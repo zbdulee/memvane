@@ -89,6 +89,65 @@ class MaintenanceRetry(FixtureCase):
             maintenance._record_request_result(self.decision)
         self.assertEqual(ledger_read_json(self.path), before)
 
+    def test_nonterminal_returns_back_off_and_only_terminal_success_resets(self):
+        self.assertEqual(self.request(1000), 1)
+        self.settle(1001)
+        self.assertEqual(self.request(1602), 1)
+        request = ledger_read_json(self.path)['requestedNs']
+        with mock.patch.dict(os.environ, {'MEMVANE_SELECTOR_REQUEST_NS': str(request)}), \
+                mock.patch('memvane.journal.api.select_route', return_value=self.decision), \
+                mock.patch.object(maintenance, '_run', return_value=False), \
+                mock.patch.object(maintenance.time, 'time_ns', return_value=1603 * SECOND):
+            maintenance.run(self.home, force=True)
+        self.assertEqual(ledger_read_json(self.path)['failures'], 2)
+        self.assertEqual(self.request(2804), 1)
+        request = ledger_read_json(self.path)['requestedNs']
+        with mock.patch.dict(os.environ, {'MEMVANE_SELECTOR_REQUEST_NS': str(request)}), \
+                mock.patch('memvane.journal.api.select_route', return_value=self.decision), \
+                mock.patch.object(maintenance, '_run', return_value=True):
+            maintenance.run(self.home, force=True)
+        self.assertEqual(ledger_read_json(self.path)['failures'], 0)
+
+    def test_proof_failure_backoff_only_updates_same_selected_install_request(self):
+        self.assertEqual(self.request(1000), 1)
+        request = ledger_read_json(self.path)['requestedNs']
+        with mock.patch.dict(os.environ, {'MEMVANE_SELECTOR_REQUEST_NS': str(request)}), \
+                mock.patch('memvane.journal.api.select_route', return_value=self.decision), \
+                mock.patch('memvane.journal.api.verify_selected_route_for_write', side_effect=ValueError('proof')), \
+                mock.patch.object(maintenance, '_run', side_effect=ValueError('proof')):
+            with self.assertRaisesRegex(ValueError, 'proof'):
+                maintenance.run(self.home, force=True)
+        self.assertEqual(ledger_read_json(self.path)['failures'], 1)
+        before = ledger_read_json(self.path)
+        with mock.patch('memvane.journal.api.inspect_journal', return_value={
+                'state': 'selected', 'installId': 'different'}), \
+                mock.patch.dict(os.environ, {'MEMVANE_SELECTOR_REQUEST_NS': str(request)}):
+            maintenance._record_request_result(self.decision, completed=True)
+        self.assertEqual(ledger_read_json(self.path), before)
+
+    def test_real_run_marks_pending_heal_warm_and_publish_contention_nonterminal(self):
+        from memvane.learning.context_learning import selector_heal
+        cases = [('pending_runtime', 'selector_ready', 'selector_warm', True, False),
+                 ('preserved', 'selector_busy', 'selector_warm', True, False),
+                 ('preserved', 'selector_ready', 'selector_warm_busy', True, False),
+                 ('preserved', 'selector_ready', 'selector_warm', False, False),
+                 ('preserved', 'selector_ready', 'selector_warm', True, True)]
+        for prepared, healed, warmed, available, terminal in cases:
+            with self.subTest(prepared=prepared, healed=healed, warmed=warmed, owner=available):
+                fd = os.open(os.devnull, os.O_RDONLY)
+                with mock.patch('memvane.journal.api.select_route', return_value=self.decision), \
+                        mock.patch('memvane.journal.api.verify_selected_route_for_write', return_value={'installId': 'fixture'}), \
+                        mock.patch('memvane.learning.runtime_activation.ensure_pending'), \
+                        mock.patch.object(selector_heal, '_prepare_lease', return_value=fd), \
+                        mock.patch('memvane.learning.default_enrollment.prepare', return_value={'status': prepared}), \
+                        mock.patch.object(maintenance, '_selector_state', return_value=self.state), \
+                        mock.patch.object(selector_heal, 'heal', return_value={'status': healed}), \
+                        mock.patch.object(selector_heal, 'warm', return_value={'status': warmed}), \
+                        mock.patch('memvane.runtime.api.sync_owner', return_value=nullcontext(object() if available else None)), \
+                        mock.patch('memvane.journal.api.publish_plugin_version') as publish:
+                    self.assertIs(maintenance._run(self.home, force=True), terminal)
+                self.assertEqual(publish.call_count, int(terminal))
+
     def test_spawn_failure_keeps_the_request_and_backoff(self):
         with mock.patch.object(maintenance.time, 'time_ns', return_value=1000 * SECOND), \
                 mock.patch.object(maintenance.subprocess, 'Popen', side_effect=OSError('private')):
