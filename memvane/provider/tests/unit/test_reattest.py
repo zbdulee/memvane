@@ -24,7 +24,7 @@ class ReattestationTest(unittest.TestCase):
         self.identity = {'modelSha256': 'd' * 64, 'tokenizer': 'embedded',
                          'chunkerSha256': 'e' * 64, 'chunkRules': '900/135/200',
                          'dimension': 768, 'metric': 'cosine', 'pooling': 'model-default',
-                         'normalization': 'none', 'maxTokens': 2048}
+                         'normalization': 'none', 'maxTokens': 2048, **reattest.LEGACY_TEMPLATES}
 
     def test_exact_pair_and_identity(self):
         with tempfile.TemporaryDirectory() as root:
@@ -51,7 +51,9 @@ class ReattestationTest(unittest.TestCase):
                     self.assertTrue(reattest.valid(state, self.original, current, self.identity))
                     self.assertTrue(reattest.valid(state, self.original, current, self.identity, require_legacy=True))
                 self.assertTrue(reattest.valid(state, self.original, other, self.identity))
-                self.assertEqual(json.loads((state/'provider-reattest.json').read_text())['current'], self.current)
+                legacy = json.loads((state/'provider-reattest.json').read_text())
+                self.assertEqual(legacy['current'], self.current)
+                self.assertEqual(set(legacy['attestedIdentity']), reattest._LEGACY_FIELDS)
                 for value in range(17):
                     current = {**self.current, 'worker':format(value, '064x')}
                     reattest.write(state, self.original, current, self.identity, self.identity)
@@ -82,19 +84,20 @@ class ReattestationTest(unittest.TestCase):
     def test_legacy_only_and_unsafe_pairs(self):
         with tempfile.TemporaryDirectory() as root:
             state = Path(root).resolve()
-            reattest.write(state, self.original, self.current, self.identity, self.identity)
+            original = reattest.LEGACY_PAIR
+            reattest.write(state, original, self.current, self.identity, self.identity)
             path = state/'provider-reattest-pairs.json'
             path.unlink()
-            self.assertTrue(reattest.valid(state, self.original, self.current, self.identity))
+            self.assertTrue(reattest.valid(state, original, self.current, self.identity))
             newer = {**self.current, 'worker':'f'*64}
-            reattest.write(state, self.original, newer, self.identity, self.identity)
-            self.assertTrue(reattest.valid(state, self.original, self.current, self.identity))
-            self.assertTrue(reattest.valid(state, self.original, newer, self.identity))
+            reattest.write(state, original, newer, self.identity, self.identity)
+            self.assertTrue(reattest.valid(state, original, self.current, self.identity))
+            self.assertTrue(reattest.valid(state, original, newer, self.identity))
             path.unlink()
             path.symlink_to(state/'provider-reattest.json')
-            self.assertFalse(reattest.valid(state, self.original, self.current, self.identity))
+            self.assertFalse(reattest.valid(state, original, self.current, self.identity))
             with self.assertRaises(OSError):
-                reattest.write(state, self.original, self.current, self.identity, self.identity)
+                reattest.write(state, original, self.current, self.identity, self.identity)
 
     def test_two_host_versions_alternate_authorization(self):
         import json
@@ -152,7 +155,8 @@ class ReattestationTest(unittest.TestCase):
             reattest.update(state, manifest)
             self.assertTrue(reattest.check(state, manifest))
             for key, value in (('pooling', 'mean'), ('normalization', 'l2'), ('maxTokens', 1024),
-                               ('chunkerSha256', 'f'*64)):
+                               ('chunkerSha256', 'f'*64), ('queryTemplate', 'changed'),
+                               ('documentTemplate', 'changed'), ('contextMargin', 5)):
                 with patch.object(reattest, '_current', return_value=(self.current, {**old, key: value})):
                     self.assertFalse(reattest.check(state, manifest))
                     with self.assertRaises(ValueError):
@@ -170,6 +174,23 @@ class ReattestationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root, patch.object(reattest, '_current', return_value=(self.current, self.identity)):
             with self.assertRaises(ValueError):
                 reattest.update(Path(root), manifest)
+
+    def test_worker_source_templates_match_manifest_and_template_change_is_detected(self):
+        from unittest.mock import patch
+        from memvane.kernel.bundle_paths import bundle_file, WORKER_RELATIVE_PATH
+        source = bundle_file(WORKER_RELATIVE_PATH).read_text(encoding='utf8')
+        manifest = {'modelSha256':'d'*64, 'dimension':768}
+        with tempfile.TemporaryDirectory() as root:
+            worker = Path(root)/'worker.mjs'; worker.write_text(source)
+            def bundle(path):
+                return worker if path == WORKER_RELATIVE_PATH else Path(root)/'provider.py'
+            with patch('memvane.kernel.bundle_paths.bundle_file', side_effect=bundle), \
+                 patch('memvane.provider.api.hash_file', return_value='e'*64):
+                _, identity = reattest._current(manifest)
+                self.assertEqual({key:identity[key] for key in reattest.LEGACY_TEMPLATES}, reattest.LEGACY_TEMPLATES)
+                worker.write_text(source.replace('task: search result | query:', 'task: altered | query:'))
+                _, changed = reattest._current(manifest)
+                self.assertNotEqual(identity['queryTemplate'], changed['queryTemplate'])
 
     def test_journal_accepts_only_proved_pair_without_changing_vectors_or_attestation(self):
         import hashlib

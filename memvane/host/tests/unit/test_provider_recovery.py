@@ -5,6 +5,16 @@ from memvane.host import provider_recovery
 
 
 class ProviderRecovery(unittest.TestCase):
+    def test_template_difference_never_offers_a_wake(self):
+        proof = {'journalPath':'/synthetic/journal', 'providerManifest':{}}
+        decision = {'projectRoot':'/synthetic/project'}
+        with mock.patch('memvane.diagnostics.api.build_progress_events', return_value=[]), \
+             mock.patch('memvane.kernel.memvane_version.plugin_version', return_value='1.0.8'), \
+             mock.patch('memvane.provider.api.reattestation_differences', return_value=['queryTemplate']), \
+             mock.patch('memvane.runtime.api.request') as request:
+            self.assertFalse(provider_recovery.offer('recall', decision, proof, {}, allowed=True, successful=True))
+        request.assert_not_called()
+
     def test_two_rejections_hold_offer_for_same_version(self):
         proof = {'journalPath':'/synthetic/journal', 'providerManifest':{}}
         decision = {'projectRoot':'/synthetic/project'}
