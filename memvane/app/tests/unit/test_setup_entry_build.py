@@ -140,9 +140,11 @@ class SetupEntry(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self.call('plan-fresh-wiki-origin', project=None)
         with mock.patch('memvane.provider.api.select', return_value={'generation': 'g1',
-                                                                    'dependencyClosure': [{'path': 'x'}]}):
+                                                                    'dependencyClosure': [{'path': 'x'}]}), \
+             mock.patch('memvane.runtime.api.background_bundle') as background:
+            background.return_value.process_version_counts.return_value = {'status':'inspected','versions':{}}
             self.assertEqual(self.call('index-runtime-status', project=None),
-                             (0, {'status': 'ready', 'generation': 'g1'}))
+                             (0, {'status': 'ready', 'generation': 'g1', 'processVersions':{'status':'inspected','versions':{}}}))
 
     def test_onboarding_answers_reach_only_the_notice_choice(self):
         for action, name, args in (('onboarding-skip', 'skip', (PROJECT, 's1')),

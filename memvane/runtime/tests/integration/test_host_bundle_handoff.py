@@ -85,10 +85,16 @@ class HostBundleHandoff(FixtureCase):
         (root / 'entry').mkdir(parents=True)
         (root / 'plugin.json').write_text('{"name":"memvane","version":"1.0.3"}', encoding='utf8')
         (root / 'entry' / 'run.py').write_text('# synthetic\n', encoding='utf8')
+        config = self.home / '.hermes' / 'config.yaml'
+        config.write_text('plugins:\n  enabled:\n    - memvane\n'); config.chmod(0o600)
         inventory = {'installed': [{'name': 'memvane', 'marketplaceName': 'market', 'version': '1.0.2',
                                     'installed': True, 'enabled': True}]}
         with mock.patch.object(host_bundle, '_codex_inventory', return_value=inventory):
             self.assertEqual(host_bundle.latest_installed(home=self.home), root)
+            config.write_text('plugins:\n  enabled:\n    - other\n')
+            self.assertNotEqual(host_bundle.latest_installed(home=self.home), root)
+            config.write_text('plugins:\n  enabled:\n    - memvane\n  disabled:\n    - memvane\n')
+            self.assertNotEqual(host_bundle.latest_installed(home=self.home), root)
 
     def test_claude_inventory_must_name_the_exact_cache_path(self):
         root = self.bundle('claude', 'market', '1.0.2')
@@ -126,16 +132,18 @@ class HostBundleHandoff(FixtureCase):
             self.assertIsNone(host_bundle.fast_installed(home=self.home))
         self.assertTrue(old.exists())
 
-    def test_retired_timer_is_rearmed_in_same_wake(self):
+    def test_retired_timer_rearms_in_detached_handoff_if_lease_is_busy(self):
         from memvane.runtime import runtime_work as runtime
         queue = runtime.WakeQueue()
         queue.put('laya-sync', '/synthetic/project', now=time.time()+300)
         with mock.patch.object(host_bundle, 'retire_old_helpers', return_value=1), \
-             mock.patch.object(runtime, '_arm_timer', side_effect=[False, False, True]) as arm, \
+             mock.patch.object(runtime, '_arm_timer', return_value=False) as arm, \
+             mock.patch.object(runtime, '_handoff', return_value=True) as handoff, \
              mock.patch.object(runtime.time, 'sleep') as sleep:
             self.assertEqual(runtime._wake(queue), 'idle')
-        self.assertEqual(arm.call_count, 3)
-        self.assertEqual(sleep.call_count, 2)
+        arm.assert_called_once_with(queue)
+        handoff.assert_called_once_with()
+        sleep.assert_not_called()
 
     def test_group_writable_path_does_not_stop_spawn(self):
         unsafe = self.tmp / 'group-writable'
@@ -182,6 +190,34 @@ class HostBundleHandoff(FixtureCase):
         hosts = {call.kwargs.get('host') for call in emit.call_args_list
                  if call.kwargs.get('reason') == 'host_inventory_unreadable'}
         self.assertEqual(hosts, {'codex', 'claude'})
+
+    def test_read_only_process_counts_require_own_uid_and_bundle_path(self):
+        root = self.bundle('codex', 'market', '1.0.2')
+        entry = root / 'entry' / 'run.py'
+        worker = root / 'memvane/provider/adapters/laya_local_embed_worker.mjs'
+        rows = (f'{os.getuid()} /usr/bin/python3 -B {entry} runtime-work worker 3\n'
+                f'{os.getuid()} /usr/bin/node {worker}\n'
+                f'{os.getuid()+1} /usr/bin/python3 -B {entry} resident-service\n'
+                f'{os.getuid()} /usr/bin/python3 -B {entry} unrelated\n')
+        result = types.SimpleNamespace(returncode=0, stdout=rows)
+        with mock.patch.dict(os.environ, {'CODEX_HOME':str(self.home/'.codex')}), \
+             mock.patch.object(host_bundle.subprocess, 'run', return_value=result):
+            self.assertEqual(host_bundle.process_version_counts(),
+                             {'status':'inspected', 'versions':{'1.0.2':2}})
+        with mock.patch.object(host_bundle.subprocess, 'run', side_effect=OSError('ps')):
+            self.assertEqual(host_bundle.process_version_counts(), {'status':'unavailable', 'versions':{}})
+
+    def test_old_helper_scan_is_cached_for_one_process(self):
+        root = self.bundle('codex', 'market', '1.0.2')
+        current = host_bundle.BundleIdentity(root)
+        host_bundle._RETIRE_CHECKS.clear()
+        with mock.patch.object(host_bundle.time, 'monotonic', side_effect=[100, 110, 131]), \
+             mock.patch.object(host_bundle, 'fast_installed', return_value=root), \
+             mock.patch.object(host_bundle, '_process_rows', return_value=[]) as rows:
+            self.assertEqual(host_bundle.retire_old_helpers(self.tmp, current), 0)
+            self.assertEqual(host_bundle.retire_old_helpers(self.tmp, current), 0)
+            self.assertEqual(host_bundle.retire_old_helpers(self.tmp, current), 0)
+        self.assertEqual(rows.call_count, 2)
 
     def test_host_cli_is_not_run_from_a_writable_path(self):
         unsafe = self.tmp / 'unsafe'
@@ -282,6 +318,7 @@ class HostBundleHandoff(FixtureCase):
             self.assertEqual(child.stdout.readline().strip(), 'READY')
             with mock.patch.dict(os.environ, {'CODEX_HOME':str(self.home/'.codex')}), \
                  mock.patch.object(runtime, 'BACKGROUND_BUNDLE', host_bundle.BundleIdentity(new)), \
+                 mock.patch.object(host_bundle, 'fast_installed', return_value=new), \
                  mock.patch.object(runtime, 'entry_argv', side_effect=entry), \
                  mock.patch.object(runtime, 'subprocess', process_api):
                 self.assertEqual(runtime._wake(queue), 'spawned')

@@ -497,10 +497,10 @@ def _wake(queue=None):
     # lease-free timer runs them once they are due.
     if not wake_policy.any_due(_own_view(queue.root,rows,time.time()),time.time()):
         if retired:
-            for _attempt in range(20):
-                if _arm_timer(queue):return 'idle'
-                time.sleep(.05)
-            return 'unavailable'
+            if _arm_timer(queue):return 'idle'
+            # The old timer can take time to release its lease. Reuse the
+            # existing detached handoff contender to rearm off the hook.
+            return 'idle' if _handoff() else 'unavailable'
         return 'idle' if _timer_available(queue) else 'unavailable'
     if yield_requested(queue.root):
         return 'yield' if _timer_available(queue) else 'unavailable'
