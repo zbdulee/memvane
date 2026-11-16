@@ -23,12 +23,17 @@ def _selector_state(project):
 
 def _missing_warm_receipt(project):
     """Only a prepared selector needs a same-version warm retry."""
-    from memvane.learning.context_learning import selector_heal
-    from memvane.learning.context_learning.dataset import read_private_json
     try:
         state = _selector_state(project)
     except (OSError, ValueError, TypeError, KeyError):
         return False
+    return _missing_warm_at(state)
+
+
+def _missing_warm_at(state):
+    """A prepared namespace (policy + checkpoint) without a valid warm receipt."""
+    from memvane.learning.context_learning import selector_heal
+    from memvane.learning.context_learning.dataset import read_private_json
     if state is None:
         return False
     if not (state / selector_heal.POLICY).is_file() or not (state / 'active-checkpoint.json').is_file():
@@ -179,7 +184,35 @@ def request(decision, *, force=False, owner=None, origin='session'):
             _request_event(decision, 'failed', 'request_failed', origin=origin, error=type(exc).__name__)
 
 
-def _pending_request(row, project):
+def _unpublished_version(decision):
+    """The executing plugin is newer than the selected journal's maximum."""
+    from memvane.journal.api import inspect_journal
+    from memvane.kernel.memvane_version import plugin_version, version_key
+    try:
+        running = version_key(plugin_version())
+        highest = version_key(inspect_journal(decision['journalPath'])['maxPluginVersion'])
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    return running is not None and highest is not None and running > highest
+
+
+def _missing_default_warm(decision):
+    """A prepared default namespace for this selected install, not yet warmed.
+
+    ``default_enrollment.prepare`` warms before ``_activate_profile``, so the
+    configured namespace may not point here yet. Read-only: no enrollment
+    record or write.
+    """
+    from memvane.learning.default_enrollment import default_namespace
+    try:
+        root = default_namespace(Path(decision['projectRoot']).resolve(strict=True),
+                                 decision['installId'])
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    return _missing_warm_at(root)
+
+
+def _pending_request(row, decision):
     """A valid row still owed an attempt; None when the row is malformed."""
     if not isinstance(row, dict):
         return None
@@ -187,7 +220,8 @@ def _pending_request(row, project):
     retry_after = row.get('retryAfterNs', 0)
     if not all(type(value) is int and value >= 0 for value in (requested, failures, retry_after)):
         return None
-    return retry_after > 0 or failures > 0 or _missing_warm_receipt(project)
+    return (retry_after > 0 or failures > 0 or _missing_warm_receipt(decision['projectRoot'])
+            or _unpublished_version(decision) or _missing_default_warm(decision))
 
 
 def _selected_route(project):
@@ -223,7 +257,7 @@ def due_request(project):
         path = Path(decision['journalPath']).parent / REQUEST_FILE
         if not path.exists():
             return none
-        pending = _pending_request(ledger_read_json(path), decision['projectRoot'])
+        pending = _pending_request(ledger_read_json(path), decision)
         if pending is None:
             _request_event(decision, 'failed', 'request_state_invalid', origin='wake')
             return none

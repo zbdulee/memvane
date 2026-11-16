@@ -27,7 +27,9 @@ sync가 하한보다 먼저 끝나면 `learning`에 남은 지연을 예약한�
 `laya-sync`의 편집·vector 재offer due를 바꾸지 않는다. 더 이른 일반 학습
 wake와 합쳐지면 due probe와 기존 큐 backoff로 유지하며 일반 학습 step도
 함께 실행한다. 결과 기록이 owner 경합에 지면 파일을 바꾸지 않고 요청
-하한에 `learning` wake를 남긴다. 학습 runtime이나
+하한에 `learning` wake를 남긴다. 요청 파일의 실패 횟수가 아직 0이어도
+미게시 버전이나 profile 활성화 전 기본 namespace의 미완료 warm을
+재시도 대상으로 확인한다. 학습 runtime이나
 모델이 없는 설치는 자동 polling을 예약하지 않고 자연스러운 다음 요청을
 기다린다. 큐 용량 때문에 예약이 버려지면 `retry_offer_dropped`를 기록한다.
 

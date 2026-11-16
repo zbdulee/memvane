@@ -17,6 +17,38 @@ from memvane.runtime import api as runtime
 
 
 class RequestGates(FixtureCase):
+    def test_first_same_version_default_warm_still_pending_before_profile_activation(self):
+        from memvane.learning import default_enrollment
+        state = self.home / 'unsettled'
+        state.mkdir(mode=0o700)
+        config = self.home / '.memvane'
+        config.mkdir(mode=0o700)
+        (config / 'settings.json').write_text(json.dumps({'name': 'retry'}), encoding='utf8')
+        store = state / 'store'
+        store.touch(mode=0o600)
+        decision = {'projectRoot': str(self.home), 'journalPath': str(state / 'journal'),
+                    'storePath': str(store), 'installId': 'fixture'}
+        journal.ledger_write(state / maintenance.REQUEST_FILE,
+            {'requestedNs': 1000*10**9, 'failures': 0, 'retryAfterNs': 0}, replace=False)
+        pending = default_enrollment.default_namespace(self.home, 'fixture')
+        pending.mkdir(mode=0o700, parents=True)
+        for name in (selector_heal.POLICY, 'active-checkpoint.json'):
+            path = pending / name
+            path.write_text('{}', encoding='utf8')
+            path.chmod(0o600)
+        spawn = mock.Mock()
+        with mock.patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '0'}), \
+                mock.patch.object(journal, 'select_route', return_value=decision), \
+                mock.patch.object(journal, 'inspect_journal', return_value={
+                    'state': 'selected', 'installId': 'fixture', 'maxPluginVersion': '1.0.12'}), \
+                mock.patch.object(journal, 'verify_selected_route_for_write', return_value={'installId': 'fixture'}), \
+                mock.patch.object(maintenance.time, 'time_ns', return_value=1601*10**9), \
+                mock.patch.object(selector_heal, 'official_runtime', return_value=('/synthetic/python', '/synthetic/model')), \
+                mock.patch.object(maintenance, 'subprocess', SimpleNamespace(Popen=spawn, DEVNULL=maintenance.subprocess.DEVNULL)):
+            result = maintenance.due_request(self.home)
+        self.assertEqual(result['status'], 'requested')
+        spawn.assert_called_once()
+
     def test_sync_reoffers_backoff_but_does_not_poll_an_absent_runtime(self):
         state = self.home / 'retry-state'
         state.mkdir(mode=0o700)

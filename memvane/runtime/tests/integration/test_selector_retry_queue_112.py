@@ -120,7 +120,9 @@ class SelectorRetryQueue(FixtureCase):
 
     def test_completed_or_missing_request_does_not_enroll_or_spawn(self):
         journal.ledger_write(self.path, {'requestedNs': 1000*10**9, 'failures': 0, 'retryAfterNs': 0}, replace=True)
-        with mock.patch('subprocess.Popen') as spawn:
+        with mock.patch('subprocess.Popen') as spawn, \
+                mock.patch.object(journal, 'inspect_journal', return_value={
+                    'state': 'selected', 'installId': 'fixture', 'maxPluginVersion': '1.0.12'}):
             for remove in (False, True):
                 if remove:
                     self.path.unlink()
@@ -153,6 +155,20 @@ class SelectorRetryQueue(FixtureCase):
         spawn.assert_not_called()
         self.assertEqual(journal.ledger_read_json(self.path), self.row)
         self.assertEqual(self.rows(), {})
+
+    def test_first_upgrade_attempt_owner_timeout_is_not_a_completed_request(self):
+        self.row = {'requestedNs': 1000 * 10**9, 'failures': 0, 'retryAfterNs': 0}
+        journal.ledger_write(self.path, self.row, replace=True)
+        with api.sync_owner(self.store), \
+                mock.patch.dict(os.environ, {'MEMVANE_SELECTOR_REQUEST_NS': str(self.row['requestedNs'])}), \
+                mock.patch.object(journal, 'verify_selected_route_for_write', side_effect=ValueError('proof')):
+            with self.assertRaisesRegex(ValueError, 'proof'):
+                learning.run_selector_maintenance(self.project, force=True)
+        self.assertEqual(journal.ledger_read_json(self.path), self.row)
+        self.now = 1601
+        with mock.patch('subprocess.Popen') as spawn:
+            self.drain(self.probe)
+        spawn.assert_called_once()
 
 
 if __name__ == '__main__':
