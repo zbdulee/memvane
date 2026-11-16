@@ -166,6 +166,16 @@ class CheckoutCacheChecks(existing.CheckoutCase):
             self.assertTrue(view.capture_matches(baseline, repository, worktree, fresh=True))
         self.assertGreater(git.call_count, 0)
 
+    def test_fresh_proof_populates_cache_for_next_unchanged_capture(self):
+        repository, worktree = self.bind(self.root)
+        baseline = self.cap(self.root, repository, worktree)
+        with mock.patch.object(view, '_git', wraps=view._git) as git:
+            self.assertTrue(view.capture_matches(baseline, repository, worktree, fresh=True))
+            self.assertGreater(git.call_count, 0)
+            git.reset_mock()
+            self.assertEqual(self.cap(self.root, repository, worktree), baseline)
+            self.assertEqual(git.call_count, 0)
+
     def test_unknown_filesystem_uses_the_full_git_path(self):
         repository, worktree = self.bind(self.root)
         self.cap(self.root, repository, worktree)

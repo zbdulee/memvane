@@ -1297,7 +1297,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
 
             def fence():
                 _mark_schema3_write(writer, proof, marks)
-            files, seconds = 8, min(SCHEMA3_FILL_CALL_SECONDS, left)
+            files, seconds = 32, min(SCHEMA3_FILL_CALL_SECONDS, left)
             if resumable:
                 files, seconds = span, SCHEMA3_RESUME_SECONDS
                 cold_used = cold_used or not first[1]
