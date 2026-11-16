@@ -3,6 +3,8 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import signal
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -172,11 +174,16 @@ class Handoff(unittest.IsolatedAsyncioTestCase):
                         if (home/(name+'-done')).exists():
                             continue
                         pid = int((home/name).read_text())
-                        ps = subprocess.run(['/bin/ps','-p',str(pid),'-o','uid=,command='],
-                                            capture_output=True, text=True, timeout=3, check=False)
-                        if ps.returncode == 0 and ps.stdout.strip().startswith(str(os.getuid())+' ') \
-                                and str(new/'entry/run.py') in ps.stdout:
-                            os.kill(pid, 15)
+                        argv = ['/bin/ps','-p',str(pid),'-o','uid=,lstart=,command=']
+                        ps = subprocess.run(argv, capture_output=True, text=True, timeout=3, check=False)
+                        again = subprocess.run(argv, capture_output=True, text=True, timeout=3, check=False)
+                        fields = ps.stdout.strip().split(None, 6)
+                        command = shlex.split(fields[6]) if len(fields) == 7 else []
+                        expected = [str(new/'entry/run.py'), name.removesuffix('-new'), str(home), str(old), str(new)]
+                        if (ps.returncode == again.returncode == 0 and ps.stdout == again.stdout
+                                and fields[0] == str(os.getuid()) and len(command) >= 7
+                                and command[2:7] == expected):
+                            os.kill(pid, signal.SIGTERM)
                 for process in running:
                     if process.poll() is None:
                         process.terminate()
