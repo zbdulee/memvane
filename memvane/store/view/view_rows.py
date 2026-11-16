@@ -1289,10 +1289,12 @@ class RowsMixin:
                 fenced.append(True)
 
         filler = ContentFiller(self)
-        steps = used = filled = hits = 0
+        skipped = fills.completed_prefix(self, targets, cursor, recipe_id, profile_id, deadline)
+        steps = hits = skipped
+        used = filled = 0
         deferred = False
-        for target in targets[cursor:]:
-            if steps >= max_files:
+        for target in targets[cursor + skipped:]:
+            if steps - skipped >= max_files:
                 break
             if used + target['byte_length'] > max_bytes:
                 deferred = steps == 0

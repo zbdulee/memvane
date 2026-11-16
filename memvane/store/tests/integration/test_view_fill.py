@@ -11,6 +11,23 @@ from memvane.store.tests.support import FillCase
 
 
 class FillChecks(FillCase):
+    def test_completed_prefix_skips_content_revalidation_after_new_head(self):
+        from memvane.store.blob.blob_fill import ContentFiller
+        store, _, handle, manifest, recipe, profile = self.configured(9)
+        self.assertTrue(self.fill(store, handle, manifest, recipe, profile, max_files=64)['complete'])
+        self.add_member(store, handle, manifest, 'cards/zz-new.md', b'# Unique\nnew content\n', 'Unique')
+        self.lexical(store, handle, manifest)
+        calls = []
+        real = ContentFiller.ensure_content
+        def counted(filler, blob, *args, **kwargs):
+            calls.append(blob)
+            return real(filler, blob, *args, **kwargs)
+        with mock.patch.object(ContentFiller, 'ensure_content', counted):
+            result = self.fill(store, handle, manifest, recipe, profile, max_files=1)
+        self.assertTrue(result['complete'])
+        self.assertEqual((result['cursor'], result['cache_hits'], result['filled']), (10, 9, 1))
+        self.assertEqual(calls, [manifest['members'][-1]['blob_sha']])
+
     def test_01_absent_status_is_readonly_and_deterministic(self):
         store, _, h, manifest, r, p = self.configured()
         before = store._db.total_changes

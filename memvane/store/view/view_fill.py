@@ -58,6 +58,20 @@ def _remaining(deadline):
     return left
 
 
+def completed_prefix(store, targets, cursor, recipe_id, profile_id, deadline):
+    """Count consecutive existing sets; publication still validates their contents."""
+    count = 0
+    with store._session() as db:
+        for target in targets[cursor:]:
+            _remaining(deadline)
+            row = db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
+                             (target['blob_sha'], recipe_id, profile_id)).fetchone()
+            if row is None:
+                break
+            count += 1
+    return count
+
+
 def _bounded(value, lower, upper, reason):
     if type(value) is not int or not lower <= value <= upper:
         v.fail(reason)
