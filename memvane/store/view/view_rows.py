@@ -1373,27 +1373,23 @@ class RowsMixin:
             groups = {}
             for row in cards:
                 groups.setdefault(row['blob_sha'], []).append(row)
-            if sum(heads[blob]['chunk_count'] for blob in groups) * dimension > max_float_work:
-                v.fail(vectors.WORK_EXCEEDED)
-            if timings is not None:
-                timings.update(vectorReadMs=0.0, vectorUnpackMs=0.0, vectorDotMs=0.0)
-            top = []
-            for batch in vectors._vector_batches(vectors._preferred_order(groups, preferred_paths), heads):
-                vectors._left(deadline)
-                by_blob = vectors._read_batch(db, batch, heads, recipe_id, profile_id, timings)
-                for blob in batch:
-                    vectors._left(deadline)
-                    started = time.perf_counter() if timings is not None else None
-                    try:
-                        rows = self._vectors(blob, recipe_id, profile_id, saved=by_blob[blob])
-                    finally:
-                        if timings is not None:
-                            timings['vectorReadMs'] += (time.perf_counter() - started) * 1000
-                    if len(rows) != heads[blob]['chunk_count']:
-                        v.fail('vector_rows_mismatch')
-                    score = vectors._set_score(query, rows, dimension, deadline, timings=timings)
-                    for row in groups[blob]:
-                        vectors._keep(top, score, dict(path=row['path'], blob_sha=blob, display_title=row['title']), limit)
+            from memvane.store.view import vector_accel
+            native = vector_accel.kernel()
+            stats = timings if timings is not None else {}
+            stats.update(vectorKernel='accelerate' if native is not None else 'python',
+                         vectorSource='store' if native is not None else 'python',
+                         vectorRows=0, vectorVerified=0, vectorScanBlocks=0,
+                         vectorLoadMs=0.0, vectorScanMs=0.0, vectorVerifyMs=0.0,
+                         vectorReadMs=0.0, vectorUnpackMs=0.0, vectorDotMs=0.0)
+            stats['vectorKernelUnavailable'] = native is None and vector_accel.requested()
+            if native is not None:
+                from memvane.store.view import view_accel_search
+                top = view_accel_search.search(self, db, groups, heads, recipe_id, profile_id,
+                                              dimension, query, limit, deadline, stats, native)
+            else:
+                top = vectors._python_top(self, db, groups, heads, recipe_id, profile_id,
+                                          dimension, query, limit, max_float_work, deadline,
+                                          stats, preferred_paths)
             state = self._snapshot_state(entry['capture'], v.parse_canonical(generation['capture_json']), deadline)
             answer = [dict(path=ref['path'], blob_sha=ref['blob_sha'], body=self._blob(ref['blob_sha']),
                            display_title=ref['display_title'], score=-negative, view_id=pin.view_id,

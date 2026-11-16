@@ -127,6 +127,38 @@ class SelectedRoute(FixtureCase):
                          'capture_deadline')
         self.assertFalse((learning_state_base() / 'live-selection' / digest(str(self.project))).exists())
 
+    def test_capture_sources_join_request_id_and_do_not_change_the_sample(self):
+        from memvane.learning.context_learning.contracts import validate_request
+        pool = self.pool(self.snapshot())
+        state = self.private_state()
+        sources = {row['path']: source for row, source in zip(pool, ('store', 'python', 'lexical'))}
+        payload = {'prompt': 'private capture prompt marker', '_memvane_semantic_sources': sources}
+        self.assertEqual(learning.capture_recall('codex', self.install.decision, payload,
+                                                self.settings, pool, pool[:1]), 'stored')
+        with closing(sqlite3.connect(state / 'learning.sqlite3')) as db:
+            sample = json.loads(db.execute('SELECT body FROM samples').fetchone()[0])
+        validate_request(sample)
+        self.assertEqual(set(sample), {'schema_version', 'request_id', 'host', 'context_origin',
+                                       'prompt', 'candidates', 'sampling'})
+        events = [row for row in self.install.events() if row.get('event') == 'learning.capture.sources']
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event['request_id'], sample['request_id'])
+        self.assertEqual(event['candidates'], [{'id_sha256': digest(row['path']), 'source': sources[row['path']]}
+                                              for row in pool])
+        raw = json.dumps(event)
+        self.assertNotIn(payload['prompt'], raw)
+        for row in pool:
+            self.assertNotIn(row['body'], raw)
+
+    def test_disabled_capture_has_no_source_event(self):
+        pool = self.pool(self.snapshot())
+        settings = dict(self.settings, contextLearning={'capture': False})
+        self.assertEqual(learning.capture_recall('codex', self.install.decision,
+                         {'prompt': 'find', '_memvane_semantic_sources': {pool[0]['path']: 'store'}},
+                         settings, pool, []), 'disabled')
+        self.assertFalse(any(row.get('event') == 'learning.capture.sources' for row in self.install.events()))
+
     def test_stale_incremental_row_stays_private(self):
         current = self.snapshot()
         pool = self.pool(current)

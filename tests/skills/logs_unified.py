@@ -85,6 +85,20 @@ def write_log(path, rows, mode='wb'):
 
 
 class UnifiedLogs(FixtureCase):
+    def test_summary_groups_semantic_use_and_latency_by_vector_source(self):
+        from types import SimpleNamespace
+        rows = [dict(ts='2026-11-09T00:00:00Z', event='recall', outcome='served',
+                     ms=100, semantic='complete', vectorSource='store', semanticMs=10),
+                dict(ts='2026-11-09T00:00:01Z', event='recall', outcome='served',
+                     ms=110, semantic='deferred_deadline', vectorSource='store', semanticMs=30),
+                dict(ts='2026-11-09T00:00:02Z', event='recall', outcome='served',
+                     ms=90, semantic='complete', vectorSource='python', semanticMs=5)]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.logs['summary'](rows, SimpleNamespace(hours=None))
+        self.assertIn('semantic store: 1/2 (50.0%) p50=10ms p95=30ms', out.getvalue())
+        self.assertIn('semantic python: 1/1 (100.0%) p50=5ms p95=5ms', out.getvalue())
+
     def test_summary_counts_progress_separately_from_failure(self):
         from types import SimpleNamespace
         rows = [

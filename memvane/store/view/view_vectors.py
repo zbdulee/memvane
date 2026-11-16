@@ -312,10 +312,13 @@ class VectorMixin:
     def search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work=DEFAULT_WORK,
                      deadline_seconds=2, path_prefixes=None, excluded_paths=None, timings=None,
                      preferred_paths=None):
-        return self._rows_search_exact(pin, query_vector, limit, profile_id=profile_id,
-                                       max_float_work=max_float_work, deadline_seconds=deadline_seconds,
-                                       path_prefixes=path_prefixes, excluded_paths=excluded_paths, timings=timings,
-                                       preferred_paths=preferred_paths)
+        try:
+            return self._rows_search_exact(pin, query_vector, limit, profile_id=profile_id,
+                                           max_float_work=max_float_work, deadline_seconds=deadline_seconds,
+                                           path_prefixes=path_prefixes, excluded_paths=excluded_paths, timings=timings,
+                                           preferred_paths=preferred_paths)
+        except MemoryError:
+            v.fail(WORK_EXCEEDED)
 
     def search_hybrid(self, pin, fts_query, query_vector, limit, *, profile_id=None,
                       max_float_work=DEFAULT_WORK, deadline_seconds=2, path_prefixes=None,
@@ -367,6 +370,38 @@ def _check_preferred(paths):
             v.fail('vector_filter_invalid')
         for path in paths:
             v.relative(path)
+
+
+def _python_top(store, db, groups, heads, recipe_id, profile_id, dimension, query,
+                limit, max_float_work, deadline, stats, preferred_paths):
+    """The fully verified Python lane, with its original float-work cap."""
+    if sum(heads[blob]['chunk_count'] for blob in groups) * dimension > max_float_work:
+        v.fail(WORK_EXCEEDED)
+    top = []
+    for batch in _vector_batches(_preferred_order(groups, preferred_paths), heads):
+        _left(deadline)
+        started = time.perf_counter()
+        by_blob = _read_batch(db, batch, heads, recipe_id, profile_id, stats)
+        stats['vectorLoadMs'] += (time.perf_counter() - started) * 1000
+        for blob in batch:
+            _left(deadline)
+            started = time.perf_counter()
+            try:
+                rows = store._vectors(blob, recipe_id, profile_id, saved=by_blob[blob])
+            finally:
+                elapsed = (time.perf_counter() - started) * 1000
+                stats['vectorReadMs'] += elapsed
+                stats['vectorVerifyMs'] += elapsed
+            if len(rows) != heads[blob]['chunk_count']:
+                v.fail('vector_rows_mismatch')
+            stats['vectorRows'] += len(rows)
+            stats['vectorVerified'] += 1
+            started = time.perf_counter()
+            score = _set_score(query, rows, dimension, deadline, timings=stats)
+            stats['vectorScanMs'] += (time.perf_counter() - started) * 1000
+            for row in groups[blob]:
+                _keep(top, score, dict(path=row['path'], blob_sha=blob, display_title=row['title']), limit)
+    return top
 
 
 def _preferred_order(groups, paths):

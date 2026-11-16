@@ -1214,6 +1214,16 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/store/view/vector_accel.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/view/view_accel_search.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/sync/__init__.py": {
       "context": "sync",
       "layer": "adapter",

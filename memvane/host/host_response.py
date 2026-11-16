@@ -779,7 +779,8 @@ def _render_answer(host: str, payload: dict, answer) -> dict:
 
 def _render_answer_timed(host: str, payload: dict, answer) -> dict:
     if answer.capture is not None:
-        _set_learning_capture((host, answer.decision, payload) + tuple(answer.capture))
+        capture_payload = dict(payload, _memvane_semantic_sources=answer.capture_sources)
+        _set_learning_capture((host, answer.decision, capture_payload) + tuple(answer.capture))
     if not answer.rows:
         return host_payload(host, '')
     context = render_context(answer.decision, answer.rows, limit=answer.limit,

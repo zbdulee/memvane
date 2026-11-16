@@ -369,11 +369,24 @@ def summary(rows, args):
         print(f'{action} p50={percentile(elapsed, .5):g}ms p95={percentile(elapsed, .95):g}ms'
               f' n={len(elapsed)}{extra}')
         if action == 'recall':
+            for source in sorted({row['vectorSource'] for row in action_rows
+                                  if row.get('vectorSource') in ('store', 'python')}):
+                sourced = [row for row in action_rows if row.get('vectorSource') == source
+                           and isinstance(row.get('semantic'), str)]
+                if not sourced:
+                    continue
+                used = sum(row['semantic'] == 'complete' for row in sourced)
+                times = values(sourced, 'semanticMs')
+                latency = (f' p50={percentile(times, .5):g}ms p95={percentile(times, .95):g}ms'
+                           if times else '')
+                print(f'semantic {source}: {used}/{len(sourced)} '
+                      f'({100 * used / len(sourced):.1f}%){latency}')
             labels = (('routeProofMs', 'route'), ('lexicalMs', 'lexical'),
                       ('queryEmbeddingMs', 'queryEmbedding'), ('semanticMs', 'semantic'),
                       ('selectorMs', 'selector'), ('renderMs', 'render'),
                       ('vectorReadMs', 'vectorRead'), ('vectorUnpackMs', 'vectorUnpack'),
-                      ('vectorDotMs', 'vectorDot'))
+                      ('vectorDotMs', 'vectorDot'), ('vectorLoadMs', 'vectorLoad'),
+                      ('vectorScanMs', 'vectorScan'), ('vectorVerifyMs', 'vectorVerify'))
             stages = [(label, values(action_rows, key)) for key, label in labels]
             present = [f'{label}={statistics.median(data):g}ms' for label, data in stages if data]
             if present:
