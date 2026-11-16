@@ -80,8 +80,9 @@ def owner(root):
 
 
 def _settings_scope(project):
-    from memvane.settings import api as project_dir, types as project_types
-    raw=read_private_json(_path(project_dir.settings_path(project) or project_dir.folder(project)/project_types.SETTINGS))
+    from memvane.settings import api as project_dir
+    from .learning_profile import _settings
+    raw=_settings(project)
     # The project writes minimal settings; the scope binds the collections they derive to.
     if not project_dir.is_minimal_settings(raw):
         raise ValueError('project_scope_settings_invalid')
