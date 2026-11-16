@@ -424,7 +424,13 @@ def warm(project, *, home=None, state=None):
         request = {'schema_version': 1, 'artifact_path': active['artifact_path'], 'cases': [case]}
         if active.get('model_input_view') is not None:
             request['model_input_view'] = active['model_input_view']
-        predict(state, policy, request, active['artifact_sha256'], deadline=deadline)
+        try:
+            predict(state, policy, request, active['artifact_sha256'], deadline=deadline)
+        except Exception as exc:
+            from memvane.runtime.types import ServiceFailure
+            if isinstance(exc, ServiceFailure) and exc.code in ('starting', 'deadline_expired'):
+                raise HealDeferred(exc.code) from exc
+            raise
         # Keyed after the request: it may have started (or replaced) the service.
         atomic_json(state / WARM_MARKER, {'schema': 'memvane-selector-warm-v1',
                                           'key': _warm_key(state), 'at': time.time()})
