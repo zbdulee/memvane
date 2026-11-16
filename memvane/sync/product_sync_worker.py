@@ -212,10 +212,9 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
                 proof = writer.admission_proof()
                 expected_build = build.build_lookup(decision['projectRoot'])
                 info = writer.store()
-                # Initial builds never yield to each other (_initial_build_waiting).
-                vectors = _schema3_vector_context(decision, proof, lane, coordinator=coordinator,
-                                                   report=report, start_service=start_service,
-                                                   yield_to_builds=False)
+                # Publish the first complete lexical head without starting the
+                # provider. The selected sync wake fills vectors after activation.
+                vectors = {'spec': None}
                 store = store_api.open_store(info['path'], repository=info['repository'],
                                              scope_id=decision['scopeId'])
                 try:
@@ -228,9 +227,8 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
                         time.monotonic() + SCHEMA3_PASS_SECONDS, {}, vectors, window=True)
                 finally:
                     store.close()
-            vector = result.get('vector') or {}
             complete = (result.get('state') in ('indexed', 'unchanged')
-                        and vector.get('state') in ('published', 'current'))
+                        and result.get('generation') is not None)
             with build.build_owner(state) as owned:
                 if not owned:
                     raise ResourceDeferred('owner_busy')
@@ -241,9 +239,6 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
                                  reason=None if complete else result.get('reason'))
             if complete:
                 return {**result, 'buildPhase': 'ready'}
-            if result.get('state') in ('indexed', 'unchanged'):
-                return {**result, 'state': 'pending',
-                        'reason': vector.get('reason', 'initial_build_vectors_pending')}
             return result
     except ResourceDeferred as exc:
         return _deferred(exc)

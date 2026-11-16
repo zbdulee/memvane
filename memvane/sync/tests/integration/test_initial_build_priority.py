@@ -169,6 +169,60 @@ class BuildOwner(FixtureCase):
         self.assertTrue(calls)
         self.assertTrue(all(kwargs == {'wait': True} for _name, kwargs in calls), calls)
 
+    def test_lexical_build_activates_before_vectors_and_then_seals_them(self):
+        from memvane.journal.api import inspect_journal
+        from memvane.sync import api as sync
+        from memvane.sync.tests.support import Coordinator
+
+        for name in ('egret', 'tern'):
+            note = self.fixture.write_note('notes/' + name + '.md', name + ' nests by the pond.\n')
+            self.fixture.write_card(name + '.md', title=name, body=name + ' nests by the pond.\n', sources=[note])
+        self.fixture.commit('three cards')
+        # The provider lane cannot start; the first complete lexical head
+        # must still make this install ready to finalize and activate.
+        result = sync.run(self.fixture.root, coordinator=Coordinator(refuse='cpu_pressure'),
+                          report={}, start_service=self.target.provider.start_service)
+        self.assertEqual((result.get('buildPhase'), result.get('vector', {}).get('state')),
+                         ('ready', 'off'), result)
+        self.assertEqual(result['ingested'], 3)
+        self.assertEqual(self.target.finalize()['status'], 'initial_build_finalized')
+        self.assertEqual(self.target.activate()['status'], 'selected')
+        reader = inspect_journal(self.target.journal)['reader']
+        self.assertEqual((reader['vector_profile'], reader['vector_recipe']), (None, None))
+        self.target.provider.admit_queries()
+        self.assertIn('heron.md', self.target.recall('emerald heron'))
+        event = [row for row in self.target.events() if row.get('event') == 'recall'][-1]
+        self.assertEqual(event.get('vector_fallback'), 'selected_view_vectors_pending')
+
+        result = self.target.run_sync()
+        self.assertEqual(result['vector']['state'], 'published', result)
+        reader = inspect_journal(self.target.journal)['reader']
+        self.assertTrue(reader['vector_profile'])
+        self.assertTrue(reader['vector_recipe'])
+        self.assertIn('heron.md', self.target.recall('emerald heron'))
+        event = [row for row in self.target.events() if row.get('event') == 'recall'][-1]
+        self.assertEqual(event.get('semantic'), 'complete')
+
+    def test_a_build_with_an_existing_lexical_head_resumes_to_ready(self):
+        from memvane.install.api import build_lookup
+        real_publish = worker._publish_schema3_view
+
+        def old_build_result(*args, **kwargs):
+            result = real_publish(*args, **kwargs)
+            return {**result, 'state': 'pending', 'reason': 'schema3_vector_deadline'}
+
+        # Model a 1.0.0 pass which published a lexical head but kept the
+        # build in progress while its vector fill was incomplete.
+        with mock.patch.object(worker, '_publish_schema3_view', side_effect=old_build_result):
+            result = self.target.run_sync()
+        self.assertIsNotNone(result['generation'])
+        self.assertEqual(build_lookup(str(self.fixture.root))['phase'], 'building')
+        resumed = self.target.run_sync()
+        self.assertEqual((resumed['generation'], resumed['buildPhase']), (result['generation'], 'ready'))
+        self.assertEqual(self.target.finalize()['status'], 'initial_build_finalized')
+        self.assertEqual(self.target.activate()['status'], 'selected')
+        self.assertIn('heron.md', self.target.recall('emerald heron'))
+
     # Product regression candidate (reported to the lead): the cold build shares
     # the selected sync's vector context, whose provider calls probe
     # ``_initial_build_waiting``; its docstring says initial builds never yield.
