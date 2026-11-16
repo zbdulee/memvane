@@ -41,6 +41,11 @@ class ProjectWorkerTests(unittest.TestCase):
     def test_resource_pressure_starts_neither_teacher_nor_trainer(self):
         self.assertEqual(self.execute(ready=False)['status'],'deferred_resource')
         self.assertEqual(self.events,[])
+    def test_default_local_cycle_never_calls_teacher_or_quota(self):
+        with patch('memvane.learning.default_enrollment.default_local_only', return_value=True):
+            answer=self.execute()
+        self.assertEqual(self.events,['train'])
+        self.assertEqual(answer['teacher']['status'],'disabled_local_only')
     def test_inbox_cannot_start_models_during_setup_transaction(self):
         from memvane.learning.context_learning.local_cycle import _atomic_json
         _atomic_json(self.state/'project-learning-setup.json',{'phase':'installing'})

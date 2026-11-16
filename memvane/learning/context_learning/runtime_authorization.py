@@ -26,6 +26,9 @@ def active(root, policy, adapter, *, reviewed_adapter_sha256):
     value = project_scope.require(root, policy, 'local_train')
     approved = {Path(r['root']) / 'memvane/learning/context_learning/adapter.py'
                 for r in value['binding']['installations']}
+    if value.get('operations') == project_scope.LOCAL_OPERATIONS:
+        approved.update(Path(r['root']) / 'memvane/learning/context_learning/adapter.py'
+                        for r in project_scope._local_installations(value['projectRoot']))
     if Path(adapter).resolve(strict=True) not in approved:
         raise ValueError('runtime_authorization_adapter_invalid')
     return value

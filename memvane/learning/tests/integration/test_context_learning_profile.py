@@ -50,6 +50,10 @@ class Checks(unittest.TestCase):
   current={**old,'contextLearning':{'capture':False,'autoCycle':True}}
   self.assertTrue(P._binding_matches(row,current))
   self.assertFalse(P._binding_matches(row,{**current,'indexing':False}))
+ def test_local_grant_can_use_other_verified_host_adapter(self):
+  row=self.plan()
+  other={**self.policy,'trainerArgv':[self.policy['trainerArgv'][0],'/other/verified/adapter',self.policy['trainerArgv'][2]]}
+  self.assertEqual(P._check_scope(row,self.root,other,'local_train',settings=False),row)
  def test_exact_acceptance_required_and_revocation_model_change_disable(self):
   self.assertIsNotNone(P,'learning profile missing')
   plan=self.plan();key=P.digest(plan)

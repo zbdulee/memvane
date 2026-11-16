@@ -17,7 +17,7 @@ The notice's second line, `[memvane] onboarding-answer <JSON>`, holds the exact 
 
 ## Minimal settings
 
-Onboarding reads `.memvane/settings.json` with required `name` and optional `skipPaths`, `diagnostics`, `contextLearning`, and `sharedLearning`. Other keys or an invalid `name` or `skipPaths` refuse as `minimal_settings_required`; report that and ask the user to write the minimal file (the `name` slug derives the raw collection `<slug>` at the project root and the wiki collection `<slug>-wiki` at `.memvane/wiki`). Never rewrite settings.json on the user's behalf. A selected route binds the resolved settings identity, so editing `skipPaths` keeps it selected; changing `name` changes the identity and blocks the route as `route_settings_changed`.
+Onboarding reads `.memvane/settings.json` with required `name` and optional `skipPaths`, `diagnostics`, `contextLearning`, and `sharedLearning`. Other keys or an invalid `name` or `skipPaths` refuse as `minimal_settings_required`; report that and ask the user to write the minimal file (the `name` slug derives the raw collection `<slug>` at the project root and the wiki collection `<slug>-wiki` at `.memvane/wiki`). Outside the learning operations described below, never rewrite settings.json on the user's behalf. A selected route binds the resolved settings identity, so editing `skipPaths` keeps it selected; changing `name` changes the identity and blocks the route as `route_settings_changed`.
 
 Projects that only have `.auto-context/` need the owner to move it to `.memvane/` before onboarding.
 
@@ -48,14 +48,26 @@ The user asks in natural language; the actions below are internal maintenance st
 3. `prepare-fresh-wiki-origin --install-id <id> --accepted-origin-sha256 <plan proposalSha256> --accepted-provider-sha256 <review proposalSha256> --provider-dimension <n>` runs only on the user's approval of both proposals and returns `initial_build_registered`. The initial build then runs in the background.
 4. `index-build-status` reports the build `phase` and the latest bounded progress snapshot: stage, ingested cards and processed vector content sets. Counts can be `null` when no recent snapshot is available; do not infer zero. Wait for `ready`, then finalize and activate. Ready means lexical search is available after activation; vector filling continues in the background. `index-origin-status` shows the install record.
 5. `finalize-index-origin` returns `initial_build_finalized`, or `initial_build_pending` while a build pass is still needed.
-6. `activate-index-origin --approve-index-origin-activation` selects the index for the project and returns `selected`. Run it only on the user's explicit activation request. `recover-index-origin` resumes an interrupted activation.
+6. `activate-index-origin --approve-index-origin-activation` selects the index for the project and returns `selected`. Run it only on the user's explicit activation request. Activation also authorizes this project's local automatic learning and its local train/evaluate grant. Learning data stays local and is not sent to an external teacher. `recover-index-origin` resumes an interrupted activation.
 7. `restore-index-origin --approve-index-origin-restore` returns `restored` (abandoned or withdrawn) or `released`; run it only on the user's explicit request. `index-build-rescan` requests another build pass for an install that was never selected.
 
 An interrupted onboarding step converges when the same step runs again. A raw tree over the sync scan bounds (4,096 files or 64 MB) refuses at prepare as `raw_scan_limit_exceeded`; report it before any build starts. When activation refuses as `initial_build_out_of_date` or `initial_build_head_changed`, run finalize again: it requests one more build pass (`initial_build_pending`) and, once the build is ready again, reseals the install so activation can proceed. Restore before activation abandons the prepared install so a new prepare with a new install id can start; after activation it withdraws the selection even after a selected write (`released`), so setup can onboard the project again. When SessionStart reports that this plugin cannot read the project's install record (a project pointer of a lower or unknown major), restore releases those project pointers without reading a state root, and a new plan then starts onboarding; a pointer of a newer major is never released. Restore never deletes the old install directory or its database. A build rescan is for an install that was never selected; a selected project refreshes through `update`.
 
 Each linked git worktree reads its own published view of its wiki cards. The main checkout's sync publishes these views. Until a view is published, recall adds no context and reports `view_preparing`.
 
-## Explicit local learning profile
+## Local learning
+
+An activated project defaults to the local automatic-apply profile. Existing
+profiles and explicit disabled settings are preserved. If the managed learning
+runtime is inactive, the selection is recorded and preparation resumes after it
+is activated; a selected profile does not prove that training or model
+replacement has occurred. Resource admission still applies.
+
+When the user asks to turn off learning for this project, confirm the project
+root, then update only the existing settings fields `contextLearning.capture`
+and `contextLearning.autoCycle` to `false` and `sharedLearning.enabled` to
+`false`, preserving the other settings. Report that learning is disabled. This
+explicit request authorizes that settings edit.
 
 To activate an already staged managed learning runtime, review the staged
 generation executable and local model directory with the user. On explicit
@@ -70,7 +82,7 @@ failure. Runtime activation does not prepare a project's profile or selector.
 
 For an explicitly requested profile, run `plan-learning-profile --project "$PROJECT_ROOT" --learning-namespace "$APPROVED_NAMESPACE" --learning-choice local-auto-apply --learning-migration new --learning-expires-at-unix-ms "$REVIEWED_EXPIRY"`. Explain the choices in natural language: local learning plus validated candidate application, staged local learning only (`local-staged`), or disabled (`off`). A profile requires an already prepared private namespace, local runtime/model and inference identity, and a separate current train/evaluate execution grant. Missing preparation or corpus authorization remains review-required; do not create a grant, import data, download weights or call a teacher to satisfy it. Use `preserve` migration for an existing learning configuration; never switch to `new` to escape existing false choices. Show the proposal's actual settings changes, project/source/cohort and runtime/model scope, resource/batch/disk limits, expiry and application authority.
 
-Only on acceptance of that exact proposal, use `activate-learning-profile` with identical options plus `--accepted-learning-profile` equal to its `proposalSha256`. Never infer acceptance from the recommendation, onboarding approval, a prior train/evaluate grant or live selection. An interrupted profile activation resumes with the identical accepted options; changed scope/expiry/settings require review. Report selected, waiting, deferred, blocked, staged and applied states separately. A selected profile is not evidence that real training, model replacement or host-hook operation passed.
+For a manually proposed profile, use `activate-learning-profile` only on acceptance of that exact proposal, with identical options plus `--accepted-learning-profile` equal to its `proposalSha256`. An interrupted profile activation resumes with the identical accepted options; changed scope/expiry/settings require review. Report selected, waiting, deferred, blocked, staged and applied states separately. A selected profile is not evidence that real training, model replacement or host-hook operation passed.
 
 `update` refreshes an already selected index; it does not replace this setup flow. Never activate a teacher, private checkpoint, or operating plugin hook as a side effect of preparing a runtime.
 

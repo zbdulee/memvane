@@ -35,6 +35,7 @@ from memvane.learning.context_learning.training_cursor import _sync
 NAME='project-learning-setup.json'
 SCHEMA='qmd-project-learning-setup-v1'
 SYNTHETIC_STAGED='synthetic-staged'
+DEFAULT_LOCAL='default-local'
 SYNTHETIC_RESERVE='reviewed-synthetic-qa-floor'
 # Reviewed synthetic-QA process RSS ceiling (user-approved 3.5 GiB). The 35 % free
 # headroom, CPU 1, 768 MiB floor and every other synthetic bound are unchanged.
@@ -99,6 +100,10 @@ def _namespace(project,root,*,mode='default'):
                 or marker.get('uid')!=os.getuid()
                 or root!=fixture/'learning-private'):
             raise ValueError('setup_synthetic_fixture_invalid')
+        return project,root
+    if mode==DEFAULT_LOCAL:
+        from memvane.learning.default_enrollment import authorized
+        if not authorized(project,root):raise ValueError('setup_namespace_invalid')
         return project,root
     if mode!='default':raise ValueError('setup_mode_invalid')
     from memvane.learning.context_learning.runtime_setup import learning_state_base
@@ -225,19 +230,8 @@ def _inventory(root):
 
 
 def _desired_settings(raw,root,*,mode='default'):
-    settings,dropped=learning_profile.closed_learning(raw)
-    learning=settings.setdefault('contextLearning',{})
-    shared=settings.setdefault('sharedLearning',{})
-    if not isinstance(learning,dict) or not isinstance(shared,dict):raise ValueError('setup_settings_invalid')
-    if shared.get('root') not in (None,str(root)):raise ValueError('setup_namespace_changed')
-    if settings.get('indexing') is False:raise ValueError('setup_indexing_disabled')
-    learning.update(capture=True,autoCycle=True)
-    learning.pop('liveSelection',None)
-    if mode==SYNTHETIC_STAGED:
-        shared.update(enabled=True,root=str(root),profile=learning_profile.SCHEMA,autoApply=False)
-    else:
-        shared.update(enabled=True,root=str(root),profile=learning_profile.SCHEMA,autoApply=True)
-    return settings,dropped
+    from memvane.learning.default_enrollment import desired_settings
+    return desired_settings(raw,root,mode=mode)
 
 
 def _guard_state_root():
@@ -437,9 +431,10 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
     # Synthetic setup consumes only the exact reviewed binding; ordinary
     # default enrollment never requires one.
     bound=_require_bound(project,root,fresh=True)[0] if mode==SYNTHETIC_STAGED else None
+    lifetime=project_scope.DEFAULT_LIFETIME_MS if mode==DEFAULT_LOCAL else project_scope.MAX_LIFETIME_MS
     if (type(expires_at_unix_ms)is not int or type(not_before_unix_ms)is not int
-        or not 0<not_before_unix_ms<expires_at_unix_ms<=not_before_unix_ms+project_scope.MAX_LIFETIME_MS
-        or not time.time()*1000<expires_at_unix_ms<=time.time()*1000+project_scope.MAX_LIFETIME_MS):
+        or not 0<not_before_unix_ms<expires_at_unix_ms<=not_before_unix_ms+lifetime
+        or not time.time()*1000<expires_at_unix_ms<=time.time()*1000+lifetime):
         raise ValueError('setup_expiry_invalid')
     if not isinstance(cohort_id,str) or not project_scope.re.fullmatch('[a-z0-9][a-z0-9-]{2,63}',cohort_id):
         raise ValueError('setup_cohort_invalid')
@@ -472,7 +467,9 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
     adapter=_path(argv[1]);model=_path(argv[2],directory=True)
     from memvane.learning.context_learning.adapter import MODEL_FILES
     for name in MODEL_FILES:_path(model/name)
-    installs=project_scope._installed_binding(project_scope._installations(project))
+    local=mode==DEFAULT_LOCAL
+    installs=(project_scope._installed_binding(project_scope._local_installations(project),local_only=True)
+              if local else project_scope._installed_binding(project_scope._installations(project)))
     if str(adapter) not in {str(Path(row['root'])/'memvane/learning/context_learning/adapter.py') for row in installs}:
         raise ValueError('setup_adapter_invalid')
     pointer=read_private_json(_path(root/'active-checkpoint.json',private=True))
@@ -486,6 +483,7 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
              'transport':'codex-cli','purpose':'selection-gold','fields':['query','candidate_body','candidate_id','revision_sha256'],
              'model':'gpt-6-luna','maxGoldCalls':20,'maxInputBytes':65536,'maxOutputBytes':65536,
              'timeoutSeconds':60,'maxRssMib':4096,'enabled':True}
+    if mode==DEFAULT_LOCAL:teacher=None
     consent={'schema':'qmd-shared-consent-v1','projectRoot':str(project),'sharedRoot':str(root),
              'capture':True,'localTraining':True,'externalTeacher':False}
     if mode==SYNTHETIC_STAGED:
@@ -509,7 +507,8 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
     elif memory_profile is not None or memory_evidence is not None:
         raise ValueError('setup_mode_invalid')
     settings,dropped=_desired_settings(raw,root,mode=mode)
-    return {**({'mode':mode,'bindingSha256':bound} if mode==SYNTHETIC_STAGED else {}),
+    return {**({'mode':mode,'bindingSha256':bound} if mode==SYNTHETIC_STAGED else
+               {'mode':mode} if mode==DEFAULT_LOCAL else {}),
             'schema':SCHEMA,'projectRoot':str(project),'namespaceRoot':str(root),
             'expiresAtUnixMs':expires_at_unix_ms,'notBeforeUnixMs':not_before_unix_ms,'cohortId':cohort_id,
             'sourceSettingsSha256':file_sha(settings_path),'namespaceFiles':inventory,
@@ -587,7 +586,7 @@ def activate(plan,*,accepted_sha256,fault=lambda _:None):
                         memory_evidence=plan.get('memoryEvidence'))
         if current!=plan:raise ValueError('setup_reviewed_inputs_changed')
         backup=_backup(project,root,plan)
-        paths=[name for name in CONFIG_NAMES if name!='project-teacher-consent.json' or mode!='synthetic-staged']+['consents/'+_project_key(project)+'.json']
+        paths=[name for name in CONFIG_NAMES if name!='project-teacher-consent.json' or mode not in (SYNTHETIC_STAGED,DEFAULT_LOCAL)]+['consents/'+_project_key(project)+'.json']
         journal={'schema':SCHEMA,'phase':'prepared','acceptedSha256':accepted_sha256,
                  'plan':plan,'backupRoot':str(backup),'written':{},'configurationPaths':paths,
                  'sourceSettingsSha256':plan['sourceSettingsSha256']}
@@ -601,19 +600,20 @@ def activate(plan,*,accepted_sha256,fault=lambda _:None):
             journal['written'][relative]=hashlib.sha256((canonical(value)+'\n').encode()).hexdigest()
             _write(root/NAME,journal);_write(target,value)
         publish('shared-policy.json',plan['policy'])
-        if mode!='synthetic-staged':
+        if mode not in (SYNTHETIC_STAGED,DEFAULT_LOCAL):
             publish('project-teacher-consent.json',{'acceptedSha256':proposal_sha256(plan['teacherConsent']),'proposal':plan['teacherConsent']})
         publish('consents/'+_project_key(project)+'.json',plan['localConsent'])
         scope=project_scope.proposal(project,root,plan['policy'],expires_at_unix_ms=plan['expiresAtUnixMs'],
-                                     not_before_unix_ms=plan['notBeforeUnixMs'],cohort_id=plan['cohortId'])
+                                     not_before_unix_ms=plan['notBeforeUnixMs'],cohort_id=plan['cohortId'],local_only=mode==DEFAULT_LOCAL)
         scope_envelope={'acceptedSha256':project_scope.proposal_sha256(scope),'proposal':scope}
         journal['written'][project_scope.NAME]=hashlib.sha256((canonical(scope_envelope)+'\n').encode()).hexdigest()
         _write(root/NAME,journal)
         project_scope.activate(project,root,plan['policy'],accepted_sha256=scope_envelope['acceptedSha256'],
-                               expires_at_unix_ms=plan['expiresAtUnixMs'],not_before_unix_ms=plan['notBeforeUnixMs'],cohort_id=plan['cohortId'])
+                               expires_at_unix_ms=plan['expiresAtUnixMs'],not_before_unix_ms=plan['notBeforeUnixMs'],cohort_id=plan['cohortId'],local_only=mode==DEFAULT_LOCAL)
         fault('scope_written')
         kwargs={'choice':'local-staged' if mode==SYNTHETIC_STAGED else 'local-auto-apply',
-                'mode':'preserve','expires_at_unix_ms':plan['expiresAtUnixMs'],'enable_learning':True}
+                'mode':('new' if mode==DEFAULT_LOCAL and not any(k in learning_profile._settings(project) for k in ('contextLearning','sharedLearning')) else 'preserve'),
+                'expires_at_unix_ms':plan['expiresAtUnixMs'],'enable_learning':True}
         if mode==SYNTHETIC_STAGED:kwargs['staged_no_selection']=True
         if file_sha(_project_settings(project))!=plan['sourceSettingsSha256']:raise ValueError('setup_settings_changed')
         profile=learning_profile.proposal(project,root,**kwargs)
@@ -628,7 +628,7 @@ def activate(plan,*,accepted_sha256,fault=lambda _:None):
         journal['phase']='activated';_write(root/NAME,journal)
         return {'status':'activated','acceptedSha256':accepted_sha256,'backupRoot':str(backup),
                 'projectRoot':str(project),'namespaceRoot':str(root),'capture':True,'autoCycle':True,
-                'teacherModel':None if mode==SYNTHETIC_STAGED else 'gpt-6-luna',
+                'teacherModel':None if mode in (SYNTHETIC_STAGED,DEFAULT_LOCAL) else 'gpt-6-luna',
                 'maxGoldCalls':0 if mode==SYNTHETIC_STAGED else 20,
                 'promotion':'disabled' if mode==SYNTHETIC_STAGED else 'quality_gated'}
 
@@ -656,7 +656,7 @@ def recover(project,root):
         if file_sha(settings) not in {journal['sourceSettingsSha256'],journal.get('targetSettingsSha256')}:
             raise ValueError('setup_recovery_settings_changed')
         # Verify all configuration before changing any of it.
-        allowed=(set(CONFIG_NAMES)-({'project-teacher-consent.json'} if journal['plan'].get('mode')==SYNTHETIC_STAGED else set()))|{'consents/'+_project_key(project)+'.json'}
+        allowed=(set(CONFIG_NAMES)-({'project-teacher-consent.json'} if journal['plan'].get('mode') in (SYNTHETIC_STAGED,DEFAULT_LOCAL) else set()))|{'consents/'+_project_key(project)+'.json'}
         if set(journal['configurationPaths'])!=allowed or not set(journal['written'])<=allowed:
             raise ValueError('setup_recovery_invalid')
         affected=set(journal['written'])

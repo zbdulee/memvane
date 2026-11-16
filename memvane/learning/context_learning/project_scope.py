@@ -13,7 +13,9 @@ SCHEMA='qmd-project-learning-authorization-v1'
 SCOPE='single-project-local-learning'
 COHORT_SCHEMA='qmd-project-capture-cohort-v1'
 OPERATIONS=['gold','local_train','quality_evaluate']
+LOCAL_OPERATIONS=['local_train','quality_evaluate']
 MAX_LIFETIME_MS=14*86400000
+DEFAULT_LIFETIME_MS=10*365*86400000
 _MODEL_CACHE={}
 
 
@@ -49,18 +51,26 @@ def _envelope(root):
             or value['proposal'].get('namespaceRoot')!=str(root)):
         raise ValueError('project_scope_acceptance_invalid')
     row=value['proposal']
+    local_only = row.get('operations') == LOCAL_OPERATIONS
+    if local_only and isinstance(row.get('projectRoot'), str):
+        from memvane.learning.default_enrollment import authorized
+        if not authorized(row.get('projectRoot'), root):
+            raise ValueError('project_scope_authorization_invalid')
+    elif local_only:
+        raise ValueError('project_scope_authorization_invalid')
+    lifetime = DEFAULT_LIFETIME_MS if local_only else MAX_LIFETIME_MS
     cohort=row.get('cohort',{})
     limits={'minTrainCases':5,'minQualityTrainCases':100,'minTrainFamilies':5,
             'minValidationCases':50,'minValidationFamilies':5,'minEmptyValidation':10}
     if (set(row)!={'schema','scope','projectRoot','namespaceRoot','operations','cohort','expiresAtUnixMs','binding'}
-            or row['scope']!=SCOPE or row['operations']!=OPERATIONS
+            or row['scope']!=SCOPE or row['operations'] not in (OPERATIONS, LOCAL_OPERATIONS)
             or not isinstance(cohort,dict) or set(cohort)!=set(limits)|{'schema','id','notBeforeUnixMs'}
             or cohort.get('schema')!=COHORT_SCHEMA
             or any(type(cohort.get(k))is not int or cohort[k]!=v for k,v in limits.items())
             or not isinstance(cohort.get('id'),str) or not re.fullmatch('[a-z0-9][a-z0-9-]{2,63}',cohort['id'])
             or type(cohort.get('notBeforeUnixMs'))is not int
             or type(row['expiresAtUnixMs'])is not int
-            or not 0<cohort['notBeforeUnixMs']<row['expiresAtUnixMs']<=cohort['notBeforeUnixMs']+MAX_LIFETIME_MS):
+            or not 0<cohort['notBeforeUnixMs']<row['expiresAtUnixMs']<=cohort['notBeforeUnixMs']+lifetime):
         raise ValueError('project_scope_authorization_invalid')
     return row
 
@@ -125,6 +135,25 @@ def _installations(project=None):
     return rows
 
 
+def _local_installations(project):
+    """Bind the project-effective host executing this default enrollment."""
+    from . import host_inventory
+    from .selector_heal import running_adapter
+    adapter=running_adapter();home=Path.home().resolve();root=adapter.parents[3]
+    try:
+        relative=adapter.relative_to(home).parts
+    except ValueError as exc:
+        raise ValueError('project_scope_installation_invalid') from exc
+    host='codex' if relative and relative[0]=='.codex' else 'claude'
+    resolver=host_inventory._project_codex_root if host=='codex' else host_inventory._project_claude_root
+    try:
+        selected=Path(resolver(home,_path(project,directory=True))).resolve(strict=True)
+    except (OSError,ValueError,KeyError,TypeError) as exc:
+        raise ValueError('project_scope_installation_invalid') from exc
+    if selected!=root:raise ValueError('project_scope_installation_invalid')
+    return [{'host':host,'root':str(root)}]
+
+
 def _code_snapshot(root,home):
     """Fresh owned bytes once per tree; never reuse trust across operations."""
     from .adapter_binding import _local_code
@@ -140,9 +169,10 @@ def _code_snapshot(root,home):
     return files,fingerprint
 
 
-def _installed_binding(rows):
+def _installed_binding(rows, *, local_only=False):
     """Host inventories establish provenance; every operation rechecks bytes."""
-    if not isinstance(rows,list) or [r.get('host') for r in rows]!=['claude','codex']:
+    hosts=[r.get('host') for r in rows] if isinstance(rows,list) else []
+    if hosts!=['claude','codex'] and not (local_only and hosts in (['claude'],['codex'])):
         raise ValueError('project_scope_installation_invalid')
     source=Path(__file__).parents[3]
     expected,current_fingerprint=_code_snapshot(source,source)
@@ -218,7 +248,7 @@ def _model_identity(root,model):
     return value
 
 
-def _binding(project,root,policy,installs):
+def _binding(project,root,policy,installs,*,local_only=False):
     project=_path(project,directory=True);root=_path(root,private=True,directory=True)
     if root==project or project in root.parents:raise ValueError('project_scope_namespace_invalid')
     settings=_settings_scope(project)
@@ -228,11 +258,15 @@ def _binding(project,root,policy,installs):
     disk=read_private_json(_path(root/'shared-policy.json',private=True))
     expected={key:value for key,value in policy.items() if not key.startswith('_')}
     # Shared workers resolve the equivalent installed host adapter in memory.
-    installed=_installed_binding(installs)
+    installed=_installed_binding(installs,local_only=True) if local_only else _installed_binding(installs)
     adapters={str(Path(r['root'])/'memvane/learning/context_learning/adapter.py') for r in installed}
+    executing_adapters=adapters
+    if local_only:
+        current=_installed_binding(_local_installations(project),local_only=True)
+        executing_adapters=adapters | {str(Path(r['root'])/'memvane/learning/context_learning/adapter.py') for r in current}
     if (not isinstance(expected.get('trainerArgv'),list) or len(expected['trainerArgv'])!=3
             or len(disk.get('trainerArgv',[]))!=3
-            or expected['trainerArgv'][1] not in adapters or disk['trainerArgv'][1] not in adapters):
+            or expected['trainerArgv'][1] not in executing_adapters or disk['trainerArgv'][1] not in adapters):
         raise ValueError('project_scope_adapter_changed')
     expected['trainerArgv']=list(expected['trainerArgv']);expected['trainerArgv'][1]=disk['trainerArgv'][1]
     if expected!=disk or disk.get('modelInputView')!=EDIT_INPUT_VIEW:
@@ -249,25 +283,32 @@ def _binding(project,root,policy,installs):
 
 
 @prepared
-def proposal(project,root,policy,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='general-v1'):
+def proposal(project,root,policy,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='general-v1',local_only=False):
     project=_path(project,directory=True);root=_path(root,private=True,directory=True)
+    if type(local_only) is not bool:raise ValueError('project_scope_authorization_invalid')
+    if local_only:
+        from memvane.learning.default_enrollment import authorized
+        if not authorized(project,root):raise ValueError('project_scope_authorization_invalid')
+    lifetime=DEFAULT_LIFETIME_MS if local_only else MAX_LIFETIME_MS
     if (type(expires_at_unix_ms)is not int or type(not_before_unix_ms)is not int
-            or not 0<not_before_unix_ms<expires_at_unix_ms<=not_before_unix_ms+MAX_LIFETIME_MS
-            or not time.time()*1000<expires_at_unix_ms<=time.time()*1000+MAX_LIFETIME_MS):
+            or not 0<not_before_unix_ms<expires_at_unix_ms<=not_before_unix_ms+lifetime
+            or not time.time()*1000<expires_at_unix_ms<=time.time()*1000+lifetime):
         raise ValueError('project_scope_expiry_invalid')
     if not isinstance(cohort_id,str) or not re.fullmatch('[a-z0-9][a-z0-9-]{2,63}',cohort_id):
         raise ValueError('project_scope_cohort_invalid')
     cohort={'schema':COHORT_SCHEMA,'id':cohort_id,'notBeforeUnixMs':not_before_unix_ms,
             'minTrainCases':5,'minQualityTrainCases':100,'minTrainFamilies':5,
             'minValidationCases':50,'minValidationFamilies':5,'minEmptyValidation':10}
+    binding=(_binding(project,root,policy,_local_installations(project),local_only=True)
+             if local_only else _binding(project,root,policy,_installations(project)))
     return {'schema':SCHEMA,'scope':SCOPE,'projectRoot':str(project),'namespaceRoot':str(root),
-            'operations':OPERATIONS,'cohort':cohort,'expiresAtUnixMs':expires_at_unix_ms,
-            'binding':_binding(project,root,policy,_installations(project))}
+            'operations':LOCAL_OPERATIONS if local_only else OPERATIONS,'cohort':cohort,'expiresAtUnixMs':expires_at_unix_ms,
+            'binding':binding}
 
 
-def activate(project,root,policy,*,accepted_sha256,expires_at_unix_ms,not_before_unix_ms,cohort_id='general-v1'):
+def activate(project,root,policy,*,accepted_sha256,expires_at_unix_ms,not_before_unix_ms,cohort_id='general-v1',local_only=False):
     value=proposal(project,root,policy,expires_at_unix_ms=expires_at_unix_ms,
-                   not_before_unix_ms=not_before_unix_ms,cohort_id=cohort_id)
+                   not_before_unix_ms=not_before_unix_ms,cohort_id=cohort_id,local_only=local_only)
     if accepted_sha256!=proposal_sha256(value):raise ValueError('project_scope_acceptance_required')
     path=Path(root)/NAME
     if path.exists() or path.is_symlink():
@@ -288,6 +329,7 @@ def activate(project,root,policy,*,accepted_sha256,expires_at_unix_ms,not_before
 def require(root,policy,operation,*,fresh_inventory=False):
     if operation not in OPERATIONS:raise ValueError('project_scope_operation_invalid')
     value=_envelope(root)
+    if operation not in value['operations']:raise ValueError('project_scope_operation_invalid')
     if time.time()*1000>=value['expiresAtUnixMs']:raise ValueError('project_scope_expired')
     project=_path(value['projectRoot'],directory=True)
     if type(fresh_inventory)is not bool:raise ValueError('project_scope_inventory_invalid')
@@ -295,9 +337,13 @@ def require(root,policy,operation,*,fresh_inventory=False):
     # A directory-source Claude marketplace can change its source pointer
     # without changing the account registry or the previously hashed root.
     # Re-resolve the project-effective host inventory on every grant use.
-    if _installations(project)!=installs:
+    local_only=value['operations']==LOCAL_OPERATIONS
+    current=_local_installations(project) if local_only else _installations(project)
+    if not local_only and current!=installs:
         raise ValueError('project_scope_installation_changed')
-    if value['binding']!=_binding(project,Path(root),policy,installs):
+    binding=(_binding(project,Path(root),policy,installs,local_only=True)
+             if local_only else _binding(project,Path(root),policy,installs))
+    if value['binding']!=binding:
         raise ValueError('project_scope_binding_changed')
     if operation=='gold':
         if not (Path(root)/'project-teacher-consent.json').exists():
