@@ -160,6 +160,26 @@ class HostBundleHandoff(FixtureCase):
             listing.assert_called_once_with()
         host_bundle._BACKGROUND_INVENTORY.update(until=0, root=None)
 
+    def test_background_unchanged_inventory_avoids_host_cli(self):
+        root = self.bundle('codex', 'market', '1.0.3')
+        config = self.home / '.codex' / 'config.toml'
+        config.write_text('[plugins."memvane@market"]\nenabled = true\n')
+        host_bundle._BACKGROUND_INVENTORY.update(until=0, root=None)
+        with mock.patch.object(host_bundle, 'latest_installed', return_value=root) as listing, \
+             mock.patch.dict(os.environ, {'CODEX_HOME': str(self.home / '.codex'),
+                                          'CLAUDE_CONFIG_DIR': str(self.home / '.claude'),
+                                          'HERMES_HOME': str(self.home / '.hermes')}), \
+             mock.patch.object(host_bundle.time, 'monotonic', return_value=100.0) as clock:
+            self.assertEqual(host_bundle.background_installed(), root)
+            listing.reset_mock()
+            for now in (131.0, 300.0, 1000.0):
+                clock.return_value = now
+                self.assertEqual(host_bundle.background_installed(), root)
+            listing.assert_not_called()
+            config.write_text('[plugins."memvane@market"]\nenabled = false\n')
+            self.assertEqual(host_bundle.background_installed(), root)
+            listing.assert_called_once_with()
+        host_bundle._BACKGROUND_INVENTORY.update(until=0, root=None)
     def test_retired_timer_rearms_in_detached_handoff_if_lease_is_busy(self):
         from memvane.runtime import runtime_work as runtime
         queue = runtime.WakeQueue()

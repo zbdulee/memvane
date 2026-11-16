@@ -173,6 +173,35 @@ class Schema3Recall(RecallInstallCase):
         self.assertNotIn('serving lexical results', err)
         self.assertEqual(self.wakes, [])
 
+    def test_large_semantic_deadline_preserves_lexical_recall(self):
+        from memvane.store.types import BlobStoreError
+        from memvane.store.view.view_store import ViewStore
+        self.install.provider.admit_queries()
+        sizes = [5] * 3408 + [4] * 343  # 3,751 cards, 18,412 synthetic chunks.
+        self.assertEqual(len(sizes), 3751)
+        observed = []
+        def slow_exact(_store, _pin, _vector, _limit, **kwargs):
+            observed.append((sum(sizes), kwargs['deadline_seconds']))
+            if kwargs['deadline_seconds'] <= 1.0:
+                raise BlobStoreError('vector_deadline_exceeded')
+            return []
+        selected = []
+        def select(pool, **_kwargs):
+            selected.extend(pool)
+            return {'reason': 'selected', 'final_results': pool[:1]}
+        with mock.patch.object(ViewStore, 'search_exact', slow_exact), \
+                mock.patch('memvane.learning.api.selector_prepared', return_value=True), \
+                mock.patch('memvane.learning.api.select_published', side_effect=select):
+            context, _err, event = self.recall(PROMPT)
+        self.assertTrue(selected)
+        self.assertTrue(any('zqheronx' in row['body'] for row in selected))
+        self.assertIn('local Laya model selected these cards', context)
+        self.assertIn('zqheronx', context)
+        self.assertEqual(event['outcome'], 'served')
+        self.assertEqual(event['semantic'], 'deferred_deadline')
+        self.assertEqual(observed[0][0], 18412)
+        self.assertLessEqual(observed[0][1], 1.0)
+
     def test_recall_event_records_stage_times_without_prompt_or_body(self):
         self.install.provider.admit_queries()
         context, _err, event = self.recall(PROMPT)

@@ -400,15 +400,38 @@ def fast_installed(*, home=None):
 
 
 def background_installed():
-    """A background process may ask host CLIs, at most once per 30 seconds."""
+    """Refresh host evidence on file changes or after a one-hour backoff."""
     now = time.monotonic()
-    if now >= _BACKGROUND_INVENTORY['until']:
+    stamp = _inventory_stamp()
+    if now >= _BACKGROUND_INVENTORY['until'] or stamp != _BACKGROUND_INVENTORY.get('stamp'):
         try:
             root = latest_installed()
         except (OSError, ValueError, TypeError, KeyError, AttributeError, UnicodeError, subprocess.TimeoutExpired):
             root = None
-        _BACKGROUND_INVENTORY.update(root=root, until=time.monotonic() + 30)
+        _BACKGROUND_INVENTORY.update(root=root, stamp=stamp, until=time.monotonic() + 3600)
     return _BACKGROUND_INVENTORY['root']
+
+
+def _inventory_stamp():
+    home = Path.home()
+    codex = Path(os.environ.get('CODEX_HOME') or home / '.codex')
+    claude = Path(os.environ.get('CLAUDE_CONFIG_DIR') or home / '.claude')
+    hermes = Path(os.environ.get('HERMES_HOME') or home / '.hermes')
+    paths = [codex / 'config.toml', claude / 'settings.json',
+             claude / 'plugins' / 'installed_plugins.json',
+             hermes / 'config.yaml', hermes / 'plugins' / 'memvane' / 'plugin.json']
+    try:
+        paths.extend(codex / 'plugins' / 'cache' / market / 'memvane'
+                     for market in _codex_enabled_markets(codex))
+    except (OSError, ValueError, TypeError, UnicodeError):
+        pass
+    result = []
+    for path in paths:
+        try:
+            result.append((str(path), _identity(path)))
+        except (OSError, ValueError):
+            result.append((str(path), None))
+    return tuple(result)
 
 
 def entry_argv(name, *args, python=None, isolated=False, background=False):
