@@ -31,10 +31,11 @@ async function load(config) {
   const threads = Math.max(1, availableParallelism());
   const llama = await getLlama({gpu: 'auto', build: 'never', skipDownload: true,
                                 maxThreads: threads, progressLogs: false});
-  const model = await llama.loadModel({modelPath: config.modelPath, gpuLayers: 'auto'});
+  const cpuOnly = process.env.MEMVANE_EMBED_CPU === '1';
+  const model = await llama.loadModel({modelPath: config.modelPath, gpuLayers: cpuOnly ? 0 : 'auto'});
   const contextSize = Math.min(EMBEDDING_IDENTITY.maxTokens, model.trainContextSize || EMBEDDING_IDENTITY.maxTokens);
   const context = await model.createEmbeddingContext({contextSize, threads});
-  return {llama, model, context, contextSize};
+  return {llama, model, context, contextSize, gpuLayers: model.gpuLayers || 0};
 }
 
 // Refusals that depend only on the document: the same input is refused on
@@ -50,7 +51,14 @@ async function embed(config, state, request, yieldQueries = async () => {}) {
     const tokens = model.tokenize(text);
     if (!Number.isInteger(tokens.length) || tokens.length > contextSize - 4)
       throw Error('provider_context_exceeded');
-    const embedding = await context.getEmbeddingFor(text);
+    let embedding;
+    try {
+      embedding = await context.getEmbeddingFor(text);
+    } catch (error) {
+      // The resident retries this request once after a CPU worker restart.
+      if (serving && state.gpuLayers > 0) process.exit(86);
+      throw error;
+    }
     const vector = Array.from(embedding.vector);
     if (vector.length !== config.dimension || !vector.every(Number.isFinite))
       throw Error('provider_vector_invalid');
@@ -120,7 +128,17 @@ if (serving && (typeof config.serviceSocketPath !== 'string' ||
     !/^[0-9a-f]{64}$/.test(config.providerArtifactSha256) ||
     typeof config.approvedProviderId !== 'string')) process.exit(2);
 
-const state = await load(config);
+let state;
+try {
+  state = await load(config);
+} catch (error) {
+  if (serving && process.env.MEMVANE_EMBED_CPU !== '1') process.exit(86);
+  throw error;
+}
+if (serving) {
+  process.stderr.write('[memvane-provider] ' + JSON.stringify({gpu: String(state.llama.gpu || 'cpu'),
+    gpuLayers: state.gpuLayers}) + '\n');
+}
 if (!serving) {
   try {
     process.stdout.write(JSON.stringify(await embed(config, state, config)));

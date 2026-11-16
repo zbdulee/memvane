@@ -499,18 +499,11 @@ class Worker:
         if not slot.acquire(timeout=min(_left(deadline), 5 if kind == 'query' else 300)):
             raise TimeoutError('laya_service_slot_timeout')
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-                conn.settimeout(min(_left(deadline), 5))
-                conn.connect(self.socket_path)
-                conn.settimeout(_left(deadline))
-                conn.sendall(payload)
-                conn.shutdown(socket.SHUT_WR)
-                answer = _read_all(conn, RESPONSE_LIMIT, deadline)
+            from memvane.resident.embed_resident import forward_with_fallback
+            return forward_with_fallback(self.socket_path, payload, deadline, self.handle,
+                                         _left, _read_all, RESPONSE_LIMIT)
         finally:
             slot.release()
-        if not answer:
-            raise ConnectionError('laya_service_worker_closed')
-        return answer
 
 
 class Binding:
