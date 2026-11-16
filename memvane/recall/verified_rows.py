@@ -111,7 +111,12 @@ def _serve_verified_rows(decision, settings, prompt, rows, *, top_n, title_only,
             # The reason of a recall with no candidate rows; vector fallbacks stay notes.
             trace.final('no_candidates')
         return RecallAnswer(decision, capture=capture, own_view=own_view)
-    if not still_current(chosen):
+    started = time.monotonic()
+    try:
+        current = still_current(chosen)
+    finally:
+        trace.fields(stillCurrentMs=round((time.monotonic() - started) * 1000, 3))
+    if not current:
         _fail('selected_proof_changed')
     chosen_paths = {row['path'] for row in chosen}
     return RecallAnswer(

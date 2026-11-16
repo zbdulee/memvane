@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 import stat
+import time
 from types import MappingProxyType
 import weakref
 
@@ -217,7 +218,7 @@ def _schema3_store(state, project, proof, decision, db_path, worktree_id):
 
 
 @contextmanager
-def _schema3_pin(record, *, deadline, linked=None, pin_view=True):
+def _schema3_pin(record, *, deadline, linked=None, pin_view=True, timings=None):
     """Pin the current main-view head of a schema3 endpoint and check its floor.
 
     With ``pin_view=False`` it yields the head record (``view_id``, ``gen_id``,
@@ -262,7 +263,12 @@ def _schema3_pin(record, *, deadline, linked=None, pin_view=True):
         _need(identity['incarnation'] == record['incarnation']
               and identity['policy_digest'] == record['settings_policy_digest']
               and persistent_node_equal(record['db_node'], _file(path, state)), 'reader_store_changed')
-        handle = store.capture_view(target, deadline=deadline)
+        started = time.monotonic()
+        try:
+            handle = store.capture_view(target, deadline=deadline)
+        finally:
+            if timings is not None:
+                timings['checkoutMs'] = round((time.monotonic() - started) * 1000, 3)
         _need(store_api.store_identity(store, handle)['capture']['projectRoot'] == project,
               'reader_checkout_changed')
         if not pin_view:
@@ -277,7 +283,12 @@ def _schema3_pin(record, *, deadline, linked=None, pin_view=True):
                 _need(head['epoch'] >= floor['epoch'], 'reader_head_regressed')
             yield store, handle, head
             return
-        pin = store.pin_view(handle, deadline=deadline)
+        started = time.monotonic()
+        try:
+            pin = store.pin_view(handle, deadline=deadline)
+        finally:
+            if timings is not None:
+                timings['pinMs'] = round((time.monotonic() - started) * 1000, 3)
         try:
             _need(pin.incarnation == record['incarnation'], 'reader_store_changed')
             floor = record.get('head_floor')

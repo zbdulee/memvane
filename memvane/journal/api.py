@@ -65,9 +65,10 @@ def recheck_reader(endpoint):
     from memvane.journal.journal_reader import _recheck as implementation
     return implementation(endpoint)
 
-def pin_schema3(record, *, deadline, linked=None, pin_view=True):
+def pin_schema3(record, *, deadline, linked=None, pin_view=True, timings=None):
     from memvane.journal.journal_reader import _schema3_pin as implementation
-    return implementation(record, deadline=deadline, linked=linked, pin_view=pin_view)
+    given = {'timings': timings} if timings is not None else {}
+    return implementation(record, deadline=deadline, linked=linked, pin_view=pin_view, **given)
 
 def settings_resettle_pending(state, project, executing_root):
     from memvane.journal.journal_reader import settings_resettle_pending as implementation

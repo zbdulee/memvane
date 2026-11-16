@@ -156,5 +156,5 @@ def capture_recall(host, decision, payload, settings, pool, chosen, *, started=N
         status = 'capture_unavailable'
     _log(decision if isinstance(decision, dict) else None, host, status,
          elapsed=round((time.monotonic() - began) * 1000),
-         session=payload.get('session_id') if isinstance(payload, dict) else None)
+         session=(payload.get('session_id') or payload.get('sessionId')) if isinstance(payload, dict) else None)
     return status

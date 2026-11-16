@@ -175,12 +175,12 @@ class Schema3Recall(RecallInstallCase):
 
     def test_large_semantic_deadline_preserves_lexical_recall(self):
         from memvane.store.types import BlobStoreError
-        from memvane.store.view.view_store import ViewStore
+        from memvane.store import api as store_api
         self.install.provider.admit_queries()
         sizes = [5] * 3408 + [4] * 343  # 3,751 cards, 18,412 synthetic chunks.
         self.assertEqual(len(sizes), 3751)
         observed = []
-        def slow_exact(_store, _pin, _vector, _limit, **kwargs):
+        def slow_exact(_pin, _vector, _limit, **kwargs):
             observed.append((sum(sizes), kwargs['deadline_seconds'], kwargs['max_float_work']))
             if kwargs['deadline_seconds'] <= 1.0:
                 raise BlobStoreError('vector_deadline_exceeded')
@@ -189,7 +189,12 @@ class Schema3Recall(RecallInstallCase):
         def select(pool, **_kwargs):
             selected.extend(pool)
             return {'reason': 'selected', 'final_results': pool[:1]}
-        with mock.patch.object(ViewStore, 'search_exact', slow_exact), \
+        real_open = store_api.open_store
+        def open_store(*args, **kwargs):
+            store = real_open(*args, **kwargs)
+            store.search_exact = slow_exact
+            return store
+        with mock.patch.object(store_api, 'open_store', side_effect=open_store), \
                 mock.patch('memvane.learning.api.selector_prepared', return_value=True), \
                 mock.patch('memvane.learning.api.select_published', side_effect=select):
             context, _err, event = self.recall(PROMPT)
@@ -207,7 +212,8 @@ class Schema3Recall(RecallInstallCase):
         self.install.provider.admit_queries()
         context, _err, event = self.recall(PROMPT)
         self.assertTrue(context)
-        for field in ('routeProofMs', 'queryEmbeddingMs', 'lexicalMs', 'semanticMs', 'selectorMs', 'renderMs'):
+        for field in ('routeProofMs', 'queryEmbeddingMs', 'readerSetupMs', 'checkoutMs', 'pinMs', 'lexicalMs',
+                      'semanticMs', 'locationsMs', 'selectorMs', 'stillCurrentMs', 'renderMs'):
             self.assertIsInstance(event.get(field), (int, float), field)
             self.assertGreaterEqual(event[field], 0)
         for field in ('vectorReadMs', 'vectorUnpackMs', 'vectorDotMs'):
@@ -227,6 +233,7 @@ class Schema3Recall(RecallInstallCase):
                          [(None, 'provider_absent')])
         self.assertEqual((event['outcome'], event['vector_fallback']),
                          ('served', 'selected_provider_preparing'))
+        self.assertGreaterEqual(event['providerWakeMs'], 0)
         self.assertEqual(event['notes'], ['laya_vector_selected_provider_preparing'])
         self.assertIn('selected_provider_preparing; serving lexical results', err)
         self.assertEqual([(kind, target, kwargs.get('pull_due')) for kind, target, kwargs in self.wakes],
