@@ -313,6 +313,9 @@ def heal(project, *, home=None, deadline=None, state=None, _lease_fd=None):
     state = Path(state) if state is not None else namespace(project, home)
     if not (state / POLICY).is_file() or not (state / 'active-checkpoint.json').is_file():
         return {'status': 'selector_not_prepared'}
+    if _lease_fd is None:
+        from memvane.learning.runtime_activation import ensure_pending
+        ensure_pending(project=project)
     policy, rebound = rebind(state, home=home, deadline=deadline)
     if admitted(state, policy['trainerArgv']):
         return {'status': 'selector_ready', 'rebound': rebound}

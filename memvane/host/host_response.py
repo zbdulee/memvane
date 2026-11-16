@@ -969,9 +969,9 @@ def _learning_settings_notice(decision, notice, host, payload):
 
 
 def _learning_runtime_notice(notice):
-    from memvane.learning.api import learning_runtime_needs_activation
-    if learning_runtime_needs_activation():
-        line = '[memvane] 학습 런타임이 활성화되지 않았습니다. setup skill로 준비하고 활성화하세요.'
+    from memvane.learning.api import learning_runtime_message
+    line = learning_runtime_message()
+    if line:
         return notice + '\n' + line if notice else line
     return notice
 

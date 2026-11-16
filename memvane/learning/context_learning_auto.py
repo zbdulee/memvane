@@ -95,8 +95,10 @@ def run(project: Path) -> dict:
             if latest is None or latest["fingerprint"] != expected_corpus:
                 raise ValueError("corpus_changed_during_cycle")
         return read_private_json(policy["revisionsJson"])
+    from memvane.learning.runtime_activation import ensure_pending
     result = run_due_cycle(state, cycle_id, policy["versionId"], revisions, trainer,
-                           incumbent_artifact=policy["incumbentArtifact"])
+                           incumbent_artifact=policy["incumbentArtifact"],
+                           before_run=lambda: ensure_pending(project=project))
     summary = {"schema": "qmd-auto-cycle-result-v1", "status": result["status"],
                "cycleId": cycle_id, "versionId": policy["versionId"],
                "dataMode": data_mode,

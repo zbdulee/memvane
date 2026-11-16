@@ -1,8 +1,11 @@
-"""Explicit activation of a staged, owner-managed learning runtime."""
+"""Select a staged learning runtime; prove it off-hook before first use."""
 import os
 from pathlib import Path
 
 from memvane.kernel.resource_deferred import ResourceDeferred
+
+PENDING = 'pending-activation.json'
+FAILURE = 'activation-failure.json'
 
 
 def _memory_admission():
@@ -11,21 +14,93 @@ def _memory_admission():
     return limits is not None
 
 
-def _activate(executable, model_dir):
-    from memvane.learning.context_learning.runtime_installer import activate_generation
+def _root():
     from memvane.learning.context_learning.runtime_setup import default_managed_root
+    return default_managed_root()
+
+
+def _pending():
+    from memvane.learning.context_learning.dataset import read_private_json
+    path = _root() / PENDING
+    if not path.exists() and not path.is_symlink():
+        return None
+    row = read_private_json(path)
+    keys = {'schema', 'executable', 'model_dir', 'model_identity', 'runtime_identity_sha256'}
+    if not isinstance(row, dict) or set(row) != keys or row['schema'] != 'memvane-learning-pending-v1':
+        raise ValueError('invalid_pending_activation')
+    return row
+
+
+def _stage_pending(executable, model_dir):
+    from memvane.learning.context_learning.runtime_installer import (
+        _activation_lock, _generation_executable, _private_directory, _write_pointer)
+    from memvane.learning.context_learning.dataset import read_private_json
+    from memvane.learning.context_learning.adapter import model_identity
+    root = _private_directory(_root())
+    executable = _generation_executable(root, executable)
+    prepared = read_private_json(executable.parent.parent.parent / 'prepared.json')
+    identity = model_identity(model_dir)
+    row = {'schema':'memvane-learning-pending-v1', 'executable':str(executable),
+           'model_dir':str(model_dir), 'model_identity':identity,
+           'runtime_identity_sha256':prepared['runtime_identity_sha256']}
+    with _activation_lock(root):
+        _generation_executable(root, executable)
+        _write_pointer(root / PENDING, row)
+        (root / FAILURE).unlink(missing_ok=True)
+    return {'status':'activated_pending_proof', 'executable':str(executable),
+            'runtime_identity_sha256':row['runtime_identity_sha256']}
+
+
+def _activate_pending(row):
+    from memvane.learning.context_learning.runtime_installer import activate_generation
     from memvane.learning.context_learning.selector_heal import running_adapter
-    return activate_generation(default_managed_root(), executable, str(running_adapter()), model_dir)
+    return activate_generation(_root(), row['executable'], str(running_adapter()), row['model_dir'],
+                               expected_pending=row)
+
+
+def _mark_failed(row, reason):
+    from memvane.learning.context_learning.runtime_installer import _activation_lock, _write_pointer
+    root = _root()
+    with _activation_lock(root):
+        if _pending() != row:
+            return
+        _write_pointer(root / FAILURE, {'schema':'memvane-learning-activation-failure-v1',
+                                       'executable':row['executable'], 'reason':reason[:128]})
+        (root / PENDING).unlink()
+
+
+def failure_notice():
+    from memvane.learning.context_learning.dataset import read_private_json
+    try:
+        row = read_private_json(_root() / FAILURE)
+        return isinstance(row, dict) and row.get('schema') == 'memvane-learning-activation-failure-v1'
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def needs_activation():
-    from memvane.learning.context_learning.runtime_setup import _activated, default_managed_root
-    return not _activated(default_managed_root())
+    from memvane.learning.context_learning.runtime_setup import _activated
+    try:
+        if _pending() is not None:
+            return False
+    except (OSError, ValueError, TypeError):
+        pass
+    return not _activated(_root())
 
 
 def activate(executable, model_dir):
     if not Path(executable).is_absolute() or not Path(model_dir).is_absolute():
         raise ValueError('invalid_compatibility_source_path')
+    return _stage_pending(executable, model_dir)
+
+
+def ensure_pending(*, decision=None, project=None):
+    row = _pending()
+    if row is None:
+        return {'status':'no_pending'}
+    if decision is None and project is not None:
+        from memvane.journal.api import select_route
+        decision = select_route(str(project), action='update')
     if not _memory_admission():
         raise ResourceDeferred('learning_prepare_memory_pressure')
     from memvane.learning.context_learning.selector_heal import _prepare_lease, HealDeferred
@@ -34,6 +109,22 @@ def activate(executable, model_dir):
     except HealDeferred as exc:
         raise ResourceDeferred(str(exc)) from exc
     try:
-        return _activate(executable, model_dir)
+        current = _pending()
+        if current is None:
+            return {'status':'no_pending'}
+        if current != row:
+            raise ResourceDeferred('learning_pending_changed')
+        try:
+            result = _activate_pending(row)
+        except ResourceDeferred:
+            raise
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            _mark_failed(row, str(exc))
+            from memvane.diagnostics import api as diagnostics
+            diagnostics.emit('learning.runtime.proof', outcome='failed', decision=decision, reason=str(exc))
+            raise
+        from memvane.diagnostics import api as diagnostics
+        diagnostics.emit('learning.runtime.proof', outcome='accepted', decision=decision)
+        return result
     finally:
         os.close(lease)

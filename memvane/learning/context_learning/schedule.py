@@ -15,19 +15,19 @@ from .selection_queue import build_queue
 from .store import canonical, database
 
 
-def run_due_cycle(state_dir, cycle_id, version_id, revision_reader, trainer, *, incumbent_artifact, now=None):
+def run_due_cycle(state_dir, cycle_id, version_id, revision_reader, trainer, *, incumbent_artifact, now=None, before_run=None):
     with database(state_dir): pass
     lock = Path(state_dir)/'learning-schedule.lock'
     fd = os.open(lock, os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX|fcntl.LOCK_NB)
         return _run_due_cycle_locked(state_dir, cycle_id, version_id, revision_reader,
-            trainer, incumbent_artifact=incumbent_artifact, now=now)
+            trainer, incumbent_artifact=incumbent_artifact, now=now, before_run=before_run)
     finally:
         os.close(fd)
 
 
-def _run_due_cycle_locked(state_dir, cycle_id, version_id, revision_reader, trainer, *, incumbent_artifact, now):
+def _run_due_cycle_locked(state_dir, cycle_id, version_id, revision_reader, trainer, *, incumbent_artifact, now, before_run=None):
     if now is None: now = time.time()
     if type(now) not in (int, float) or now < 0: raise ValueError('invalid_time')
     queue = build_queue(state_dir, version_id, revision_reader())
@@ -46,6 +46,8 @@ def _run_due_cycle_locked(state_dir, cycle_id, version_id, revision_reader, trai
         return {'status': 'not_due', 'next_due': due,
                 'interval_hours': previous['interval_hours']}
     try:
+        if before_run is not None:
+            before_run()
         result = run_cycle(state_dir, cycle_id, version_id, revision_reader, trainer,
                            incumbent_artifact=incumbent_artifact)
     except ResourceDeferred:

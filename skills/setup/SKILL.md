@@ -61,11 +61,12 @@ To activate an already staged managed learning runtime, review the staged
 generation executable and local model directory with the user. On explicit
 approval run `activate-learning-runtime --learning-runtime-executable <absolute
 venv python> --learning-model-dir <absolute model directory>
---approve-learning-runtime-activation`. The setup command checks resource
-admission and performs the existing synthetic compatibility proof before
-selecting the generation. A `deferred` result is not activation; report its
-reason and retry only when resources permit. Runtime activation does not
-prepare or activate a project's learning profile or selector.
+--approve-learning-runtime-activation`. The command records the selected
+generation as `activated_pending_proof` after checking its files and identity.
+The first training run or selector preparation performs the compatibility proof
+under resource admission. If resources are unavailable, it retries later; if the
+proof fails, the previous selection remains active and SessionStart reports the
+failure. Runtime activation does not prepare a project's profile or selector.
 
 For an explicitly requested profile, run `plan-learning-profile --project "$PROJECT_ROOT" --learning-namespace "$APPROVED_NAMESPACE" --learning-choice local-auto-apply --learning-migration new --learning-expires-at-unix-ms "$REVIEWED_EXPIRY"`. Explain the choices in natural language: local learning plus validated candidate application, staged local learning only (`local-staged`), or disabled (`off`). A profile requires an already prepared private namespace, local runtime/model and inference identity, and a separate current train/evaluate execution grant. Missing preparation or corpus authorization remains review-required; do not create a grant, import data, download weights or call a teacher to satisfy it. Use `preserve` migration for an existing learning configuration; never switch to `new` to escape existing false choices. Show the proposal's actual settings changes, project/source/cohort and runtime/model scope, resource/batch/disk limits, expiry and application authority.
 

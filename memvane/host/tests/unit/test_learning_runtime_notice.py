@@ -13,3 +13,10 @@ class RuntimeNoticeTests(unittest.TestCase):
         with mock.patch('memvane.learning.api.learning_runtime_needs_activation',
                         create=True, return_value=False):
             self.assertEqual(_learning_runtime_notice('existing'), 'existing')
+
+    def test_failed_compatibility_has_actionable_notice(self):
+        from memvane.host.host_response import _learning_runtime_notice
+        with mock.patch('memvane.learning.api.learning_runtime_proof_failed', return_value=True):
+            result = _learning_runtime_notice('existing')
+        self.assertIn('호환성 검사에 실패', result)
+        self.assertIn('setup skill', result)

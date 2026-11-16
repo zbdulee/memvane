@@ -81,6 +81,17 @@ def learning_runtime_needs_activation():
     from memvane.learning.runtime_activation import needs_activation as implementation
     return implementation()
 
+def learning_runtime_proof_failed():
+    from memvane.learning.runtime_activation import failure_notice as implementation
+    return implementation()
+
+def learning_runtime_message():
+    if learning_runtime_proof_failed():
+        return '[memvane] 학습 런타임 호환성 검사에 실패해 이전 선택을 유지했습니다. setup skill로 확인하세요.'
+    if learning_runtime_needs_activation():
+        return '[memvane] 학습 런타임이 활성화되지 않았습니다. setup skill로 준비하고 활성화하세요.'
+    return None
+
 def propose_learning_profile(project, root, *, choice, mode, expires_at_unix_ms, enable_learning=False,
                              staged_no_selection=False):
     from memvane.learning.context_learning.learning_profile import proposal as implementation
