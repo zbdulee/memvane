@@ -51,6 +51,7 @@
 | 1.0.x | 9 시험 기반 | M | 없음 |
 | 1.0.x | 10 문서와 릴리스 절차 정합 | S | 없음 |
 | 1.0.x | 11 방어 심화, 세션당 고정비 | S | 없음 |
+| 1.0.x | 12 검증 job 없는 교체 pending 정리 | S | 확인 |
 | 1.1 | 1 대형 프로젝트 semantic 검색 구조 | L | 확인 |
 | 1.1 | 2 worker 안 batch 임베딩 | M | 확인 |
 | 1.1 | 3 admission 분리와 busy 사유 | M | 없음 |
@@ -225,6 +226,14 @@
 - **범위.** fixture provider seam 게이트의 temp-root 조건. reader 경로 `journal_directory(create=True)`의 경로 모양 검사. journal `_open`의 `mode=ro` 예외 전제를 단정으로 고정. fill call 범위에서 store header 검증 결과를 `schema_version`·`data_version`이 같을 때 재사용한다(카드당 약 10 ms).
 - **의존.** 없음. **크기.** S. **불변.** 없음.
 - **합격.** focused 시험. 고정비는 `sync.profile`의 storage 시간이 카드당 10 ms 이상 줄 때만 유지한다.
+
+### 1.0.x-12 검증 job 없는 교체 pending 정리
+
+- **현재 동작.** verified 카드의 교체 후보 `.<card>.pending-<hash>`가 대응하는 verify-queue job 없이 남을 수 있다.
+- **범위.** 수명 주기 또는 verify worker가 job 없는 pending의 나이와 소유·경로를 확인해 정해진 보존 기간이 지난 파일을 정리하고 결과를 이벤트로 남긴다. 활성 job과 진행 중인 교체 후보는 보존하고, 삭제 직전에 job과 파일 정체성을 다시 확인한다.
+- **의존.** 없음. **크기.** S. **불변.** 확인(기존 queue·lock·파일 모양을 유지한다).
+- **열린 결정.** 보존 기간과 정리 주체.
+- **합격(live).** 보존 기간이 지난 job 없는 pending은 다음 정리 후 0개이고 정리 건수가 이벤트와 일치한다. 활성 job의 pending과 verified 카드는 보존된다.
 
 ## 롤아웃
 
