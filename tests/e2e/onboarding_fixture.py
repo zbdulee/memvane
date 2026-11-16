@@ -63,8 +63,10 @@ def _crash_once(real, when=lambda *_a, **_k: True):
 
 def _fd_name(fd):
     """Base name of the file an fd is open on ('' when it names no file)."""
-    import fcntl
     try:
+        if sys.platform.startswith('linux'):
+            return os.path.basename(os.readlink('/proc/self/fd/' + str(fd)))
+        import fcntl
         raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
     except (OSError, ValueError, AttributeError):
         return ''
@@ -74,6 +76,13 @@ def _fd_name(fd):
 def _opened_for(name):
     """``os.fdopen`` filter: the file (or the partial file beside it) is ``name``."""
     return lambda fd, *_a, **_k: _fd_name(fd) in (name, '.' + name + '.partial')
+
+
+class FileDescriptorNameTests(unittest.TestCase):
+    def test_linux_proc_fd_resolves_the_opened_file(self):
+        with mock.patch.object(sys, 'platform', 'linux'), \
+                mock.patch('os.readlink', return_value='/tmp/fixture/.route.json.partial'):
+            self.assertEqual(_fd_name(123), '.route.json.partial')
 
 
 class FixtureOnboarding(FixtureCase):
@@ -302,7 +311,11 @@ class FixtureOnboarding(FixtureCase):
         self.assertGreater(resealed['reader']['head_floor']['epoch'],
                            first['reader']['head_floor']['epoch'])
         self.assertEqual(self.activate()['status'], 'selected')
-        self.assertIn('zqheronx', self.recall('what marker does the heron protocol keep?'))
+        with self.target.db() as db:
+            card = db.execute("SELECT trust_digest,eligible FROM s_cards "
+                              "WHERE path='concepts/heron.md' AND gen_to IS NULL").fetchone()
+        self.assertEqual(card, (None, 0))
+        self.assertNotIn('zqheronx', self.recall('what marker does the heron protocol keep?'))
 
     def test_rescan_after_selection_is_refused(self):
         """F4: a selected install's refresh belongs to the sync owner."""

@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import stat
-import tempfile
 
 from memvane.journal.types import CutoverBlocked
 from memvane.kernel.atomic_rename import fsync_dir as _fsync_dir, canonical_json_bytes as _canon
@@ -60,6 +59,7 @@ def _read_json(path):
 
 
 def _write(path, value, *, replace):
+    import tempfile
     path = Path(path)
     fd, name = tempfile.mkstemp(prefix='.laya-cutover-', dir=path.parent)
     temp = Path(name)

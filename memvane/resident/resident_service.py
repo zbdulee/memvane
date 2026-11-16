@@ -1118,13 +1118,22 @@ class Service:
         backoff (and the cooldown after the last attempt) bounds the
         re-hashing instead of a 5 s loop.
         """
-        from memvane.resident.embed_resident import _MAX_FAILURES, _write_state
+        from memvane.resident.embed_resident import _MAX_FAILURES, _write_state, read_owner_state
         if str(exc) != 'worker_selection_changed':
+            with self.lock:
+                self.moved.pop(project, None)
             return 5
-        fingerprint = manifest.get('embeddingFingerprint')
+        fingerprint = (_worker_key(manifest), manifest.get('serviceSocketPath'))
         with self.lock:
             seen, count = self.moved.get(project, (None, 0))
-            count = count + 1 if seen == fingerprint else 1
+            if seen == fingerprint:
+                count += 1
+            else:
+                previous = read_owner_state(manifest)
+                attempts = (previous['attempts'] if previous is not None
+                            and previous['reason'] == 'startup_failed'
+                            and previous['attempts'] < _MAX_FAILURES else 0)
+                count = (MOVED_DEFER_LIMIT + attempts + 1) if attempts else 1
             self.moved[project] = (fingerprint, count)
         if count <= MOVED_DEFER_LIMIT:
             return 5
@@ -1170,7 +1179,7 @@ class Service:
         _event(targets, 'resident.adopt', outcome, reason)
 
     def _adopt(self, project):
-        from memvane.resident.embed_resident import _owner_identity, _write_state
+        from memvane.resident.embed_resident import _owner_identity, _write_state, _failure_decision
         from memvane.provider.api import private_parent as _private_parent, remove_stale_socket as _remove_stale_socket, bind_private
         try:
             decision, proof, mode = self.prove(project)
@@ -1215,6 +1224,13 @@ class Service:
         if not attested:
             # Full artifact rehash: once per installation identity, only on
             # the path that binds, never on a tick that merely waits.
+            try:
+                # A warm worker must honor this install's persisted cooldown too.
+                _failure_decision(manifest)
+            except Exception:
+                os.close(owner_fd)
+                self._later(project, 5)
+                return
             try:
                 self.attest(decision, proof, mode)
             except Exception as exc:
@@ -1298,10 +1314,12 @@ class Service:
                 # Registry adoption obeys the durable budget after a restart.
                 # Observe worker death first so its retry clock overlaps the
                 # disk backoff, rather than adding a second five-second wait.
-                _failure_decision(manifest)
+                previous = _failure_decision(manifest)
             except Exception:
                 self._later(project, 5)
                 return
+            if previous is not None and previous['attempts'] < 3:
+                worker.failures = max(worker.failures, previous['attempts'])
             if (self.draining.is_set() or worker.loading
                     or worker.retry_at > time.monotonic() or worker.state == 'terminal'):
                 return
@@ -1436,7 +1454,7 @@ class Service:
                 continue
             with suppress(Exception):
                 if reason == 'resource_deferred':
-                    _write_state(row, 'resource_deferred', attempts=0)
+                    _write_state(row, 'resource_deferred', attempts=min(_MAX_FAILURES, worker.failures))
                 else:
                     _write_state(row, reason, terminal=worker.state == 'terminal',
                                  attempts=min(_MAX_FAILURES, worker.failures))

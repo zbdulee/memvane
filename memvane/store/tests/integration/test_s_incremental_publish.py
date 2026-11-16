@@ -4,10 +4,12 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import unittest
 from unittest import mock
 
 from memvane.store.tests import support as seed
+from tests.support.gc_fixture import GC_HELD_CHILD
 
 REPO = Path(__file__).resolve().parents[4]
 
@@ -58,6 +60,7 @@ else:
     store.collect_view_rows(handle, limit=64)
     stop()
 '''
+
 
 
 class IncrementalPublicationChecks(seed.GenerationCase):
@@ -502,6 +505,27 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         self.assertEqual(self.counts(store, handle.view_id), before)
         reader.rollback()
         self.assertTrue(store.collect_view_rows(handle, limit=64)['s_cards'])
+
+    def test_recall_during_a_gc_transaction_reads_the_head(self):
+        store, repository, handle, _ = self.collectable()
+        ready, release = self.root / 'gc-ready', self.root / 'gc-release'
+        args = dict(db=str(self.db), repository=repository, scope=self.scope,
+                    worktree_id=handle.worktree_id, ready=str(ready), release=str(release))
+        child = subprocess.Popen([sys.executable, '-B', '-c', GC_HELD_CHILD, json.dumps(args)],
+                                 cwd=str(REPO), env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 20
+            while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue(ready.exists(), 'GC did not reach its commit')
+            start = time.monotonic()
+            self.assertEqual(self.found(store, handle, 'uniquethree'), ['cards/a.md'])
+            print('synthetic recall during held GC: %.3f ms' % ((time.monotonic() - start) * 1000))
+        finally:
+            release.touch()
+            output, errors = child.communicate(timeout=25)
+        self.assertEqual(child.returncode, 0, output + errors)
 
     def test_generations_persist_seal_accumulators_and_a_head_rowid_map(self):
         from memvane.store.view import view_fts as fts

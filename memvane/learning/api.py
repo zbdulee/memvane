@@ -73,6 +73,14 @@ def read_private_json(path):
 
 # Learning profile.
 
+def activate_managed_runtime(executable, model_dir):
+    from memvane.learning.runtime_activation import activate as implementation
+    return implementation(executable, model_dir)
+
+def learning_runtime_needs_activation():
+    from memvane.learning.runtime_activation import needs_activation as implementation
+    return implementation()
+
 def propose_learning_profile(project, root, *, choice, mode, expires_at_unix_ms, enable_learning=False,
                              staged_no_selection=False):
     from memvane.learning.context_learning.learning_profile import proposal as implementation

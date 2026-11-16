@@ -124,7 +124,7 @@ def owner_lock_held(manifest):
 def _failure_decision(manifest, *, own_lock=False):
     row = read_owner_state(manifest)
     if row is None:
-        return
+        return row
     if (row['reason'] in _TRANSIENT_FAILURES
             and (row['terminal'] or row['attempts'] >= _MAX_FAILURES)):
         # Older services persisted transient exhaustion as terminal. Keep one
@@ -150,6 +150,7 @@ def _failure_decision(manifest, *, own_lock=False):
         _write_state(manifest, 'worker_exited', terminal=True,
                      attempts=_MAX_FAILURES)
         raise ResourceDeferred('laya_service_backoff')
+    return row
 
 
 

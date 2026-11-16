@@ -968,8 +968,17 @@ def _learning_settings_notice(decision, notice, host, payload):
     return notice + '\n' + line if notice else line
 
 
+def _learning_runtime_notice(notice):
+    from memvane.learning.api import learning_runtime_needs_activation
+    if learning_runtime_needs_activation():
+        line = '[memvane] 학습 런타임이 활성화되지 않았습니다. setup skill로 준비하고 활성화하세요.'
+        return notice + '\n' + line if notice else line
+    return notice
+
+
 def _session_health_notice(decision, notice, host, payload):
     notice = _learning_settings_notice(decision, _wiki_recovery_notice(decision, notice), host, payload)
+    notice = _learning_runtime_notice(notice)
     try:
         if event_log.vector_damage_seen(decision):
             line = ('[memvane] 임베딩 데이터가 손상돼 어휘 검색만 씁니다. '

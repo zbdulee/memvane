@@ -4,7 +4,6 @@ from memvane.recall.types import KO_STOPWORDS, EN_STOPWORDS
 import sys
 import re
 import json
-import argparse
 
 
 
@@ -562,6 +561,7 @@ def build_lexical_terms(prompt: str, patterns: list[str]) -> dict:
 
 
 def main():
+    import argparse
     parser = argparse.ArgumentParser(description="Extract keywords and lexical terms.")
     parser.add_argument("--patterns", default="")
     args = parser.parse_args()

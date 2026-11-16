@@ -1653,6 +1653,11 @@
       "context": "learning",
       "layer": "adapter",
       "pinned": false
+    },
+    "memvane/learning/runtime_activation.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
     }
   },
   "pinned_paths": [

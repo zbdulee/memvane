@@ -127,11 +127,13 @@ class SelectedActions(HostInstallCase):
                 self.assert_sync_woken()
                 self.assertEqual(self.install.epoch(), epoch)
                 if host == 'hermes':
-                    self.assertEqual(answer, {'status': 'queued'})
+                    self.assertEqual(answer['status'], 'queued')
+                    self.assertIn('학습 런타임이 활성화되지 않았습니다', answer['notice'])
                 else:
-                    self.assertEqual(answer['hookSpecificOutput'],
-                                     {'hookEventName': 'SessionStart',
-                                      'additionalContext': SESSION_NOTICE})
+                    output = answer['hookSpecificOutput']
+                    self.assertEqual(output['hookEventName'], 'SessionStart')
+                    self.assertTrue(output['additionalContext'].startswith(SESSION_NOTICE + '\n'))
+                    self.assertIn('학습 런타임이 활성화되지 않았습니다', output['additionalContext'])
 
     def test_session_start_needs_a_session_event(self):
         with self.assertRaisesRegex(HostResponseError, '^invalid_session_event$'):

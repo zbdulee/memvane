@@ -87,12 +87,13 @@ class WorktreeViews(SyncCase):
     def test_an_edit_in_one_checkout_leaves_the_other_view_unchanged(self):
         first, item, _calls = self.built()
         main_gen, linked_view = first['generation'], self.view_of(item['generation'])
+        linked_before = self.members(item['generation'])
         self.linked_card('concepts/kestrel-perch.md', 'ospreylinkedprobe')
         edited = self.run_pass()
         self.assertEqual((edited['generation'], edited['worktrees'][0]['ingested']), (main_gen, 1), edited)
         moved = self.head(linked_view)[0]
         self.assertNotEqual(moved, item['generation'])
-        self.assertEqual(self.changed_paths(self.members(item['generation']), self.members(moved)),
+        self.assertEqual(self.changed_paths(linked_before, self.members(moved)),
                          ['concepts/kestrel-perch.md'])
         self.card('concepts/heron-main.md', 'heronmainprobe')
         main_edit = self.run_pass()

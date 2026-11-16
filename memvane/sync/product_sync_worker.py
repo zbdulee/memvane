@@ -381,8 +381,8 @@ SCHEMA3_LINKED_HELD = SCHEMA3_BINDING_REASONS | frozenset(('worktree_binding_con
 def _publish_schema3(decision, proof, writer, vectors=None):
     """Main view first, then each linked worktree's own view (design 5.2).
 
-    Changed cards only: head members with the same bytes keep their trust. A
-    linked worktree is published only while the main view is complete
+    Recheck observed source revisions as well as changed card bytes. A linked
+    worktree is published only while the main view is complete
     (``indexed``/``unchanged``); its refusals hold that view alone. One
     ``vectors`` context (``_schema3_vector_context``) serves every view of
     the pass, so content two views share is embedded once.
@@ -407,6 +407,7 @@ def _publish_schema3(decision, proof, writer, vectors=None):
         if result['state'] not in ('indexed', 'unchanged'):
             return result, marks.get('proof', proof)
         linked = []
+        gc_worktrees = [info['worktree_id']] if result['state'] == 'indexed' else []
         listing = max(deadline, time.monotonic() + SCHEMA3_LINKED_LIST_SECONDS)
         for project in _schema3_linked_projects(decision, listing):
             if time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE:
@@ -432,9 +433,30 @@ def _publish_schema3(decision, proof, writer, vectors=None):
             if outcome['state'] == 'deferred' and outcome['reason'] == 'schema3_binding_changed':
                 # Retrying cannot clear these; that view keeps its last head.
                 outcome = {**outcome, 'state': 'held'}
+            if outcome['state'] == 'indexed':
+                gc_worktrees.append(worktree_id)
             linked.append({'root': str(project), **{k: outcome[k] for k in
                            ('state', 'reason', 'generation', 'ingested', 'pending', 'vector', 'provenance')
                            if k in outcome}})
+        # Keep the existing owner and writer proof until every view succeeds.
+        # A live SQLite reader can defer maintenance until a later publication.
+        if all(item['state'] in ('indexed', 'unchanged') for item in linked):
+            gc_deadline = time.monotonic() + 1.0
+            for gc_id in gc_worktrees:
+                if time.monotonic() >= gc_deadline:
+                    break
+                try:
+                    handle = store.capture_view(gc_id, deadline=gc_deadline)
+                    while time.monotonic() < gc_deadline:
+                        writer.validate()
+                        removed = store.collect_view_rows(handle, limit=64, deadline=gc_deadline)
+                        if not any(removed.values()):
+                            break
+                except (store_types.BlobStoreError, store_types.CheckoutUnavailable) as exc:
+                    if exc.reason not in ('candidate_busy', 'fts_deadline_exceeded',
+                                          'checkout_budget_exhausted', 'checkout_changed'):
+                        raise
+                    break
     finally:
         store.close()
     proof = marks.get('proof', proof)
@@ -562,9 +584,47 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
         ingest_limit=SCHEMA3_MAX_INGEST)
 
 
+def _schema3_card_source_match(path, raw, decision, current_sources):
+    """Return observed match and expected revisions; None means unknown."""
+    if current_sources is None:
+        return None
+    from memvane.wiki.card import api as card
+    from memvane.wiki.card.types import FRONTMATTER_RE
+    try:
+        body = raw.decode('utf8').replace('\r\n', '\n').replace('\r', '\n')
+        if card.verified_wiki_locations({'path': path, 'body': body}, decision, frozenset(),
+                                        tuple(decision['recallSettings']['skipPaths']),
+                                        current_source=False) is None:
+            return None
+        match = FRONTMATTER_RE.match(body)
+        if match is None:
+            return None
+        revisions = card.frontmatter_source_revisions(match.group(1))
+        groups = {}
+        for revision in revisions:
+            groups.setdefault(revision['path'], set()).add((revision['sha256'], revision['size']))
+        if any(tuple(current_sources[p]) not in versions for p, versions in groups.items()
+               if p in current_sources):
+            return False, None
+        if groups and all(p in current_sources for p in groups):
+            return True, {(p, *current_sources[p]) for p in groups}
+        return None
+    except (UnicodeError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _schema3_reclassified(paths, changed, old, current, decision, sources):
+    result = {}
+    for path in set(paths) - changed:
+        verdict = _schema3_card_source_match(path, current[path][1], decision, sources)
+        if verdict is not None and verdict[0] != bool(old[path]['trust_digest']):
+            result[path] = verdict
+    return result
+
+
 def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, deadline, marks,
                           vectors=None, *, raw_scan=None, window=False):
-    """One view's pass: changed cards ingested, unchanged members keep their trust.
+    """One view's pass: ingest changed cards and recheck observed source revisions.
 
     ``binding`` is the main worktree's journal-recorded binding (None for a
     linked worktree, whose row the store itself re-observes). A view with no
@@ -617,8 +677,12 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         # Only a completed scan is a current observation; over its bounds no revision is judged.
         current_sources = ({source: (sha, length) for source, (sha, length, _tracked) in observed.items()}
                            if 'snapshot' in scanned else None)
+        same_observation = not cold and v.head_same(store, head, baseline, observed, handle)
+        reclassified = (_schema3_reclassified(paths, changed, old, current, decision, current_sources)
+                        if current_sources is not None and not same_observation else {})
+        changed.update(reclassified)
         if (not changed and not removed and not excluded and not cold
-                and v.head_same(store, head, baseline, observed, handle)):
+                and same_observation):
             provenance = _consume_compile_intents(store, writer, proof, marks, decision, handle, old, current)
             if window:
                 # The main view has nothing to ingest: its vector fill (and the
@@ -663,8 +727,12 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                 members[path] = {k: old[path][k] for k in keys}
                 continue
             if path in carry and carry[path]['blob_sha'] == sha:
-                members[path] = {k: carry[path][k] for k in keys}
-                continue
+                verdict = reclassified.get(path)
+                sources = baseline['carry_sources']
+                if (verdict is None or (path in sources and sources[path] == verdict[1]
+                                        and bool(carry[path]['trust_digest']) == verdict[0])):
+                    members[path] = {k: carry[path][k] for k in keys}
+                    continue
             if (pending or ingested >= SCHEMA3_MAX_INGEST
                     or time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE):
                 # Left for the next wake. No generation may name its old blob

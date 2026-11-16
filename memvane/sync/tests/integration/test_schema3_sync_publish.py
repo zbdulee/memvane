@@ -1,14 +1,17 @@
 """The selected sync pass publishes format 4 view generations recall reads.
 
 One project onboarded through the 1.0 install use cases (``SyncCase``); each
-pass runs ``sync.api.run``. A pass ingests only the cards whose bytes changed
-(an unchanged member keeps its trust), publishes the lexical generation and
+pass runs ``sync.api.run``. A pass ingests cards whose bytes or observed source
+trust changed, publishes the lexical generation and
 then the vector generation, publishes removals, never publishes a partial
 cold view, and leaves the journal untouched when nothing changed. Every check
 counts rows, epochs and pass results.
 """
 import json
 import os
+import subprocess
+import sys
+import time
 import unittest
 from unittest import mock
 
@@ -16,6 +19,7 @@ from memvane.sync import product_sync_worker as worker
 from memvane.sync.tests.support import SyncCase, sha
 from tests.support import sqlite_hot_journal as hot
 from tests.support.project import settle_index
+from tests.support.gc_fixture import GC_HELD_CHILD
 
 
 class _Store:
@@ -32,6 +36,68 @@ class _Store:
 
 
 class SyncPublish(SyncCase):
+    def test_recall_hook_during_gc_pass(self):
+        ready, release = self.home / 'gc-ready', self.home / 'gc-release'
+        samples = []
+        def collect(real, handle, **kwargs):
+            if samples:
+                return real(handle, **kwargs)
+            store = real.__self__
+            args = dict(db=str(store._path), repository=store._repository, scope=store._scope,
+                        worktree_id=handle.worktree_id, ready=str(ready), release=str(release))
+            child = subprocess.Popen([sys.executable, '-B', '-c', GC_HELD_CHILD, json.dumps(args)],
+                                     env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                deadline = time.monotonic() + 20
+                while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(ready.exists(), 'GC did not reach its commit')
+                start = time.monotonic()
+                code, output, errors = self.target.hook('recall', {
+                    'session_id': 'fixture-session', 'cwd': str(self.project),
+                    'hook_event_name': 'UserPromptSubmit', 'prompt': 'kestrelprobe'})
+                samples.append((time.monotonic() - start) * 1000)
+                self.assertEqual(code, 0, errors)
+                self.assertIn('concepts/kestrel-perch.md', output)
+            finally:
+                release.touch()
+                output, errors = child.communicate(timeout=25)
+            self.assertEqual(child.returncode, 0, output + errors)
+            return real(handle, **kwargs)
+        with self.store_methods(collect_view_rows=collect):
+            self.card('concepts/another.md', 'anotherprobe')
+            self.assertEqual(self.run_pass()['state'], 'indexed')
+        self.assertEqual(len(samples), 1)
+        print('synthetic full recall hook during held GC: %.3f ms' % samples[0])
+
+    def test_row_gc_runs_only_after_a_successful_publication(self):
+        calls = []
+        def collect(real, *args, **kwargs):
+            calls.append(kwargs.get('limit'))
+            return real(*args, **kwargs)
+        with self.store_methods(collect_view_rows=collect):
+            self.card('concepts/kestrel-perch.md', 'gcpublicationprobe')
+            result = self.run_pass()
+            self.assertEqual(result['state'], 'indexed')
+            self.assertEqual(calls, [64, 64])
+            calls.clear()
+            self.assertEqual(self.run_pass()['state'], 'unchanged')
+            self.assertEqual(calls, [])
+
+    def test_failed_publication_does_not_run_row_gc(self):
+        calls = []
+        def collect(real, *args, **kwargs):
+            calls.append(1)
+            return real(*args, **kwargs)
+        def fail(_real, *args, **kwargs):
+            raise RuntimeError('synthetic publication failure')
+        self.card('concepts/kestrel-perch.md', 'gcfailedprobe')
+        with self.store_methods(collect_view_rows=collect, publish_generation=fail):
+            with self.assertRaisesRegex(RuntimeError, 'synthetic publication failure'):
+                self.run_pass()
+        self.assertEqual(calls, [])
+
     def test_sync_restores_the_untracked_wiki_keeper(self):
         keeper = self.wiki / '.memvane-root'
         self.assertTrue(keeper.is_file())
@@ -219,6 +285,7 @@ class SyncPublish(SyncCase):
 
     def test_new_cards_over_the_ingest_cap_publish_progress_then_complete(self):
         start = self.head()
+        start_members = self.members(start[0])
         for token in ('owlprobe', 'larkprobe', 'ternprobe', 'rookprobe'):
             self.card('concepts/' + token + '.md', token)
         with mock.patch.object(worker, 'SCHEMA3_MAX_INGEST', 2):
@@ -228,11 +295,12 @@ class SyncPublish(SyncCase):
                              ('pending', 'schema3_ingest_backlog', 2, 2, 'ingest'), first)
             # New cards publish as they are ingested.
             self.assertEqual(self.head()[0], first['generation'])
-            first_new = self.changed_paths(self.members(start[0]), self.members(first['generation']))
+            first_members = self.members(first['generation'])
+            first_new = self.changed_paths(start_members, first_members)
             self.assertEqual(len(first_new), 2)
             second = self.run_pass()
         self.assertEqual((second['state'], second['ingested'], second['pending']), ('indexed', 2, 0), second)
-        second_new = self.changed_paths(self.members(first['generation']), self.members(second['generation']))
+        second_new = self.changed_paths(first_members, self.members(second['generation']))
         self.assertEqual(len(second_new), 2)
         self.assertEqual(set(first_new) & set(second_new), set())
         self.assertEqual(len(self.members(second['generation'])), 9)
@@ -272,6 +340,7 @@ class SyncPublish(SyncCase):
     # -- interrupted publication --------------------------------------------------
     def test_interrupted_publish_keeps_the_old_head_and_the_next_pass_resumes(self):
         start = self.head()
+        start_members = self.members(start[0])
         self.card('concepts/wren-path.md', 'robinprobe')
 
         def before(store, *args, **kwargs):
@@ -283,7 +352,7 @@ class SyncPublish(SyncCase):
         resumed = self.run_pass()
         # The stopped pass's prepared member is carried, not ingested again.
         self.assertEqual((resumed['state'], resumed['ingested']), ('indexed', 0), resumed)
-        self.assertEqual(self.changed_paths(self.members(start[0]), self.members(resumed['generation'])),
+        self.assertEqual(self.changed_paths(start_members, self.members(resumed['generation'])),
                          ['concepts/wren-path.md'])
         resumed_head = self.head()
         self.assertEqual(resumed_head[0], resumed['generation'])
@@ -307,6 +376,58 @@ class SyncPublish(SyncCase):
         self.assertIn('concepts/wren-path.md', self.recalled('thrushprobe'))
 
     # -- source revisions ----------------------------------------------------------
+    def test_unchanged_card_is_untrusted_only_while_observed_source_differs(self):
+        self.card('concepts/source-stale.md', 'stalecaseprobe')
+        first = self.run_pass()
+        self.assertEqual(first['state'], 'indexed')
+        self.assertEqual(self.member_trust(first['generation'], 'concepts/source-stale.md')[1], 1)
+        source = self.project / 'notes/stalecaseprobe.md'
+        original = source.read_bytes()
+        source.write_bytes(b'Changed source, without a new verified card.\n')
+        changed = self.run_pass()
+        self.assertEqual(changed['state'], 'indexed')
+        self.assertEqual(self.member_trust(changed['generation'], 'concepts/source-stale.md'), (None, 0))
+        self.assertNotIn('concepts/source-stale.md', self.recalled('stalecaseprobe'))
+        source.write_bytes(original)
+        restored = self.run_pass()
+        self.assertEqual(restored['state'], 'indexed')
+        self.assertEqual(self.member_trust(restored['generation'], 'concepts/source-stale.md')[1], 1)
+        self.assertIn('concepts/source-stale.md', self.recalled('stalecaseprobe'))
+
+    def test_incomplete_raw_observation_does_not_demote_existing_trust(self):
+        self.card('concepts/source-unknown.md', 'unknownsourceprobe')
+        first = self.run_pass()
+        self.assertEqual(self.member_trust(first['generation'], 'concepts/source-unknown.md')[1], 1)
+        (self.project / 'notes/unknownsourceprobe.md').write_bytes(b'Changed source.\n')
+        with mock.patch('memvane.wiki.intake.types.RAW_SCAN_MAX_FILES', 1):
+            unknown = self.run_pass()
+        self.assertEqual(self.member_trust(unknown['generation'], 'concepts/source-unknown.md')[1], 1)
+        known = self.run_pass()
+        self.assertEqual(self.member_trust(known['generation'], 'concepts/source-unknown.md'), (None, 0))
+
+    def test_source_reclassification_resumes_across_ingest_batches(self):
+        for token in ('batchfirstprobe', 'batchsecondprobe'):
+            self.card('concepts/' + token + '.md', token)
+        self.assertEqual(self.run_pass()['state'], 'indexed')
+        originals = {}
+        for token in ('batchfirstprobe', 'batchsecondprobe'):
+            source = self.project / ('notes/' + token + '.md')
+            originals[token] = source.read_bytes()
+            source.write_bytes(b'Changed source.\n')
+        with mock.patch('memvane.sync.product_sync_worker.SCHEMA3_MAX_INGEST', 1):
+            self.assertEqual(self.run_pass()['state'], 'pending')
+            stale = self.run_pass()
+            self.assertEqual(stale['state'], 'indexed')
+            for token in originals:
+                self.assertEqual(self.member_trust(stale['generation'], 'concepts/' + token + '.md'), (None, 0))
+            for token, raw in originals.items():
+                (self.project / ('notes/' + token + '.md')).write_bytes(raw)
+            self.assertEqual(self.run_pass()['state'], 'pending')
+            restored = self.run_pass()
+            self.assertEqual(restored['state'], 'indexed')
+            for token in originals:
+                self.assertEqual(self.member_trust(restored['generation'], 'concepts/' + token + '.md')[1], 1)
+
     def dual_card(self, rel, token, *, current):
         """A verified card citing ``notes/<token>.md`` at an older and a compiled revision.
 
@@ -346,7 +467,7 @@ class SyncPublish(SyncCase):
         self.assertNotIn('concepts/dual-stale.md', self.recalled('dualstaleprobe'))
         self.assertEqual(self.compile_files(), queued, 'the writer queues no regeneration')
 
-    def test_observation_over_its_bounds_keeps_both_revisions_until_the_card_changes(self):
+    def test_observation_over_its_bounds_defers_source_judgment(self):
         path, _compiled = self.dual_card('concepts/dual-kept.md', 'dualkeptprobe', current=b'Third bytes.\n')
         # No current observation picks no winner.
         with mock.patch('memvane.wiki.intake.types.RAW_SCAN_MAX_FILES', 1):
@@ -355,11 +476,11 @@ class SyncPublish(SyncCase):
         self.assertEqual(len(self.attested_revisions(first['generation'], 'concepts/dual-kept.md')), 2)
         trust = self.member_trust(first['generation'], 'concepts/dual-kept.md')
         self.assertEqual(trust[1], 1)
-        # Unchanged card bytes keep their trust; the lifecycle regenerates, not the writer.
+        # A later complete observation proves both revisions differ.
         (self.project / path).write_bytes(b'Fourth bytes.\n')
         second = self.run_pass()
-        self.assertEqual(second.get('ingested', 0), 0, second)
-        self.assertEqual(self.member_trust(self.head()[0], 'concepts/dual-kept.md'), trust)
+        self.assertEqual(second.get('ingested', 0), 1, second)
+        self.assertEqual(self.member_trust(self.head()[0], 'concepts/dual-kept.md'), (None, 0))
 
     def test_card_citing_a_dot_directory_source_keeps_its_trust(self):
         self.card('concepts/dot-source.md', 'dotsourceprobe', source_dir='.nova/06_Sessions')

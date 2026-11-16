@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import json
 import math
 import sys
@@ -941,6 +940,7 @@ def load_project_config_raw(cwd):
 
 
 def main():
+    import argparse
     parser = argparse.ArgumentParser(description="Normalize qmd recall configuration.")
     parser.add_argument("--cwd", required=True)
     parser.add_argument("--raw", action="store_true", help="Print raw discovered project config JSON instead of stdin normalization.")
