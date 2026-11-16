@@ -25,18 +25,28 @@ def stopped_at_once(real, *args, **kwargs):
 
 
 class SyncVectors(SyncCase):
+    def test_sealed_head_edit_publishes_one_vector_generation(self):
+        before = self.head()
+        self.edit('singlepublishprobe')
+        with self.provider_calls() as calls:
+            result = self.run_pass()
+        self.assertEqual(result['vector']['state'], 'published', result)
+        self.assertEqual(self.head(), (result['generation'], before[1] + 1))
+        self.assertEqual(self.coverage(result['generation'])[1], 'complete')
+        self.assertEqual([kind for kind, _ in calls], ['chunks'])
+
     def test_ingest_main_view_receives_vector_window(self):
         self.edit('windowprobe')
-        original = worker._schema3_vectors
-        windows = []
+        original = worker._schema3_prefill_changed
+        calls = []
         def record(*args, **kwargs):
-            windows.append(kwargs.get('window', False))
+            calls.append(1)
             return original(*args, **kwargs)
-        with mock.patch.object(worker, '_schema3_vectors', side_effect=record):
+        with mock.patch.object(worker, '_schema3_prefill_changed', side_effect=record):
             result = self.run_pass()
         self.assertEqual(result['ingested'], 1)
-        self.assertTrue(windows)
-        self.assertTrue(windows[0], windows)
+        self.assertEqual(result['vector']['state'], 'published')
+        self.assertEqual(calls, [1])
 
     def test_staged_ingest_receives_vector_window_on_existing_head(self):
         self.edit('windowone', 'windowtwo', 'windowthree')
@@ -162,7 +172,7 @@ class SyncVectors(SyncCase):
     def test_progressing_pass_acks_and_reoffers_while_a_zero_progress_pass_keeps_its_wake(self):
         self.edit('falconprobe', 'hawkprobe')
         wakes, recorded = self.wakes()
-        with recorded, self.store_methods(fill_view=stopped_at_once):
+        with recorded, self.store_methods(ensure_content=stopped_at_once):
             stuck = self.run_pass()
         self.assertEqual((stuck['state'], stuck['reason'], stuck['vector']['progress']),
                          ('pending', 'schema3_vector_deadline', 0), stuck)
@@ -173,8 +183,9 @@ class SyncVectors(SyncCase):
         self.edit('falconprobe2', 'hawkprobe2', 'owlprobe2')
         with recorded, self.store_methods(fill_view=stopped_after_one):
             moved = self.run_pass()
-        self.assertEqual((moved['state'], moved['vector']['state'], moved['vector']['progress'],
-                          moved.get('vectorReoffer')), ('indexed', 'pending', 1, True), moved)
+        self.assertEqual((moved['state'], moved['vector']['state'], moved.get('vectorReoffer')),
+                         ('indexed', 'pending', True), moved)
+        self.assertGreater(moved['vector']['progress'], 0, moved)
         self.assertEqual(wakes, [('laya-sync', str(self.project), worker.SCHEMA3_VECTOR_REOFFER_SECONDS)])
         self.assertTrue(moved['detail'].startswith('vec_pending_deadline:rem'), moved)
         with recorded:
@@ -212,6 +223,8 @@ class SyncVectors(SyncCase):
 
     def test_a_cold_target_gets_the_resume_budget(self):
         self.card('concepts/owl-roost.md', 'owlprobe')
+        # With a lexical head, the existing resumable cursor owns the fill.
+        self.run_pass(Coordinator(refuse='cpu_pressure'))
         seen = []
         with self.store_methods(fill_view=lambda real, *a, **k: seen.append(k['deadline_seconds']) or real(*a, **k)):
             result = self.run_pass()

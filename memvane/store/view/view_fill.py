@@ -127,6 +127,11 @@ def _status(job, stored):
 
 
 class FillMixin:
+    def ensure_content(self, blob, recipe_id, profile_id, *, chunker, embedder, write_fence, deadline_seconds):
+        return ContentFiller(self).ensure_content(blob, recipe_id, profile_id, chunker=chunker,
+                                                 embedder=embedder, write_fence=write_fence,
+                                                 deadline_seconds=deadline_seconds)
+
     def _fill_idle(self):
         try:
             busy = self._db.in_transaction

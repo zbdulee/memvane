@@ -196,6 +196,22 @@ def fill_plan(store, handle, recipe_id, profile_id):
     return store._rows_fill_plan(handle, recipe_id, profile_id)
 
 
+def prepublish_targets(store, handle, manifest, expected_head, changed_blobs, deadline):
+    """Derive eligible changed blobs under the same view proof as publication."""
+    from memvane.store.view import view_values as vals
+    from memvane.store.view.view_store import _skip_patterns
+    entry = store._check(handle)
+    saved = store._observe(entry, deadline=deadline)
+    manifest = vals.manifest(manifest, handle.policy_digest)
+    base = vals.expected_head(expected_head, handle.view_id, store._incarnation)
+    with store._session() as db:
+        if store._rows_head(db, handle) != base:
+            raise store_types.BlobStoreError('view_head_conflict')
+        plan = store._derive(handle, manifest, _skip_patterns(saved), retain_bodies=False, deadline=deadline)
+        return sorted({member['blob_sha'] for member in plan['members']
+                       if member['eligible'] and member['blob_sha'] in changed_blobs})
+
+
 def put_source_fingerprints(store, handle, scan, observed):
     """Record this scan's observed fingerprints in one write; returns the manifest sources."""
     sources = []
