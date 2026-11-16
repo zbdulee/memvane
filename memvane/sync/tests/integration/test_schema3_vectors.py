@@ -25,6 +25,32 @@ def stopped_at_once(real, *args, **kwargs):
 
 
 class SyncVectors(SyncCase):
+    def test_ingest_main_view_receives_vector_window(self):
+        self.edit('windowprobe')
+        original = worker._schema3_vectors
+        windows = []
+        def record(*args, **kwargs):
+            windows.append(kwargs.get('window', False))
+            return original(*args, **kwargs)
+        with mock.patch.object(worker, '_schema3_vectors', side_effect=record):
+            result = self.run_pass()
+        self.assertEqual(result['ingested'], 1)
+        self.assertTrue(windows)
+        self.assertTrue(windows[0], windows)
+
+    def test_staged_ingest_receives_vector_window_on_existing_head(self):
+        self.edit('windowone', 'windowtwo', 'windowthree')
+        original = worker._schema3_vectors
+        windows = []
+        def record(*args, **kwargs):
+            windows.append(kwargs.get('window', False))
+            return original(*args, **kwargs)
+        with mock.patch.object(worker, 'SCHEMA3_MAX_INGEST', 1), \
+             mock.patch.object(worker, '_schema3_vectors', side_effect=record):
+            result = self.run_pass()
+        self.assertEqual(result['reason'], 'schema3_changes_staged')
+        self.assertTrue(windows and windows[0], windows)
+
     def test_sync_records_one_body_free_stage_profile(self):
         self.edit('profilecanary')
         before = len(self.events('sync.profile'))

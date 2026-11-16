@@ -741,6 +741,19 @@ def _schema3_reclassified(paths, changed, old, current, decision, sources):
     return result
 
 
+def _staged_vector_result(store, writer, proof, marks, handle, baseline, vectors, deadline,
+                          head, generation, ingested, removed, pending, skipped, provenance, window):
+    result = {'state': 'pending', 'reason': 'schema3_changes_staged', 'storeFormat': 'schema3',
+              **({'progressKind': 'ingest'} if ingested else {}),
+              'generation': head['gen_id'], 'prepared': generation, 'ingested': ingested,
+              'removed': removed, 'pending': pending, 'skipped': skipped, 'provenance': provenance}
+    if window:
+        deadline = max(deadline, time.monotonic() + SCHEMA3_VECTOR_SECONDS)
+        result['vector'] = _schema3_vectors(store, writer, proof, marks, handle, None,
+                                            baseline['vector_spec'], vectors, deadline, window=True)
+    return result
+
+
 def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, deadline, marks,
                           vectors=None, *, raw_scan=None, window=False):
     """One view's pass: ingest changed cards and recheck observed source revisions.
@@ -894,14 +907,12 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         if staging:
             # Published cards wait for new bytes: the head stays, the prepared
             # progress is the next pass's carry.
-            return {'state': 'pending', 'reason': 'schema3_changes_staged', 'storeFormat': 'schema3',
-                    **({'progressKind': 'ingest'} if ingested else {}),
-                    'generation': head['gen_id'], 'prepared': generation, 'ingested': ingested,
-                    'removed': len(removed), 'pending': pending, 'skipped': skipped, 'provenance': provenance}
+            return _staged_vector_result(store, writer, proof, marks, handle, baseline, vectors, deadline,
+                                         head, generation, ingested, len(removed), pending, skipped, provenance, window)
         _profile_call(profile, 'publish', store.publish_generation, handle, generation, expected_head=head, deadline=deadline)
         if vector['state'] == 'lexical_first':
             generation, vector = _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest,
-                                                              vectors, deadline)
+                                                              vectors, deadline, window=window)
     except store_types.BlobStoreError as exc:
         if exc.reason in SCHEMA3_BINDING_REASONS:
             return {'state': 'deferred', 'reason': 'schema3_binding_changed',
@@ -947,12 +958,14 @@ def _schema3_rows_covered(store, manifest, sealed, vectors, changed_blobs):
     return {'state': 'complete', 'filled': 0, 'cacheHits': len(blobs), 'targets': len(manifest['members'])}
 
 
-def _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest, vectors, deadline):
+def _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest, vectors, deadline, *, window=False):
     """After a row-format lexical publication: fill the new head and seal its vector generation.
 
     Returns ``(generation, vector)``; an unfinished fill keeps the lexical head.
     """
-    vector = _schema3_vectors(store, writer, proof, marks, handle, None, None, vectors, deadline)
+    if window:
+        deadline = max(deadline, time.monotonic() + SCHEMA3_VECTOR_SECONDS)
+    vector = _schema3_vectors(store, writer, proof, marks, handle, None, None, vectors, deadline, window=window)
     head = store.head(handle)
     if vector['state'] != 'complete':
         return head['gen_id'], vector
