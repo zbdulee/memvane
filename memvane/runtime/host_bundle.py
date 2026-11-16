@@ -369,7 +369,7 @@ def _old_helper(row, queue_root, current):
                 if len(parts) != 5 or parts[:2] != ('plugins', 'cache') or parts[3] != 'memvane':
                     continue
                 candidate = _candidate(base, parts[2], parts[4], host)
-                if candidate is not None and candidate[1] == old and current.version is not None and candidate[0] < current.version:
+                if candidate is not None and candidate[1] == old and getattr(current, 'version', None) is not None and candidate[0] < current.version:
                     proven = True
             except (ValueError, OSError):
                 continue
@@ -389,7 +389,7 @@ def retire_old_helpers(queue_root, current):
     """Ask only proved older timer/monitor owners to exit; never signal workers."""
     import signal
     queue_root = Path(queue_root)
-    if not current.intact() or not current.preferred():
+    if not current.intact() or not getattr(current, 'preferred', lambda: True)():
         return 0
     try:
         rows = _process_rows()
