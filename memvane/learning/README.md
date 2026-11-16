@@ -34,7 +34,11 @@ wake와 합쳐지면 due probe와 기존 큐 backoff로 유지하며 일반 학�
 기다린다. 큐 용량 때문에 예약이 버려지면 `retry_offer_dropped`를 기록한다.
 
 기본 namespace의 adapter 경로만 달라진 정책은 heal의 내용·승인 범위
-검증으로 재결속한다. 준비할 selector가 없으면 warm 없이 버전을 게시한다.
+검증으로 재결속한다. 미활성 기본 namespace는 profile을 만들기 전에
+현재 번들의 adapter 경로로 원자적으로 고정한다. interpreter·model·다른
+정책 키가 달라지면 거절하며, 정책 다이제스트가 달라지면 추론 증명을
+재준비한다. 이미 승인된 profile은 이 경로로 재기록하지 않는다.
+준비할 selector가 없으면 warm 없이 버전을 게시한다.
 후보 apply의 resident 시작 실패는 재시도를 예약하며, 실행 중인 resident의
 정체성·권한 거절은 후보 적용을 차단한다.
 

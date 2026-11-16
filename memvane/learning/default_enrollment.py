@@ -164,7 +164,7 @@ def _prepare_namespace(root, executable, model):
                         and {**current, 'trainerArgv': [argv[0], value['trainerArgv'][1], argv[2]]} == value):
                     # Reuse heal's content/approved-scope checks for a moved anchor.
                     # Accepted policies stay intact; only rebind may rewrite them.
-                    selector_heal.rebind(root)
+                    selector_heal.rebind(root, canonicalize=True)
                     continue
                 legacy = {key: item for key, item in value.items() if key != 'schema_version'}
                 if name != 'active-checkpoint.json' or current != legacy:

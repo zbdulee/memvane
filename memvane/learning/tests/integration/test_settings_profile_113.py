@@ -59,6 +59,9 @@ class SettingsProfile(FixtureCase):
             project_scope._settings_scope(self.project)
 
     def test_entry_warms_then_creates_profile_and_local_grant_from_0644_settings(self):
+        self.run_profile_entry()
+
+    def run_profile_entry(self, *, seed_namespace=None, heal_impl=None, expected_error=None):
         model = self.home / 'model'
         model.mkdir(mode=0o700)
         for name in adapter.MODEL_FILES:
@@ -80,6 +83,8 @@ class SettingsProfile(FixtureCase):
         root = default_enrollment.default_namespace(self.project, 'fixture')
         root.parent.parent.mkdir(mode=0o700, parents=True)
         source = Path(adapter.__file__).resolve().parents[3]
+        if seed_namespace is not None:
+            seed_namespace(root, str(runtime), str(model), source)
         installs = [{'host': 'codex', 'root': str(source)}]
         events = []
         original_activate = default_enrollment._activate_profile
@@ -107,7 +112,7 @@ class SettingsProfile(FixtureCase):
                 mock.patch.object(project_scope, '_installed_binding', return_value=installs), \
                 mock.patch.object(selector_heal, 'official_runtime', return_value=(str(runtime), str(model))), \
                 mock.patch.object(selector_heal, 'pressure', return_value=None), \
-                mock.patch.object(selector_heal, 'heal', return_value={'status': 'selector_ready'}), \
+                mock.patch.object(selector_heal, 'heal', side_effect=heal_impl, return_value={'status': 'selector_ready'}), \
                 mock.patch.object(selector_heal, '_service_identity', return_value=[1, 2, 3, 'synthetic']), \
                 mock.patch.object(inference_service, '_SERVICE_STARTER', None), \
                 mock.patch.object(inference_service, '_policy', side_effect=policy), \
@@ -120,6 +125,12 @@ class SettingsProfile(FixtureCase):
             with self.assertRaises(SystemExit) as ended:
                 runpy.run_path(str(entry), run_name='__main__')
             self.assertEqual(ended.exception.code, 0)
+            if expected_error is not None:
+                self.assertIn(expected_error, stderr.getvalue())
+                self.assertFalse((root / selector_heal.WARM_MARKER).exists())
+                self.assertFalse((root / learning_profile.NAME).exists())
+                self.assertFalse((root / project_scope.NAME).exists())
+                return root
             grant_path = root / project_scope.NAME
             self.assertTrue(grant_path.is_file(), stderr.getvalue()[-1000:])
             grant = dataset.read_private_json(grant_path)['proposal']
@@ -130,7 +141,9 @@ class SettingsProfile(FixtureCase):
             grant_path.chmod(0o644)
             with self.assertRaisesRegex(ValueError, 'unsafe|private'):
                 project_scope.require(root, shared._policy(root), 'local_train')
+            grant_path.chmod(0o600)
         self.assertEqual(events, ['warm', 'profile'])
+        return root
 
 
 if __name__ == '__main__':
