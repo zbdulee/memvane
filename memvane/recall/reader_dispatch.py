@@ -250,6 +250,13 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                 return answer
             lexical=[shaped(store.search(pin, query, HYBRID_LIST_LIMIT, deadline_seconds=left()))
                      for query in queries]
+            if query_vector is None and not any(lexical):
+                # When a cold provider leaves a conjunctive query empty, retain
+                # useful lexical evidence from its individual bounded terms.
+                atoms = list(dict.fromkeys(atom for query in queries for atom in query.split(' AND ') if atom))[:3]
+                if len(atoms)>1:
+                    lexical=[shaped(store.search(pin, atom, HYBRID_LIST_LIMIT, deadline_seconds=left()))
+                             for atom in atoms]
             status='provider_absent' if query_vector is None else 'lexical_only' if vector is None else 'complete'
             nearest=None
             if semantic:

@@ -6,6 +6,18 @@ from memvane.provider.adapters import reattest
 
 
 class ReattestationTest(unittest.TestCase):
+    def test_exact_artifacts_do_not_require_a_new_identity_manifest(self):
+        import hashlib
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as folder:
+            state=Path(folder).resolve()
+            worker=state/'worker.mjs';worker.write_text('legacy worker')
+            provider=state/'provider.py';provider.write_text('legacy provider')
+            sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+            manifest={'workerPath':str(worker),'workerSha256':sha(worker),
+                      'providerPath':str(provider),'providerArtifactSha256':sha(provider)}
+            with patch.object(reattest,'_current',side_effect=ValueError('reattest_manifest_missing')):
+                self.assertEqual(reattest.authorize(state,manifest),{'worker':sha(worker),'provider':sha(provider)})
     def setUp(self):
         self.original = {'provider': 'a' * 64, 'worker': 'b' * 64}
         self.current = {'provider': 'a' * 64, 'worker': 'c' * 64}
@@ -48,10 +60,12 @@ class ReattestationTest(unittest.TestCase):
         from unittest.mock import patch
         manifest = {'workerSha256': reattest.LEGACY_WORKER,
                     'providerArtifactSha256': reattest.LEGACY_PROVIDER,
+                    'workerPath':'/synthetic/worker.mjs', 'providerPath':'/synthetic/provider.py',
                     'modelSha256': 'd'*64, 'dimension': 768}
         old = {**self.identity, 'tokenizer': 'model-embedded',
                'chunkerSha256': reattest.LEGACY_CHUNKER}
-        with tempfile.TemporaryDirectory() as root, patch.object(reattest, '_current', return_value=(self.current, old)):
+        with tempfile.TemporaryDirectory() as root, patch.object(reattest, '_current', return_value=(self.current, old)), \
+             patch('memvane.provider.api.hash_file', side_effect=lambda p: self.current['worker'] if p.endswith('.mjs') else self.current['provider']):
             state = Path(root).resolve()
             self.assertFalse(reattest.check(state, manifest))
             reattest.update(state, manifest)
@@ -70,6 +84,7 @@ class ReattestationTest(unittest.TestCase):
         from unittest.mock import patch
         manifest = {'workerSha256': self.original['worker'],
                     'providerArtifactSha256': self.original['provider'],
+                    'workerPath':'/synthetic/worker.mjs', 'providerPath':'/synthetic/provider.py',
                     'modelSha256': 'd'*64, 'dimension': 768}
         with tempfile.TemporaryDirectory() as root, patch.object(reattest, '_current', return_value=(self.current, self.identity)):
             with self.assertRaises(ValueError):
