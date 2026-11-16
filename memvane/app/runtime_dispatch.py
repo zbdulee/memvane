@@ -185,6 +185,20 @@ def _deferred_detail(result):
     return ':'.join(parts)
 
 
+def _sync_progress(kind, exc):
+    """Recognize normal bounded sync handoffs without masking actual failures."""
+    if kind != 'laya-sync' or exc.code != 'target_deferred':
+        return False
+    detail = getattr(exc, 'detail', None)
+    if not isinstance(detail, str):
+        return False
+    parts = detail.split(':')
+    return (len(parts) >= 3 and parts[:2] == ['deferred', 'pending']
+            and parts[2] in ('schema3_progress_ingest', 'schema3_progress_vector',
+                             'schema3_vector_deadline', 'schema3_vector_budget',
+                             'schema3_vector_content_busy'))
+
+
 def _diagnostic_route(target):
     """A freshly selected route proved to be this wake's own install, else None.
 
@@ -352,7 +366,8 @@ def run(kind, value, *, owner_fd=None):
         diagnostic_fields = _diagnostic_fields(target, kind, exc)
         if exc.code == 'target_preparing':
             diagnostic_fields['severity'] = 'warning'
-        _event(target, kind, started, outcome='failed', reason=exc.code,
+        _event(target, kind, started, outcome='progress' if _sync_progress(kind, exc) else 'failed',
+               reason=exc.code,
                result={'detail': getattr(exc, 'detail', None),
                        'path': getattr(exc, 'member_path', None),
                        'cause': getattr(exc, 'member_cause', None)}
