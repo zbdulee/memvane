@@ -27,6 +27,7 @@ class SocketSecurity(FixtureCase):
             return real_open(path, *args, **kwargs)
 
         with patch.object(local, 'ReviewedLocalQmdProvider', SyntheticArtifacts), \
+             patch('memvane.provider.adapters.reattest.authorize', return_value={'worker':'x', 'provider':'y'}), \
              patch.object(local.os, 'open', side_effect=exhausted), \
              self.assertRaises(OSError) as failure:
             local.start_owned_embed_service(manifest, admit=lambda: True)
@@ -67,6 +68,7 @@ class SocketSecurity(FixtureCase):
                     self.addCleanup(listener.close)
                     listener.bind(str(lock))
                 with patch.object(local, 'ReviewedLocalQmdProvider', SyntheticArtifacts), \
+                     patch('memvane.provider.adapters.reattest.authorize', return_value={'worker':'x', 'provider':'y'}), \
                      patch.object(local.subprocess, 'Popen') as spawn:
                     with self.assertRaises(IndexContractError) as caught:
                         local.start_owned_embed_service(manifest, admit=lambda: True)

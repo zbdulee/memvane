@@ -76,9 +76,10 @@ def bind_private(server, path):
     return implementation(server, path)
 
 
-def start_owned_embed_service(manifest, *, admit, startup_timeout_s=15):
+def start_owned_embed_service(manifest, *, admit, startup_timeout_s=15, execution_state=None):
     from memvane.provider.adapters.local_embed_service import start_owned_embed_service as implementation
-    return implementation(manifest, admit=admit, startup_timeout_s=startup_timeout_s)
+    return implementation(manifest, admit=admit, startup_timeout_s=startup_timeout_s,
+                          execution_state=execution_state)
 
 
 def profile_identity(model_id, embedding_fingerprint, dimension):
