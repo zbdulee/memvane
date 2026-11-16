@@ -367,7 +367,7 @@ class DrainThroughSeam(FixtureCase):
                             self.assertEqual(runtime._drain_and_rewake(self.queue, 123, execute=execute), outcome)
                         draining.assert_called_once_with(self.queue, lease_fd=123, execute=execute,
                                                          on_drop=None, on_stall=None)
-                        rewake.assert_called_once_with()
+                        rewake.assert_called_once_with(background=True)
             self.assertEqual(len(self.rows()), 1)
 
     def test_backed_off_rows_arm_only_a_timer_and_due_rows_start_worker(self):
@@ -552,7 +552,7 @@ class DrainThroughSeam(FixtureCase):
             self.assertEqual(runtime.main(['timer', str(fd)], execute=lambda _row: True), 0)
         with self.assertRaises(OSError):
             os.fstat(fd)
-        wake.assert_called_once_with(self.queue)
+        wake.assert_called_once_with(self.queue, background=True)
 
     def test_transient_failure_retries_without_another_hook(self):
         self.queue.put('laya-sync', '/synthetic/a', now=0)

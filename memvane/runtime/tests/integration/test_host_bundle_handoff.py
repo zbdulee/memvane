@@ -120,17 +120,45 @@ class HostBundleHandoff(FixtureCase):
         with mock.patch.dict(os.environ, {'PATH': str(self.tmp)}):
             self.assertEqual(host_bundle._codex_inventory(self.home), {'installed': []})
 
-    def test_codex_toml_enabled_plugin_selects_latest_cache(self):
+    def test_codex_enabled_uses_loaded_bundle_not_a_stale_higher_cache(self):
         old = self.bundle('codex', 'market', '1.0.2')
         new = self.bundle('codex', 'market', '1.0.3')
         config = self.home/'.codex/config.toml'
         config.write_text('[plugins."memvane@market"]\nenabled = true\n')
         config.chmod(0o600)
-        with mock.patch.dict(os.environ, {'CODEX_HOME':str(self.home/'.codex')}):
+        with mock.patch.dict(os.environ, {'CODEX_HOME':str(self.home/'.codex')}), \
+             mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=old) as own:
+            self.assertEqual(host_bundle.fast_installed(home=self.home), old)
+            own.return_value = new
             self.assertEqual(host_bundle.fast_installed(home=self.home), new)
             config.write_text('[plugins."memvane@market"]\nenabled = false\n')
             self.assertIsNone(host_bundle.fast_installed(home=self.home))
         self.assertTrue(old.exists())
+
+    def test_background_inventory_honors_downgrade_and_is_cached(self):
+        old = self.bundle('codex', 'market', '1.0.2')
+        stale = self.bundle('codex', 'market', '1.0.3')
+        identity = host_bundle.BundleIdentity(stale)
+        host_bundle._BACKGROUND_INVENTORY.update(until=0, root=None)
+        with mock.patch.dict(os.environ, {'MEMVANE_TEST_RUNTIME_ROOT':''}), \
+             mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=stale), \
+             mock.patch.object(host_bundle, 'latest_installed', return_value=old) as listing:
+            self.assertFalse(identity.preferred_background())
+            argv = host_bundle.entry_argv('runtime-work', 'timer', '3', background=True)
+            self.assertEqual(argv[-4], str(old/'entry'/'run.py'))
+            self.assertEqual(listing.call_count, 1)
+        host_bundle._BACKGROUND_INVENTORY.update(until=0, root=None)
+
+    def test_background_inventory_timeout_keeps_intact_bundle(self):
+        root = self.bundle('codex', 'market', '1.0.3')
+        identity = host_bundle.BundleIdentity(root)
+        host_bundle._BACKGROUND_INVENTORY.update(until=0, root=None)
+        with mock.patch.dict(os.environ, {'MEMVANE_TEST_RUNTIME_ROOT':''}), \
+             mock.patch.object(host_bundle, 'latest_installed', side_effect=subprocess.TimeoutExpired('fixture', 1)) as listing:
+            self.assertTrue(identity.preferred_background())
+            self.assertTrue(identity.preferred_background())
+            listing.assert_called_once_with()
+        host_bundle._BACKGROUND_INVENTORY.update(until=0, root=None)
 
     def test_retired_timer_rearms_in_detached_handoff_if_lease_is_busy(self):
         from memvane.runtime import runtime_work as runtime
@@ -140,10 +168,19 @@ class HostBundleHandoff(FixtureCase):
              mock.patch.object(runtime, '_arm_timer', return_value=False) as arm, \
              mock.patch.object(runtime, '_handoff', return_value=True) as handoff, \
              mock.patch.object(runtime.time, 'sleep') as sleep:
-            self.assertEqual(runtime._wake(queue), 'idle')
-        arm.assert_called_once_with(queue)
-        handoff.assert_called_once_with()
+            self.assertEqual(runtime._wake(queue, background=True), 'idle')
+        arm.assert_called_once_with(queue, background=True)
+        handoff.assert_called_once_with(background=True)
         sleep.assert_not_called()
+
+    def test_hook_wake_never_scans_old_processes(self):
+        from memvane.runtime import runtime_work as runtime
+        queue = runtime.WakeQueue()
+        queue.put('laya-sync', '/synthetic/project', now=time.time()+300)
+        with mock.patch.object(host_bundle, 'retire_old_helpers') as scan, \
+             mock.patch.object(runtime, '_timer_available', return_value=True):
+            self.assertEqual(runtime._wake(queue), 'idle')
+        scan.assert_not_called()
 
     def test_group_writable_path_does_not_stop_spawn(self):
         unsafe = self.tmp / 'group-writable'
@@ -238,7 +275,7 @@ class HostBundleHandoff(FixtureCase):
         tick = [0.0]
         identity = types.SimpleNamespace(intact=lambda: False)
         with mock.patch.object(runtime, 'BACKGROUND_BUNDLE', identity), \
-                mock.patch.object(host_bundle, 'fast_installed', side_effect=[None, self.tmp]):
+                mock.patch.object(host_bundle, 'background_installed', side_effect=[None, self.tmp]):
             result = runtime.timer(queue, wall=lambda: 1, clock=lambda: tick[0],
                                    sleep=lambda seconds: tick.__setitem__(0, tick[0] + .1),
                                    max_seconds=1)
@@ -318,10 +355,10 @@ class HostBundleHandoff(FixtureCase):
             self.assertEqual(child.stdout.readline().strip(), 'READY')
             with mock.patch.dict(os.environ, {'CODEX_HOME':str(self.home/'.codex')}), \
                  mock.patch.object(runtime, 'BACKGROUND_BUNDLE', host_bundle.BundleIdentity(new)), \
-                 mock.patch.object(host_bundle, 'fast_installed', return_value=new), \
+                 mock.patch.object(host_bundle, 'background_installed', return_value=new), \
                  mock.patch.object(runtime, 'entry_argv', side_effect=entry), \
                  mock.patch.object(runtime, 'subprocess', process_api):
-                self.assertEqual(runtime._wake(queue), 'spawned')
+                self.assertEqual(runtime._wake(queue, background=True), 'spawned')
             self.assertEqual(child.wait(timeout=15), -15)
             wait_until(lambda: marker.exists() and not queue.pending(), timeout=30)
             self.assertEqual(json.loads(marker.read_text())['entry'], str(new/'entry'/'run.py'))
@@ -366,7 +403,7 @@ class HostBundleHandoff(FixtureCase):
             return child
 
         with mock.patch.object(runtime, 'BACKGROUND_BUNDLE', identity, create=True), \
-                mock.patch.object(host_bundle, 'fast_installed', return_value=new), \
+                mock.patch.object(host_bundle, 'background_installed', return_value=new), \
                 mock.patch.object(runtime, 'entry_argv', side_effect=entry), \
                 mock.patch.object(runtime.subprocess, 'Popen', side_effect=spawn):
             outcome = runtime.timer(queue, wake_once=lambda _: self.fail('old timer ran a due wake'),
@@ -395,7 +432,7 @@ class HostBundleHandoff(FixtureCase):
             'sys.path.insert(0,str(Path(__file__).resolve().parents[1]))\n'
             'from memvane.runtime import host_bundle\n'
             f'new=Path({str(new)!r})\n'
-            'host_bundle.fast_installed=lambda: new if new.is_dir() else None\n'
+            'host_bundle.background_installed=lambda: new if new.is_dir() else None\n'
             'host_bundle.entry_argv=lambda name,*args,**kw: [sys.executable,"-B",str(new/"entry"/"run.py"),name,*args]\n'
             'from memvane.runtime import runtime_work as r\n'
             'r.TIMER_CHUNK_SECONDS=.05; r.TIMER_MIN_SLEEP_SECONDS=.01\n'

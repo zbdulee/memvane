@@ -19,6 +19,7 @@ import time
 from memvane.kernel.memvane_version import version_key
 
 _RETIRE_CHECKS = {}
+_BACKGROUND_INVENTORY = {'until': 0.0, 'root': None}
 
 _SEGMENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z')
 
@@ -48,24 +49,28 @@ class BundleIdentity:
         except (OSError, ValueError):
             return False
 
-    def entry(self, name, *args, python=None, isolated=False):
-        return entry_argv(name, *args, python=python, isolated=isolated)
+    def entry(self, name, *args, python=None, isolated=False, background=False):
+        return entry_argv(name, *args, python=python, isolated=isolated, background=background)
 
     def process_version_counts(self):
         return process_version_counts()
 
-    def preferred(self):
+    def preferred_background(self):
+        return self.preferred(background=True)
+
+    def preferred(self, *, background=False):
         """Equal-version host copies may share a resident; older ones may not."""
         if not self.intact():
             return False
         if os.environ.get('MEMVANE_TEST_RUNTIME_ROOT'):
             return True
-        root = fast_installed()
+        root = background_installed() if background else fast_installed()
         if root is None:
             return True  # An unreadable inventory does not revoke an intact resident.
         try:
             other = version_key(_read_json(root / 'plugin.json', limit=65536).get('version'))
-            return self.version is not None and (other is None or self.version >= other)
+            return self.version is not None and (other is None or
+                (self.version == other if background else self.version >= other))
         except (OSError, ValueError, AttributeError, TypeError):
             return True  # A transient metadata read cannot revoke this intact bundle.
 
@@ -359,15 +364,14 @@ def fast_installed(*, home=None):
     claude = Path(os.environ.get('CLAUDE_CONFIG_DIR') or home / '.claude')
     found = []
     try:
+        from memvane.kernel.bundle_paths import plugin_root
+        own = plugin_root()
         for market in _codex_enabled_markets(codex):
             parent = codex / 'plugins' / 'cache' / market / 'memvane'
             _safe_node(parent, directory=True)
-            versions = list(parent.iterdir())
-            if len(versions) > 128:
-                continue
-            for version in versions:
-                item = _candidate(codex, market, version.name, 'codex')
-                if item is not None:
+            if own.parent == parent:
+                item = _candidate(codex, market, own.name, 'codex')
+                if item is not None and item[1] == own:
                     found.append(item)
     except FileNotFoundError:
         pass
@@ -394,15 +398,29 @@ def fast_installed(*, home=None):
         _inventory_unavailable('claude')
     return max(found, key=lambda item: (item[0], str(item[1])))[1] if found else None
 
-def entry_argv(name, *args, python=None, isolated=False):
+
+def background_installed():
+    """A background process may ask host CLIs, at most once per 30 seconds."""
+    now = time.monotonic()
+    if now >= _BACKGROUND_INVENTORY['until']:
+        try:
+            root = latest_installed()
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, UnicodeError, subprocess.TimeoutExpired):
+            root = None
+        _BACKGROUND_INVENTORY.update(root=root, until=time.monotonic() + 30)
+    return _BACKGROUND_INVENTORY['root']
+
+
+def entry_argv(name, *args, python=None, isolated=False, background=False):
     """Spawn from the newest known bundle, without host CLI calls on hooks."""
     from memvane.kernel.bundle_paths import plugin_root
     own = plugin_root()
-    root = None if os.environ.get('MEMVANE_TEST_RUNTIME_ROOT') else fast_installed()
+    root = (None if os.environ.get('MEMVANE_TEST_RUNTIME_ROOT') else
+            background_installed() if background else fast_installed())
     if root is not None:
         own_identity = BundleIdentity(own)
         other = BundleIdentity(root)
-        if own_identity.intact() and (other.version is None or
+        if not background and own_identity.intact() and (other.version is None or
                 (own_identity.version is not None and own_identity.version >= other.version)):
             root = own
     else:
@@ -541,18 +559,19 @@ def _old_helper(row, queue_root, current):
     return None
 
 
-def retire_old_helpers(queue_root, current):
+def retire_old_helpers(queue_root, current, *, background=False):
     """Ask only proved older timer/monitor owners to exit; never signal workers."""
     import signal
     queue_root = Path(queue_root)
-    if not current.intact() or not getattr(current, 'preferred', lambda: True)():
+    preferred = getattr(current, 'preferred', None)
+    if not current.intact() or not callable(preferred) or not preferred(background=background):
         return 0
     try:
-        chosen = fast_installed()
+        chosen = background_installed() if background else fast_installed()
         if chosen is None:
             return 0
         newest = version_key(_read_json(chosen / 'plugin.json', limit=65536).get('version'))
-        if newest is None or getattr(current, 'version', None) is None or current.version < newest:
+        if newest is None or getattr(current, 'version', None) is None or current.version != newest:
             return 0
     except (OSError, ValueError, TypeError, AttributeError, UnicodeError):
         return 0

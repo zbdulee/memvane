@@ -25,16 +25,17 @@ def parent_alive(fd):
     except OSError:return False
 
 
-def run(queue,*,coordinator=None,probe=runtime_work.sample,wake=runtime_work.wake,
+def run(queue,*,coordinator=None,probe=runtime_work.sample,wake=None,
         alive=lambda:True,wait=time.sleep,wall=time.time,lease_fd=None):
     controller=coordinator or Coordinator(queue.root)
+    wake = wake or (lambda: runtime_work.wake(background=True))
     fd=_lock(queue.root/'runtime-monitor.lock') if lease_fd is None else lease_fd
     samples=wakes=0
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return {'status':'busy','samples':0,'wakes':0}
         while alive():
-            if not BACKGROUND_BUNDLE.intact() or not BACKGROUND_BUNDLE.preferred():
+            if not BACKGROUND_BUNDLE.intact() or not getattr(BACKGROUND_BUNDLE, 'preferred_background', lambda: True)():
                 return {'status':'bundle_changed','samples':samples,'wakes':wakes}
             interval=INTERVAL
             try:
@@ -92,7 +93,7 @@ def start(root,*,spawn=None):
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return None
         read,write=os.pipe()
-        process=spawn(entry_argv('runtime-monitor',str(root),str(fd),str(read)),
+        process=spawn(entry_argv('runtime-monitor',str(root),str(fd),str(read),background=True),
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             close_fds=True,pass_fds=(fd,read),start_new_session=True)
         result=Handle(process,write);write=None;return result
