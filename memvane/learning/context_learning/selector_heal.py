@@ -163,17 +163,20 @@ def check_scope(state, policy, *, home=None):
     return row
 
 
-def rebind(state, *, home=None, deadline=None):
+def rebind(state, *, home=None, deadline=None, canonicalize=False):
     """Check the approved scope, then point the adapter anchor at the running one.
 
     Nothing runs before ``check_scope`` passes. A policy under an accepted
     learning profile is never rewritten (its acceptance covers the policy).
+    ``canonicalize`` pins an unaccepted enrollment to the current adapter
+    before its profile binds the installed path; companion-host reads keep
+    their existing anchor by default.
     """
     from memvane.kernel.atomic_rename import atomic_json
     policy = _policy(state)
     adapter = running_adapter()
     argv = policy['trainerArgv']
-    if argv[1] != str(adapter) and os.path.lexists(argv[1]):
+    if not canonicalize and argv[1] != str(adapter) and os.path.lexists(argv[1]):
         # Another host's installed copy of the same adapter (Claude and Codex
         # caches) already admits predictions: rewriting the anchor would only
         # invalidate the prepared evidence that the other host's worker then

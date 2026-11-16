@@ -38,15 +38,25 @@ class Fixture(unittest.TestCase):
     def read(self):
         return json.loads((self.state / selector_heal.POLICY).read_text())
 
-    def rebind(self, binding):
+    def rebind(self, binding, **kwargs):
         with patch.object(selector_heal, 'running_adapter', return_value=self.codex), \
                 patch.object(adapter_binding, 'inference_argv', side_effect=binding), \
                 patch.object(selector_heal, 'check_scope',
                              side_effect=lambda state, policy, home=None: self.scoped.append(policy)), \
                 patch.object(selector_heal, '_official', return_value=None):
-            return selector_heal.rebind(self.state, home=self.state)
+            return selector_heal.rebind(self.state, home=self.state, **kwargs)
 
 class RebindTests(Fixture):
+    def test_canonicalization_never_rewrites_an_accepted_profile(self):
+        profile = self.state / 'learning-profile.json'
+        profile.write_text('{}'); profile.chmod(0o600)
+        before = (self.state / selector_heal.POLICY).read_bytes()
+        with self.assertRaisesRegex(selector_heal.HealRefused, 'learning_profile_rebind_required'):
+            self.rebind(lambda *a, **k: self.fail('canonicalization must not keep the old anchor'),
+                        canonicalize=True)
+        self.assertEqual((self.state / selector_heal.POLICY).read_bytes(), before)
+        self.assertEqual(self.scoped, [])
+
     def test_identical_official_anchor_of_the_other_host_is_kept(self):
         before = (self.state / selector_heal.POLICY).read_bytes()
         policy, rebound = self.rebind(lambda argv, adapter, **kw: [argv[0], str(adapter), argv[2]])
