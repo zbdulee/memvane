@@ -11,6 +11,21 @@ from memvane.store.tests.support import FillCase
 
 
 class FillChecks(FillCase):
+    def test_head_bound_fill_plan_reuses_targets_until_head_changes(self):
+        store, _, handle, manifest, recipe, profile = self.configured(3)
+        with mock.patch.object(store, '_rows_open', wraps=store._rows_open) as rows:
+            first = store.fill_status(handle, manifest, recipe, profile)
+            second = store.fill_status(handle, manifest, recipe, profile)
+        self.assertEqual(first, second)
+        self.assertEqual(rows.call_count, 1)
+        changed = copy.deepcopy(manifest)
+        changed['members'][0]['display_title'] = 'new head title'
+        self.lexical(store, handle, changed)
+        with mock.patch.object(store, '_rows_open', wraps=store._rows_open) as rows:
+            fresh = store.fill_status(handle, changed, recipe, profile)
+        self.assertEqual(rows.call_count, 1)
+        self.assertNotEqual(first['job_id'], fresh['job_id'])
+
     def test_completed_prefix_skips_content_revalidation_after_new_head(self):
         from memvane.store.blob.blob_fill import ContentFiller
         store, _, handle, manifest, recipe, profile = self.configured(9)

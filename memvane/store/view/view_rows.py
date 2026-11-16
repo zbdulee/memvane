@@ -1213,8 +1213,7 @@ class RowsMixin:
     @profile_fill_plan
     def _rows_fill_plan(self, handle, recipe_id, profile_id):
         """Eligible head cards in path order and the head/spec-bound cursor of this view."""
-        from memvane.store.view.view_fill import JOB_SCHEMA
-        from memvane.store.view import fill_schema as fill_schema
+        from memvane.store.view.view_fill import JOB_SCHEMA, head_targets
         entry = self._check(handle)
         v.identifier(recipe_id); v.identifier(profile_id)
         saved = self._observe(entry)
@@ -1223,17 +1222,10 @@ class RowsMixin:
             head = self._rows_head_row(db, handle.view_id)
             if head.ordinal is None:
                 v.fail('view_preparing')
-            targets = []
-            for row in self._rows_open(db, handle.view_id, head.ordinal):
-                if row['eligible']:
-                    size = db.execute('SELECT byte_length FROM wiki_blobs WHERE blob_sha=?',
-                                      (row['blob_sha'],)).fetchone()[0]
-                    targets.append(dict(path=row['path'], blob_sha=row['blob_sha'], byte_length=size))
-            if len(targets) > fill_schema.MAX_TARGETS:
-                v.fail('fill_targets_too_large')
+            targets, targets_digest = head_targets(self, db, handle, head, recipe_id, profile_id)
             identity = dict(schema=JOB_SCHEMA + ':rows', incarnation=self._incarnation, view_id=handle.view_id,
                             head_ordinal=head.ordinal, gen_id=head.gen_id, recipe_id=recipe_id,
-                            profile_id=profile_id, targets=v.digest('memvane-fill-targets-v1', targets))
+                            profile_id=profile_id, targets=targets_digest)
             job = dict(job_id=v.digest(JOB_SCHEMA, identity), head_ordinal=head.ordinal,
                        target_count=len(targets))
             row = db.execute('SELECT job_id,head_ordinal,target_count,cursor FROM s_fill_cursors '

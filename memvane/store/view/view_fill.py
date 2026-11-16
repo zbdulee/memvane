@@ -72,6 +72,25 @@ def completed_prefix(store, targets, cursor, recipe_id, profile_id, deadline):
     return count
 
 
+def head_targets(store, db, handle, head, recipe_id, profile_id):
+    """Reuse immutable head targets on this store instance; cursor stays fresh."""
+    key = (handle.view_id, head.ordinal, head.gen_id, recipe_id, profile_id)
+    cached = getattr(store, '_fill_target_cache', None)
+    if cached is not None and cached[0] == key:
+        return [dict(row) for row in cached[1]], cached[2]
+    targets = []
+    for row in store._rows_open(db, handle.view_id, head.ordinal):
+        if row['eligible']:
+            size = db.execute('SELECT byte_length FROM wiki_blobs WHERE blob_sha=?',
+                              (row['blob_sha'],)).fetchone()[0]
+            targets.append(dict(path=row['path'], blob_sha=row['blob_sha'], byte_length=size))
+    if len(targets) > fill_schema.MAX_TARGETS:
+        v.fail('fill_targets_too_large')
+    digest = v.digest('memvane-fill-targets-v1', targets)
+    store._fill_target_cache = (key, tuple(dict(row) for row in targets), digest)
+    return targets, digest
+
+
 def _bounded(value, lower, upper, reason):
     if type(value) is not int or not lower <= value <= upper:
         v.fail(reason)
