@@ -242,7 +242,7 @@ class SelectedStore(FixtureCase):
         project.write_card('entities/alpha-copy.md', title='Alpha copy', body='North bridge closes at 22:00.\n',
                            sources=[note])
         project.commit()
-        build_install(self, project)
+        build_install(self, project).settle()
         with mock.patch.dict(os.environ, {'QMD_SYNC_STATE_DIR': str(self.home / 'scan-state'),
                                           'QMD_WIKI_DEDUP_LOG': str(self.tmp / 'wiki-dedup.log')}):
             result = dedup.run(str(project.root))
