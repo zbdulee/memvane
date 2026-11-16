@@ -45,6 +45,23 @@ class CheckoutMoved(Exception):
 class Schema3Recall(RecallInstallCase):
     CARDS = 2
 
+    def test_semantic_sources_and_kernel_statistics_reach_all_host_events(self):
+        self.install.provider.admit_queries()
+        for switch in ('on', 'off'):
+            with mock.patch.dict(os.environ, {'MEMVANE_VECTOR_ACCEL': switch}):
+                kernel = 'accelerate' if sys.platform == 'darwin' and switch != 'off' else 'python'
+                for host in HOSTS:
+                    with self.subTest(switch=switch, host=host):
+                        context, _err, event = self.recall(PROMPT, host)
+                        self.assertIn('zqheronx', context)
+                        self.assertEqual(event['semantic'], 'complete')
+                        self.assertEqual(event['vectorKernel'], kernel)
+                        self.assertGreater(event['vectorRows'], 0)
+                        self.assertGreater(event['vectorVerified'], 0)
+                        self.assertNotIn('semanticSources', event)
+                        for key in ('vectorLoadMs', 'vectorScanMs', 'vectorVerifyMs'):
+                            self.assertGreaterEqual(event[key], 0)
+
     def test_corrupt_vector_set_keeps_lexical_recall_and_requests_owner(self):
         self.install.provider.admit_queries()
         with closing(sqlite3.connect(self.install.state / 'store.sqlite')) as db, db:
@@ -72,6 +89,96 @@ class Schema3Recall(RecallInstallCase):
         notice = answer['hookSpecificOutput']['additionalContext']
         self.assertIn('임베딩 데이터가 손상돼 어휘 검색만 씁니다', notice)
         self.assertIn('restore → setup', notice)
+
+    def test_nonfinite_semantic_rows_keep_lexical_recall(self):
+        self.install.provider.admit_queries()
+        with closing(sqlite3.connect(self.install.state / 'store.sqlite')) as db, db:
+            trigger = db.execute("SELECT sql FROM sqlite_master WHERE name='vectors_update'").fetchone()[0]
+            db.execute('DROP TRIGGER vectors_update')
+            db.execute('UPDATE vectors SET embedding=?', (struct.pack('<ff', float('nan'), 1.),))
+            db.execute(trigger)
+        context, _err, event = self.recall(PROMPT)
+        self.assertIn('zqheronx', context)
+        self.assertEqual(event['semantic'], 'embedding_set_invalid')
+        self.assertEqual(event['outcome'], 'served')
+
+    def test_semantic_set_validation_errors_keep_lexical_selector_and_reason(self):
+        from memvane.store import api as store_api
+        from memvane.store.types import BlobStoreError
+        self.install.provider.admit_queries()
+        real_open = store_api.open_store
+        reasons = ('embedding_set_missing', 'embedding_input_mismatch',
+                   'embedding_dimension_mismatch', 'embedding_sequence_invalid',
+                   'vector_rows_mismatch')
+        for reason in reasons:
+            selected = []
+            def open_store(*args, **kwargs):
+                store = real_open(*args, **kwargs)
+                def failed(*_args, **_kwargs):
+                    raise BlobStoreError(reason)
+                store.search_exact = failed
+                return store
+            def select(pool, **_kwargs):
+                selected.extend(pool)
+                return {'reason': 'selected', 'final_results': pool[:1]}
+            with self.subTest(reason=reason), \
+                    mock.patch.object(store_api, 'open_store', side_effect=open_store), \
+                    mock.patch('memvane.learning.api.selector_prepared', return_value=True), \
+                    mock.patch('memvane.learning.api.select_published', side_effect=select):
+                context, _err, event = self.recall(PROMPT)
+                self.assertGreater(len(selected), 0)
+                self.assertIn('zqheronx', context)
+                self.assertIn('local Laya model selected these cards', context)
+                self.assertEqual(event['outcome'], 'served')
+                self.assertEqual(event['semantic'], 'embedding_set_invalid')
+                self.assertEqual(event['semanticReason'], reason)
+                self.assertEqual(event['vector_fallback'], 'selected_embedding_set_invalid')
+
+    def test_actual_input_sha_mismatch_preserves_lexical_in_both_vector_lanes(self):
+        self.install.provider.admit_queries()
+        with closing(sqlite3.connect(self.install.state / 'store.sqlite')) as db, db:
+            trigger = db.execute("SELECT sql FROM sqlite_master WHERE name='vectors_update'").fetchone()[0]
+            db.execute('DROP TRIGGER vectors_update')
+            db.execute('UPDATE vectors SET input_sha=?', ('0' * 64,))
+            db.execute(trigger)
+        for switch in ('on', 'off'):
+            with self.subTest(switch=switch), \
+                    mock.patch.dict(os.environ, {'MEMVANE_VECTOR_ACCEL': switch}):
+                context, _err, event = self.recall(PROMPT)
+                self.assertIn('zqheronx', context)
+                self.assertEqual(event['outcome'], 'served')
+                self.assertEqual(event['semantic'], 'embedding_set_invalid')
+                self.assertEqual(event['semanticReason'], 'embedding_input_mismatch')
+                expected = 'accelerate' if sys.platform == 'darwin' and switch == 'on' else 'python'
+                self.assertEqual(event['vectorKernel'], expected)
+        self.assertEqual([kind for kind, _target, _kw in self.wakes], ['laya-sync'])
+
+    def test_semantic_store_deadlines_keep_lexical_candidates_and_selector(self):
+        from contextlib import contextmanager
+        from memvane.journal import api as journal
+        from memvane.store.types import BlobStoreError
+        self.install.provider.admit_queries()
+        real_pin = journal.pin_schema3
+        for reason in ('fts_deadline_exceeded', 'reader_snapshot_deadline'):
+            error = (ValueError(reason) if reason == 'reader_snapshot_deadline'
+                     else BlobStoreError(reason))
+            @contextmanager
+            def pinned(*args, **kwargs):
+                with real_pin(*args, **kwargs) as (store, handle, pin):
+                    with mock.patch.object(store, 'search_exact', side_effect=error):
+                        yield store, handle, pin
+            selected = []
+            def select(pool, **_kwargs):
+                selected.extend(pool)
+                return {'reason': 'selected', 'final_results': pool[:1]}
+            with mock.patch.object(journal, 'pin_schema3', side_effect=pinned), \
+                    mock.patch('memvane.learning.api.selector_prepared', return_value=True), \
+                    mock.patch('memvane.learning.api.select_published', side_effect=select):
+                context, _err, event = self.recall(PROMPT)
+            self.assertGreater(len(selected), 0)
+            self.assertIn('zqheronx', context)
+            self.assertEqual(event['semantic'], 'deferred_deadline')
+            self.assertEqual(event['outcome'], 'served')
 
     def opened(self, call):
         _OPENED.append([])

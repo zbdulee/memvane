@@ -215,6 +215,23 @@ def _store(sample, config, root, state, compact_sources, current_corpus):
     return status
 
 
+def _capture_sources(sample, payload, host, decision):
+    """Join provenance to a private request without extending the 1.x sample."""
+    try:
+        sources = payload.get('_memvane_semantic_sources')
+        if not isinstance(sources, dict) or not sources:
+            return
+        candidates = [{'id_sha256': digest(row['candidate_id']), 'source': sources[row['candidate_id']]}
+                      for row in sample['candidates']]
+        if any(row['source'] not in ('store', 'python', 'lexical') for row in candidates):
+            return
+        from memvane.diagnostics.api import emit
+        emit('learning.capture.sources', outcome='recorded', decision=decision, host=host,
+             request_id=sample['request_id'], candidates=candidates)
+    except Exception:
+        pass  # Diagnostics cannot invalidate a durable capture.
+
+
 def observe_published(payload, config, project_root, pool, selected, *, host, decision):
     """Capture the verified Laya pool the local selector scored; no source reads.
 
@@ -286,6 +303,9 @@ def observe_published(payload, config, project_root, pool, selected, *, host, de
                     'candidate_limit': CAPTURE_POOL_LIMIT}
         sample = request(payload, rows, host=host, request_id=str(uuid.uuid4()),
                          sampling=sampling)
-        return _store(sample, config, root, state, compact_sources, current_corpus)
+        status = _store(sample, config, root, state, compact_sources, current_corpus)
+        if status == 'stored':
+            _capture_sources(sample, payload, host, decision)
+        return status
     except Exception:
         return 'capture_unavailable'

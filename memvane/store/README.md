@@ -9,6 +9,13 @@
 
 ## 공개 API (`api.py`)
 
+macOS exact semantic 검색은 `view/vector_accel.py`의 지연 로드 Accelerate
+커널과 `view/view_accel_search.py`의 대량 읽기를 사용한다. pin의 member만
+읽고 모든 행의 모양·유한성·norm, 상위 60장의 set·행 digest를 검증한다.
+최종 점수는 기존 Python 함수로 계산한다. 게시 시점에는 전체 set을 검증한다.
+`MEMVANE_VECTOR_ACCEL=off`나 커널 부재에서는 모든 set을 검증하는 Python
+경로와 기존 float 연산량 상한을 사용한다.
+
 다른 도메인은 `memvane.store.api`의 함수만 쓴다. `open_store`가 돌려준 열린 view store의 공개 메서드(`capture_view`, `head`, `pin_view`, `release`, `prepare_generation`, `publish_generation`, `ingest_attested_card`, `fill_view`, `fill_status`, `search_exact`, `vectors`, `close` 등)는 그대로 부른다. 그 밖에 store의 `_` 멤버나 store 테이블(`store_meta`, `worktrees`, `s_*`, `embedding_sets`, `chunk_sets` 등)이 필요한 읽기·쓰기는 아래 함수로 한다.
 
 - `application/store_ops.py` — 수명과 정체성(`observe_binding`: 열거나 만들고 워크트리 하나를 관측한 뒤 닫는다, `open_store`, `store_identity`), store 헤더·워크트리 행 읽기(`read_header`: store 파일을 직접 열어 한 query_only 스냅샷으로 `store_meta`와 워크트리 행을 읽고 `types.STORE_HEADER_KEYS` dict나 None을 돌려준다. `recover=True`는 hot journal을 rollback한다. 파일 정체 대조는 호출자가 앞뒤로 한다), pinned 읽기(`pinned_vector`, `vector_profile`, `eligible_members`, `worktree_wiki_root`), `skipPaths` 판정(`admitted_paths`).

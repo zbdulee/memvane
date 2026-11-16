@@ -351,6 +351,14 @@ class FillCase(GenerationCase):
 class VectorCase(FillCase):
     """``ready`` publishes the lexical head, fills it and publishes complete coverage."""
 
+    def setUp(self):
+        super().setUp()
+        # These baseline fixtures assert the Python float-work/digest contract.
+        # Native-path cases explicitly enable Accelerate after this setup.
+        env = mock.patch.dict(os.environ, {'MEMVANE_VECTOR_ACCEL': 'off'})
+        env.start()
+        self.addCleanup(env.stop)
+
     def publish(self, store, handle, manifest, recipe_id=None, profile_id=None):
         base = store.head(handle)
         vector_spec = None if recipe_id is None else dict(recipe_id=recipe_id, profile_id=profile_id)

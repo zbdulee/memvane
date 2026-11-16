@@ -77,13 +77,15 @@ class RecallAnswer:
     ``title_only_paths``, ``source_locations`` and ``allow_mixed_generation``
     and traces them with ``selection_fallback`` and ``vector_fallback``.
     ``capture`` is ``(settings, pool, chosen)`` for learning capture when a
-    selection ran, else None. ``own_view``: the linked worktree's own view
+    selection ran, else None. ``capture_sources`` maps candidate paths to
+    semantic sources for a separate diagnostic event, never learning rows.
+    ``own_view``: the linked worktree's own view
     answered inside a recall scope.
     """
 
     __slots__ = ('decision', 'rows', 'limit', 'ranking', 'title_only_paths',
                  'source_locations', 'allow_mixed_generation', 'selection_fallback',
-                 'vector_fallback', 'capture', 'own_view')
+                 'vector_fallback', 'capture', 'own_view', 'capture_sources')
 
     def __init__(self, decision, *, rows=(), limit=MAX_ROWS, ranking='hybrid_rrf',
                  title_only_paths=frozenset(), source_locations=None,
@@ -100,6 +102,7 @@ class RecallAnswer:
         self.vector_fallback = vector_fallback
         self.capture = capture
         self.own_view = own_view
+        self.capture_sources = {}
 
 KO_STOPWORDS = {
     "해줘", "해주세요", "해봐", "알려줘", "보여줘", "찾아줘",

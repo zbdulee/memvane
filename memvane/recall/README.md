@@ -9,3 +9,8 @@ recall은 선택 recall의 판정을 소유하고 평범한 결과 `RecallAnswer
 - `recall_scope.py` — 한 recall과 그 재시도가 공유하는 상태(journal epoch 하한, project root별 sync wake 1회, writer floor)와 provider owner wake.
 - `domain/rules.py` — 순수 규칙: lexical 질의·RRF 결합, 검증 pool(상위 15행), 답 상한(`topN`과 3 중 작은 값), selector 사유 판정. selector 사유 코드는 `learning.types`의 `SELECTOR_ANSWERS`·`SELECTOR_CANDIDATE_INVALID`를 쓴다.
 - `keywords.py`, `reader_dispatch.py` — 질의어 구성과 reader 질의.
+
+recall은 융합 후보별 `store`(Accelerate)·`python`·`lexical` 출처를 보관한다.
+host는 이 정보를 capture 입력과 함께 전달하고 learning은
+표본을 저장한 뒤 같은 `request_id`의 `learning.capture.sources` 진단 이벤트에
+후보 id의 SHA-256과 출처를 기록한다. 학습 표본과 compile 행의 모양은 유지한다.
