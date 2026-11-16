@@ -10,7 +10,8 @@ from unittest import mock
 root = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(root))
 real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
-with tempfile.TemporaryDirectory(prefix='memvane-resident-model-') as directory:
+short_temp = Path('/private/tmp') if Path('/private/tmp').is_dir() else Path('/tmp')
+with tempfile.TemporaryDirectory(prefix='mvsm-', dir=short_temp) as directory:
     home = Path(directory).resolve()
     os.environ.update(HOME=str(home), TMPDIR=str(home),
                       MEMVANE_TEST_RUNTIME_ROOT=str(home / 'runtime'),
