@@ -209,7 +209,7 @@ def verify_compatibility(probe, attestation, base_model_sha256):
 
 
 def attest_runtime(executable, adapter_path, model_dir, *, max_seconds=120,
-                   max_rss_mib=8192, temp_dir=None):
+                   max_rss_mib=8192, temp_dir=None, admission_peak_mib=None):
     """Run the real local synthetic Laya smoke before explicit runtime reuse.
 
     This prepares no runtime and writes only disposable owner-only temp files.
@@ -217,6 +217,7 @@ def attest_runtime(executable, adapter_path, model_dir, *, max_seconds=120,
     """
     from .adapter import model_identity
     from .local_cycle import LocalTrainer
+    from .resident import estimated_peak_mib
 
     probe = (probe_runtime(executable, temp_dir=temp_dir) if temp_dir is not None
              else probe_runtime(executable))
@@ -228,7 +229,8 @@ def attest_runtime(executable, adapter_path, model_dir, *, max_seconds=120,
     adapter_sha = _sha_file(adapter)
     model_sha = model_identity(model_dir)
     trainer = LocalTrainer([str(executable),str(adapter),str(model_dir)],
-        max_seconds=max_seconds,max_rss_mib=max_rss_mib,scratch_dir=temp_dir)
+        max_seconds=max_seconds,max_rss_mib=max_rss_mib,scratch_dir=temp_dir,
+        admission_peak_mib=estimated_peak_mib() if admission_peak_mib is None else admission_peak_mib)
     with tempfile.TemporaryDirectory(prefix='qmd-laya-compat-', dir=temp_dir) as tmp:
         root = Path(tmp)
         os.chmod(root,0o700)

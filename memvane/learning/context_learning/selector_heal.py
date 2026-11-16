@@ -223,9 +223,12 @@ def admitted(state, argv):
 def attest(state, policy):
     """The real synthetic attestation, written only when missing or stale."""
     from .local_cycle import VerifiedLayaTrainer
+    from .resident import estimated_peak_mib, load_footprint
+    peak = load_footprint(state, policy['trainerArgv'][2], _view(state))
     trainer = VerifiedLayaTrainer(policy['trainerArgv'], proof_cache_dir=state,
                                   max_seconds=PREPARE_SECONDS,
                                   max_rss_mib=policy['maxRssMib'],
+                                  admission_peak_mib=estimated_peak_mib(peak),
                                   deadline=time.monotonic() + PREPARE_SECONDS + 30)
     trainer._prepare('train', cwd=state)
 

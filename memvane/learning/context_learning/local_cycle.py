@@ -69,7 +69,8 @@ class LocalTrainer:
     Offline variables are advisory; the executable itself must be audited local code.
     """
     def __init__(self, argv, *, max_seconds=900, max_rss_mib=8192,
-                 pressure_probe=None, require_monitor=False, scratch_dir=None):
+                 pressure_probe=None, require_monitor=False, scratch_dir=None,
+                 admission_peak_mib=None):
         if not isinstance(argv, (tuple, list)) or not argv or len(argv) > 4 or any(not isinstance(x, str) or not x for x in argv):
             raise ValueError('invalid_trainer_command')
         executable = Path(argv[0]).resolve()
@@ -78,6 +79,9 @@ class LocalTrainer:
         if type(max_seconds) is not int or not 1 <= max_seconds <= 3600 or type(max_rss_mib) is not int or not 128 <= max_rss_mib <= 65536:
             raise ValueError('invalid_resource_budget')
         self.argv = tuple(argv); self.max_seconds = max_seconds; self.max_rss_mib = max_rss_mib
+        if admission_peak_mib is not None and (type(admission_peak_mib) is not int or not 1 <= admission_peak_mib <= 65536):
+            raise ValueError('invalid_resource_budget')
+        self.admission_peak_mib = admission_peak_mib
         if pressure_probe is not None and not callable(pressure_probe):
             raise ValueError('invalid_pressure_probe')
         self.pressure_probe = pressure_probe
@@ -124,7 +128,7 @@ class LocalTrainer:
         self._admission(cwd)
         from memvane.runtime.api import coordinator as Coordinator
         from .shared import resource_report
-        policy={'maxRssMib':self.max_rss_mib,'minAvailableMib':768,'maxLoadPerCpu':1}
+        policy={'maxRssMib':self.admission_peak_mib or self.max_rss_mib,'minAvailableMib':768,'maxLoadPerCpu':1}
         try:
             with Coordinator().step(policy,resource_report(policy,detailed=True),with_fd=True) as (_,fd):
                 return self._call(mode,request,result_path,cwd=cwd,boundary_coordinated=True,extra_fds=(fd,))
@@ -453,6 +457,8 @@ class VerifiedLayaTrainer(LocalTrainer):
                 from .runtime_setup import attest_runtime
                 options={'max_seconds':min(120,self.max_seconds),
                          'max_rss_mib':self.max_rss_mib}
+                if self.admission_peak_mib is not None:
+                    options['admission_peak_mib'] = self.admission_peak_mib
                 if self.isolated_temp_dir is not None:
                     options['temp_dir']=self.isolated_temp_dir
                 proof=attest_runtime(self.argv[0],self.argv[1],self.argv[2],**options)

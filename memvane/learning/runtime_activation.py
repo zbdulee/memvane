@@ -136,6 +136,20 @@ def activate(executable, model_dir):
 
 def ensure_pending(*, decision=None, project=None):
     try:
+        return _ensure_pending(decision=decision, project=project)
+    except ResourceDeferred as exc:
+        from memvane.diagnostics import api as diagnostics
+        report = exc.report if isinstance(exc.report, dict) else {}
+        admission = report.get('memory_admission') or {}
+        reserve, peak = admission.get('reserve_mib'), admission.get('required_additional_mib')
+        required = reserve + peak if type(reserve) in (int, float) and type(peak) in (int, float) else None
+        diagnostics.emit('learning.runtime.proof', outcome='deferred', decision=decision,
+                         reason=str(exc), detail=report.get('reason'), requiredMib=required)
+        raise
+
+
+def _ensure_pending(*, decision=None, project=None):
+    try:
         row = _pending()
     except (ValueError, UnicodeError):
         if not _discard_invalid_pending():
