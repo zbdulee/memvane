@@ -19,6 +19,29 @@ _PROVIDER_ERRORS=frozenset(('provider_unavailable','provider_identity_mismatch',
     'provider_artifact_hash_mismatch','provider_model_not_gguf','vector_profile_mismatch'))
 
 
+def _fused_sources(lexical, nearest, timings):
+    from memvane.recall.domain.rules import _fuse_verified_lists
+    lists = lexical + ([] if nearest is None else [nearest])
+    rows = _fuse_verified_lists(lists, max_rows=15) if any(lists) else []
+    if timings is not None:
+        semantic = {row['path'] for row in nearest or []}
+        timings['semanticSources'] = {row['path']: timings.get('vectorSource', 'python')
+                                     if row['path'] in semantic else 'lexical' for row in rows}
+    return rows
+
+
+def _semantic_error_status(exc):
+    from memvane.store.types import DEFERRED
+    reason = getattr(exc, 'reason', str(exc))
+    if reason in ('embedding_set_invalid', 'embedding_values_invalid'):
+        return 'embedding_set_invalid'
+    if reason in ('fts_deadline_exceeded', 'reader_snapshot_deadline'):
+        return DEFERRED['vector_deadline_exceeded']
+    if reason not in DEFERRED:
+        raise exc
+    return DEFERRED[reason]
+
+
 
 
 def _approved_profile_matches(candidate, proof):
@@ -227,10 +250,9 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
             raise ValueError('reader_vector_caller_unproved')
         deadline=min(deadline,valid[-1][6])
     from memvane.recall.types import HYBRID_LIST_LIMIT
-    from memvane.recall.domain.rules import _fuse_verified_lists, _hybrid_fts_queries, _fail
+    from memvane.recall.domain.rules import _hybrid_fts_queries, _fail
     from memvane.route.api import wiki_index_roots
     from memvane.store.types import BlobStoreError
-    from memvane.store.types import DEFERRED
     from memvane.store import api as store_api
     queries=[query for query in _hybrid_fts_queries(
         prompt,tuple(decision['recallSettings'].get('lexicalPatterns',())) ) if query]
@@ -303,18 +325,13 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                                                       max_float_work=6000000,
                                                       deadline_seconds=min(1.0, remaining), timings=timings,
                                                       preferred_paths=preferred))
-                except BlobStoreError as exc:
-                    if exc.reason == 'embedding_set_invalid':
-                        status = 'embedding_set_invalid'
-                    elif exc.reason not in DEFERRED:
-                        raise
-                    else:
-                        status=DEFERRED[exc.reason]
+                except (BlobStoreError, ValueError) as exc:
+                    status = _semantic_error_status(exc)
                 finally:
                     if timings is not None:
                         timings['semanticMs'] = round((time.monotonic() - started) * 1000, 3)
 
-            rows = _fuse_verified_lists(lexical + ([] if nearest is None else [nearest]), max_rows=15) if any(lexical) or nearest else []
+            rows = _fused_sources(lexical, nearest, timings)
             started = time.monotonic()
             try:
                 spans = _card_spans(store, pin, rows, name, status, deadline)

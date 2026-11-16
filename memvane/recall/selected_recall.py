@@ -18,13 +18,20 @@ def _fail(code: str):
     raise HostResponseError(code)
 
 
+def _search_trace(trace, timings):
+    """Keep candidate paths off the bounded recall event; capture retains them."""
+    sources = timings.pop('semanticSources', {})
+    trace.fields(**timings)
+    if timings.get('vectorKernelUnavailable'):
+        trace.note('laya_vector_kernel_unavailable')
+    return sources
+
+
 def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline, main_proof,
                          trace, linked=None):
     """Recall from a journal-selected schema3 view; no v6 store or source file is opened.
 
-    Settings, admission, provider and vector-fallback rules are the v6
-    recall's. The query vector, when the sealed view has vectors and a warm
-    provider answers, is bound to this endpoint by ``approved_query_vector``.
+    ``approved_query_vector`` binds a warm provider's query vector to this endpoint.
 
     ``linked`` reads the linked worktree's own view. A view with no
     published head yet (a first-seen worktree or branch) answers with no
@@ -98,7 +105,7 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
                         deadline=deadline, snapshot=None, decision=decision, provider=provider,
                         authority=endpoint, linked=linked, timings=timings)
                 finally:
-                    trace.fields(**timings)
+                    semantic_sources = _search_trace(trace, timings)
                 break
             except Exception as exc:
                 # Design 5.1/5.2: a cold view, or a checkout that moved twice
@@ -162,12 +169,14 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
         with reader.pin_schema3(record, deadline=deadline, linked=linked,
                                  pin_view=False) as (_store, _handle, head):
             return head['gen_id'] == result.data_generation
-    return _serve_verified_rows(
+    answer = _serve_verified_rows(
         decision, settings, prompt, list(result.rows), top_n=top_n,
         title_only=result.title_only, locations=dict(result.source_locations),
         generation=result.data_generation, still_current=still_current,
         vector_fallback=vector_fallback, allow_mixed_generation=False, trace=trace,
         own_view=own_view)
+    answer.capture_sources = semantic_sources
+    return answer
 
 
 _RESETTLE_PENDING = 'reader_settings_resealing'

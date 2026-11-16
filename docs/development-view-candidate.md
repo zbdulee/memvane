@@ -169,9 +169,24 @@ cosine을 계산한 최댓값이 카드 점수다. 점수 내림차순, 동점�
 오름차순이다. ANN이나 일부 chunk 절삭을 사용하지 않는다.
 
 view·eligibility·path 필터는 연산량 계산과 scoring·top-K 전에 적용한다.
-`max_float_work`는 양의 정수이며 기본 4,000,000이다. 연산량은 필터를 통과한
-각 path의 `chunk_count × dimension` 합계로 계산한다. 같은 blob을 참조하는 여러
-path도 각각 예산에 포함하며 카드 수 상한으로 해석하지 않는다.
+macOS의 Accelerate 경로는 pin의 member vector를 store에서 대량으로 읽는다.
+상한은 중복 blob을 한 번씩 센 40,000 vector와 입력 128 MiB다. 4,096행마다
+deadline을 확인하며 float32 바이트를 double로 넓혀 chunk별 cosine을 계산한다.
+모든 행의 개수·seq·길이·유한성·양의 norm을 확인한다. 상위 60장(요청 limit가
+더 크면 limit장)의 set·행 digest를 store에서 전체 검증하고 기존 Python
+함수로 다시 채점한다. 나머지 set의 digest 검증은 게시 봉인에 맡긴다.
+별도 파일·캐시·resident 요청은 없다.
+
+`MEMVANE_VECTOR_ACCEL=off`, 비-macOS, 라이브러리 로드·자기 시험 실패에서는
+순수 Python 경로를 쓴다. `max_float_work`는 이 경로의 양의 정수 상한이며
+기본 4,000,000이다. 필터를 통과한 고유 blob의 `chunk_count × dimension`
+합계를 계산하고 모든 set·행 digest를 검증한다.
+
+recall의 semantic 단계는 최대 1초이며 상한 초과·시간 초과에도 lexical
+후보와 selector를 유지한다. recall 이벤트의 `vectorKernel`·`vectorSource`,
+`vectorRows`·`vectorVerified`, `vectorLoadMs`·`vectorScanMs`·`vectorVerifyMs`가
+사용 경로와 비용을 나타낸다. 기존 `vectorReadMs`·`vectorUnpackMs`·`vectorDotMs`도
+함께 기록한다.
 
 `search_hybrid`는 같은 pin에서 lexical·semantic의 정렬된 두 목록을 반환하며
 순위 융합을 하지 않는다. `profile_id=None`이면 pin에 봉인된 profile을 사용한다.
