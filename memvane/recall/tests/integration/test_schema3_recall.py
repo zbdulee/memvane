@@ -173,6 +173,16 @@ class Schema3Recall(RecallInstallCase):
         self.assertNotIn('serving lexical results', err)
         self.assertEqual(self.wakes, [])
 
+    def test_recall_event_records_stage_times_without_prompt_or_body(self):
+        self.install.provider.admit_queries()
+        context, _err, event = self.recall(PROMPT)
+        self.assertTrue(context)
+        for field in ('routeProofMs', 'queryEmbeddingMs', 'lexicalMs', 'semanticMs', 'selectorMs', 'renderMs'):
+            self.assertIsInstance(event.get(field), (int, float), field)
+            self.assertGreaterEqual(event[field], 0)
+        self.assertNotIn(PROMPT, json.dumps(event))
+        self.assertNotIn(NOTE, json.dumps(event))
+
     def test_a_cold_provider_serves_lexical_rows_and_wakes_the_owner_once(self):
         self.install.provider.admit_queries()
         self.install.provider.answer_queries('provider_unavailable')

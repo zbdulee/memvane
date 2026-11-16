@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import time
 
 from memvane.recall.types import HostResponseError, RecallAnswer
 
@@ -91,7 +92,11 @@ def _serve_verified_rows(decision, settings, prompt, rows, *, top_n, title_only,
     ``still_current(chosen)``
     is the store's own proof/view recheck after selection.
     """
-    chosen, reason, fallback = _select_verified_cards(decision, settings, prompt, rows, trace)
+    started = time.monotonic()
+    try:
+        chosen, reason, fallback = _select_verified_cards(decision, settings, prompt, rows, trace)
+    finally:
+        trace.fields(selectorMs=round((time.monotonic() - started) * 1000, 3))
     trace.fields(selection=reason, candidates=len(rows), generation=generation)
     from memvane.recall.domain.rules import limit_selected, selection_action
     chosen, answer_limit = limit_selected(chosen, top_n)

@@ -764,6 +764,14 @@ def _endpoint_answer(host: str, payload: dict, *, cwd: str, route_decision=None,
 
 def _render_answer(host: str, payload: dict, answer) -> dict:
     """The host hook output of recall's answer: learning capture, context and card trace."""
+    started = time.monotonic()
+    try:
+        return _render_answer_timed(host, payload, answer)
+    finally:
+        _trace_fields(renderMs=round((time.monotonic() - started) * 1000, 3))
+
+
+def _render_answer_timed(host: str, payload: dict, answer) -> dict:
     if answer.capture is not None:
         _set_learning_capture((host, answer.decision, payload) + tuple(answer.capture))
     if not answer.rows:
@@ -989,13 +997,23 @@ def _session_health_notice(decision, notice, host, payload):
     return notice
 
 
+def _timed_route_proof(decision, action):
+    from memvane.journal.api import verify_selected_route
+    started = time.monotonic()
+    try:
+        return verify_selected_route(decision)
+    finally:
+        if action == 'recall':
+            _trace_fields(routeProofMs=round((time.monotonic() - started) * 1000, 3))
+
+
 def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
     if decision.get('state') == 'worktree':
         return _serve_worktree(action, host, decision, payload)
     if decision.get('routeSchema') == 'memvane-route-v4' and not _major_allowed(decision):
         return _major_mismatch_response(action, host)
     from memvane.journal.api import verify_selected_route
-    proof = verify_selected_route(decision)
+    proof = _timed_route_proof(decision, action)
     response = _provider_recovery(action, host, decision, proof, payload)
     if response is not None:return response
     # Failure must not reach QMD.
@@ -1301,7 +1319,7 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
         _fail('worktree_route_invalid')
     if main.get('routeSchema') == 'memvane-route-v4' and not _major_allowed(main):
         return _major_mismatch_response(action, host)
-    proof = recheck(main)
+    proof = _timed_route_proof(main, action)
     response = _provider_recovery(action, host, main, proof, payload)
     if response is not None:return response
     if proof.get('productRouteAllowed') is not True:

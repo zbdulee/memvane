@@ -10,6 +10,19 @@ from memvane.diagnostics import event_log
 
 
 class DiagnosticRecordTests(FixtureCase):
+    def test_logs_summary_reports_latency_semantic_and_stage_medians(self):
+        import subprocess
+        import sys
+        for ms, semantic in ((100, 'complete'), (200, 'provider_absent'), (300, 'complete')):
+            self.assertTrue(api.emit('recall', outcome='served', state_root=self.state, ms=ms,
+                                     semantic=semantic, lexicalMs=ms / 10, selectorMs=1))
+        script = Path(__file__).resolve().parents[4] / 'skills' / 'logs' / 'scripts' / 'logs.py'
+        result = subprocess.run([sys.executable, '-B', str(script), '--state-root', str(self.state)],
+                                text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('recall p50=200ms p95=300ms', result.stdout)
+        self.assertIn('semantic=2/3', result.stdout)
+        self.assertIn('lexical=20ms', result.stdout)
     def test_build_progress_reads_only_a_bounded_event_window(self):
         with patch.object(event_log, 'read', return_value=[]) as read:
             self.assertEqual(api.build_progress_events(self.state), [])

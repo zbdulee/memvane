@@ -80,17 +80,25 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
     with ExitStack() as stack:
         vector = None
         if provider is not None and not vector_off and not unsealed:
-            vector = stack.enter_context(dispatch.approved_query_vector(
-                authority=endpoint, snapshot=None, decision=decision, provider=provider,
-                prompt=prompt, deadline=deadline))
+            started = time.monotonic()
+            try:
+                vector = stack.enter_context(dispatch.approved_query_vector(
+                    authority=endpoint, snapshot=None, decision=decision, provider=provider,
+                    prompt=prompt, deadline=deadline))
+            finally:
+                trace.fields(queryEmbeddingMs=round((time.monotonic() - started) * 1000, 3))
             if vector is None and not vector_off:
                 vector_off.append('provider_unavailable')
         for attempt in range(2):
             try:
-                result = dispatch.query_endpoint(
-                    endpoint, checkout=project, prompt=prompt, query_vector=vector,
-                    deadline=deadline, snapshot=None, decision=decision, provider=provider,
-                    authority=endpoint, linked=linked)
+                timings = {}
+                try:
+                    result = dispatch.query_endpoint(
+                        endpoint, checkout=project, prompt=prompt, query_vector=vector,
+                        deadline=deadline, snapshot=None, decision=decision, provider=provider,
+                        authority=endpoint, linked=linked, timings=timings)
+                finally:
+                    trace.fields(**timings)
                 break
             except Exception as exc:
                 # Design 5.1/5.2: a cold view, or a checkout that moved twice
