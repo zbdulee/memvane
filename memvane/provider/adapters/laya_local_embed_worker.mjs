@@ -3,7 +3,10 @@
 import {readFileSync, chmodSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {pathToFileURL} from 'node:url';
+import {availableParallelism} from 'node:os';
 import {chunkDocumentByTokens, extractQmdMarkdownTitle} from './laya_qmd_chunking.mjs';
+
+export const EMBEDDING_IDENTITY = {"pooling":"model-default","normalization":"none","maxTokens":2048};
 
 function validConfig(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) &&
@@ -25,13 +28,12 @@ function validRequest(value) {
 async function load(config) {
   const {getLlama} = await import(pathToFileURL(config.moduleEntryPath).href);
   if (typeof getLlama !== 'function') throw Error('provider_module_invalid');
-  // Installed QMD may ship only a Metal prebuilt. gpuLayers:0 keeps model
-  // layers on CPU while the packaged binding avoids a new native build.
+  const threads = Math.max(1, availableParallelism());
   const llama = await getLlama({gpu: 'auto', build: 'never', skipDownload: true,
-                                maxThreads: 1, progressLogs: false});
-  const model = await llama.loadModel({modelPath: config.modelPath, gpuLayers: 0});
-  const contextSize = Math.min(2048, model.trainContextSize || 2048);
-  const context = await model.createEmbeddingContext({contextSize, threads: 1});
+                                maxThreads: threads, progressLogs: false});
+  const model = await llama.loadModel({modelPath: config.modelPath, gpuLayers: 'auto'});
+  const contextSize = Math.min(EMBEDDING_IDENTITY.maxTokens, model.trainContextSize || EMBEDDING_IDENTITY.maxTokens);
+  const context = await model.createEmbeddingContext({contextSize, threads});
   return {llama, model, context, contextSize};
 }
 

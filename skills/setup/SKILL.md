@@ -72,3 +72,5 @@ For an explicitly requested profile, run `plan-learning-profile --project "$PROJ
 Only on acceptance of that exact proposal, use `activate-learning-profile` with identical options plus `--accepted-learning-profile` equal to its `proposalSha256`. Never infer acceptance from the recommendation, onboarding approval, a prior train/evaluate grant or live selection. An interrupted profile activation resumes with the identical accepted options; changed scope/expiry/settings require review. Report selected, waiting, deferred, blocked, staged and applied states separately. A selected profile is not evidence that real training, model replacement or host-hook operation passed.
 
 `update` refreshes an already selected index; it does not replace this setup flow. Never activate a teacher, private checkpoint, or operating plugin hook as a side effect of preparing a runtime.
+
+For updates, execution-only provider or worker changes are reattested by the background sync owner while retaining the existing index. If the embedding identity changes or cannot be verified, restore and onboard again.

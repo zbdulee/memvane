@@ -517,7 +517,7 @@ export async function getLlama(opts) {
     async loadModel(modelOpts) { seen.modelOpts = modelOpts; return {
       trainContextSize: 2048,
       tokenize: () => new Uint32Array(3),
-      async createEmbeddingContext() { return {
+      async createEmbeddingContext(opts) { seen.contextOpts = opts; return {
         async getEmbeddingFor(s) { seen.embedded.push(s); return {vector:[1,0]}; },
         async dispose() {} }; },
       async dispose() { process.stderr.write(JSON.stringify(seen)); }
@@ -541,8 +541,9 @@ export async function getLlama(opts) {
             self.assertEqual(seen['opts']['build'], 'never')
             self.assertTrue(seen['opts']['skipDownload'])
             self.assertEqual(seen['opts']['gpu'], 'auto')
-            self.assertEqual(seen['opts']['maxThreads'], 1)
-            self.assertEqual(seen['modelOpts']['gpuLayers'], 0)
+            self.assertGreaterEqual(seen['opts']['maxThreads'], 1)
+            self.assertEqual(seen['contextOpts']['threads'], seen['opts']['maxThreads'])
+            self.assertEqual(seen['modelOpts']['gpuLayers'], 'auto')
             self.assertEqual(seen['embedded'], [expected])
         request = {'kind': 'document_chunks', 'text': '# T\n' + 'z' * 3000,
                    'title': None, 'path': 'docs/T.md', 'modelPath': str(self.model),
@@ -559,8 +560,9 @@ export async function getLlama(opts) {
         seen = json.loads(result.stderr)
         self.assertTrue(seen['opts']['skipDownload'])
         self.assertEqual(seen['opts']['gpu'], 'auto')
-        self.assertEqual(seen['opts']['maxThreads'], 1)
-        self.assertEqual(seen['modelOpts']['gpuLayers'], 0)
+        self.assertGreaterEqual(seen['opts']['maxThreads'], 1)
+        self.assertEqual(seen['contextOpts']['threads'], seen['opts']['maxThreads'])
+        self.assertEqual(seen['modelOpts']['gpuLayers'], 'auto')
 
 
 if __name__ == '__main__':

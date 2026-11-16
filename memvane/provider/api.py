@@ -136,3 +136,28 @@ def runtime_file_sha256(path):
     value = digest(path, _hash_file, cache, 'provider-sha256')
     cache.flush()
     return value
+
+
+def reattestation_check(state, manifest):
+    from memvane.provider.adapters.reattest import check
+    return check(state, manifest)
+
+
+def reattestation_current(manifest):
+    from memvane.provider.adapters.reattest import _current
+    return _current(manifest)
+
+
+def reattestation_valid(state, original, current, identity):
+    from memvane.provider.adapters.reattest import valid
+    return valid(state, original, current, identity)
+
+
+def reattestation_update(state, manifest):
+    from memvane.provider.adapters.reattest import update
+    return update(state, manifest)
+
+
+def reattestation_differences(state, manifest):
+    from memvane.provider.adapters.reattest import differences
+    return differences(state, manifest)

@@ -24,7 +24,7 @@
 - attestation `providerRelativePath`와 onboarding artifact sha map에 기록되는 provider 파일 상대 경로(`memvane/provider/adapters/local_embed_provider.py`·`laya_local_embed_worker.mjs`)와 접두사 `memvane/provider/adapters/`. 정의는 `memvane/kernel/bundle_paths.py` 한 곳이다.
 - compile intent(`<install state root>/provenance-intents/`)의 필수 키 집합(`kind`·`viewId`·`targetPath`·`cardSha`·`expectedTargetHash`·`sourceFingerprints`·`sourceSpans`·`verifiedMode`·`verifyEngine`·`producingEngine`·`verdict_digest`·`result_digest`), 이름의 id 입력, 결과 접미사(`.consumed`·`.rejected`·`.superseded`). 추가 키는 허용한다: consumer는 필수 키만 읽고 나머지는 무시하며, `result_digest`는 필수 키로만 계산한다. 한 호스트의 verify worker가 쓴 intent를 다른 1.x 호스트의 sync가 소비한다.
 
-보호된 provider·worker 파일이나 `locks/`를 변경하는 1.x 릴리스는 모든 프로젝트의 재빌드가 필요하다.
+임베딩 정체성(모델·토크나이저·chunker·차원·pooling·정규화·최대 토큰 길이)이 바뀌면 재빌드가 필요하다. 실행 방식만 바뀌면 백그라운드 sync owner가 정체성을 확인하고 재봉인한다.
 
 - `package.json` — project/npm version
 - `plugin.json` — root AGY/Gemini plugin metadata

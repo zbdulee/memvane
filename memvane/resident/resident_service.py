@@ -702,17 +702,12 @@ def default_admit():
     return Coordinator().check(EMBED_POLICY, resource_report(EMBED_POLICY, detailed=True))['ready']
 
 
-def default_start_worker(manifest, admit):
-    from memvane.provider.api import hash_file as _hash_file
-    from memvane.provider.api import start_owned_embed_service
+def default_start_worker(manifest, admit, *, execution_state=None):
     if not BACKGROUND_BUNDLE.preferred():
         raise _deferred('laya_service_bundle_changed')
-    provider, worker = bundle_file(PROVIDER_RELATIVE_PATH), bundle_file(WORKER_RELATIVE_PATH)
-    if (_hash_file(str(provider)) != manifest['providerArtifactSha256']
-            or _hash_file(str(worker)) != manifest['workerSha256']):
-        _fail('provider_attestation_invalid')
-    local = {**manifest, 'providerPath': str(provider), 'workerPath': str(worker)}
-    return start_owned_embed_service(local, admit=admit)
+    from memvane.resident.embed_resident import start_attested_worker
+    return start_attested_worker(manifest, admit, execution_state=execution_state,
+        provider=bundle_file(PROVIDER_RELATIVE_PATH), worker=bundle_file(WORKER_RELATIVE_PATH))
 
 
 class Service:
@@ -1393,8 +1388,12 @@ class Service:
         try:
             if reason is not None:
                 raise _deferred('laya_service_resource_deferred')
-            handle = self.start_worker(dict(manifest, serviceSocketPath=worker.socket_path),
-                                       self.admit)
+            if self.start_worker is default_start_worker:
+                handle = self.start_worker(dict(manifest, serviceSocketPath=worker.socket_path),
+                                           self.admit, execution_state=Path(decision['journalPath']).parent)
+            else:
+                handle = self.start_worker(dict(manifest, serviceSocketPath=worker.socket_path),
+                                           self.admit)
         except Exception as exc:
             code = str(exc)
             if code in ('provider_admission_deferred', 'laya_service_resource_deferred') or \

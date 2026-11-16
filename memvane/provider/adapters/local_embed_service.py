@@ -130,7 +130,7 @@ def _valid_lock_file(info):
             and not info.st_mode & 0o077)
 
 
-def start_owned_embed_service(manifest, *, admit, startup_timeout_s=15):
+def start_owned_embed_service(manifest, *, admit, startup_timeout_s=15, execution_state=None):
     """Load once after owner admission; return a handle that owns its process.
 
     The callback is invoked after exact artifact verification and before model
@@ -142,7 +142,21 @@ def start_owned_embed_service(manifest, *, admit, startup_timeout_s=15):
     provider = ReviewedLocalQmdProvider(manifest)
     socket_path = provider.manifest['serviceSocketPath']
     _private_parent(socket_path)
-    provider._verify_artifacts()
+    if execution_state is None:
+        provider._verify_artifacts()
+    else:
+        from memvane.provider.adapters.reattest import authorize
+        try:
+            current = authorize(execution_state, manifest)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            raise IndexContractError('provider_artifact_hash_mismatch') from exc
+        original = provider.manifest
+        try:
+            provider.manifest = {**original, 'workerSha256': current['worker'],
+                                 'providerArtifactSha256': current['provider']}
+            provider._verify_artifacts()
+        finally:
+            provider.manifest = original
     lock_path = socket_path + '.lock'
     try:
         lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)

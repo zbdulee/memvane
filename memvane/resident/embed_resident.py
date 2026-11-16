@@ -371,3 +371,17 @@ def _owner_identity(decision, proof):
     if any(decision.get(key) is None for key in keys):
         raise IndexContractError('provider_owner_identity_invalid')
     return tuple(decision[key] for key in keys) + (proof['providerManifest'],)
+
+
+def start_attested_worker(manifest, admit, *, execution_state, provider, worker):
+    """Start only the exact attested or independently reattested artifacts."""
+    from memvane.kernel.errors import IndexContractError
+    from memvane.provider import api as provider_api
+    if (provider_api.hash_file(str(provider)) != manifest['providerArtifactSha256']
+            or provider_api.hash_file(str(worker)) != manifest['workerSha256']):
+        if execution_state is None or not provider_api.reattestation_check(execution_state, manifest):
+            raise IndexContractError('provider_attestation_invalid')
+    local = {**manifest, 'providerPath': str(provider), 'workerPath': str(worker)}
+    if execution_state is None:
+        return provider_api.start_owned_embed_service(local, admit=admit)
+    return provider_api.start_owned_embed_service(local, admit=admit, execution_state=execution_state)

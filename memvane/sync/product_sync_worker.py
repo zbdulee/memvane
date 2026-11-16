@@ -275,8 +275,53 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
         return _deferred(exc)
 
 
+def _prepare_provider_reattest(project):
+    """Reattest under the sync owner, after proving the selected installation."""
+    from memvane.provider.api import fixture_port
+    if fixture_port() is not None:
+        return
+    from memvane.journal.api import verify_selected_route
+    from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
+    from memvane.provider import api as reattest
+    from memvane.diagnostics import api as diagnostics
+    decision = select_route(str(project), action='update')
+    if decision.get('state') != 'candidate':
+        return
+    proof = verify_selected_route(decision)
+    state = Path(proof['journalPath']).parent
+    require_cached_plugin_for_live_write(state)
+    from memvane.kernel.memvane_version import writer_floor_allows
+    if not writer_floor_allows(proof['writerFloor']):
+        raise IndexContractError('writer_floor')
+    with sync_owner(Path(decision['storePath']), wait=True) as owner:
+        if owner is None:
+            raise ResourceDeferred('owner_busy')
+        if verify_selected_route(decision) != proof:
+            raise IndexContractError('selected_proof_changed')
+        manifest = proof['providerManifest']
+        original = {'worker': manifest['workerSha256'], 'provider': manifest['providerArtifactSha256']}
+        try:
+            current, identity = reattest.reattestation_current(manifest)
+            if reattest.reattestation_valid(state, original, current, identity):
+                return
+            reattest.reattestation_update(state, manifest)
+            changed = [key for key in ('provider', 'worker') if original[key] != current[key]]
+            diagnostics.emit('provider.reattest', outcome='accepted', decision=decision, changed=changed)
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            try:
+                changed = reattest.reattestation_differences(state, manifest) or ['manifest']
+            except (ValueError, KeyError, TypeError, OSError):
+                changed = ['manifest']
+            diagnostics.emit('provider.reattest', outcome='rejected', decision=decision,
+                             reason=str(exc), changed=changed)
+            # Existing refusal path remains authoritative.
+            if not proof.get('providerAvailable'):
+                raise IndexContractError('provider_identity_changed') from exc
+
+
 def _run_sync(project, *, coordinator=None, report=None, start_service=start_owned_embed_service):
     try:
+        _prepare_provider_reattest(project)
         decision, proof = _selected(project, owner_wait=True)
     except ResourceDeferred as exc:
         return _deferred(exc)
