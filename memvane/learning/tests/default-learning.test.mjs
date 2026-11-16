@@ -9,6 +9,7 @@ test('default learning enrollment and selector maintenance', { timeout: 300000 }
     const result = spawnSync('python3', ['-B', '-m', 'unittest', '-v',
       'memvane.learning.tests.integration.test_default_learning',
       'memvane.learning.tests.integration.test_selector_maintenance',
+      'memvane.learning.tests.unit.test_runtime_activation_entry',
       'memvane.learning.tests.integration.test_context_learning_profile',
       'memvane.learning.tests.integration.test_context_learning_project_worker'],
     { cwd: process.cwd(), encoding: 'utf8', timeout: 290000, env: fixtureEnv(fixture) });

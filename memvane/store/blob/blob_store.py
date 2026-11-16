@@ -864,16 +864,17 @@ class BlobStore:
                 v.fail('chunk_missing')
             return inputs[seq]
 
-    def _vectors(self, blob, recipe_id, profile_id):
+    def _vectors(self, blob, recipe_id, profile_id, *, saved=None):
         spec = self._profile(profile_id)
         inputs = self._inputs(blob, recipe_id, profile_id)
         head = self._db.execute('SELECT * FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
                                 (blob, recipe_id, profile_id)).fetchone()
         if head is None:
             v.fail('embedding_set_missing')
-        saved = list(self._db.execute(
-            'SELECT seq,input_sha,embedding,provenance_digest FROM vectors '
-            'WHERE blob_sha=? AND recipe_id=? AND profile_id=? ORDER BY seq', (blob, recipe_id, profile_id)))
+        if saved is None:
+            saved = list(self._db.execute(
+                'SELECT seq,input_sha,embedding,provenance_digest FROM vectors '
+                'WHERE blob_sha=? AND recipe_id=? AND profile_id=? ORDER BY seq', (blob, recipe_id, profile_id)))
         rows = v.embedding_rows([{k: row[k] for k in ('seq', 'input_sha', 'embedding')} for row in saved],
                                 spec['dimension'], inputs)
         if (head['chunk_count'] != len(rows) or head['set_digest'] != v.embedding_digest(blob, recipe_id, profile_id, rows)

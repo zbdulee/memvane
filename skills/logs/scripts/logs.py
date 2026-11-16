@@ -24,6 +24,8 @@ terminal. Stored bytes are never changed.
 from __future__ import annotations
 
 import argparse
+import math
+import statistics
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 import json
@@ -345,6 +347,37 @@ def summary(rows, args):
     for (event, outcome), count in sorted(counts.items(), key=lambda item: (str(item[0][0]),
                                                                            str(item[0][1]))):
         print(f'  {_esc(event)} {_esc(outcome)}: {count}')
+    hooks = ('recall', 'gate', 'posttool', 'index', 'compile', 'update', 'update-queued', 'file-change-event')
+    def values(items, field):
+        return [value for row in items for value in [row.get(field)]
+                if type(value) in (int, float) and math.isfinite(value) and value >= 0]
+    def percentile(items, fraction):
+        ordered = sorted(items)
+        return ordered[max(0, math.ceil(len(ordered) * fraction) - 1)]
+    for action in hooks:
+        action_rows = [row for row in window if row.get('event') == action][-100:]
+        elapsed = values(action_rows, 'ms')
+        if not elapsed:
+            continue
+        extra = ''
+        if action == 'recall':
+            semantic = [row for row in action_rows if isinstance(row.get('semantic'), str)]
+            if semantic:
+                used = sum(row['semantic'] == 'complete' for row in semantic)
+                extra = f' semantic={used}/{len(semantic)} ({100 * used / len(semantic):.1f}%)'
+            extra += ' target p50=1000ms p95=1500ms large-p95=2500ms'
+        print(f'{action} p50={percentile(elapsed, .5):g}ms p95={percentile(elapsed, .95):g}ms'
+              f' n={len(elapsed)}{extra}')
+        if action == 'recall':
+            labels = (('routeProofMs', 'route'), ('lexicalMs', 'lexical'),
+                      ('queryEmbeddingMs', 'queryEmbedding'), ('semanticMs', 'semantic'),
+                      ('selectorMs', 'selector'), ('renderMs', 'render'),
+                      ('vectorReadMs', 'vectorRead'), ('vectorUnpackMs', 'vectorUnpack'),
+                      ('vectorDotMs', 'vectorDot'))
+            stages = [(label, values(action_rows, key)) for key, label in labels]
+            present = [f'{label}={statistics.median(data):g}ms' for label, data in stages if data]
+            if present:
+                print('recall stage median: ' + ' '.join(present))
     recalls = [row for row in window if row.get('event') == 'recall']
     if recalls:
         empty = [row for row in recalls if row.get('outcome') != 'served']

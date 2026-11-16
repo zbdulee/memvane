@@ -1,5 +1,7 @@
 """Select a staged learning runtime; prove it off-hook before first use."""
 import os
+import re
+import stat
 from pathlib import Path
 
 from memvane.kernel.resource_deferred import ResourceDeferred
@@ -26,7 +28,10 @@ def _pending():
         return None
     row = read_private_json(path)
     keys = {'schema', 'executable', 'model_dir', 'model_identity', 'runtime_identity_sha256'}
-    if not isinstance(row, dict) or set(row) != keys or row['schema'] != 'memvane-learning-pending-v1':
+    if (not isinstance(row, dict) or set(row) != keys or row['schema'] != 'memvane-learning-pending-v1'
+            or any(not isinstance(row[k], str) or not os.path.isabs(row[k]) for k in ('executable', 'model_dir'))
+            or any(not isinstance(row[k], str) or not re.fullmatch('[0-9a-f]{64}', row[k])
+                   for k in ('model_identity', 'runtime_identity_sha256'))):
         raise ValueError('invalid_pending_activation')
     return row
 
@@ -78,6 +83,41 @@ def failure_notice():
         return False
 
 
+def has_active_runtime():
+    from memvane.learning.context_learning.runtime_setup import _activated
+    return _activated(_root())
+
+
+def _discard_invalid_pending():
+    """Under the existing activation lock, discard only a safe malformed file."""
+    from memvane.learning.context_learning.runtime_installer import _activation_lock, _private_directory, _write_pointer
+    root = _private_directory(_root())
+    path = root / PENDING
+    with _activation_lock(root):
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return False
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 16 * 1024 * 1024):
+            raise ValueError('unsafe_input_file')
+        try:
+            _pending()
+        except (ValueError, UnicodeError) as exc:
+            if str(exc) in ('unsafe_input_file', 'input_changed', 'input_budget_exceeded'):
+                raise
+        else:
+            return False
+        after = path.lstat()
+        if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise ResourceDeferred('learning_pending_changed')
+        _write_pointer(root / FAILURE, {'schema': 'memvane-learning-activation-failure-v1',
+                                        'executable': '', 'reason': 'invalid_pending_activation'})
+        path.unlink()
+        return True
+
+
 def needs_activation():
     from memvane.learning.context_learning.runtime_setup import _activated
     try:
@@ -95,7 +135,29 @@ def activate(executable, model_dir):
 
 
 def ensure_pending(*, decision=None, project=None):
-    row = _pending()
+    try:
+        return _ensure_pending(decision=decision, project=project)
+    except ResourceDeferred as exc:
+        from memvane.diagnostics import api as diagnostics
+        report = exc.report if isinstance(exc.report, dict) else {}
+        admission = report.get('memory_admission') or {}
+        reserve, peak = admission.get('reserve_mib'), admission.get('required_additional_mib')
+        required = reserve + peak if type(reserve) in (int, float) and type(peak) in (int, float) else None
+        diagnostics.emit('learning.runtime.proof', outcome='deferred', decision=decision,
+                         reason=str(exc), detail=report.get('reason'), requiredMib=required)
+        raise
+
+
+def _ensure_pending(*, decision=None, project=None):
+    try:
+        row = _pending()
+    except (ValueError, UnicodeError):
+        if not _discard_invalid_pending():
+            raise ResourceDeferred('learning_pending_changed')
+        from memvane.diagnostics import api as diagnostics
+        diagnostics.emit('learning.runtime.proof', outcome='failed', decision=decision,
+                         reason='invalid_pending_activation')
+        return {'status': 'invalid_pending'}
     if row is None:
         return {'status':'no_pending'}
     if decision is None and project is not None:

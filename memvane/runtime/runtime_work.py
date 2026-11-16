@@ -319,7 +319,7 @@ def drain(queue,*,execute,on_drop=None,on_stall=None,ready=None,clock=time.monot
             return controller.check(POLICY,report)['ready']
         injected_ready=ready
         while runs<max_runs and clock()<deadline:
-            if not BACKGROUND_BUNDLE.intact() or not getattr(BACKGROUND_BUNDLE, 'preferred', lambda: True)():
+            if not BACKGROUND_BUNDLE.intact() or not getattr(BACKGROUND_BUNDLE, 'preferred_background', lambda: True)():
                 return {'status':'bundle_changed','runs':runs}
             rows=queue.pending()
             if not rows:return {'status':'drained','runs':runs}
@@ -485,30 +485,33 @@ def _record_tail(path,key,entry,*,limit=FAILURE_DETAIL_MAX_ROWS):
     return True
 
 
-def _wake(queue=None):
+def _wake(queue=None, *, background=False):
     """'spawned', 'busy' (another owner holds the lease), 'idle' or 'yield'."""
     queue=WakeQueue() if queue is None else queue
     if not queue.path.exists():return 'idle'
     rows=queue.pending()
     rows=[row for row in rows if row['kind'] in wake_policy.KINDS]
     if not rows:return 'idle'
-    retired = host_bundle.retire_old_helpers(queue.root, BACKGROUND_BUNDLE)
+    # Process inspection and signalling are owned by detached workers/timers;
+    # hook invocations only enqueue and contend for the existing leases.
+    retired = (host_bundle.retire_old_helpers(queue.root, BACKGROUND_BUNDLE, background=True)
+               if background else 0)
     # Backed-off rows alone never start a worker that would only wait: the
     # lease-free timer runs them once they are due.
     if not wake_policy.any_due(_own_view(queue.root,rows,time.time()),time.time()):
         if retired:
-            for _attempt in range(20):
-                if _arm_timer(queue):return 'idle'
-                time.sleep(.05)
-            return 'unavailable'
-        return 'idle' if _timer_available(queue) else 'unavailable'
+            if _arm_timer(queue, background=background):return 'idle'
+            # The old timer can take time to release its lease. Reuse the
+            # existing detached handoff contender to rearm off the hook.
+            return 'idle' if _handoff(background=background) else 'unavailable'
+        return 'idle' if _timer_available(queue, background=background) else 'unavailable'
     if yield_requested(queue.root):
-        return 'yield' if _timer_available(queue) else 'unavailable'
+        return 'yield' if _timer_available(queue, background=background) else 'unavailable'
     fd=_lock(queue.root/'runtime-worker.lock')
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return 'busy'
-        try:argv=entry_argv('runtime-work','worker',str(fd))
+        try:argv=entry_argv('runtime-work','worker',str(fd), background=background)
         except ValueError:return 'unavailable'
         try:
             subprocess.Popen(argv, stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
@@ -518,12 +521,12 @@ def _wake(queue=None):
     finally:os.close(fd)
 
 
-def wake(queue=None):
+def wake(queue=None, *, background=False):
     """Pass the dispatch lease across spawn, avoiding one child per session."""
-    return _wake(queue)=='spawned'
+    return _wake(queue, background=background)=='spawned'
 
 
-def _arm_timer(queue):
+def _arm_timer(queue, *, background=False):
     """Start the one per-user timer unless it already runs; True when started."""
     try:
         fd=_lock(queue.root/TIMER_LOCK)
@@ -532,7 +535,7 @@ def _arm_timer(queue):
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return False
-        subprocess.Popen(entry_argv('runtime-work','timer',str(fd)),
+        subprocess.Popen(entry_argv('runtime-work','timer',str(fd), background=background),
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             close_fds=True,pass_fds=(fd,),start_new_session=True)
         return True
@@ -541,8 +544,8 @@ def _arm_timer(queue):
     finally:os.close(fd)
 
 
-def _timer_available(queue):
-    if _arm_timer(queue):return True
+def _timer_available(queue, *, background=False):
+    if _arm_timer(queue, background=background):return True
     fd=_lock(queue.root/TIMER_LOCK)
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -561,7 +564,7 @@ def _after_timer(queue,outcome):
     """
     if outcome=='gone':return
     for _attempt in range(40):
-        try:result=_wake(queue)
+        try:result=_wake(queue, background=True)
         except (OSError,ValueError,sqlite3.Error):return
         if result!='unavailable':return
         time.sleep(TIMER_CHUNK_SECONDS)
@@ -575,7 +578,7 @@ def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.
     queue has no row, 'expired' at ``max_seconds`` (the caller arms a
     successor) or 'gone' when the queue cannot be read (a moved root).
     """
-    wake_once=wake_once or _wake
+    wake_once=wake_once or (lambda item: _wake(item, background=True))
     deadline=clock()+max_seconds
     while True:
         try:rows=queue.pending()
@@ -583,10 +586,10 @@ def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.
         rows=[row for row in rows if row['kind'] in wake_policy.KINDS]
         if not rows:return 'empty'
         if clock()>=deadline:return 'expired'
-        if not BACKGROUND_BUNDLE.intact() or not getattr(BACKGROUND_BUNDLE, 'preferred', lambda: True)():
+        if not BACKGROUND_BUNDLE.intact() or not getattr(BACKGROUND_BUNDLE, 'preferred_background', lambda: True)():
             # Keep the lease until the host finishes installing a successor;
             # otherwise no process remains to wake the durable queue.
-            if host_bundle.fast_installed() is not None:return 'bundle_changed'
+            if host_bundle.background_installed() is not None:return 'bundle_changed'
             sleep(TIMER_CHUNK_SECONDS)
             continue
         if clock()>=deadline:return 'expired'
@@ -602,7 +605,7 @@ def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.
         sleep(max(TIMER_MIN_SLEEP_SECONDS,min(delay,deadline-clock())))
 
 
-def _handoff():
+def _handoff(*, background=False):
     """One bounded contender lets a new bundle take over an old UID worker.
 
     The old worker may self-rewake while a selected project uses newer code.
@@ -615,7 +618,7 @@ def _handoff():
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return False
-        try:argv=entry_argv('runtime-work','handoff',str(fd))
+        try:argv=entry_argv('runtime-work','handoff',str(fd), background=background)
         except ValueError:return False
         subprocess.Popen(argv,
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
@@ -685,7 +688,7 @@ def _drain_and_rewake(queue,fd,*,execute,on_drop=None,on_stall=None):
             # The worker lease is already closed; retry an unavailable host.
             _after_timer(queue,'bundle_changed')
         else:
-            wake()
+            wake(background=True)
 
 
 def hook_wake():

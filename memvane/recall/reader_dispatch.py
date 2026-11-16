@@ -138,13 +138,13 @@ def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline
 
 
 def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline,
-                   snapshot=None, decision=None, provider=None, authority=None, linked=None):
+                   snapshot=None, decision=None, provider=None, authority=None, linked=None, timings=None):
     """Read the journal-selected view for this checkout."""
     if not _persisted_schema3(endpoint):
         raise ValueError('reader_endpoint_not_issued')
     return _query_persisted_schema3(endpoint, checkout=checkout, prompt=prompt,
         query_vector=query_vector, deadline=deadline, snapshot=snapshot,
-        decision=decision, provider=provider, authority=authority, linked=linked)
+        decision=decision, provider=provider, authority=authority, linked=linked, timings=timings)
 
 
 def auxiliary_wiki_row(path: str, body: str, wiki_roots) -> bool:
@@ -163,7 +163,7 @@ def auxiliary_wiki_row(path: str, body: str, wiki_roots) -> bool:
 
 
 def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,snapshot,decision,
-                             provider,authority,linked=None):
+                             provider,authority,linked=None,timings=None):
     """Read the journal-selected schema3 endpoint at its current view head.
 
     Rows leave in the recall row shape (``scope, generation, path, hash, body,
@@ -248,22 +248,36 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                     answer.append({'scope':decision['scopeId'],'generation':pin.gen_id,'path':full,
                                    'hash':row['blob_sha'],'body':row['body'],'score':row['score']})
                 return answer
-            lexical=[shaped(store.search(pin, query, HYBRID_LIST_LIMIT, deadline_seconds=left()))
-                     for query in queries]
-            if query_vector is None and not any(lexical):
-                # When a cold provider leaves a conjunctive query empty, retain
-                # useful lexical evidence from its individual bounded terms.
-                atoms = list(dict.fromkeys(atom for query in queries for atom in query.split(' AND ') if atom))[:3]
-                if len(atoms)>1:
-                    lexical=[shaped(store.search(pin, atom, HYBRID_LIST_LIMIT, deadline_seconds=left()))
-                             for atom in atoms]
+            started = time.monotonic()
+            try:
+                lexical=[shaped(store.search(pin, query, HYBRID_LIST_LIMIT, deadline_seconds=left()))
+                         for query in queries]
+                if query_vector is None and not any(lexical):
+                    # A cold provider can leave the conjunctive query empty.
+                    atoms = list(dict.fromkeys(atom for query in queries for atom in query.split(' AND ') if atom))[:3]
+                    if len(atoms)>1:
+                        lexical=[shaped(store.search(pin, atom, HYBRID_LIST_LIMIT, deadline_seconds=left()))
+                                 for atom in atoms]
+            finally:
+                if timings is not None:
+                    timings['lexicalMs'] = round((time.monotonic() - started) * 1000, 3)
             status='provider_absent' if query_vector is None else 'lexical_only' if vector is None else 'complete'
             nearest=None
             if semantic:
+                started = time.monotonic()
                 try:
+                    # Reserve time for lexical locations, selector and rendering.
+                    remaining = min(30, deadline - time.monotonic()) - 1.0
+                    if remaining <= 0:
+                        raise BlobStoreError('vector_deadline_exceeded')
+                    preferred = list(dict.fromkeys(row['path'][len(name) + 1:]
+                                                   for lane in lexical for row in lane))[:100]
+                    # Bound large scans before they consume the semantic time budget.
                     nearest=shaped(store.search_exact(pin,query_vector,HYBRID_LIST_LIMIT,
                                                       profile_id=vector['profile_id'],
-                                                      deadline_seconds=left()))
+                                                      max_float_work=6000000,
+                                                      deadline_seconds=min(1.0, remaining), timings=timings,
+                                                      preferred_paths=preferred))
                 except BlobStoreError as exc:
                     if exc.reason == 'embedding_set_invalid':
                         status = 'embedding_set_invalid'
@@ -271,15 +285,30 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                         raise
                     else:
                         status=DEFERRED[exc.reason]
+                finally:
+                    if timings is not None:
+                        timings['semanticMs'] = round((time.monotonic() - started) * 1000, 3)
 
             def fused(lists):
                 return _fuse_verified_lists(lists,max_rows=15) if any(lists) else []
             rows=fused(lexical+([] if nearest is None else [nearest]))
-            spans=store.card_locations(pin,[row['path'][len(name)+1:] for row in rows],
-                                       deadline_seconds=left())
-            if time.monotonic()>=deadline:
+            expired = time.monotonic() >= deadline
+            if expired and status == 'deferred_deadline':
+                spans = {}
+            else:
+                try:
+                    spans=store.card_locations(pin,[row['path'][len(name)+1:] for row in rows],
+                                               deadline_seconds=left())
+                except (BlobStoreError, ValueError) as exc:
+                    reason = getattr(exc, 'reason', str(exc))
+                    if (status != 'deferred_deadline' or time.monotonic() < deadline or
+                            reason not in ('reader_snapshot_deadline', 'vector_deadline_exceeded',
+                                           'fts_deadline_exceeded')):
+                        raise
+                    spans = {}
+            if time.monotonic()>=deadline and status != 'deferred_deadline':
                 raise ValueError('reader_snapshot_deadline')
-            if semantic and _vector_proof(authority,None,decision,provider,deadline)!=proof:
+            if nearest is not None and _vector_proof(authority,None,decision,provider,deadline)!=proof:
                 raise ValueError('reader_vector_caller_unproved')
             locations={name+'/'+path:tuple(found) for path,found in spans.items() if found}
             return ReaderResult('schema3',endpoint.endpoint_id,selected.epoch,pin.gen_id,

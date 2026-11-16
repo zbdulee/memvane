@@ -5,6 +5,42 @@ from memvane.learning import runtime_activation as activation
 
 
 class RuntimeActivationTests(unittest.TestCase):
+    def test_invalid_pending_is_recorded_and_removed(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); root.chmod(0o700)
+            pending = root / activation.PENDING
+            pending.write_text('{broken', encoding='utf8'); pending.chmod(0o600)
+            with mock.patch.object(activation, '_root', return_value=root), \
+                 mock.patch('memvane.diagnostics.api.emit'):
+                self.assertEqual(activation.ensure_pending()['status'], 'invalid_pending')
+                self.assertIsNone(activation._pending())
+                self.assertTrue(activation.failure_notice())
+            self.assertFalse(pending.exists())
+
+    def test_unsafe_pending_is_not_removed_or_followed(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); root.chmod(0o700)
+            target = root / 'outside'; target.write_text('{broken', encoding='utf8')
+            pending = root / activation.PENDING
+            pending.symlink_to(target)
+            with mock.patch.object(activation, '_root', return_value=root):
+                with self.assertRaises(OSError):
+                    activation.ensure_pending()
+            self.assertTrue(pending.is_symlink())
+            self.assertEqual(target.read_text(), '{broken')
+
+    def test_failure_message_distinguishes_first_and_previous_activation(self):
+        from memvane.learning import api
+        with mock.patch.object(api, 'learning_runtime_proof_failed', return_value=True), \
+             mock.patch.object(activation, 'has_active_runtime', return_value=False) as active:
+            self.assertIn('첫 활성화', api.learning_runtime_message())
+            active.return_value = True
+            self.assertIn('이전 선택', api.learning_runtime_message())
+
     def test_activation_only_records_choice_even_under_pressure(self):
         with mock.patch.object(activation, '_memory_admission', return_value=False) as admit, \
              mock.patch.object(activation, '_stage_pending', return_value={'status':'activated_pending_proof'}) as stage:

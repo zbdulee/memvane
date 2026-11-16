@@ -16,6 +16,7 @@ class ServiceChecks(Fixture):
         identity = Mock()
         identity.intact.return_value = True
         identity.preferred.return_value = False
+        identity.preferred_background.return_value = False
         service = self.service(start=False)
         self.assertTrue(service.acquire(wait=5))
         with patch.object(svc, 'BACKGROUND_BUNDLE', identity), \

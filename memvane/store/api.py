@@ -159,7 +159,10 @@ def embedding_coverage(store, targets, recipe_id, profile_id, *, first_from=None
     return implementation(store, targets, recipe_id, profile_id, first_from=first_from)
 
 
-def fill_plan(store, handle, recipe_id, profile_id):
+def fill_plan(store, handle, recipe_id, profile_id, *, manifest=None, expected_head=None, changed_blobs=None, deadline=None):
+    if manifest is not None:
+        from memvane.store.application.view_sync import prepublish_targets
+        return prepublish_targets(store, handle, manifest, expected_head, changed_blobs, deadline)
     from memvane.store.application.view_sync import fill_plan as implementation
     return implementation(store, handle, recipe_id, profile_id)
 

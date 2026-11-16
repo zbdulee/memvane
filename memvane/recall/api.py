@@ -36,11 +36,11 @@ def approved_query_vector(*, authority, snapshot, decision, provider, prompt, de
 
 
 def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline, snapshot=None, decision=None,
-                   provider=None, authority=None, linked=None):
+                   provider=None, authority=None, linked=None, timings=None):
     from memvane.recall.reader_dispatch import query_endpoint as implementation
     return implementation(endpoint, checkout=checkout, prompt=prompt, query_vector=query_vector,
                           deadline=deadline, snapshot=snapshot, decision=decision, provider=provider,
-                          authority=authority, linked=linked)
+                          authority=authority, linked=linked, timings=timings)
 
 
 def serve_endpoint_recall(host, payload, *, cwd, trace, route_decision=None, main_proof=None,

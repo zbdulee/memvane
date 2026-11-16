@@ -11,6 +11,7 @@ stay commitment-only. Elapsed checks never preempt arbitrary Python.
 from __future__ import annotations
 
 import bisect
+from functools import lru_cache
 import hashlib
 import math
 import operator
@@ -258,16 +259,27 @@ def _left(deadline):
 
 
 
-def _set_score(query, rows, dimension, deadline):
+@lru_cache(maxsize=32)
+def _unpacker(dimension):
+    return struct.Struct('<' + 'f' * dimension).unpack
+
+
+def _set_score(query, rows, dimension, deadline, timings=None):
     """Max cosine over every chunk of one validated little-endian float32 set."""
-    unpack, best = struct.Struct('<' + 'f' * dimension).unpack, None
+    unpack, best = _unpacker(dimension), None
     for row in rows:
         _left(deadline)
+        started = time.perf_counter() if timings is not None else None
         values = unpack(row['embedding'])
-        norm = math.sqrt(math.fsum(x * x for x in values))
+        if timings is not None:
+            timings['vectorUnpackMs'] += (time.perf_counter() - started) * 1000
+            started = time.perf_counter()
+        norm = math.sqrt(math.fsum(map(operator.mul, values, values)))
         if not norm or not math.isfinite(norm):
             v.fail('embedding_values_invalid')
         score = math.fsum(map(operator.mul, query, values)) / norm
+        if timings is not None:
+            timings['vectorDotMs'] += (time.perf_counter() - started) * 1000
         if best is None or score > best:
             best = score
     return max(-1.0, min(1.0, best))
@@ -298,10 +310,12 @@ class VectorMixin:
 
 
     def search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work=DEFAULT_WORK,
-                     deadline_seconds=2, path_prefixes=None, excluded_paths=None):
+                     deadline_seconds=2, path_prefixes=None, excluded_paths=None, timings=None,
+                     preferred_paths=None):
         return self._rows_search_exact(pin, query_vector, limit, profile_id=profile_id,
                                        max_float_work=max_float_work, deadline_seconds=deadline_seconds,
-                                       path_prefixes=path_prefixes, excluded_paths=excluded_paths)
+                                       path_prefixes=path_prefixes, excluded_paths=excluded_paths, timings=timings,
+                                       preferred_paths=preferred_paths)
 
     def search_hybrid(self, pin, fts_query, query_vector, limit, *, profile_id=None,
                       max_float_work=DEFAULT_WORK, deadline_seconds=2, path_prefixes=None,
@@ -345,3 +359,47 @@ class VectorMixin:
                 raise
             return dict(lexical=lexical, semantic=[], semantic_status=DEFERRED[exc.reason])
         return dict(lexical=lexical, semantic=semantic, semantic_status='complete')
+
+
+def _check_preferred(paths):
+    if paths is not None:
+        if type(paths) is not list or len(paths) > 100:
+            v.fail('vector_filter_invalid')
+        for path in paths:
+            v.relative(path)
+
+
+def _preferred_order(groups, paths):
+    preferred = set(paths or ())
+    return sorted(groups, key=lambda blob: not any(r['path'] in preferred for r in groups[blob]))
+
+
+def _vector_batches(blobs, heads):
+    """Bound each read to 32 blobs and 128 vectors, except one large set."""
+    batch, count = [], 0
+    for blob in blobs:
+        size = heads[blob]['chunk_count']
+        if batch and (len(batch) == 32 or count + size > 128):
+            yield batch
+            batch, count = [], 0
+        batch.append(blob)
+        count += size
+    if batch:
+        yield batch
+
+
+def _read_batch(db, batch, heads, recipe_id, profile_id, timings):
+    started = time.perf_counter() if timings is not None else None
+    expected = sum(heads[blob]['chunk_count'] for blob in batch)
+    marks = ','.join('?' for _ in batch)
+    saved = list(db.execute('SELECT blob_sha,seq,input_sha,embedding,provenance_digest FROM vectors '
+                            'WHERE recipe_id=? AND profile_id=? AND blob_sha IN (' + marks + ') '
+                            'ORDER BY blob_sha,seq LIMIT ?', (recipe_id, profile_id, *batch, expected + 1)))
+    if timings is not None:
+        timings['vectorReadMs'] += (time.perf_counter() - started) * 1000
+    if len(saved) != expected:
+        v.fail('embedding_set_invalid')
+    by_blob = {blob: [] for blob in batch}
+    for row in saved:
+        by_blob[row['blob_sha']].append(row)
+    return by_blob

@@ -236,6 +236,12 @@ _TEST_G1_EXEMPT_DIRS = ('tests/structure/',)
 # Each entry: (test file, dotted name it may name) -> reason. An entry whose file
 # exists but never names it is itself a finding (unused_exception).
 _TEST_G1_EXCEPTIONS = {
+    ('tests/e2e/handoff_four_processes.py', 'memvane.runtime.runtime_work'): 'two-bundle timer and worker handoff boundary',
+    ('tests/e2e/handoff_four_processes.py', 'memvane.runtime.host_bundle'): 'synthetic installed bundle inventory',
+    ('tests/e2e/handoff_four_processes.py', 'memvane.runtime.runtime_monitor'): 'two-bundle monitor handoff boundary',
+    ('tests/e2e/handoff_four_processes.py', 'memvane.resident.resident_service'): 'two-bundle resident handoff boundary',
+    ('tests/e2e/handoff_four_processes.py', 'memvane.resident.tests.support'): 'model-free owned worker fixture',
+    ('memvane/resident/tests/model/resident_embed_smoke.py', 'memvane.provider.runtime_digests'): 'prevent live digest-cache writes during real-model smoke',
     ('tests/e2e/sync_profile_scale.py', 'memvane.store.tests.support'): 'synthetic row store fixture',
     ('tests/e2e/sync_profile_scale.py', 'memvane.sync.product_sync_worker'): 'measured sync fill path',
     # Reattestation E2E drives the real resident with a model-free socket worker.

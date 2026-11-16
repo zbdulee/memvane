@@ -15,6 +15,37 @@ QUERY = [1.0] + [0.0] * (DIMENSION - 1)
 class VectorBudgetChecks(vectors.VectorCase):
     two_chunks = False
 
+    def test_exact_counts_shared_content_once_and_reports_stage_timings(self):
+        store, handle, manifest, recipe, profile = self.configured_budget()
+        body = store.document(manifest['members'][0]['blob_sha'])['body'].encode()
+        self.add_member(store, handle, manifest, 'public/shared.md', body, 'Shared')
+        self.lexical(store, handle, manifest)
+        self.fill_all(store, handle, manifest, recipe, profile)
+        _gen, pin = self.publish(store, handle, manifest, recipe, profile)
+        self.addCleanup(store.release, pin)
+        timings = {}
+        rows = store.search_exact(pin, QUERY, 100, profile_id=profile,
+                                  max_float_work=12 * DIMENSION, timings=timings)
+        self.assertEqual(len(rows), 13)
+        for field in ('vectorReadMs', 'vectorUnpackMs', 'vectorDotMs'):
+            self.assertIsInstance(timings.get(field), (int, float), field)
+            self.assertGreaterEqual(timings[field], 0)
+
+    def test_exact_scores_preferred_paths_first_without_changing_results(self):
+        from unittest import mock
+        store, handle, manifest, recipe, profile = self.configured_budget()
+        self.lexical(store, handle, manifest)
+        self.fill_all(store, handle, manifest, recipe, profile)
+        _gen, pin = self.publish(store, handle, manifest, recipe, profile)
+        self.addCleanup(store.release, pin)
+        expected = store.search_exact(pin, QUERY, 100, profile_id=profile)
+        preferred = next(m for m in manifest['members'] if m['path'] == 'cards/11.md')
+        with mock.patch.object(store, '_vectors', wraps=store._vectors) as vectors_called:
+            result = store.search_exact(pin, QUERY, 100, profile_id=profile,
+                                        preferred_paths=[preferred['path']])
+        self.assertEqual(result, expected)
+        self.assertEqual(vectors_called.call_args_list[0].args[0], preferred['blob_sha'])
+
     def configured_budget(self):
         store, _, handle = self.seeded()
         manifest = self.snapshot(store, handle, body=b'# Budget zero\nhello synthetic card zero\n')

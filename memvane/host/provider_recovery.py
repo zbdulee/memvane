@@ -10,8 +10,16 @@ def offer(action, decision, proof, payload, *, allowed, successful):
     if action in ('index', 'file-change-event') and not successful:
         return False
     try:
+        from memvane.diagnostics import api as diagnostics
+        from memvane.kernel.memvane_version import plugin_version
         from memvane.provider.api import reattestation_differences
         state = Path(proof['journalPath']).parent
+        version = plugin_version()
+        attempts = [row for row in diagnostics.build_progress_events(state)
+                    if row.get('event') == 'provider.reattest' and row.get('pluginVersion') == version
+                    and row.get('outcome') in ('accepted', 'rejected')]
+        if len(attempts) >= 2 and all(row['outcome'] == 'rejected' for row in attempts[-2:]):
+            return False
         if reattestation_differences(state, proof['providerManifest']):
             return False
         from memvane.runtime.api import request

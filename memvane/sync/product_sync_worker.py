@@ -338,7 +338,7 @@ def _prepare_provider_reattest(project):
         original = {'worker': manifest['workerSha256'], 'provider': manifest['providerArtifactSha256']}
         try:
             current, identity = reattest.reattestation_current(manifest)
-            if reattest.reattestation_valid(state, original, current, identity):
+            if reattest.reattestation_valid(state, original, current, identity, require_legacy=True):
                 return
             reattest.reattestation_update(state, manifest)
             changed = [key for key in ('provider', 'worker') if original[key] != current[key]]
@@ -888,6 +888,10 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             # lexical one unless every eligible set is already stored.
             vector = _schema3_rows_covered(store, manifest, baseline['vector_spec'], vectors,
                                            {members[p]['blob_sha'] for p in changed if p in members})
+            if vector['state'] == 'lexical_first' and baseline['vector_spec'] == vectors.get('spec'):
+                vector = _schema3_prefill_changed(store, writer, proof, marks, handle, manifest, head,
+                                                  {members[p]['blob_sha'] for p in changed if p in members},
+                                                  vectors, deadline)
         spec = vectors['spec'] if vector['state'] == 'complete' else None
         if not staging:
             # The last fill call may run past the pass deadline (one document):
@@ -931,6 +935,60 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         if ingested:
             result['progressKind'] = 'ingest'
     return result
+
+
+def _schema3_prefill_changed(store, writer, proof, marks, handle, manifest, head, changed, vectors, deadline):
+    """Fill eligible changed content before publishing over a vector-sealed head."""
+    from memvane.store import api as v
+    spec = vectors['spec']
+    if time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE:
+        return {'state': 'pending', 'reason': 'schema3_vector_budget', 'progress': 0}
+    try:
+        targets = _profile_call(vectors.get('profile'), 'plan', v.fill_plan,
+                                store, handle, spec['recipe_id'], spec['profile_id'],
+                                manifest=manifest, expected_head=head, changed_blobs=changed,
+                                deadline=deadline - SCHEMA3_PUBLISH_RESERVE)
+    except store_types.BlobStoreError as exc:
+        if exc.reason == 'fts_deadline_exceeded':
+            return {'state': 'pending', 'reason': 'schema3_vector_budget', 'progress': 0}
+        raise
+    current = lambda: marks.get('proof', proof)  # noqa: E731
+    chunker, embedder = _schema3_chunker(vectors, current)
+    filled = hits = 0
+    try:
+        for blob in targets:
+            left = deadline - SCHEMA3_PUBLISH_RESERVE - time.monotonic()
+            if left <= 0:
+                return {'state': 'pending', 'reason': 'schema3_vector_budget', 'progress': filled,
+                        'filled': filled, 'cacheHits': hits, 'remaining': len(targets) - filled - hits}
+            def fence():
+                _mark_schema3_write(writer, proof, marks)
+            result = _profile_call(vectors.get('profile'), 'storage', store.ensure_content,
+                                   blob, spec['recipe_id'], spec['profile_id'],
+                                   chunker=chunker, embedder=embedder, write_fence=fence,
+                                   deadline_seconds=min(SCHEMA3_RESUME_SECONDS, left))
+            filled += result['status'] == 'filled'
+            hits += result['status'] != 'filled'
+    except ResourceDeferred as exc:
+        if filled:
+            return {'state': 'pending', 'reason': str(exc), 'progress': filled,
+                    'filled': filled, 'cacheHits': hits, 'remaining': len(targets) - filled - hits}
+        refused = _deferred(exc)
+        if refused.get('detail') == refused['reason']:
+            del refused['detail']
+        return refused
+    except _VectorMemberBlocked as exc:
+        return {'state': 'blocked', 'reason': str(exc)}
+    except _VectorProviderBlocked as exc:
+        return {'state': 'provider_blocked', 'reason': str(exc)}
+    except store_types.BlobStoreError as exc:
+        if exc.reason in SCHEMA3_FILL_DEADLINES or exc.reason == 'content_claim_busy':
+            reason = 'schema3_vector_content_busy' if exc.reason == 'content_claim_busy' else 'schema3_vector_deadline'
+            return {'state': 'pending', 'reason': reason, 'progress': filled,
+                    'filled': filled, 'cacheHits': hits, 'remaining': len(targets) - filled - hits}
+        raise
+    return {'state': 'complete', 'filled': filled, 'cacheHits': hits, 'targets': len(targets),
+            'providerMs': vectors.get('stats', {}).get('providerMs', 0)}
 
 
 def _schema3_rows_covered(store, manifest, sealed, vectors, changed_blobs):

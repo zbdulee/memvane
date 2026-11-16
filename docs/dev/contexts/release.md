@@ -22,9 +22,12 @@
 - state base의 `layout.json` 바이트 `{"stateFormat":1}\n`과 state major·단조 증가하는 `writer_floor`·최고 plugin 버전의 비교 규칙.
 - 카드 frontmatter 필드와 `.memvane/compile/*.jsonl` 행 모양.
 - attestation `providerRelativePath`와 onboarding artifact sha map에 기록되는 provider 파일 상대 경로(`memvane/provider/adapters/local_embed_provider.py`·`laya_local_embed_worker.mjs`)와 접두사 `memvane/provider/adapters/`. 정의는 `memvane/kernel/bundle_paths.py` 한 곳이다.
+- 재봉인 호환 기록 `provider-reattest.json`: schema `memvane-provider-reattest-v1`, 키 `schema`·`attested`·`current`·`attestedIdentity`·`currentIdentity`·`outcome`·`timeNs`. 정체성 키는 `modelSha256`·`tokenizer`·`chunkerSha256`·`chunkRules`·`dimension`·`metric`·`pooling`·`normalization`·`maxTokens`다. 쌍별 기록 `provider-reattest-pairs.json`: schema `memvane-provider-reattest-pairs-v1`, 최상위 키 `schema`·`records`, 각 행 키 `attested`·`current`·`attestedIdentity`·`currentIdentity`·`outcome`·`timeNs`. 쌍별 정체성은 v1 키에 `queryTemplate`·`documentTemplate`·`contextMargin`을 더한다. 각 쌍은 `worker`·`provider` SHA를 담고 최대 16행이다.
 - compile intent(`<install state root>/provenance-intents/`)의 필수 키 집합(`kind`·`viewId`·`targetPath`·`cardSha`·`expectedTargetHash`·`sourceFingerprints`·`sourceSpans`·`verifiedMode`·`verifyEngine`·`producingEngine`·`verdict_digest`·`result_digest`), 이름의 id 입력, 결과 접미사(`.consumed`·`.rejected`·`.superseded`). 추가 키는 허용한다: consumer는 필수 키만 읽고 나머지는 무시하며, `result_digest`는 필수 키로만 계산한다. 한 호스트의 verify worker가 쓴 intent를 다른 1.x 호스트의 sync가 소비한다.
 
-임베딩 정체성(모델·토크나이저·chunker·차원·pooling·정규화·최대 토큰 길이)이 바뀌면 재빌드가 필요하다. 실행 방식만 바뀌면 백그라운드 sync owner가 정체성을 확인하고 재봉인한다.
+임베딩 정체성(모델·토크나이저·chunker·차원·pooling·정규화·최대 토큰 길이·질의 및 문서 템플릿·context 여유)이 바뀌면 재빌드가 필요하다. 실행 방식만 바뀌면 백그라운드 sync owner가 정체성을 확인하고 재봉인한다.
+
+릴리스마다 직전 버전의 worker·provider SHA 쌍과 해당 코드에서 확인한 정체성을 알려진 이전 쌍 표에 넣고, 모르는 쌍은 거절한다.
 
 - `package.json` — project/npm version
 - `plugin.json` — root AGY/Gemini plugin metadata

@@ -130,6 +130,8 @@ def main(argv=None):
                 result = laya_embed_runtime.collect(approve=args.approve_index_runtime_gc)
             else:
                 result = {'status': 'ready', **laya_embed_runtime.select()}
+                from memvane.runtime import api as runtime
+                result['processVersions'] = runtime.background_bundle().process_version_counts()
             result.pop('dependencyClosure', None)
         elif args.action in ('plan-fresh-wiki-origin',
                            'review-index-provider',

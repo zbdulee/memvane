@@ -301,7 +301,7 @@ def default_spawn(argv, *, pass_fds):
                      start_new_session=True, env=env, cwd='/')
 
 
-def _spawn(root, *, python=None, learning_root=None, spawn=None):
+def _spawn(root, *, python=None, learning_root=None, spawn=None, background=False):
     """Start one successor that waits for the service lease."""
     fd = _private_lock(Path(root) / SUCCESSOR)
     try:
@@ -314,7 +314,7 @@ def _spawn(root, *, python=None, learning_root=None, spawn=None):
         # -I: the hosted learning inference requires an isolated interpreter.
         argv = BACKGROUND_BUNDLE.entry('resident-service', 'serve', str(root),
                                        str(learning_root) if learning_root else '-', str(fd),
-                                       python=_interpreter(root, python), isolated=True)
+                                       python=_interpreter(root, python), isolated=True, background=background)
         fds = (fd,)
         (spawn or default_spawn)(argv, pass_fds=fds)
         return True
@@ -929,7 +929,7 @@ class Service:
             self.workers.clear()
         _stop_handles(handles, cleanup_end)
         if getattr(self, 'drain_for_bundle', False):
-            wait_for_successor(self.stopped, lambda: _spawn(self.root, learning_root=self.learning_root))
+            wait_for_successor(self.stopped, lambda: _spawn(self.root, learning_root=self.learning_root, background=True))
         _event(getattr(self, 'drain_targets', ()), 'resident.drain', 'stopped',
                ms=(time.monotonic() - started) * 1000)
         self.stopped.set()
@@ -1000,7 +1000,7 @@ class Service:
             check = now >= next_bundle_check
             if check:
                 next_bundle_check = now + 30
-            if not BACKGROUND_BUNDLE.intact() or (check and not BACKGROUND_BUNDLE.preferred()):
+            if not BACKGROUND_BUNDLE.intact() or (check and not getattr(BACKGROUND_BUNDLE, 'preferred_background', lambda: True)()):
                 self.drain_for_bundle = True
                 self.begin_drain('bundle_changed')
                 return

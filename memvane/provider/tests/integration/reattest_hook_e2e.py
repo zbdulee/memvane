@@ -45,9 +45,11 @@ def hash_file(path):
 def current(m):
     identity = {'modelSha256':m['modelSha256'], 'tokenizer':'model-embedded',
                 'chunkerSha256':r.LEGACY_CHUNKER, 'chunkRules':'900/135/200',
-                'dimension':m['dimension'], 'metric':'cosine', **r.LEGACY_SEMANTICS}
+                'dimension':m['dimension'], 'metric':'cosine', **r.LEGACY_SEMANTICS, **r.LEGACY_TEMPLATES}
     if os.environ.get('MV_REATTEST_IDENTITY_CHANGED'):
         identity['normalization'] = 'l2'
+    if os.environ.get('MV_REATTEST_TEMPLATE_CHANGED'):
+        identity['queryTemplate'] = 'changed query template'
     return {'worker':'8d6fdd22432d22c3256015da501ff6ef063a899f8c10e198831f1db99509a43c', 'provider':r.LEGACY_PROVIDER}, identity
 def proof(self, record, profile, *, allow_local_unavailable=False):
     result = _original_proof(self, record, profile, allow_local_unavailable=allow_local_unavailable)
@@ -110,6 +112,12 @@ class ReattestHook(FixtureCase):
             env={**env,'MV_REATTEST_IDENTITY_CHANGED':'1'},cwd=project.root,timeout=60)
         self.assertEqual(incompatible.returncode,0,incompatible.stderr)
         self.assertIn('다시 온보딩',json.loads(incompatible.stdout)['hookSpecificOutput']['additionalContext'])
+        self.assertFalse([r for r in queue.pending() if r['kind']=='laya-sync'])
+        template_changed = subprocess.run(['bash',str(ROOT/'hooks/run-hook'),'update-queued','claude'],
+            input=json.dumps(payload),text=True,capture_output=True,
+            env={**env,'MV_REATTEST_TEMPLATE_CHANGED':'1'},cwd=project.root,timeout=60)
+        self.assertEqual(template_changed.returncode,0,template_changed.stderr)
+        self.assertIn('다시 온보딩',json.loads(template_changed.stdout)['hookSpecificOutput']['additionalContext'])
         self.assertFalse([r for r in queue.pending() if r['kind']=='laya-sync'])
         hook = subprocess.run(['bash',str(ROOT/'hooks/run-hook'),'update-queued','claude'],
             input=json.dumps(payload),text=True,capture_output=True,env=env,cwd=project.root,timeout=60)
