@@ -55,6 +55,19 @@ class BundleIdentity:
     def process_version_counts(self):
         return process_version_counts()
 
+    def installed_version(self):
+        """Highest version tuple proved by this bundle or bounded host metadata; no CLI."""
+        versions = [self.version] if self.intact() and self.version is not None else []
+        if os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1':
+            try:
+                root = fast_installed()
+                other = version_key(_read_json(root / 'plugin.json', limit=65536).get('version')) if root else None
+                if other is not None:
+                    versions.append(other)
+            except (OSError, ValueError, TypeError, AttributeError, UnicodeError):
+                pass
+        return max(versions) if versions else None
+
     def preferred_background(self):
         return self.preferred(background=True)
 

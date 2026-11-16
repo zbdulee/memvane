@@ -2,6 +2,12 @@
 
 학습 선택, 추론 서비스와 selector 유지보수를 담당한다. 초기 활성화 후 detached 작업이 heal 다음 warm을 수행한다.
 
+base checkpoint 포인터는 `schema_version: 1`을 기록한다. 해당 키만 없는
+기본 enrollment 포인터는 보정하고 receipt 재준비 후 warm을 수행한다.
+다른 값이 달라진 포인터는 거절한다. selector 재시도는 최소 10분 간격이며
+지속 실패 시 최대 1시간까지 지수 backoff를 적용한다. 자원 부족과
+시작 경로·권한·IO 실패는 별도 고정 사유 코드로 기록한다.
+
 구현: `context_learning_auto.py`, `context_learning_cli.py`, `prepare_laya_inference.py`, `project_learning_setup.py`, `selector_maintenance.py`.
 
 저장된 recall capture의 후보 출처는 별도 `learning.capture.sources` 진단

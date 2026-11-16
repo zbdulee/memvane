@@ -1,5 +1,10 @@
 # View와 blob store
 
+읽기 검증 영수증은 view id별 파일에 보관하며 다른 view의 영수증을
+덮어쓰지 않는다. recall 이벤트의 `pinVerified`는 영수증 재사용이면
+`receipt`, 전체 검증이면 `full`이다. pin의 같은 세대와 DB 정체성을
+검증하며 영수증이 없거나 맞지 않으면 전체 검증을 수행한다.
+
 - `checkout_view.py` — caller가 보관하는 저장소·워크트리 등록 JSON과 Git checkout capture API. 경로·dev/ino, ref·HEAD·index·operation을 재검증하고 view identity를 계산한다. view store가 binding·capture를 검증할 때 쓴다. recall pin과 sync 게시가 이 경로로 checkout을 관측한다. API와 증명 범위는 `docs/development-checkout-capture.md` 참고.
 - `blob_store.py` / `blob_schema.py` / `blob_values.py` — schema3 view store의 내용 층인 private Git-blob 형식의 wiki admission·불변 body/recipe/profile/set·metadata provenance. 원문 body API는 없다. `put_fingerprint`·`put_attestation`에 넘기는 지문·receipt는 호출자의 증거 주장이다. schema3 sync 게시는 `ingest_attested_card`를 쓴다: 저장소가 카드 frontmatter를 recall의 신뢰 규칙(`legacy_card_evidence`)으로 직접 판정해 통과한 카드에만 `legacy_unbound` 지문의 `legacy_verified` attestation을 붙이고, 현재 HEAD를 과거 compile commit으로 쓰지 않는다. 구조 제약과 의미 검증, API·상한은 `docs/development-blob-candidate.md` 참고.
 - `blob_lease.py` / `blob_fill.py` — view store의 private content flock과 불변 complete set 채우기. schema3 sync의 vector fill이 이 경로로 content set을 재사용한다(두 view가 공유하는 content는 한 번만 임베딩). 캐시는 읽기 전용이고 callback은 SQLite transaction 밖에서 실행한다. claim은 협력적 발급 객체·보유 FD 계약이며 운영 owner 권한이나 임의 동일 UID FD 조작에 대한 보안 경계가 아니다. API는 `docs/development-blob-candidate.md` 참고.

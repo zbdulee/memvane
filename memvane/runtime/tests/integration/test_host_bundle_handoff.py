@@ -15,6 +15,21 @@ from memvane.runtime import host_bundle
 
 
 class HostBundleHandoff(FixtureCase):
+    def test_installed_version_uses_metadata_without_cli_or_fixture_inventory(self):
+        current = self.bundle('codex', 'market', '1.0.11')
+        newer = self.bundle('claude', 'market', '1.0.12')
+        identity = host_bundle.BundleIdentity(current)
+        with mock.patch.object(host_bundle, '_host_listing', side_effect=AssertionError('no CLI')), \
+                mock.patch.object(host_bundle, 'fast_installed', return_value=newer) as inventory:
+            with mock.patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '1'}):
+                self.assertEqual(identity.installed_version(), host_bundle.version_key('1.0.11'))
+                inventory.assert_not_called()
+            with mock.patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '0'}):
+                self.assertEqual(identity.installed_version(), host_bundle.version_key('1.0.12'))
+            inventory.return_value = None
+            with mock.patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '0'}):
+                self.assertEqual(identity.installed_version(), host_bundle.version_key('1.0.11'))
+
     def bundle(self, host, marketplace, version):
         root = self.home / ('.codex' if host == 'codex' else '.claude') / 'plugins' / 'cache' / marketplace / 'memvane' / version
         (root / 'entry').mkdir(parents=True)
