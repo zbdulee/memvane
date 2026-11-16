@@ -140,7 +140,8 @@ class Results(DispatchCase):
     def test_normal_sync_progress_is_logged_without_a_failure(self):
         cases = (
             ({'state': 'pending', 'reason': 'schema3_view_preparing', 'progressKind': 'ingest'}, 'progress'),
-            ({'state': 'pending', 'reason': 'schema3_vector_deadline'}, 'progress'),
+            ({'state': 'pending', 'reason': 'schema3_vector_deadline'}, 'failed'),
+            ({'state': 'pending', 'reason': 'schema3_vector_deadline', 'progressKind': 'vector'}, 'progress'),
             ({'state': 'pending', 'reason': 'schema3_vector_budget'}, 'progress'),
             ({'state': 'pending', 'reason': 'schema3_vector_content_busy'}, 'progress'),
             ({'state': 'deferred', 'reason': 'provider_result_invalid'}, 'failed'),
@@ -154,7 +155,7 @@ class Results(DispatchCase):
                     mock.patch('memvane.diagnostics.api.emit',
                                side_effect=lambda name, **fields: events.append((name, fields))):
                 self.assertEqual(self.failure().code, 'target_deferred')
-                (name, fields), = events
+                (name, fields), = [event for event in events if event[0] == 'wake.sync']
                 self.assertEqual((name, fields['outcome']), ('wake.sync', expected))
 
     def test_results_other_than_done_cannot_ack(self):
@@ -205,7 +206,7 @@ class Results(DispatchCase):
                     mock.patch('memvane.diagnostics.api.emit',
                                side_effect=lambda name, **fields: events.append((name, fields))):
                 self.assertEqual(self.failure().detail, 'deferred:deferred:provider_result_invalid')
-                (name, fields), = events
+                (name, fields), = [event for event in events if event[0] == 'wake.sync']
                 self.assertEqual((name, fields['outcome'], fields['reason'], fields.get('path')),
                                  ('wake.sync', 'failed', 'target_deferred', expected))
                 self.assertEqual(fields.get('cause'), 'chunk_pos_not_increasing' if expected else None)
@@ -218,6 +219,7 @@ class Results(DispatchCase):
                 mock.patch('memvane.diagnostics.api.emit',
                            side_effect=lambda name, **fields: events.append((name, fields))):
             dispatch.run('laya-sync', self.project)
+        events = [event for event in events if event[0] in ('wake.sync', 'index.publish')]
         self.assertEqual([(name, fields['outcome']) for name, fields in events],
                          [('wake.sync', 'indexed'), ('index.publish', 'published')])
         self.assertEqual((events[1][1]['generation'], events[1][1]['previousGeneration']),

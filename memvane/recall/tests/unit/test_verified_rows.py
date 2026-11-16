@@ -51,7 +51,9 @@ class ServeVerifiedRows(unittest.TestCase):
                 locations=dict(locations or {}), generation='gen-1',
                 still_current=still_current, vector_fallback=vector_fallback,
                 allow_mixed_generation=False, trace=trace, own_view=True)
-        return answer, trace.events, checked, found
+        events = [(kind, fields) for kind, fields in trace.events
+                  if kind != 'fields' or not ({'selectorMs', 'stillCurrentMs'} & fields.keys())]
+        return answer, events, checked, found
 
     def test_selected_cards_are_rechecked_and_returned_with_their_metadata(self):
         answer, events, checked, found = self.serve(

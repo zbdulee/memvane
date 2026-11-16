@@ -23,6 +23,7 @@ class PublishedRetrieval(FixtureCase):
         self.project.git('add', '--', '.memvane/settings.json', '.memvane/wiki', 'docs')
         self.project.git('commit', '-qm', 'fixture')
         self.install = build_install(self, self.project)
+        self.install.settle()
         self.bound = workspace.selected(self.project.root)
 
     def matches(self, text):
@@ -76,7 +77,7 @@ class WeakPublishedVectors(FixtureCase):
                                body='Garden flower number %d.\n' % number, sources=[source])
         project.git('add', '--', '.memvane/settings.json', '.memvane/wiki', 'docs')
         project.git('commit', '-qm', 'fixture')
-        build_install(self, project)
+        build_install(self, project).settle()
         bound = workspace.selected(project.root)
         with patch.object(retrieval, 'overlay_paths', return_value=[]), \
              patch.object(retrieval, 'query_provider', return_value=lambda _text, _profile: {'vector': [-1.0, 0.0]}):

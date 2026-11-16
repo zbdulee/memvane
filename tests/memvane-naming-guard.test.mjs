@@ -19,6 +19,7 @@ const ALLOWED = {
   'memvane/wiki/verify/README.md': [/이전 플러그인 이름 `qmd-auto-context`/],
   'docs/architecture.md': [/earlier plugin name/, /^`qmd-auto-context`, non-empty$/],
   'docs/continual-learning.md': [/earlier `qmd-auto-context` support directory/],
+  'docs/ROADMAP.md': [/기준 프로젝트는 카나리\(qmd-auto-context\)/],
   'docs/release-agent-qa.md': [/`qmd-auto-context` plugin in either host/,
                                /Application Support\/qmd-auto-context`/],
   // The switch from the earlier plugin id.
