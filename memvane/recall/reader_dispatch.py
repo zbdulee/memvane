@@ -272,9 +272,10 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                         raise BlobStoreError('vector_deadline_exceeded')
                     preferred = list(dict.fromkeys(row['path'][len(name) + 1:]
                                                    for lane in lexical for row in lane))[:100]
+                    # Bound large scans before they consume the semantic time budget.
                     nearest=shaped(store.search_exact(pin,query_vector,HYBRID_LIST_LIMIT,
                                                       profile_id=vector['profile_id'],
-                                                      max_float_work=20000000,
+                                                      max_float_work=6000000,
                                                       deadline_seconds=min(1.0, remaining), timings=timings,
                                                       preferred_paths=preferred))
                 except BlobStoreError as exc:
