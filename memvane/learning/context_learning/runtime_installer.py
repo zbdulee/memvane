@@ -195,20 +195,47 @@ def _activation_lock(root):
 
 
 def activate_generation(root, executable, adapter_path, model_dir,
-                        *, prover=attest_runtime, probe=probe_runtime, plugin_version=None):
+                        *, prover=attest_runtime, probe=probe_runtime, plugin_version=None,
+                        expected_pending=None):
     """Select a fully checked prepared generation; preserve one-step rollback."""
     root=_private_directory(root)
     executable=_generation_executable(root,executable)
     if not Path(adapter_path).is_absolute() or not Path(model_dir).is_absolute():
         raise ValueError('invalid_compatibility_source_path')
     with _activation_lock(root):
+        if expected_pending is not None:
+            from .adapter import model_identity
+            pending_path = root / 'pending-activation.json'
+            if read_private_json(pending_path) != expected_pending:
+                raise ValueError('pending_activation_changed')
+            if (str(executable) != expected_pending['executable'] or
+                str(model_dir) != expected_pending['model_dir'] or
+                model_identity(model_dir) != expected_pending['model_identity']):
+                raise ValueError('pending_activation_changed')
         inspected=probe(executable,managed_root=root)
         prepared=read_private_json(executable.parent.parent.parent/'prepared.json')
+        if expected_pending is not None and inspected.get('runtime_identity_sha256') != expected_pending['runtime_identity_sha256']:
+            raise ValueError('pending_activation_changed')
+        active = root/'active.json'
+        if expected_pending is not None and active.is_file() and not active.is_symlink():
+            previous = read_private_json(active)
+            old_attestation = previous.get('attestation') if isinstance(previous, dict) else None
+            if (isinstance(old_attestation, dict) and previous.get('executable') == str(executable)
+                    and previous.get('model_dir') == str(model_dir)
+                    and previous.get('runtime_identity_sha256') == expected_pending['runtime_identity_sha256']
+                    and old_attestation.get('adapter_sha256') == _sha_file(adapter_path)
+                    and verify_compatibility(inspected, old_attestation, expected_pending['model_identity'])):
+                pending_path.unlink()
+                return {'status':'activated_recovered', 'executable':str(executable),
+                        'runtime_identity_sha256':expected_pending['runtime_identity_sha256']}
         proof=prover(str(executable),str(adapter_path),str(model_dir))
         attestation=proof['attestation']
         if (inspected.get('status')!='metadata_compatible' or
             inspected['runtime_identity_sha256']!=proof['probe']['runtime_identity_sha256'] or
             inspected['runtime_identity_sha256']!=prepared['runtime_identity_sha256'] or
+            (expected_pending is not None and
+             (attestation.get('base_model_sha256') != expected_pending['model_identity'] or
+              model_identity(model_dir) != expected_pending['model_identity'])) or
             not verify_compatibility(inspected,attestation,attestation['base_model_sha256'])):
             raise ValueError('managed_compatibility_failed')
         active=root/'active.json'
@@ -223,6 +250,8 @@ def activate_generation(root, executable, adapter_path, model_dir,
             'model_dir':str(model_dir),'previous':old}
         _record_owner(root,attestation['adapter_sha256'],plugin_version or _installed_plugin_version())
         _write_pointer(active,pointer)
+        if expected_pending is not None:
+            pending_path.unlink()
         return {'status':'activated','executable':str(executable),
                 'runtime_identity_sha256':inspected['runtime_identity_sha256'],
                 'previous_available':old is not None}

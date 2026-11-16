@@ -144,6 +144,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/host/provider_recovery.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/host/onboarding_choice.py": {
       "context": "host",
       "layer": "adapter",
@@ -730,6 +735,11 @@
       "pinned": true
     },
     "memvane/provider/adapters/local_embed_service.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/adapters/reattest.py": {
       "context": "provider",
       "layer": "adapter",
       "pinned": false

@@ -196,7 +196,7 @@ def _sync_progress(kind, exc):
     parts = detail.split(':')
     return (len(parts) >= 3 and parts[:2] == ['deferred', 'pending']
             and parts[2] in ('schema3_progress_ingest', 'schema3_progress_vector',
-                             'schema3_vector_deadline', 'schema3_vector_budget',
+                             'schema3_vector_budget',
                              'schema3_vector_content_busy'))
 
 

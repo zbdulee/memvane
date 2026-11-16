@@ -871,7 +871,10 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False, pro
                                   for path_key, hash_key in
                                   (('providerPath', 'providerArtifactSha256'),
                                    ('workerPath', 'workerSha256')))
-        except (OSError, ValueError):
+            if not local_available:
+                from memvane.provider.api import reattestation_check
+                local_available = reattestation_check(Path(record['journalPath']).parent, manifest)
+        except (OSError, ValueError, KeyError, TypeError):
             local_available = False
         if not local_available:
             if allow_local_unavailable:

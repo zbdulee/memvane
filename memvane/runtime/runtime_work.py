@@ -319,7 +319,7 @@ def drain(queue,*,execute,on_drop=None,on_stall=None,ready=None,clock=time.monot
             return controller.check(POLICY,report)['ready']
         injected_ready=ready
         while runs<max_runs and clock()<deadline:
-            if not BACKGROUND_BUNDLE.intact():
+            if not BACKGROUND_BUNDLE.intact() or not getattr(BACKGROUND_BUNDLE, 'preferred', lambda: True)():
                 return {'status':'bundle_changed','runs':runs}
             rows=queue.pending()
             if not rows:return {'status':'drained','runs':runs}
@@ -492,9 +492,15 @@ def _wake(queue=None):
     rows=queue.pending()
     rows=[row for row in rows if row['kind'] in wake_policy.KINDS]
     if not rows:return 'idle'
+    retired = host_bundle.retire_old_helpers(queue.root, BACKGROUND_BUNDLE)
     # Backed-off rows alone never start a worker that would only wait: the
     # lease-free timer runs them once they are due.
     if not wake_policy.any_due(_own_view(queue.root,rows,time.time()),time.time()):
+        if retired:
+            for _attempt in range(20):
+                if _arm_timer(queue):return 'idle'
+                time.sleep(.05)
+            return 'unavailable'
         return 'idle' if _timer_available(queue) else 'unavailable'
     if yield_requested(queue.root):
         return 'yield' if _timer_available(queue) else 'unavailable'
@@ -554,7 +560,7 @@ def _after_timer(queue,outcome):
     the next hook.
     """
     if outcome=='gone':return
-    while True:
+    for _attempt in range(40):
         try:result=_wake(queue)
         except (OSError,ValueError,sqlite3.Error):return
         if result!='unavailable':return
@@ -576,10 +582,11 @@ def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.
         except (OSError,ValueError,sqlite3.Error):return 'gone'
         rows=[row for row in rows if row['kind'] in wake_policy.KINDS]
         if not rows:return 'empty'
-        if not BACKGROUND_BUNDLE.intact():
+        if clock()>=deadline:return 'expired'
+        if not BACKGROUND_BUNDLE.intact() or not getattr(BACKGROUND_BUNDLE, 'preferred', lambda: True)():
             # Keep the lease until the host finishes installing a successor;
             # otherwise no process remains to wake the durable queue.
-            if host_bundle.latest_installed() is not None:return 'bundle_changed'
+            if host_bundle.fast_installed() is not None:return 'bundle_changed'
             sleep(TIMER_CHUNK_SECONDS)
             continue
         if clock()>=deadline:return 'expired'

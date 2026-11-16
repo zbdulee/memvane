@@ -37,7 +37,7 @@ The installation pointers and wiki keeper must remain untracked so the keeper pr
 .memvane/wiki/.memvane-root
 ```
 
-Activation returns these paths in `gitignoreEntries`; include the recommendation when reporting the completed onboarding.
+Activation returns these paths in `gitignoreEntries`; include the recommendation when reporting the completed onboarding. If a 1.0.1 setup session is waiting for vectors after a 1.0.2+ worker has prepared the lexical head, finish setup from the newer host session.
 
 A project inside an already selected project cannot be onboarded as a separate nested install. An initial build may report `selected_route_unavailable`; explain that the parent project is already selected and use that project or a separate directory outside it. Multiple route records in one ancestor chain are refused as `ambiguous_route_records`.
 
@@ -61,14 +61,17 @@ To activate an already staged managed learning runtime, review the staged
 generation executable and local model directory with the user. On explicit
 approval run `activate-learning-runtime --learning-runtime-executable <absolute
 venv python> --learning-model-dir <absolute model directory>
---approve-learning-runtime-activation`. The setup command checks resource
-admission and performs the existing synthetic compatibility proof before
-selecting the generation. A `deferred` result is not activation; report its
-reason and retry only when resources permit. Runtime activation does not
-prepare or activate a project's learning profile or selector.
+--approve-learning-runtime-activation`. The command records the selected
+generation as `activated_pending_proof` after checking its files and identity.
+The first training run or selector preparation performs the compatibility proof
+under resource admission. If resources are unavailable, it retries later; if the
+proof fails, the previous selection remains active and SessionStart reports the
+failure. Runtime activation does not prepare a project's profile or selector.
 
 For an explicitly requested profile, run `plan-learning-profile --project "$PROJECT_ROOT" --learning-namespace "$APPROVED_NAMESPACE" --learning-choice local-auto-apply --learning-migration new --learning-expires-at-unix-ms "$REVIEWED_EXPIRY"`. Explain the choices in natural language: local learning plus validated candidate application, staged local learning only (`local-staged`), or disabled (`off`). A profile requires an already prepared private namespace, local runtime/model and inference identity, and a separate current train/evaluate execution grant. Missing preparation or corpus authorization remains review-required; do not create a grant, import data, download weights or call a teacher to satisfy it. Use `preserve` migration for an existing learning configuration; never switch to `new` to escape existing false choices. Show the proposal's actual settings changes, project/source/cohort and runtime/model scope, resource/batch/disk limits, expiry and application authority.
 
 Only on acceptance of that exact proposal, use `activate-learning-profile` with identical options plus `--accepted-learning-profile` equal to its `proposalSha256`. Never infer acceptance from the recommendation, onboarding approval, a prior train/evaluate grant or live selection. An interrupted profile activation resumes with the identical accepted options; changed scope/expiry/settings require review. Report selected, waiting, deferred, blocked, staged and applied states separately. A selected profile is not evidence that real training, model replacement or host-hook operation passed.
 
 `update` refreshes an already selected index; it does not replace this setup flow. Never activate a teacher, private checkpoint, or operating plugin hook as a side effect of preparing a runtime.
+
+For updates, execution-only provider or worker changes are reattested by the background sync owner while retaining the existing index. If the embedding identity changes or cannot be verified, restore and onboard again.

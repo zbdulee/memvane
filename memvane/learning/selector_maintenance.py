@@ -85,6 +85,8 @@ def run(project, *, force=False):
     project = str(Path(project).resolve(strict=True))
     decision = select_route(project, action='update')
     proof = verify_selected_route_for_write(decision)
+    from memvane.learning.runtime_activation import ensure_pending
+    ensure_pending(decision=decision)
     lease = selector_heal._prepare_lease(None)
     try:
         row = inspect_journal(decision['journalPath'])
