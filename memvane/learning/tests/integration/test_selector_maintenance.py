@@ -161,7 +161,6 @@ with mock.patch('memvane.learning.api.run_selector_maintenance', side_effect=Run
                 patches.enter_context(mock.patch('memvane.journal.api.verify_selected_route_for_write', return_value={'installId': 'test'}))
                 patches.enter_context(mock.patch('memvane.learning.runtime_activation.ensure_pending'))
                 patches.enter_context(mock.patch('memvane.journal.api.inspect_journal', return_value={'maxPluginVersion': '1.0.0'}))
-                patches.enter_context(mock.patch('memvane.kernel.memvane_version.plugin_version', return_value='1.0.8'))
                 patches.enter_context(mock.patch.object(selector_heal, '_prepare_lease', side_effect=lambda *_: os.open(os.devnull, os.O_RDONLY)))
                 patches.enter_context(mock.patch.object(default_enrollment, 'record', return_value={'status': 'pending_runtime'}))
                 patches.enter_context(mock.patch.object(default_enrollment, 'default_namespace', return_value=state))
