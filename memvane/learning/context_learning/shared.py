@@ -2083,6 +2083,7 @@ def run_training_pending(root,project):
     policy=_policy(root)
     if policy.get('_runtime_authorization_v2') is not True:return {'status':'disabled'}
     from memvane.learning import project_learning_setup
+    from memvane.learning.default_enrollment import default_local_only
     if project_learning_setup.synthetic_local_only(root,project,policy):
         budget=project_learning_setup.synthetic_budget_status(root,project,policy)
         if budget['status']!='ready':return budget
@@ -2093,7 +2094,8 @@ def run_training_pending(root,project):
         if flags.get('capture') is not True or flags.get('autoCycle') is not True:
             return {'status':'disabled'}
         if not setup_ready(root):return {'status':'setup_in_progress'}
-        if not project_learning_setup.synthetic_local_only(root,project,policy):
+        if (not project_learning_setup.synthetic_local_only(root,project,policy)
+                and not default_local_only(root,project,policy)):
             from .general_teacher import read_weekly_quota
             try:read_weekly_quota()
             except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}

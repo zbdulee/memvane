@@ -704,6 +704,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/learning/default_enrollment.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/learning/selector_maintenance.py": {
       "context": "learning",
       "layer": "adapter",

@@ -24,6 +24,7 @@ def run(root, project, config=None):
     if not setup_ready(root):return {'status':'setup_in_progress'}
     from . import project_scope,general_teacher
     from memvane.learning import project_learning_setup
+    from memvane.learning.default_enrollment import default_local_only
     from memvane.runtime.api import coordination_lock as _lock
     policy=shared._policy(root)
     fd=_lock(root/'project-worker.lock')
@@ -36,7 +37,10 @@ def run(root, project, config=None):
         from .local_cycle import ResourceDeferred
         try:project_scope.require(root,policy,'local_train',fresh_inventory=True)
         except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
-        if project_learning_setup.synthetic_local_only(root,project,policy):
+        if default_local_only(root,project,policy):
+            teacher={'status':'disabled_local_only'}
+            quota={'status':'not_applicable_local_only'}
+        elif project_learning_setup.synthetic_local_only(root,project,policy):
             teacher={'status':'disabled_synthetic_local_only'}
             quota={'status':'not_applicable_local_only'}
             budget=project_learning_setup.synthetic_budget_status(root,project,policy)

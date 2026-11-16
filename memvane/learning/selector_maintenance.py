@@ -11,11 +11,25 @@ REQUEST_SECONDS = 600
 REQUEST_FILE = 'selector-heal-request.json'
 
 
+def _selector_state(project):
+    from memvane.learning.context_learning import learning_profile, selector_heal
+    from memvane.settings import api as settings
+    config = settings.find_project_config(str(project))['config']
+    if config.get('sharedLearning', {}).get('profile') == learning_profile.SCHEMA:
+        return learning_profile.selection_root(config, Path(project))
+    return selector_heal.namespace(project)
+
+
 def _missing_warm_receipt(project):
     """Only a prepared selector needs a same-version warm retry."""
     from memvane.learning.context_learning import selector_heal
     from memvane.learning.context_learning.dataset import read_private_json
-    state = selector_heal.namespace(project)
+    try:
+        state = _selector_state(project)
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    if state is None:
+        return False
     if not (state / selector_heal.POLICY).is_file() or not (state / 'active-checkpoint.json').is_file():
         return False
     try:
@@ -38,7 +52,11 @@ def _request_owned(decision, owner, *, force):
     if (row['state'] != 'selected' or row['installId'] != decision['installId']
             or running is None or highest is None or running < highest):
         return
-    retry = running == highest and _missing_warm_receipt(decision['projectRoot'])
+    from memvane.learning.default_enrollment import record
+    enrollment = record(decision['projectRoot'], Path(decision['journalPath']).parent,
+                        decision['installId'])
+    retry = running == highest and (enrollment.get('status') == 'pending_runtime'
+                                    or _missing_warm_receipt(decision['projectRoot']))
     if not force and running == highest and not retry:
         return
     state = Path(decision['journalPath']).parent
@@ -94,11 +112,19 @@ def run(project, *, force=False):
         if (running is None or highest is None or running < highest
                 or (not force and running == highest)):
             return
-        result = selector_heal.heal(project, _lease_fd=lease)
-        if result.get('status') in ('selector_ready', 'selector_prepared'):
-            warmed = selector_heal.warm(project)
-            if warmed.get('status') == 'selector_warm_busy':
+        from memvane.learning.default_enrollment import prepare
+        result = prepare(project, Path(decision['journalPath']).parent, decision['installId'], lease_fd=lease)
+        if result.get('status') not in ('selected', 'preserved'):
+            return
+        if result.get('status') == 'preserved':
+            state = _selector_state(project)
+            if state is None:
                 return
+            result = selector_heal.heal(project, state=state, _lease_fd=lease)
+            if result.get('status') in ('selector_ready', 'selector_prepared'):
+                warmed = selector_heal.warm(project, state=state)
+                if warmed.get('status') == 'selector_warm_busy':
+                    return
         with sync_owner(Path(decision['storePath']), wait=False) as owner:
             if owner is None:
                 return

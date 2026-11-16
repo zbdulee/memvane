@@ -85,7 +85,12 @@ def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False
     raw=_settings(project)
     if mode=='new' and any(key in raw for key in ('contextLearning','sharedLearning')):
         raise ValueError('profile_existing_settings_require_preserve')
-    if type(expires_at_unix_ms)is not int or not time.time()*1000<expires_at_unix_ms<=time.time()*1000+14*86400000:
+    from .project_scope import MAX_LIFETIME_MS, DEFAULT_LIFETIME_MS
+    lifetime=MAX_LIFETIME_MS
+    if type(expires_at_unix_ms)is int and expires_at_unix_ms>time.time()*1000+lifetime:
+        from memvane.learning.default_enrollment import authorized
+        if authorized(project,root):lifetime=DEFAULT_LIFETIME_MS
+    if type(expires_at_unix_ms)is not int or not time.time()*1000<expires_at_unix_ms<=time.time()*1000+lifetime:
         raise ValueError('profile_expiry_invalid')
     from .project_scope import present as general_scope_present
     if type(enable_learning)is not bool or (enable_learning and not general_scope_present(root)):
@@ -132,9 +137,12 @@ def _check_scope(row,root,policy,operation,*,settings=True):
     from .adapter import model_identity
     from .inference_identity import code_identity
     grant=require_operation(root,policy,'local_train' if operation=='local_train' else 'quality_evaluate')
+    trainer=row['trainerArgv']
+    if grant.get('operations')==['local_train','quality_evaluate'] and len(trainer)==len(policy['trainerArgv'])==3:
+        trainer=[trainer[0],policy['trainerArgv'][1],trainer[2]]
     if (row['schema']!=SCHEMA or row['namespaceRoot']!=str(Path(root).resolve())
             or row['projectRoot']!=grant.get('projectRoot') or row['runtimeApprovalSha256']!=proposal_sha256(grant)
-            or row['trainerArgv']!=policy['trainerArgv'] or row['view']!=policy['modelInputView']
+            or trainer!=policy['trainerArgv'] or row['view']!=policy['modelInputView']
             or row['modelIdentitySha256']!=model_identity(policy['trainerArgv'][2])
             or row['codeSha256']!=code_identity() or row['policySha256']!=_hash(Path(root)/'shared-policy.json')
             or row['livePolicySha256']!=_hash(Path(root)/'live-selector.json')
