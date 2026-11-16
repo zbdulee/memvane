@@ -37,7 +37,87 @@ class ReattestationTest(unittest.TestCase):
             newer = {**self.current, 'worker': 'f' * 64}
             reattest.write(state, self.original, newer, self.identity, self.identity)
             self.assertTrue(reattest.valid(state, self.original, newer, self.identity))
+            self.assertTrue(reattest.valid(state, self.original, self.current, self.identity))
+
+    def test_pair_rotation_and_legacy_current(self):
+        import json
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root).resolve()
+            other = {**self.current, 'worker':'f'*64}
+            with patch.object(reattest.time, 'time_ns', side_effect=range(1, 30)):
+                for current in (self.current, other, self.current):
+                    reattest.write(state, self.original, current, self.identity, self.identity)
+                    self.assertTrue(reattest.valid(state, self.original, current, self.identity))
+                    self.assertTrue(reattest.valid(state, self.original, current, self.identity, require_legacy=True))
+                self.assertTrue(reattest.valid(state, self.original, other, self.identity))
+                self.assertEqual(json.loads((state/'provider-reattest.json').read_text())['current'], self.current)
+                for value in range(17):
+                    current = {**self.current, 'worker':format(value, '064x')}
+                    reattest.write(state, self.original, current, self.identity, self.identity)
+            record = json.loads((state/'provider-reattest-pairs.json').read_text())
+            self.assertEqual(len(record['records']), 16)
+            self.assertEqual((state/'provider-reattest-pairs.json').stat().st_mode & 0o777, 0o600)
             self.assertFalse(reattest.valid(state, self.original, self.current, self.identity))
+
+    def test_corrupt_pairs_fail_closed_even_with_valid_v1(self):
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root).resolve()
+            reattest.write(state, self.original, self.current, self.identity, self.identity)
+            path = state/'provider-reattest-pairs.json'
+            path.write_text('{"schema":"wrong","records":[]}'); path.chmod(0o600)
+            self.assertFalse(reattest.valid(state, self.original, self.current, self.identity))
+            with self.assertRaises(ValueError):
+                reattest.write(state, self.original, self.current, self.identity, self.identity)
+
+    def test_existing_origin_cannot_be_rebound_to_a_different_identity(self):
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root).resolve()
+            reattest.write(state, self.original, self.current, self.identity, self.identity)
+            changed = {**self.identity, 'pooling':'mean'}
+            with self.assertRaisesRegex(ValueError, 'reattest_identity_changed'):
+                reattest.write(state, self.original, {**self.current, 'worker':'f'*64}, changed, changed)
+            self.assertTrue(reattest.valid(state, self.original, self.current, self.identity))
+
+    def test_legacy_only_and_unsafe_pairs(self):
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root).resolve()
+            reattest.write(state, self.original, self.current, self.identity, self.identity)
+            path = state/'provider-reattest-pairs.json'
+            path.unlink()
+            self.assertTrue(reattest.valid(state, self.original, self.current, self.identity))
+            newer = {**self.current, 'worker':'f'*64}
+            reattest.write(state, self.original, newer, self.identity, self.identity)
+            self.assertTrue(reattest.valid(state, self.original, self.current, self.identity))
+            self.assertTrue(reattest.valid(state, self.original, newer, self.identity))
+            path.unlink()
+            path.symlink_to(state/'provider-reattest.json')
+            self.assertFalse(reattest.valid(state, self.original, self.current, self.identity))
+            with self.assertRaises(OSError):
+                reattest.write(state, self.original, self.current, self.identity, self.identity)
+
+    def test_two_host_versions_alternate_authorization(self):
+        import json
+        from unittest.mock import patch
+        original = reattest.LEGACY_PAIR
+        identity = {**self.identity, 'tokenizer':'model-embedded', 'chunkerSha256':reattest.LEGACY_CHUNKER}
+        host_a = {'worker':'1'*64, 'provider':'2'*64}
+        host_b = {'worker':'3'*64, 'provider':'2'*64}
+        manifest = {'workerSha256':original['worker'], 'providerArtifactSha256':original['provider'],
+                    'workerPath':'/fixture/worker.mjs', 'providerPath':'/fixture/provider.py',
+                    'modelSha256':identity['modelSha256'], 'dimension':768}
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root).resolve()
+            for host in (host_a, host_b, host_a):
+                with patch.object(reattest, '_current', return_value=(host, identity)), \
+                     patch('memvane.provider.api.hash_file', side_effect=lambda path: host['worker'] if path.endswith('.mjs') else host['provider']):
+                    reattest.update(state, manifest)
+                    self.assertTrue(reattest.check(state, manifest))
+                    self.assertEqual(json.loads((state/'provider-reattest.json').read_text())['current'], host)
+            for host in (host_a, host_b):
+                with patch.object(reattest, '_current', return_value=(host, identity)), \
+                     patch('memvane.provider.api.hash_file', side_effect=lambda path: host['worker'] if path.endswith('.mjs') else host['provider']):
+                    self.assertTrue(reattest.check(state, manifest))
 
     def test_different_or_absent_identity_is_rejected(self):
         with tempfile.TemporaryDirectory() as root:
@@ -54,6 +134,7 @@ class ReattestationTest(unittest.TestCase):
             state = Path(root).resolve()
             reattest.write(state, self.original, self.current, self.identity, self.identity)
             (state / 'provider-reattest.json').chmod(0o644)
+            (state / 'provider-reattest-pairs.json').unlink()
             self.assertFalse(reattest.valid(state, self.original, self.current, self.identity))
 
     def test_known_legacy_pair_and_new_identity(self):

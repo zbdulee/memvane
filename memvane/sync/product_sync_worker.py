@@ -338,7 +338,7 @@ def _prepare_provider_reattest(project):
         original = {'worker': manifest['workerSha256'], 'provider': manifest['providerArtifactSha256']}
         try:
             current, identity = reattest.reattestation_current(manifest)
-            if reattest.reattestation_valid(state, original, current, identity):
+            if reattest.reattestation_valid(state, original, current, identity, require_legacy=True):
                 return
             reattest.reattestation_update(state, manifest)
             changed = [key for key in ('provider', 'worker') if original[key] != current[key]]

@@ -149,9 +149,9 @@ def reattestation_current(manifest):
     return _current(manifest)
 
 
-def reattestation_valid(state, original, current, identity):
+def reattestation_valid(state, original, current, identity, *, require_legacy=False):
     from memvane.provider.adapters.reattest import valid
-    return valid(state, original, current, identity)
+    return valid(state, original, current, identity, require_legacy=require_legacy)
 
 
 def reattestation_update(state, manifest):

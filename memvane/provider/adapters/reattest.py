@@ -10,6 +10,9 @@ from memvane.kernel.atomic_rename import atomic_json, private_state, fsync_dir
 
 SCHEMA = 'memvane-provider-reattest-v1'
 FILE = 'provider-reattest.json'
+PAIRS_SCHEMA = 'memvane-provider-reattest-pairs-v1'
+PAIRS_FILE = 'provider-reattest-pairs.json'
+PAIRS_LIMIT = 16
 _FIELDS = frozenset(('modelSha256', 'tokenizer', 'chunkerSha256', 'chunkRules',
                      'dimension', 'metric', 'pooling', 'normalization', 'maxTokens'))
 _SHA = re.compile(r'^[0-9a-f]{64}$')
@@ -33,7 +36,7 @@ def _read(state):
     fd = os.open(state / FILE, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         info = os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1
                 or info.st_mode & 0o077 or info.st_size > 16384):
             raise ValueError('reattest_file_unsafe')
         with os.fdopen(fd, 'rb') as stream:
@@ -44,16 +47,78 @@ def _read(state):
             os.close(fd)
 
 
-def valid(state, original, current, identity):
+def _record_valid(record):
+    return (type(record) is dict and set(record) == {'attested', 'current', 'attestedIdentity',
+                'currentIdentity', 'outcome', 'timeNs'} and record['outcome'] == 'accepted'
+            and _pair(record['attested']) and _pair(record['current'])
+            and _identity(record['attestedIdentity'])
+            and record['attestedIdentity'] == record['currentIdentity']
+            and type(record['timeNs']) is int and record['timeNs'] > 0)
+
+
+def _pairs(state):
+    state = private_state(state)
     try:
-        record = _read(state)
-        return (type(record) is dict and set(record) == {'schema', 'attested', 'current',
-                    'attestedIdentity', 'currentIdentity', 'outcome', 'timeNs'} and
-                record['schema'] == SCHEMA and record['outcome'] == 'accepted' and
-                _pair(original) and _pair(current) and _identity(identity) and
-                record['attested'] == original and record['current'] == current and
-                record['attestedIdentity'] == identity == record['currentIdentity'] and
-                type(record['timeNs']) is int and record['timeNs'] > 0)
+        fd = os.open(state / PAIRS_FILE, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1
+                or info.st_mode & 0o077 or info.st_size > 128 * 1024):
+            raise ValueError('reattest_pairs_unsafe')
+        def unique(items):
+            value = {}
+            for key, item in items:
+                if key in value:
+                    raise ValueError('reattest_pairs_invalid')
+                value[key] = item
+            return value
+        with os.fdopen(fd, 'rb') as stream:
+            fd = None
+            row = json.load(stream, object_pairs_hook=unique)
+            after = os.fstat(stream.fileno())
+        if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            raise ValueError('reattest_pairs_changed')
+        if (type(row) is not dict or set(row) != {'schema', 'records'}
+                or row['schema'] != PAIRS_SCHEMA or type(row['records']) is not list
+                or len(row['records']) > PAIRS_LIMIT or not all(_record_valid(r) for r in row['records'])):
+            raise ValueError('reattest_pairs_invalid')
+        keys = [(r['attested']['worker'], r['attested']['provider'],
+                 r['current']['worker'], r['current']['provider']) for r in row['records']]
+        if len(keys) != len(set(keys)):
+            raise ValueError('reattest_pairs_invalid')
+        identities = {}
+        for record in row['records']:
+            key = (record['attested']['worker'], record['attested']['provider'])
+            if key in identities and identities[key] != record['attestedIdentity']:
+                raise ValueError('reattest_pairs_invalid')
+            identities[key] = record['attestedIdentity']
+        return row['records']
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def _legacy_valid(state, original, current, identity):
+    record = _read(state)
+    return (type(record) is dict and record.get('schema') == SCHEMA
+            and _record_valid({key: value for key, value in record.items() if key != 'schema'})
+            and record['attested'] == original and record['current'] == current
+            and record['attestedIdentity'] == identity)
+
+
+def valid(state, original, current, identity, *, require_legacy=False):
+    try:
+        if not _pair(original) or not _pair(current) or not _identity(identity):
+            return False
+        records = _pairs(state)
+        if records is None:
+            return _legacy_valid(state, original, current, identity)
+        found = any(r['attested'] == original and r['current'] == current
+                    and r['attestedIdentity'] == identity for r in records)
+        return found and (not require_legacy or _legacy_valid(state, original, current, identity))
     except (OSError, ValueError, TypeError, UnicodeError):
         return False
 
@@ -67,8 +132,26 @@ def write(state, original, current, old_identity, new_identity):
               'attestedIdentity': old_identity, 'currentIdentity': new_identity,
               'outcome': 'accepted', 'timeNs': time.time_ns()}
     target = state / FILE
+    prior = None
     if target.is_symlink():
         raise ValueError('reattest_file_unsafe')
+    if target.exists():
+        prior = _read(state)
+        if (type(prior) is not dict or prior.get('schema') != SCHEMA
+                or not _record_valid({key: value for key, value in prior.items() if key != 'schema'})):
+            raise ValueError('reattest_file_invalid')
+        if prior['attested'] != original or prior['attestedIdentity'] != old_identity:
+            raise ValueError('reattest_identity_changed')
+    records = _pairs(state)
+    if records is None:
+        records = ([{key: value for key, value in prior.items() if key != 'schema'}]
+                   if prior is not None else [])
+    if any(r['attested'] == original and r['attestedIdentity'] != old_identity for r in records):
+        raise ValueError('reattest_identity_changed')
+    records = [r for r in records if (r['attested'], r['current']) != (original, current)]
+    records.append({key: value for key, value in record.items() if key != 'schema'})
+    records.sort(key=lambda r: r['timeNs'], reverse=True)
+    atomic_json(state / PAIRS_FILE, {'schema': PAIRS_SCHEMA, 'records': records[:PAIRS_LIMIT]})
     atomic_json(target, record)
     fsync_dir(state)
     return record
@@ -79,6 +162,9 @@ LEGACY_WORKER = 'f71bfb3e323f4a4de72df33a699fb4c57b8de69004598bb78819055e50e36c0
 LEGACY_PROVIDER = '87cdbd2b1144c816eaf2ddd71bac3f68c6876c8f1548f29368da05882732e8ee'
 LEGACY_CHUNKER = '6e8b4f2fb2604128180590f6c15eb9c7c5b7868c34fbbdd3216a217818e76305'
 LEGACY_PAIR = {'worker': LEGACY_WORKER, 'provider': LEGACY_PROVIDER}
+# Previous release (1.0.7): same provider and chunker, worker identity above.
+PREVIOUS_PAIR = {'worker': '8d6fdd22432d22c3256015da501ff6ef063a899f8c10e198831f1db99509a43c',
+                 'provider': LEGACY_PROVIDER}
 LEGACY_SEMANTICS = {'pooling': 'model-default', 'normalization': 'none', 'maxTokens': 2048}
 
 
@@ -104,7 +190,7 @@ def _current(manifest):
 
 
 def _attested_identity(state, original, manifest, current, identity):
-    if original == LEGACY_PAIR:
+    if original in (LEGACY_PAIR, PREVIOUS_PAIR):
         return {**identity, 'chunkerSha256': LEGACY_CHUNKER, **LEGACY_SEMANTICS}
     try:
         old = _read(state)
@@ -114,6 +200,11 @@ def _attested_identity(state, original, manifest, current, identity):
             return old_identity
     except (OSError, ValueError, KeyError, TypeError):
         pass
+    records = _pairs(state)
+    if records is not None:
+        for record in records:
+            if record['attested'] == original:
+                return record['attestedIdentity']
     if original == current:
         return identity
     raise ValueError('reattest_legacy_unknown')
