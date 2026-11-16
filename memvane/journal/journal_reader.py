@@ -286,6 +286,8 @@ def _schema3_pin(record, *, deadline, linked=None, pin_view=True, timings=None):
         started = time.monotonic()
         try:
             pin = store.pin_view(handle, deadline=deadline)
+            if timings is not None:
+                timings.update(store.pin_verification(pin))
         finally:
             if timings is not None:
                 timings['pinMs'] = round((time.monotonic() - started) * 1000, 3)

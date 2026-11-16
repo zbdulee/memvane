@@ -180,6 +180,10 @@ class ReaderMixin:
         self._pinned(pin)
         del self._pins[pin.token]
 
+    def pin_verification(self, pin):
+        """Transient ``{pinVerified: receipt|full}`` of the pin's generation check."""
+        return {'pinVerified': self._pinned(pin)['verified']['pinVerified']}
+
     def _snapshot_state(self, current, original, deadline):
         if current['checkoutDigest'] == original['checkoutDigest']:
             return 'published_snapshot'

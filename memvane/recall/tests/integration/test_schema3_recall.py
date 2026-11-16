@@ -221,6 +221,9 @@ class Schema3Recall(RecallInstallCase):
             self.assertGreaterEqual(event[field], 0)
         self.assertNotIn(PROMPT, json.dumps(event))
         self.assertNotIn(NOTE, json.dumps(event))
+        self.assertIn(event['pinVerified'], ('receipt', 'full'))
+        _context, _err, repeated = self.recall(PROMPT)
+        self.assertEqual(repeated['pinVerified'], 'receipt')
 
     def test_a_cold_provider_serves_lexical_rows_and_wakes_the_owner_once(self):
         self.install.provider.admit_queries()

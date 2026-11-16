@@ -41,7 +41,7 @@ def identity(path):
 def _path(path, view_id):
     if len(view_id) != 64 or any(c not in '0123456789abcdef' for c in view_id):
         raise ValueError('invalid_view')
-    return Path(path).parent / '.view-pin-receipt.json'
+    return Path(path).parent / ('.view-pin-receipt-' + view_id + '.json')
 
 
 def matches(path, view_id, incarnation, gen_id, seal, node):
@@ -108,11 +108,14 @@ def verified(store, db, head, live_handle, deadline, record=None):
         _handle, entry, _saved = store._sealed_handle(
             db, dict(checkout_evidence=generation['capture_json'], view_id=generation['view_id']), live_handle)
         capture = entry['capture']
+        pin_verified = 'receipt'
     else:
         generation, capture = store._rows_verify(db, head, live_handle, deadline)
+        pin_verified = 'full'
         if node is not None and store._commit_stamp(db) == stamp:
             save(store._path, live_handle.view_id, store._incarnation,
                              head.gen_id, generation['seal_digest'], node)
     if record is not None:
-        record['verified'] = dict(stamp=stamp, ordinal=head.ordinal, generation=generation, capture=capture)
+        record['verified'] = dict(stamp=stamp, ordinal=head.ordinal, generation=generation,
+                                  capture=capture, pinVerified=pin_verified)
     return generation, capture
