@@ -492,10 +492,15 @@ def _wake(queue=None):
     rows=queue.pending()
     rows=[row for row in rows if row['kind'] in wake_policy.KINDS]
     if not rows:return 'idle'
-    host_bundle.retire_old_helpers(queue.root, BACKGROUND_BUNDLE)
+    retired = host_bundle.retire_old_helpers(queue.root, BACKGROUND_BUNDLE)
     # Backed-off rows alone never start a worker that would only wait: the
     # lease-free timer runs them once they are due.
     if not wake_policy.any_due(_own_view(queue.root,rows,time.time()),time.time()):
+        if retired:
+            for _attempt in range(20):
+                if _arm_timer(queue):return 'idle'
+                time.sleep(.05)
+            return 'unavailable'
         return 'idle' if _timer_available(queue) else 'unavailable'
     if yield_requested(queue.root):
         return 'yield' if _timer_available(queue) else 'unavailable'

@@ -150,9 +150,11 @@ def _launch_worker(manifest, config, socket_path, timeout, *, cpu, state_root):
             raise IndexContractError('provider_socket_invalid')
         return process
     except BaseException as exc:
+        terminated_by_owner = False
         try:
             result = process.wait(timeout=0.5)
         except subprocess.TimeoutExpired:
+            terminated_by_owner = True
             process.terminate()
             try:
                 result = process.wait(timeout=5)
@@ -163,7 +165,7 @@ def _launch_worker(manifest, config, socket_path, timeout, *, cpu, state_root):
             os.unlink(socket_path)
         except FileNotFoundError:
             pass
-        if not cpu and result == 86:
+        if not cpu and (result == 86 or (result < 0 and not terminated_by_owner)):
             raise _GpuFailure('provider_gpu_failed') from exc
         raise
 
@@ -188,7 +190,8 @@ class OwnedEmbedService:
             if self._cpu_attempted or self._restart is None or self.lock_fd == -1:
                 return False
             try:
-                if previous.wait(timeout=0.5) != 86:
+                result = previous.wait(timeout=0.5)
+                if result != 86 and result >= 0:
                     return False
             except subprocess.TimeoutExpired:
                 return False

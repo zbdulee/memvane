@@ -996,8 +996,8 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         return _major_mismatch_response(action, host)
     from memvane.journal.api import verify_selected_route
     proof = verify_selected_route(decision)
-    if proof.get('providerAvailable') is False and action != 'recall':
-        return _provider_mismatch_response(action, host)
+    response = _provider_recovery(action, host, decision, proof, payload)
+    if response is not None:return response
     # Failure must not reach QMD.
     if proof.get("productRouteAllowed") is not True:
         _fail("selected_product_unavailable")
@@ -1267,19 +1267,20 @@ def _major_mismatch_response(action, host):
     return {}
 
 
-def _provider_mismatch_response(action, host):
-    if action == 'recall':
-        return host_payload(host, '')
-    if action in ('update', 'update-queued'):
-        notice = '[memvane] 임베딩 환경이 바뀌었습니다. 기존 설치를 복원한 뒤 다시 온보딩해 주세요.'
-        if host == 'hermes':
-            return {'status': 'provider_identity_changed', 'notice': notice}
-        return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
-                                       'additionalContext': notice}}
-    if action == 'gate':
-        from memvane.host.host_rules import gate_response
-        return gate_response(host)
-    return {}
+def _provider_recovery(action, host, decision, proof, payload):
+    if proof.get('providerAvailable') is not False:
+        return None
+    from memvane.host.provider_recovery import offer
+    pending = offer(action, decision, proof, payload, allowed=_writer_floor_allowed(proof),
+                    successful=_successful_edit(payload) if action == 'index' else _successful_bash(payload))
+    if action != 'recall':
+        return _provider_mismatch_response(action, host, pending=pending)
+    return None
+
+
+def _provider_mismatch_response(action, host, *, pending=False):
+    from memvane.host.provider_recovery import mismatch_response
+    return mismatch_response(action, host, pending=pending, host_payload=host_payload)
 
 
 def _writer_floor_response(action, host):
@@ -1301,8 +1302,8 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     if main.get('routeSchema') == 'memvane-route-v4' and not _major_allowed(main):
         return _major_mismatch_response(action, host)
     proof = recheck(main)
-    if proof.get('providerAvailable') is False and action != 'recall':
-        return _provider_mismatch_response(action, host)
+    response = _provider_recovery(action, host, main, proof, payload)
+    if response is not None:return response
     if proof.get('productRouteAllowed') is not True:
         _fail('worktree_selection_unapproved')
     if not _major_allowed(proof):

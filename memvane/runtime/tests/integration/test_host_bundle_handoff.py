@@ -114,6 +114,29 @@ class HostBundleHandoff(FixtureCase):
         with mock.patch.dict(os.environ, {'PATH': str(self.tmp)}):
             self.assertEqual(host_bundle._codex_inventory(self.home), {'installed': []})
 
+    def test_codex_toml_enabled_plugin_selects_latest_cache(self):
+        old = self.bundle('codex', 'market', '1.0.2')
+        new = self.bundle('codex', 'market', '1.0.3')
+        config = self.home/'.codex/config.toml'
+        config.write_text('[plugins."memvane@market"]\nenabled = true\n')
+        config.chmod(0o600)
+        with mock.patch.dict(os.environ, {'CODEX_HOME':str(self.home/'.codex')}):
+            self.assertEqual(host_bundle.fast_installed(home=self.home), new)
+            config.write_text('[plugins."memvane@market"]\nenabled = false\n')
+            self.assertIsNone(host_bundle.fast_installed(home=self.home))
+        self.assertTrue(old.exists())
+
+    def test_retired_timer_is_rearmed_in_same_wake(self):
+        from memvane.runtime import runtime_work as runtime
+        queue = runtime.WakeQueue()
+        queue.put('laya-sync', '/synthetic/project', now=time.time()+300)
+        with mock.patch.object(host_bundle, 'retire_old_helpers', return_value=1), \
+             mock.patch.object(runtime, '_arm_timer', side_effect=[False, False, True]) as arm, \
+             mock.patch.object(runtime.time, 'sleep') as sleep:
+            self.assertEqual(runtime._wake(queue), 'idle')
+        self.assertEqual(arm.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
     def test_group_writable_path_does_not_stop_spawn(self):
         unsafe = self.tmp / 'group-writable'
         unsafe.mkdir(mode=0o775); unsafe.chmod(0o775)

@@ -144,6 +144,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/host/provider_recovery.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/host/onboarding_choice.py": {
       "context": "host",
       "layer": "adapter",

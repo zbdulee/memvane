@@ -248,6 +248,44 @@ def latest_installed(*, home=None):
 
 
 
+
+def _codex_enabled_markets(codex):
+    """Read the bounded owner-controlled Codex plugin enablement tables."""
+    path = codex / 'config.toml'
+    info = _safe_node(path, directory=False)
+    if info.st_size > 1024 * 1024:
+        raise ValueError('bundle_metadata_too_large')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(fd)
+        raw = os.read(fd, 1024 * 1024 + 1)
+        after = os.fstat(fd)
+        if (len(raw) != before.st_size or len(raw) > 1024 * 1024 or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                or (before.st_dev, before.st_ino) != (info.st_dev, info.st_ino)):
+            raise ValueError('bundle_metadata_changed')
+    finally:
+        os.close(fd)
+    markets, current, seen, enable_seen = [], None, set(), set()
+    for line in raw.decode('utf8').splitlines():
+        line = line.strip()
+        if line.startswith('['):
+            match = re.fullmatch(r'\[plugins\."memvane@([A-Za-z0-9][A-Za-z0-9._-]{0,127})"\]\s*(?:#.*)?', line)
+            current = match.group(1) if match else None
+            if current in seen:
+                raise ValueError('bundle_metadata_invalid')
+            if current:
+                seen.add(current)
+        elif current and re.match(r'enabled\s*=', line):
+            if current in enable_seen:
+                raise ValueError('bundle_metadata_invalid')
+            enable_seen.add(current)
+            if re.fullmatch(r'enabled\s*=\s*true\s*(?:#.*)?', line):
+                markets.append(current)
+            elif not re.fullmatch(r'enabled\s*=\s*false\s*(?:#.*)?', line):
+                raise ValueError('bundle_metadata_invalid')
+    return markets
+
 def fast_installed(*, home=None):
     """Read bounded host records only; never launch a host CLI on a hook."""
     home = Path.home() if home is None else Path(home)
@@ -255,14 +293,16 @@ def fast_installed(*, home=None):
     claude = Path(os.environ.get('CLAUDE_CONFIG_DIR') or home / '.claude')
     found = []
     try:
-        rows = _read_json(codex / 'plugins' / 'installed_plugins.json').get('installed', [])
-        if isinstance(rows, list) and len(rows) <= 128:
-            for row in rows:
-                if (isinstance(row, dict) and row.get('name') == 'memvane'
-                        and row.get('installed') is True and row.get('enabled') is True):
-                    item = _candidate(codex, row.get('marketplaceName'), row.get('version'), 'codex')
-                    if item is not None:
-                        found.append(item)
+        for market in _codex_enabled_markets(codex):
+            parent = codex / 'plugins' / 'cache' / market / 'memvane'
+            _safe_node(parent, directory=True)
+            versions = list(parent.iterdir())
+            if len(versions) > 128:
+                continue
+            for version in versions:
+                item = _candidate(codex, market, version.name, 'codex')
+                if item is not None:
+                    found.append(item)
     except (OSError, ValueError, TypeError, AttributeError, UnicodeError):
         pass
     try:
@@ -404,7 +444,7 @@ def retire_old_helpers(queue_root, current):
             if _process_rows(row[0]) != [row] or not _holds_path(row[0], *target):
                 continue
             os.kill(row[0], signal.SIGTERM)
-            stopped += 1
+            stopped += target[1].name == 'runtime-wake-timer.lock'
         except (OSError, subprocess.TimeoutExpired):
             continue
     return stopped
