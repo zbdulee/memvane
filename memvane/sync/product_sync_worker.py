@@ -381,8 +381,8 @@ SCHEMA3_LINKED_HELD = SCHEMA3_BINDING_REASONS | frozenset(('worktree_binding_con
 def _publish_schema3(decision, proof, writer, vectors=None):
     """Main view first, then each linked worktree's own view (design 5.2).
 
-    Changed cards only: head members with the same bytes keep their trust. A
-    linked worktree is published only while the main view is complete
+    Recheck observed source revisions as well as changed card bytes. A linked
+    worktree is published only while the main view is complete
     (``indexed``/``unchanged``); its refusals hold that view alone. One
     ``vectors`` context (``_schema3_vector_context``) serves every view of
     the pass, so content two views share is embedded once.
