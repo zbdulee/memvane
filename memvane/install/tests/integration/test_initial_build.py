@@ -10,6 +10,7 @@ owner refuses every writer. (Rescan after selection and the finalize port are
 import os
 import stat
 import unittest
+from unittest import mock
 
 from memvane.install import api as install
 from memvane.install.tests.support import OTHER_INSTALL, InstallCase
@@ -28,9 +29,20 @@ class InitialBuild(InstallCase):
     def record_bytes(self):
         return (self.state / 'build.json').read_bytes()
 
+    def test_status_uses_a_bounded_event_window_and_ignores_stale_snapshots(self):
+        from memvane.diagnostics.api import emit
+        emit('index.build.progress', state_root=self.state, install=self.target.install_id,
+             buildEpoch=0, stage='complete', ingest={'done': 42, 'total': 42})
+        self.assertEqual(self.status()['progress'],
+                         {'stage': 'registered', 'ingest': None, 'vector': None})
+        with mock.patch('memvane.diagnostics.event_log.read', return_value=[]) as read:
+            self.status()
+        read.assert_called_once_with(self.state, max_bytes=262144)
+
     def test_phase_moves_registered_to_ready_and_status_only_reads_it(self):
         self.assertEqual(self.status(project_root=str(self.project)),
-                         {'status': 'initial_build', 'phase': 'registered', 'reason': None, 'epoch': 1})
+                         {'status': 'initial_build', 'phase': 'registered', 'reason': None, 'epoch': 1,
+                          'progress': {'stage': 'registered', 'ingest': None, 'vector': None}})
         before = self.record_bytes()
         inspected = install.index_origin_status(str(self.state))
         self.assertEqual((inspected['status'], inspected['journal']['state'], inspected['initialBuild']['phase']),
@@ -72,7 +84,8 @@ class InitialBuild(InstallCase):
         self.assertEqual((result['status'], result['phase']), ('rescan_requested', 'building'))
         self.assertIn('status', result['wake'])
         self.assertEqual(self.status(), {'status': 'initial_build', 'phase': 'building', 'reason': None,
-                                         'epoch': ready['epoch'] + 1})
+                                         'epoch': ready['epoch'] + 1,
+                                         'progress': {'stage': 'building', 'ingest': None, 'vector': None}})
         self.assertEqual(self.target.build()[-1]['buildPhase'], 'ready')
 
     def test_a_busy_build_owner_refuses_the_writers(self):

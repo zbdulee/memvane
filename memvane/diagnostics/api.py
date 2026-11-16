@@ -76,6 +76,12 @@ def vector_damage_seen(decision):
     return implementation(decision)
 
 
+def build_progress_events(state_root):
+    """Read only the newest bounded event window for build progress."""
+    from memvane.diagnostics.event_log import read
+    return read(state_root, max_bytes=262144)
+
+
 def capture(decision, *, event, reason, exc=None, warning=False, child_stderr=None, consent=None):
     from memvane.diagnostics.diagnostic_trace import capture as implementation
     return implementation(decision, event=event, reason=reason, exc=exc, warning=warning,

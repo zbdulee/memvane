@@ -219,9 +219,37 @@ class BuildOwner(FixtureCase):
         self.assertEqual(build_lookup(str(self.fixture.root))['phase'], 'building')
         resumed = self.target.run_sync()
         self.assertEqual((resumed['generation'], resumed['buildPhase']), (result['generation'], 'ready'))
+        from memvane.install.api import initial_build_status
+        self.assertEqual(initial_build_status(str(self.target.state))['progress']['ingest'],
+                         {'done': 1, 'total': 1})
         self.assertEqual(self.target.finalize()['status'], 'initial_build_finalized')
         self.assertEqual(self.target.activate()['status'], 'selected')
         self.assertIn('heron.md', self.target.recall('emerald heron'))
+
+    def test_build_status_reports_bounded_ingest_and_vector_progress(self):
+        from memvane.install.api import initial_build_status
+        for name in ('egret', 'tern'):
+            note = self.fixture.write_note('notes/' + name + '.md', name + ' nests by the pond.\n')
+            self.fixture.write_card(name + '.md', title=name, body=name + ' nests by the pond.\n', sources=[note])
+        self.fixture.commit('three cards')
+        with mock.patch.object(worker, 'SCHEMA3_MAX_INGEST', 2):
+            pending = self.target.run_sync()
+        self.assertEqual(pending['state'], 'pending')
+        status = initial_build_status(str(self.target.state))
+        self.assertIn('progress', status)
+        self.assertEqual(status['progress']['ingest'], {'done': 2, 'total': 3})
+        self.assertEqual(status['progress']['stage'], 'ingest')
+        self.target.run_sync()
+        status = initial_build_status(str(self.target.state))
+        self.assertEqual(status['progress']['ingest'], {'done': 3, 'total': 3})
+        self.assertEqual(self.target.finalize()['status'], 'initial_build_finalized')
+        self.assertEqual(self.target.activate()['status'], 'selected')
+        self.target.run_sync()
+        before = (self.target.state / 'events.jsonl').read_bytes()
+        status = initial_build_status(str(self.target.state))
+        self.assertEqual(status['progress']['vector'], {'done': 3, 'total': 3})
+        self.assertEqual(status['progress']['stage'], 'complete')
+        self.assertEqual((self.target.state / 'events.jsonl').read_bytes(), before)
 
     # Product regression candidate (reported to the lead): the cold build shares
     # the selected sync's vector context, whose provider calls probe
