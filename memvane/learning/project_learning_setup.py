@@ -629,7 +629,7 @@ def activate(plan,*,accepted_sha256,fault=lambda _:None):
         return {'status':'activated','acceptedSha256':accepted_sha256,'backupRoot':str(backup),
                 'projectRoot':str(project),'namespaceRoot':str(root),'capture':True,'autoCycle':True,
                 'teacherModel':None if mode in (SYNTHETIC_STAGED,DEFAULT_LOCAL) else 'gpt-6-luna',
-                'maxGoldCalls':0 if mode==SYNTHETIC_STAGED else 20,
+                'maxGoldCalls':0 if mode in (SYNTHETIC_STAGED,DEFAULT_LOCAL) else 20,
                 'promotion':'disabled' if mode==SYNTHETIC_STAGED else 'quality_gated'}
 
 

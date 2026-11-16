@@ -11,6 +11,25 @@ from memvane.learning.context_learning import runtime_installer, selector_heal
 
 
 class SelectorMaintenance(unittest.TestCase):
+    def test_deferred_default_preparation_does_not_heal_a_different_namespace(self):
+        with tempfile.TemporaryDirectory(prefix='mvs-') as directory:
+            root = Path(directory).resolve()
+            decision = {'projectRoot': str(root), 'storePath': str(root / 'store.sqlite'),
+                        'journalPath': str(root / 'journal.sqlite'), 'installId': 'test'}
+            fd = os.open(os.devnull, os.O_RDONLY)
+            with mock.patch('memvane.journal.api.select_route', return_value=decision), \
+                 mock.patch('memvane.journal.api.verify_selected_route_for_write', return_value={'installId': 'test'}), \
+                 mock.patch('memvane.learning.runtime_activation.ensure_pending'), \
+                 mock.patch('memvane.journal.api.inspect_journal', return_value={'maxPluginVersion': '1.0.0'}), \
+                 mock.patch('memvane.kernel.memvane_version.plugin_version', return_value='1.0.1'), \
+                 mock.patch.object(selector_heal, '_prepare_lease', return_value=fd), \
+                 mock.patch('memvane.learning.default_enrollment.prepare', return_value={'status': 'selector_warm_busy'}), \
+                 mock.patch.object(selector_heal, 'heal') as heal, \
+                 mock.patch('memvane.journal.api.publish_plugin_version') as publish:
+                selector_maintenance.run(root)
+            heal.assert_not_called()
+            publish.assert_not_called()
+
     def test_session_start_retries_default_enrollment_for_same_version(self):
         decision = {'projectRoot': '/project', 'storePath': '/store',
                     'journalPath': '/state/journal', 'installId': 'test'}

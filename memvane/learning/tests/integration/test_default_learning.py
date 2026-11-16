@@ -37,6 +37,45 @@ class DefaultLearning(unittest.TestCase):
         self.assertNotEqual(row['namespaceRoot'], str(default_enrollment.namespace(self.project)))
         self.assertEqual(row['namespaceRoot'], str(default_enrollment.default_namespace(self.project, 'abc123')))
 
+    def test_missing_runtime_does_not_prepare_or_activate(self):
+        from memvane.learning import default_enrollment
+        from memvane.learning.context_learning.selector_heal import HealRefused
+        with mock.patch('memvane.learning.context_learning.selector_heal.official_runtime',
+                        side_effect=HealRefused('learning_runtime_not_installed')), \
+             mock.patch.object(default_enrollment, '_prepare_namespace') as prepare, \
+             mock.patch.object(default_enrollment, '_activate_profile') as activate:
+            result = default_enrollment.prepare(self.project, self.state, 'abc123', lease_fd=123)
+        self.assertEqual(result['status'], 'pending_runtime')
+        self.assertTrue((self.state / default_enrollment.NAME).is_file())
+        prepare.assert_not_called()
+        activate.assert_not_called()
+
+    def test_opt_out_after_intent_prevents_preparation(self):
+        from memvane.learning import default_enrollment
+        default_enrollment.record(self.project, self.state, 'abc123')
+        self.write({'name': 'fixture', 'contextLearning': {'capture': False}})
+        with mock.patch('memvane.learning.context_learning.selector_heal.official_runtime') as runtime:
+            result = default_enrollment.prepare(self.project, self.state, 'abc123', lease_fd=123)
+        self.assertEqual(result['status'], 'disabled')
+        runtime.assert_not_called()
+
+    def test_project_inventory_requires_the_executing_enabled_codex_install(self):
+        from memvane.learning.context_learning import project_scope
+        home = self.root / 'home'
+        root = home / '.codex/plugins/cache/market/memvane/1.0.7'
+        adapter = root / 'memvane/learning/context_learning/adapter.py'
+        adapter.parent.mkdir(mode=0o700, parents=True)
+        adapter.touch(mode=0o600)
+        entry = {'name': 'memvane', 'installed': True, 'enabled': True,
+                 'marketplaceName': 'market', 'version': '1.0.7'}
+        with mock.patch('pathlib.Path.home', return_value=home), \
+             mock.patch('memvane.learning.context_learning.selector_heal.running_adapter', return_value=adapter), \
+             mock.patch('memvane.learning.context_learning.host_inventory._project_listing', return_value={'installed': [entry]}) as listing:
+            self.assertEqual(project_scope._local_installations(self.project), [{'host': 'codex', 'root': str(root)}])
+            listing.return_value = {'installed': [{**entry, 'enabled': False}]}
+            with self.assertRaisesRegex(ValueError, 'project_scope_installation_invalid'):
+                project_scope._local_installations(self.project)
+
     def test_any_explicit_off_prevents_default_enrollment(self):
         from memvane.learning import default_enrollment
         for block in ({'contextLearning': {'capture': False}},
@@ -183,4 +222,43 @@ class DefaultLearning(unittest.TestCase):
         self.assertEqual(profile['choice'], 'local-auto-apply')
         self.assertEqual(profile['mode'], 'new')
         self.assertTrue(profile['autoApply'])
+        self.assertFalse((root / 'project-teacher-consent.json').exists())
+
+    def test_pending_choice_creates_one_profile_and_grant_after_warm(self):
+        from memvane.learning import default_enrollment
+        from memvane.learning.context_learning import adapter, project_scope
+        model = self.root / 'model'
+        model.mkdir(mode=0o700)
+        for name in adapter.MODEL_FILES:
+            path = model / name
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path.write_text('{}' if name.endswith('.json') else 'fixture', encoding='utf8')
+            path.chmod(0o600)
+        (model / 'rl_agent_config.json').write_text(json.dumps({'encoder': 'jhu-clsp/mmBERT-base', 'max_len': 1024, 'head_max_len': 256}))
+        runtime = self.root / 'python'
+        runtime.write_text('fixture runtime')
+        runtime.chmod(0o700)
+        support = self.root / 'support'
+        support.mkdir(mode=0o700)
+        installs = [{'host': 'codex', 'root': str(Path(adapter.__file__).resolve().parents[3])}]
+        events = []
+        with mock.patch('memvane.learning.context_learning.runtime_setup.learning_state_base', return_value=support / 'v1'), \
+             mock.patch.object(default_enrollment, 'authorized', return_value=True), \
+             mock.patch.object(project_scope, '_local_installations', return_value=installs), \
+             mock.patch.object(project_scope, '_installed_binding', return_value=installs), \
+             mock.patch.object(project_scope, '_binding', return_value={'installations': installs}), \
+             mock.patch('memvane.learning.context_learning.selector_heal.official_runtime', return_value=(str(runtime), str(model))), \
+             mock.patch('memvane.learning.context_learning.selector_heal.pressure', return_value=None), \
+             mock.patch('memvane.learning.context_learning.selector_heal.heal', side_effect=lambda *a, **k: events.append('heal') or {'status': 'selector_prepared'}), \
+             mock.patch('memvane.learning.context_learning.selector_heal.warm', side_effect=lambda *a, **k: events.append('warm') or {'status': 'selector_warm'}):
+            result = default_enrollment.prepare(self.project, self.state, 'abc123', lease_fd=123)
+            root = default_enrollment.default_namespace(self.project, 'abc123')
+            profile = json.loads((root / 'learning-profile.json').read_text())['proposal']
+            grant = json.loads((root / project_scope.NAME).read_text())['proposal']
+            self.assertEqual(default_enrollment.prepare(self.project, self.state, 'abc123', lease_fd=123)['status'], 'preserved')
+        self.assertEqual(result['status'], 'selected')
+        self.assertEqual(events, ['heal', 'warm'])
+        self.assertEqual(profile['choice'], 'local-auto-apply')
+        self.assertEqual(profile['mode'], 'new')
+        self.assertEqual(grant['operations'], ['local_train', 'quality_evaluate'])
         self.assertFalse((root / 'project-teacher-consent.json').exists())

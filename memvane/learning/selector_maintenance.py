@@ -114,9 +114,9 @@ def run(project, *, force=False):
             return
         from memvane.learning.default_enrollment import prepare
         result = prepare(project, Path(decision['journalPath']).parent, decision['installId'], lease_fd=lease)
-        if result.get('status') in ('pending_runtime', 'disabled'):
+        if result.get('status') not in ('selected', 'preserved'):
             return
-        if result.get('status') != 'selected':
+        if result.get('status') == 'preserved':
             state = _selector_state(project)
             if state is None:
                 return
