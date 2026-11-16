@@ -195,7 +195,13 @@ class GenerationChecks(GenerationCase):
         generation, base = self.prepared(store, handle, self.snapshot(store, handle, root=root))
         prior_facts = copy.deepcopy(store._handles[handle.token]['capture']['evidence'])
         self.git(root, 'commit', '--allow-empty', '-q', '-m', 'later')
-        with mock.patch.object(self.views.checkout, '_capture_facts', return_value=prior_facts):
+        original = self.views.checkout.capture_view
+        def capture(*args, **kwargs):
+            if kwargs.get('fresh'):
+                return original(*args, **kwargs)
+            with mock.patch.object(self.views.checkout, '_capture_facts', return_value=prior_facts):
+                return original(*args, **kwargs)
+        with mock.patch.object(self.views.checkout, 'capture_view', side_effect=capture):
             self.refused(store.publish_generation, handle, generation, expected_head=base)
         self.assertIsNone(store.head(store.capture_view(handle.worktree_id))['gen_id'])
 

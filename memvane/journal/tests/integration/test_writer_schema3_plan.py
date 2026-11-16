@@ -77,12 +77,13 @@ class WriterStorePlan(InstallCase):
                          (epoch + 1, epoch + 1, True))
 
     def test_a_selection_change_before_the_mark_refuses_it(self):
-        epoch = self.row()['epoch']
+        initial = self.row()
+        epoch = initial['epoch']
         with self.writer() as writer:
             self.forge('UPDATE selection SET epoch=epoch+1 WHERE id=1')
             self.refused('normal_writer_changed', writer.mark_new_write)
         row = self.row()
-        self.assertEqual((row['epoch'], row['newWriteSeen']), (epoch + 1, False))
+        self.assertEqual((row['epoch'], row['newWriteSeen']), (epoch + 1, initial['newWriteSeen']))
 
 
 if __name__ == '__main__':
