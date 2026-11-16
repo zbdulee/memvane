@@ -162,6 +162,27 @@ class HostBundleHandoff(FixtureCase):
              mock.patch.object(host_bundle, 'fast_installed', return_value=None):
             self.assertTrue(identity.preferred())
 
+    def test_transient_successor_metadata_failure_keeps_intact_resident(self):
+        root = self.bundle('codex', 'market', '1.0.3')
+        identity = host_bundle.BundleIdentity(root)
+        with mock.patch.dict(os.environ, {'MEMVANE_TEST_RUNTIME_ROOT':''}), \
+             mock.patch.object(host_bundle, 'fast_installed', return_value=self.tmp/'successor'), \
+             mock.patch.object(host_bundle, '_read_json', side_effect=OSError('transient')):
+            self.assertTrue(identity.preferred())
+
+    def test_unsafe_host_settings_emit_inventory_event(self):
+        codex = self.home / '.codex'; codex.mkdir(exist_ok=True)
+        config = codex / 'config.toml'; config.write_text(''); config.chmod(0o660)
+        claude = self.home / '.claude' / 'plugins'; claude.mkdir(parents=True, exist_ok=True)
+        (claude / 'installed_plugins.json').write_text('{"plugins":{}}')
+        settings = self.home / '.claude' / 'settings.json'; settings.symlink_to(config)
+        with mock.patch.dict(os.environ, {'CODEX_HOME': str(codex), 'CLAUDE_CONFIG_DIR': str(claude.parent)}), \
+             mock.patch('memvane.diagnostics.api.emit') as emit:
+            self.assertIsNone(host_bundle.fast_installed(home=self.home))
+        hosts = {call.kwargs.get('host') for call in emit.call_args_list
+                 if call.kwargs.get('reason') == 'host_inventory_unreadable'}
+        self.assertEqual(hosts, {'codex', 'claude'})
+
     def test_host_cli_is_not_run_from_a_writable_path(self):
         unsafe = self.tmp / 'unsafe'
         unsafe.mkdir(mode=0o777)
@@ -181,9 +202,9 @@ class HostBundleHandoff(FixtureCase):
         tick = [0.0]
         identity = types.SimpleNamespace(intact=lambda: False)
         with mock.patch.object(runtime, 'BACKGROUND_BUNDLE', identity), \
-                mock.patch.object(host_bundle, 'latest_installed', side_effect=[None, self.tmp]):
+                mock.patch.object(host_bundle, 'fast_installed', side_effect=[None, self.tmp]):
             result = runtime.timer(queue, wall=lambda: 1, clock=lambda: tick[0],
-                                   sleep=lambda seconds: tick.__setitem__(0, tick[0] + seconds),
+                                   sleep=lambda seconds: tick.__setitem__(0, tick[0] + .1),
                                    max_seconds=1)
         self.assertEqual(result, 'bundle_changed')
         self.assertEqual(len(queue.pending()), 1)
@@ -308,7 +329,7 @@ class HostBundleHandoff(FixtureCase):
             return child
 
         with mock.patch.object(runtime, 'BACKGROUND_BUNDLE', identity, create=True), \
-                mock.patch.object(host_bundle, 'latest_installed', return_value=new), \
+                mock.patch.object(host_bundle, 'fast_installed', return_value=new), \
                 mock.patch.object(runtime, 'entry_argv', side_effect=entry), \
                 mock.patch.object(runtime.subprocess, 'Popen', side_effect=spawn):
             outcome = runtime.timer(queue, wake_once=lambda _: self.fail('old timer ran a due wake'),
@@ -337,7 +358,7 @@ class HostBundleHandoff(FixtureCase):
             'sys.path.insert(0,str(Path(__file__).resolve().parents[1]))\n'
             'from memvane.runtime import host_bundle\n'
             f'new=Path({str(new)!r})\n'
-            'host_bundle.latest_installed=lambda: new if new.is_dir() else None\n'
+            'host_bundle.fast_installed=lambda: new if new.is_dir() else None\n'
             'host_bundle.entry_argv=lambda name,*args,**kw: [sys.executable,"-B",str(new/"entry"/"run.py"),name,*args]\n'
             'from memvane.runtime import runtime_work as r\n'
             'r.TIMER_CHUNK_SECONDS=.05; r.TIMER_MIN_SLEEP_SECONDS=.01\n'

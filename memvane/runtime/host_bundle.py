@@ -61,7 +61,7 @@ class BundleIdentity:
             other = version_key(_read_json(root / 'plugin.json', limit=65536).get('version'))
             return self.version is not None and (other is None or self.version >= other)
         except (OSError, ValueError, AttributeError, TypeError):
-            return False
+            return True  # A transient metadata read cannot revoke this intact bundle.
 
 
 def _safe_node(path, *, directory):
@@ -286,6 +286,12 @@ def _codex_enabled_markets(codex):
                 raise ValueError('bundle_metadata_invalid')
     return markets
 
+
+def _inventory_unavailable(host):
+    from memvane.diagnostics import api as diagnostics
+    diagnostics.emit('runtime.bundle', outcome='unavailable', reason='host_inventory_unreadable', host=host)
+
+
 def fast_installed(*, home=None):
     """Read bounded host records only; never launch a host CLI on a hook."""
     home = Path.home() if home is None else Path(home)
@@ -303,8 +309,10 @@ def fast_installed(*, home=None):
                 item = _candidate(codex, market, version.name, 'codex')
                 if item is not None:
                     found.append(item)
-    except (OSError, ValueError, TypeError, AttributeError, UnicodeError):
+    except FileNotFoundError:
         pass
+    except (OSError, ValueError, TypeError, AttributeError, UnicodeError):
+        _inventory_unavailable('codex')
     try:
         plugins = _read_json(claude / 'plugins' / 'installed_plugins.json')['plugins']
         enabled = _read_json(claude / 'settings.json').get('enabledPlugins', {})
@@ -320,8 +328,10 @@ def fast_installed(*, home=None):
                     item = _candidate(claude, name[len('memvane@'):], row.get('version'), 'claude')
                     if item is not None and row.get('installPath') == str(item[1]):
                         found.append(item)
-    except (OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError):
+    except FileNotFoundError:
         pass
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError):
+        _inventory_unavailable('claude')
     return max(found, key=lambda item: (item[0], str(item[1])))[1] if found else None
 
 def entry_argv(name, *args, python=None, isolated=False):
