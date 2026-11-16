@@ -239,17 +239,29 @@ class Schema3Recall(RecallInstallCase):
                     self.assertEqual((event['outcome'], event['reason']), ('empty', 'checkout_changed'))
                     self.assertNotIn('request refused', err)
 
-    def test_recalls_during_a_publish_each_serve_the_old_or_the_new_view(self):
+    def test_recalls_during_a_publish_only_serve_recorded_generations(self):
         old = self.generation(self.recall(PROMPT)[0])
-        self.write_card('glacier')
         self.fixture.write_note('notes.md', NOTE + 'The heron also keeps zqheronx near the glacier.\n')
+        self.write_card('heron')
+        self.write_card('glacier')
         self.fixture.commit('second card')
         done = threading.Event()
-        errors = []
+        errors, published = [], []
 
         def publish():
+            from memvane.store import api as store_api
+            real_open = store_api.open_store
+            class RecordedStore:
+                def __init__(self, base): self.base = base
+                def __getattr__(self, name): return getattr(self.base, name)
+                def publish_generation(self, handle, gen_id, **kwargs):
+                    result = self.base.publish_generation(handle, gen_id, **kwargs)
+                    published.append(gen_id)
+                    return result
             try:
-                self.install.settle()
+                with mock.patch.object(store_api, 'open_store',
+                                       side_effect=lambda *a, **kw: RecordedStore(real_open(*a, **kw))):
+                    self.install.settle()
             except BaseException as exc:  # noqa: BLE001 - reported below
                 errors.append(exc)
             finally:
@@ -260,24 +272,30 @@ class Schema3Recall(RecallInstallCase):
         try:
             while not done.is_set() and len(seen) < 50:
                 try:
-                    context = self.recall(PROMPT)[0]
+                    context, _err, event = self.recall(PROMPT)
                 except HostResponseError as exc:
                     # Two changes inside one recall (a retry already spent):
                     # refused, never served from a third or mixed view.
                     seen.append(str(exc))
                     continue
                 except JournalEvidenceError as exc:
-                    if str(exc) != 'selected_route_changed':
+                    # A concurrently changing SQLite rollback journal also
+                    # refuses proof before any rows can be served.
+                    if str(exc) not in ('selected_route_changed', 'journal_changed'):
                         raise
                     seen.append(str(exc))
                     continue
+                if context:
+                    self.assertEqual(self.generation(context), event['generation'])
                 seen.append(self.generation(context) if context else None)
         finally:
             worker.join(120)
         self.assertEqual(errors, [])
         new = self.generation(self.recall(PROMPT)[0])
         self.assertNotEqual(new, old)
-        self.assertLessEqual(set(seen), {old, new, 'selected_proof_changed', 'selected_route_changed'}, seen)
+        self.assertIn(new, published)
+        self.assertLessEqual(set(seen), {old, *published, 'selected_proof_changed',
+                                         'selected_route_changed', 'journal_changed'}, (seen, published))
 
     def test_a_hot_store_journal_is_rolled_back_before_the_reader_serves(self):
         # A writer killed mid-commit leaves a torn store with a hot journal right
