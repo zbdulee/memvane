@@ -260,13 +260,14 @@ def _run(project, *, force=False):
             if state is None:
                 return False
             result = selector_heal.heal(project, state=state, _lease_fd=lease)
-            if result.get('status') not in ('selector_ready', 'selector_prepared'):
+            if result.get('status') not in ('selector_ready', 'selector_prepared', 'selector_not_prepared'):
                 return False
-            warmed = selector_heal.warm(project, state=state)
-            if warmed.get('status') not in ('selector_warm', 'selector_warm_current'):
-                return False
-            from memvane.diagnostics import api as diagnostics
-            diagnostics.emit('learning.selector.warm', outcome=warmed.get('status'), decision=decision)
+            if result.get('status') != 'selector_not_prepared':
+                warmed = selector_heal.warm(project, state=state)
+                if warmed.get('status') not in ('selector_warm', 'selector_warm_current'):
+                    return False
+                from memvane.diagnostics import api as diagnostics
+                diagnostics.emit('learning.selector.warm', outcome=warmed.get('status'), decision=decision)
         with sync_owner(Path(decision['storePath']), wait=False) as owner:
             if owner is None:
                 return False

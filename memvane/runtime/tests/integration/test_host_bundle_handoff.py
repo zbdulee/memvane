@@ -15,6 +15,21 @@ from memvane.runtime import host_bundle
 
 
 class HostBundleHandoff(FixtureCase):
+    def test_notice_install_version_is_scoped_to_the_executing_host(self):
+        codex = self.bundle('codex', 'market', '1.0.10')
+        claude = self.bundle('claude', 'market', '1.0.11')
+        base = self.home / '.claude/plugins'
+        (base / 'installed_plugins.json').write_text(json.dumps({'plugins': {
+            'memvane@market': [{'version': '1.0.11', 'installPath': str(claude)}]}}), encoding='utf8')
+        (self.home / '.claude/settings.json').write_text(
+            json.dumps({'enabledPlugins': {'memvane@market': True}}), encoding='utf8')
+        identity = host_bundle.BundleIdentity(codex)
+        with mock.patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '0'}), \
+                mock.patch.object(host_bundle, '_codex_enabled_markets', return_value=[]), \
+                mock.patch.object(host_bundle, '_host_listing', side_effect=AssertionError('no CLI')):
+            self.assertEqual(identity.installed_version(host='codex'), host_bundle.version_key('1.0.10'))
+            self.assertEqual(identity.installed_version(host='claude'), host_bundle.version_key('1.0.11'))
+
     def test_installed_version_uses_metadata_without_cli_or_fixture_inventory(self):
         current = self.bundle('codex', 'market', '1.0.11')
         newer = self.bundle('claude', 'market', '1.0.12')

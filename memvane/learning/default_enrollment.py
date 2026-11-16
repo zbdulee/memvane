@@ -159,6 +159,13 @@ def _prepare_namespace(root, executable, model):
         if os.path.lexists(target):
             current = read_private_json(target)
             if current != value:
+                argv = current.get('trainerArgv') if isinstance(current, dict) else None
+                if (name == 'live-selector.json' and isinstance(argv, list) and len(argv) == 3
+                        and {**current, 'trainerArgv': [argv[0], value['trainerArgv'][1], argv[2]]} == value):
+                    # Reuse heal's content/approved-scope checks for a moved anchor.
+                    # Accepted policies stay intact; only rebind may rewrite them.
+                    selector_heal.rebind(root)
+                    continue
                 legacy = {key: item for key, item in value.items() if key != 'schema_version'}
                 if name != 'active-checkpoint.json' or current != legacy:
                     raise ValueError('default_learning_namespace_changed')

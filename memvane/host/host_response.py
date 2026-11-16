@@ -994,7 +994,7 @@ def _learning_runtime_notice(notice):
 def _session_health_notice(decision, notice, host, payload):
     from memvane.host.session_notice import append_notice
     notice = _learning_settings_notice(decision, _wiki_recovery_notice(decision, notice), host, payload)
-    notice = append_notice(decision, _learning_runtime_notice(notice))
+    notice = append_notice(decision, _learning_runtime_notice(notice), host, payload)
     try:
         if event_log.vector_damage_seen(decision):
             line = ('[memvane] 임베딩 데이터가 손상돼 어휘 검색만 씁니다. '
@@ -1374,7 +1374,7 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
             _fail('selected_proof_changed')
         _request_worktree_sync(main, proof, recheck)
         from memvane.host.session_notice import append_notice
-        notice = append_notice(main, WORKTREE_VIEW_NOTICE)
+        notice = append_notice(main, WORKTREE_VIEW_NOTICE, host, payload)
         if host == 'hermes':
             return {'status': 'worktree_view', 'notice': notice}
         return {'hookSpecificOutput': {'hookEventName': 'SessionStart',

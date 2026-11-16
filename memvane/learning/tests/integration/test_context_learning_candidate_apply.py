@@ -206,7 +206,8 @@ class Checks(unittest.TestCase):
   import socket
   from memvane.learning.context_learning import inference_service as service
   self.policy['trainerArgv']=[sys.executable,'/fake/adapter',str(self.root/'model')]
-  for where,error in (('_ensure',service.ServiceFailure('starting')),('_exchange',socket.timeout()),('_exchange',service.ServiceFailure('deadline_expired'))):
+  errors=[('_ensure',service.ServiceFailure(code)) for code in ('starting','start_refused','start_path_invalid','start_io_failed','start_failed','permission_denied')]
+  for where,error in errors+[('_exchange',socket.timeout()),('_exchange',service.ServiceFailure('deadline_expired'))]:
    with self.subTest(where=where,error=type(error).__name__):
     with patch.object(service,'service_root',return_value=self.root),patch.object(service,'_ensure'),patch.object(service,'_exchange',return_value={'status':'prepared'}),patch.object(service,where,side_effect=error):
      answer=A.apply_candidate(self.root,self.policy,self.cycle)
@@ -218,10 +219,11 @@ class Checks(unittest.TestCase):
  def test_service_identity_and_permission_errors_still_reject_candidate(self):
   from memvane.learning.context_learning import inference_service as service
   self.policy['trainerArgv']=[sys.executable,'/fake/adapter',str(self.root/'model')]
-  for code in ('version_mismatch','permission_denied'):
-   with self.subTest(code=code),patch.object(service,'service_root',return_value=self.root),patch.object(service,'_ensure',side_effect=service.ServiceFailure(code)):
+  for where,code in (('_ensure','version_mismatch'),('_exchange','version_mismatch'),('_exchange','permission_denied')):
+   with self.subTest(where=where,code=code),patch.object(service,'service_root',return_value=self.root),patch.object(service,'_ensure'),patch.object(service,'_exchange'),patch.object(service,where,side_effect=service.ServiceFailure(code)):
     answer=A.apply_candidate(self.root,self.policy,self.cycle)
    self.assertEqual(answer['status'],'apply_blocked');self.assertEqual(json.loads((self.root/'active-checkpoint.json').read_text()),self.old)
+   self.assertEqual(A.read_journal(self.root)['phase'],'rejected')
    (self.root/A.JOURNAL).unlink()
  def test_revoked_source_before_preparation_preserves_incumbent(self):
   with patch.object(shared,'_case_active',return_value=False):answer=self.run_apply()

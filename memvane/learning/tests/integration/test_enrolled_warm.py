@@ -115,3 +115,80 @@ class EnrolledWarm(FixtureCase):
         with self.assertRaisesRegex(ValueError, 'default_learning_namespace_changed'):
             self.namespace()
         self.assertEqual((self.state / 'active-checkpoint.json').read_bytes(), before)
+
+    def test_previous_cache_policy_rebinds_before_pointer_repair_and_real_warm(self):
+        self._previous_cache_prepare('1.0.9', 'claude')
+
+    def test_previous_codex_cache_policy_is_also_the_same_namespace(self):
+        self._previous_cache_prepare('1.0.10', 'codex')
+
+    def test_removed_previous_cache_anchor_can_rebind_and_repair(self):
+        self._previous_cache_prepare('1.0.9', 'claude', present=False)
+
+    def _previous_cache_prepare(self, version, host, *, present=True):
+        from memvane.learning.context_learning import adapter_binding
+        active = self.namespace()
+        active.pop('schema_version')
+        self.write(self.state / 'active-checkpoint.json', active)
+        old = self.home / ('.' + host) / 'plugins/cache/memvane-marketplace/memvane' / version
+        anchor = old / 'memvane/learning/context_learning/adapter.py'
+        anchor.parent.mkdir(mode=0o700, parents=True)
+        anchor.write_bytes(Path(self.argv[1]).read_bytes())
+        anchor.chmod(0o600)
+        host_manifest = old / ('.' + host + '-plugin') / 'plugin.json'
+        host_manifest.parent.mkdir(mode=0o700)
+        for path in (old / 'package.json', host_manifest):
+            self.write(path, {'name': 'memvane', 'version': version})
+        if not present:
+            anchor.unlink()
+        policy = json.loads((self.state / 'live-selector.json').read_text())
+        policy['trainerArgv'][1] = str(anchor)
+        self.write(self.state / 'live-selector.json', policy)
+        self.write(self.state / 'laya-synthetic-attestation.json',
+                   {'attestation': {'adapter_sha256': self.verified['adapter_sha256']}})
+        self.transport()
+        with mock.patch.object(inference_identity, 'runtime_roots', return_value=[]), \
+                mock.patch.object(inference_identity, 'code_identity', return_value='c' * 64), \
+                mock.patch.object(inference_identity, 'device_identity', return_value={'backend': 'fixture'}), \
+                mock.patch.object(selector_heal, 'official_runtime', return_value=(sys.executable, str(self.model))), \
+                mock.patch.object(selector_heal, '_official') as official, \
+                mock.patch.object(adapter_binding, '_local_binding', side_effect=ValueError('fixture source')), \
+                mock.patch.object(selector_heal, 'pressure', return_value=None), \
+                mock.patch.object(selector_heal, 'attest'), \
+                mock.patch.object(selector_heal, 'prepare', side_effect=self.record_receipt) as prepare, \
+                mock.patch.object(default_enrollment, '_activate_profile'):
+            result = default_enrollment.prepare(self.project, self.install, 'fixture', lease_fd=123)
+            self.assertEqual(result['status'], 'selected')
+            prepare.assert_called_once()
+            official.assert_called_once()
+        self.assertEqual(json.loads((self.state / 'live-selector.json').read_text())['trainerArgv'], self.argv)
+        self.assertEqual(json.loads((self.state / 'active-checkpoint.json').read_text())['schema_version'], 1)
+        self.assertEqual(len(self.seen), 1)
+
+    def test_cache_path_difference_does_not_bypass_trainer_admission(self):
+        active = self.namespace()
+        active.pop('schema_version')
+        self.write(self.state / 'active-checkpoint.json', active)
+        path = self.state / 'live-selector.json'
+        policy = json.loads(path.read_text())
+        policy['trainerArgv'][1] = str(self.home / 'missing-old-cache/adapter.py')
+        self.write(path, policy)
+        with mock.patch.object(selector_heal, '_official', side_effect=ValueError('unproved current trainer')):
+            with self.assertRaisesRegex(selector_heal.HealRefused, 'adapter_not_official'):
+                self.namespace()
+        self.assertEqual(json.loads((self.state / 'active-checkpoint.json').read_text()), active)
+        self.assertEqual(json.loads(path.read_text()), policy)
+
+    def test_old_cache_path_does_not_allow_other_policy_changes(self):
+        self.namespace()
+        path = self.state / 'live-selector.json'
+        policy = json.loads(path.read_text())
+        policy['trainerArgv'][1] = str(self.home / '.codex/plugins/cache/memvane-marketplace/memvane/1.0.10/memvane/learning/context_learning/adapter.py')
+        policy['timeoutSeconds'] = 31
+        self.write(path, policy)
+        before = path.read_bytes()
+        with mock.patch.object(selector_heal, 'rebind') as rebind:
+            with self.assertRaisesRegex(ValueError, 'default_learning_namespace_changed'):
+                self.namespace()
+            rebind.assert_not_called()
+        self.assertEqual(path.read_bytes(), before)

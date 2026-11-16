@@ -8,6 +8,11 @@ base checkpoint 포인터는 `schema_version: 1`을 기록한다. 해당 키만 
 지속 실패 시 최대 1시간까지 지수 backoff를 적용한다. 자원 부족과
 시작 경로·권한·IO 실패는 별도 고정 사유 코드로 기록한다.
 
+기본 namespace의 adapter 경로만 달라진 정책은 heal의 내용·승인 범위
+검증으로 재결속한다. 준비할 selector가 없으면 warm 없이 버전을 게시한다.
+후보 apply의 resident 시작 실패는 재시도를 예약하며, 실행 중인 resident의
+정체성·권한 거절은 후보 적용을 차단한다.
+
 구현: `context_learning_auto.py`, `context_learning_cli.py`, `prepare_laya_inference.py`, `project_learning_setup.py`, `selector_maintenance.py`.
 
 저장된 recall capture의 후보 출처는 별도 `learning.capture.sources` 진단

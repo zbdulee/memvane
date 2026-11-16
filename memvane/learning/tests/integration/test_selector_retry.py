@@ -130,6 +130,7 @@ class MaintenanceRetry(FixtureCase):
         cases = [('pending_runtime', 'selector_ready', 'selector_warm', True, False),
                  ('preserved', 'selector_busy', 'selector_warm', True, False),
                  ('preserved', 'selector_ready', 'selector_warm_busy', True, False),
+                 ('preserved', 'selector_not_prepared', 'selector_warm', True, True),
                  ('preserved', 'selector_ready', 'selector_warm', False, False),
                  ('preserved', 'selector_ready', 'selector_warm', True, True)]
         for prepared, healed, warmed, available, terminal in cases:
@@ -142,11 +143,13 @@ class MaintenanceRetry(FixtureCase):
                         mock.patch('memvane.learning.default_enrollment.prepare', return_value={'status': prepared}), \
                         mock.patch.object(maintenance, '_selector_state', return_value=self.state), \
                         mock.patch.object(selector_heal, 'heal', return_value={'status': healed}), \
-                        mock.patch.object(selector_heal, 'warm', return_value={'status': warmed}), \
+                        mock.patch.object(selector_heal, 'warm', return_value={'status': warmed}) as warm, \
                         mock.patch('memvane.runtime.api.sync_owner', return_value=nullcontext(object() if available else None)), \
                         mock.patch('memvane.journal.api.publish_plugin_version') as publish:
                     self.assertIs(maintenance._run(self.home, force=True), terminal)
                 self.assertEqual(publish.call_count, int(terminal))
+                if healed == 'selector_not_prepared':
+                    warm.assert_not_called()
 
     def test_spawn_failure_keeps_the_request_and_backoff(self):
         with mock.patch.object(maintenance.time, 'time_ns', return_value=1000 * SECOND), \

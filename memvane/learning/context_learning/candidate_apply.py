@@ -214,9 +214,15 @@ def service_transport(root,policy):
         from . import inference_service as service
         deadline=time.monotonic()+30
         address=service.service_root(create=True)
-        transient={'resource_deferred','replacement_deferred','busy','deadline_expired','queue_full','starting'}
+        transient={'resource_deferred','replacement_deferred','busy','deadline_expired','queue_full','starting',
+                   'start_refused','start_path_invalid','start_io_failed','start_failed'}
         try:
-            service._ensure(address,policy['trainerArgv'][0],deadline)
+            try:service._ensure(address,policy['trainerArgv'][0],deadline)
+            except service.ServiceFailure as exc:
+                # A local startup permission error does not reject a trained candidate.
+                # A permission_denied reply from the running resident still does.
+                if exc.code=='permission_denied':raise ResourceDeferred('apply_'+exc.code) from exc
+                raise
             envelope={'command':'apply_'+command,'schema':service.PROTOCOL,'signature':service._signature(),
                 'state_dir':str(root),'namespace':service.namespace(root),'apply_id':row['apply_id'],
                 'queued_at_epoch':time.time(),'deadline_epoch':time.time()+max(0,deadline-time.monotonic())}
