@@ -85,9 +85,9 @@ def finalize_initial_build(*, project_root, state_root, resolve_sync_target):
                     try:
                         head = store.head(handle)
                         vector = store_api.pinned_vector(store, pin)
-                        if (head['gen_id'] is None or vector is None
-                                or vector['recipe_id'] != spec['recipe_id']
-                                or vector['profile_id'] != spec['profile_id']):
+                        if (head['gen_id'] is None or (vector is not None
+                                and (vector['recipe_id'] != spec['recipe_id']
+                                     or vector['profile_id'] != spec['profile_id']))):
                             _fail('initial_build_vectors_pending')
                         tree, baseline, head_row = store_api.read_view_baseline(
                             store, handle, head, worktree_id=worktree_id, head_ordinal=True)
@@ -112,13 +112,14 @@ def finalize_initial_build(*, project_root, state_root, resolve_sync_target):
                             return _rescan_stale_build(record, project)
                         if store.head(handle) != head:
                             _fail('initial_build_head_changed')
+                        sealed_spec = spec if vector is not None else None
                         sealed = schema3_reader_record(state, project, identity, decision, worktree_id,
-                                                       digest, row, spec, head, head_row, fail=_fail)
+                                                       digest, row, sealed_spec, head, head_row, fail=_fail)
                     finally:
                         store.release(pin)
                 finally:
                     store.close()
-                path = seal_reader(identity['journalPath'], row, sealed, spec, fail=_fail)
+                path = seal_reader(identity['journalPath'], row, sealed, sealed_spec, fail=_fail)
                 ledger_path = state / 'ledger.json'
                 ledger = {'schema': 'memvane-install-ledger-v1', 'epoch': 1,
                           'phase': 'prepared', 'identity': identity}

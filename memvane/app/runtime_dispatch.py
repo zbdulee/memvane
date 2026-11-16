@@ -49,7 +49,8 @@ def resolve(kind, value):
 
 def _child_env():
     # Keep only the authorized local runtime, QA ceiling and guard envelope.
-    keys = ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER', 'QMD_QA_CALL_LEDGER',
+    keys = ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'HERMES_HOME',
+            'QMD_QA_CALL_LEDGER',
             'QMD_QA_CALL_LIMIT', 'QMD_DEVELOPMENT_GUARD_RUN',
             'QMD_DEVELOPMENT_GUARD_NONCE',
             'MEMVANE_TEST_RUNTIME_ROOT', 'MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT')
@@ -183,6 +184,20 @@ def _deferred_detail(result):
     if extra:
         parts.append(extra)
     return ':'.join(parts)
+
+
+def _sync_progress(kind, exc):
+    """Recognize normal bounded sync handoffs without masking actual failures."""
+    if kind != 'laya-sync' or exc.code != 'target_deferred':
+        return False
+    detail = getattr(exc, 'detail', None)
+    if not isinstance(detail, str):
+        return False
+    parts = detail.split(':')
+    return (len(parts) >= 3 and parts[:2] == ['deferred', 'pending']
+            and parts[2] in ('schema3_progress_ingest', 'schema3_progress_vector',
+                             'schema3_vector_deadline', 'schema3_vector_budget',
+                             'schema3_vector_content_busy'))
 
 
 def _diagnostic_route(target):
@@ -352,7 +367,8 @@ def run(kind, value, *, owner_fd=None):
         diagnostic_fields = _diagnostic_fields(target, kind, exc)
         if exc.code == 'target_preparing':
             diagnostic_fields['severity'] = 'warning'
-        _event(target, kind, started, outcome='failed', reason=exc.code,
+        _event(target, kind, started, outcome='progress' if _sync_progress(kind, exc) else 'failed',
+               reason=exc.code,
                result={'detail': getattr(exc, 'detail', None),
                        'path': getattr(exc, 'member_path', None),
                        'cause': getattr(exc, 'member_cause', None)}
@@ -369,8 +385,11 @@ def run(kind, value, *, owner_fd=None):
 
 
 def _run_target(kind, value, target, owner_fd):
-    from memvane.kernel.bundle_paths import entry_argv
-    argv = entry_argv('wake', kind, target['project'])
+    from memvane.runtime.api import background_bundle
+    try:
+        argv = background_bundle().entry('wake', kind, target['project'])
+    except (OSError, ValueError) as exc:
+        raise DispatchFailure('target_entry_unavailable') from exc
     try:
         options = {'owner_fd': owner_fd} if owner_fd is not None else {}
         child = _run_child(argv, target['project'],

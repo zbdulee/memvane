@@ -2,7 +2,7 @@
 import os
 import threading
 import time
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from memvane.kernel.errors import IndexContractError
 from memvane.kernel.resource_deferred import ResourceDeferred
@@ -12,6 +12,30 @@ from memvane.resident.tests.support import DIM, Fixture, embed
 
 
 class ServiceChecks(Fixture):
+    def test_newer_installed_bundle_drains_even_if_old_root_exists(self):
+        identity = Mock()
+        identity.intact.return_value = True
+        identity.preferred.return_value = False
+        service = self.service(start=False)
+        self.assertTrue(service.acquire(wait=5))
+        with patch.object(svc, 'BACKGROUND_BUNDLE', identity), \
+                patch.object(svc, '_spawn', return_value=True) as successor:
+            service.start()
+            self.assertTrue(service.stopped.wait(2), 'older resident did not drain')
+            self.assertEqual(successor.call_count, 1)
+
+    def test_removed_bundle_drains_and_starts_one_successor(self):
+        identity = Mock()
+        identity.intact.return_value = False
+        service = self.service(start=False)
+        self.assertTrue(service.acquire(wait=5))
+        with patch.object(svc, 'BACKGROUND_BUNDLE', identity, create=True), \
+                patch.object(svc, '_spawn', return_value=True) as successor:
+            service.start()
+            self.assertTrue(service.stopped.wait(2), 'stale resident did not drain')
+            self.assertTrue(service.draining.is_set())
+            self.assertEqual(successor.call_count, 1)
+
     def test_public_sockets_never_appear_with_a_loose_mode(self):
         # Clients refuse a socket with group/other bits; one seen between
         # bind() and chmod() would fail a request instead of waiting.

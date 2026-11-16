@@ -85,6 +85,23 @@ def write_log(path, rows, mode='wb'):
 
 
 class UnifiedLogs(FixtureCase):
+    def test_summary_counts_progress_separately_from_failure(self):
+        from types import SimpleNamespace
+        rows = [
+            {'ts': '2026-11-09T00:00:00Z', 'event': 'wake.sync', 'outcome': 'progress',
+             'reason': 'target_deferred'},
+            {'ts': '2026-11-09T00:00:01Z', 'event': 'wake.sync', 'outcome': 'failed',
+             'reason': 'target_child_failed'},
+        ]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.logs['summary'](rows, SimpleNamespace(hours=None))
+        text = out.getvalue()
+        self.assertIn('wake.sync progress: 1', text)
+        self.assertIn('wake.sync failed: 1', text)
+        self.assertIn('target_child_failed', text)
+        self.assertNotIn('target_deferred', text)
+
     def setUp(self):
         super().setUp()
         saved = os.environ.get('XDG_CONFIG_HOME')

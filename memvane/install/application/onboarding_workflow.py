@@ -615,8 +615,24 @@ def initial_build_status(state_root, *, project_root=None):
         _require_build_project(record, project_root)
     if record is None:
         _fail('initial_build_missing')
+    from memvane.diagnostics.api import build_progress_events
+    progress = {'stage': record['phase'], 'ingest': None, 'vector': None}
+    for event in build_progress_events(state):
+        if (event.get('event') != 'index.build.progress'
+                or event.get('install') != record['identity']['installId']
+                or type(event.get('buildEpoch')) is not int
+                or event.get('buildEpoch') != record['epoch']):
+            continue
+        if event.get('stage') in ('ingest', 'ready', 'vector', 'complete'):
+            progress['stage'] = event['stage']
+        for key in ('ingest', 'vector'):
+            counts = event.get(key)
+            if (isinstance(counts, dict) and set(counts) == {'done', 'total'}
+                    and type(counts['done']) is int and type(counts['total']) is int
+                    and 0 <= counts['done'] <= counts['total']):
+                progress[key] = counts
     return {'status': 'initial_build', 'phase': record['phase'],
-            'reason': record['reason'], 'epoch': record['epoch']}
+            'reason': record['reason'], 'epoch': record['epoch'], 'progress': progress}
 
 
 def request_initial_build_rescan(state_root, *, project_root=None):

@@ -58,6 +58,8 @@ after one selector runtime failed and another counted it; this and every other
 `wiki.card` outcome measured after such a failure carry `measureId`, `attempts`
 and the `failure` codes.
 
+`index.build.progress` lines record the latest completed pass's stage and available ingest or vector counts. These are snapshots; when no recent line is available, `index-build-status` reports unknown counts rather than zero.
+
 A `wake.sync` line that settled compile intents carries `provenance`:
 `consumed` (verified cards whose compile evidence the sync recorded in the
 index), `superseded` (an older intent for the same card path replaced by a

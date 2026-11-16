@@ -22,6 +22,9 @@ Run a manual MemVane recall query for the current project.
    ```
 
 4. Report the returned context or say that recall returned no context.
+   When a vector-pending note accompanies lexical results, explain that vector
+   filling continues in the background. If the user asks for progress, use the
+   setup skill's build status; report unavailable counts as unknown.
 
 ## Safety
 

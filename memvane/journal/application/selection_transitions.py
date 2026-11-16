@@ -34,7 +34,7 @@ def seal_reader(journal_path, row, sealed, spec, *, fail):
                     fail('initial_build_journal_changed')
                 changed = db.execute("UPDATE selection SET epoch=epoch+1,vector_recipe=? "
                     "WHERE id=1 AND epoch=? AND state='prepared'",
-                    (spec['recipe_id'], row['epoch'])).rowcount
+                    (spec['recipe_id'] if spec is not None else None, row['epoch'])).rowcount
                 if changed != 1:
                     fail('initial_build_journal_changed')
             journal._inspect_v1_row(db)

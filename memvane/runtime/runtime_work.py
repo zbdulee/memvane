@@ -45,7 +45,9 @@ import time
 sys.dont_write_bytecode = True
 
 from memvane.kernel.resource_deferred import ResourceDeferred
-from memvane.kernel.bundle_paths import entry_argv
+from memvane.kernel.bundle_paths import plugin_root
+from memvane.runtime import host_bundle
+from memvane.runtime.host_bundle import entry_argv
 # Neutral lease primitives: importing this module never loads context_learning.
 from memvane.runtime.runtime_lease import atomic_json as _atomic_json,coordination_lock as _lock,private_state as _private_state
 from memvane.runtime import runtime_wake_policy as wake_policy
@@ -79,6 +81,7 @@ DEFERRED_FILE='runtime-wake-deferred.json'
 TIMER_CHUNK_SECONDS=15
 TIMER_MIN_SLEEP_SECONDS=.5
 TIMER_MAX_SECONDS=3600
+BACKGROUND_BUNDLE=host_bundle.BundleIdentity(plugin_root())
 
 
 def Coordinator(*args,**kwargs):
@@ -316,6 +319,8 @@ def drain(queue,*,execute,on_drop=None,on_stall=None,ready=None,clock=time.monot
             return controller.check(POLICY,report)['ready']
         injected_ready=ready
         while runs<max_runs and clock()<deadline:
+            if not BACKGROUND_BUNDLE.intact():
+                return {'status':'bundle_changed','runs':runs}
             rows=queue.pending()
             if not rows:return {'status':'drained','runs':runs}
             # A mover waits for this lease: never start another child for it.
@@ -490,16 +495,19 @@ def _wake(queue=None):
     # Backed-off rows alone never start a worker that would only wait: the
     # lease-free timer runs them once they are due.
     if not wake_policy.any_due(_own_view(queue.root,rows,time.time()),time.time()):
-        _arm_timer(queue);return 'idle'
+        return 'idle' if _timer_available(queue) else 'unavailable'
     if yield_requested(queue.root):
-        _arm_timer(queue);return 'yield'
+        return 'yield' if _timer_available(queue) else 'unavailable'
     fd=_lock(queue.root/'runtime-worker.lock')
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return 'busy'
-        subprocess.Popen(entry_argv('runtime-work','worker',str(fd)),
-            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
-            close_fds=True,pass_fds=(fd,),start_new_session=True)
+        try:argv=entry_argv('runtime-work','worker',str(fd))
+        except ValueError:return 'unavailable'
+        try:
+            subprocess.Popen(argv, stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                close_fds=True,pass_fds=(fd,),start_new_session=True)
+        except OSError:return 'unavailable'
         return 'spawned'
     finally:os.close(fd)
 
@@ -522,7 +530,17 @@ def _arm_timer(queue):
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             close_fds=True,pass_fds=(fd,),start_new_session=True)
         return True
-    except OSError:
+    except (OSError,ValueError):
+        return False
+    finally:os.close(fd)
+
+
+def _timer_available(queue):
+    if _arm_timer(queue):return True
+    fd=_lock(queue.root/TIMER_LOCK)
+    try:
+        try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:return True  # another timer owns the lease
         return False
     finally:os.close(fd)
 
@@ -536,8 +554,11 @@ def _after_timer(queue,outcome):
     the next hook.
     """
     if outcome=='gone':return
-    try:_wake(queue)
-    except (OSError,ValueError,sqlite3.Error):pass
+    while True:
+        try:result=_wake(queue)
+        except (OSError,ValueError,sqlite3.Error):return
+        if result!='unavailable':return
+        time.sleep(TIMER_CHUNK_SECONDS)
 
 
 def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.sleep,
@@ -550,11 +571,18 @@ def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.
     """
     wake_once=wake_once or _wake
     deadline=clock()+max_seconds
-    while clock()<deadline:
+    while True:
         try:rows=queue.pending()
         except (OSError,ValueError,sqlite3.Error):return 'gone'
         rows=[row for row in rows if row['kind'] in wake_policy.KINDS]
         if not rows:return 'empty'
+        if not BACKGROUND_BUNDLE.intact():
+            # Keep the lease until the host finishes installing a successor;
+            # otherwise no process remains to wake the durable queue.
+            if host_bundle.latest_installed() is not None:return 'bundle_changed'
+            sleep(TIMER_CHUNK_SECONDS)
+            continue
+        if clock()>=deadline:return 'expired'
         now=wall();earliest=min(row['due'] for row in _own_view(queue.root,rows,now))
         if earliest<=now:
             try:wake_once(queue)
@@ -565,7 +593,6 @@ def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.
         else:
             delay=min(earliest-now,TIMER_CHUNK_SECONDS)
         sleep(max(TIMER_MIN_SLEEP_SECONDS,min(delay,deadline-clock())))
-    return 'expired'
 
 
 def _handoff():
@@ -581,7 +608,9 @@ def _handoff():
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return False
-        subprocess.Popen(entry_argv('runtime-work','handoff',str(fd)),
+        try:argv=entry_argv('runtime-work','handoff',str(fd))
+        except ValueError:return False
+        subprocess.Popen(argv,
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             close_fds=True,pass_fds=(fd,),start_new_session=True)
         return True
@@ -644,7 +673,12 @@ def _drain_and_rewake(queue,fd,*,execute,on_drop=None,on_stall=None):
     a drained result closes the enqueue-versus-last-read race.
     """
     try:return drain(queue,lease_fd=fd,execute=execute,on_drop=on_drop,on_stall=on_stall)
-    finally:wake()
+    finally:
+        if not BACKGROUND_BUNDLE.intact():
+            # The worker lease is already closed; retry an unavailable host.
+            _after_timer(queue,'bundle_changed')
+        else:
+            wake()
 
 
 def hook_wake():

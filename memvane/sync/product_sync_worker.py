@@ -9,10 +9,12 @@ from memvane.resident.types import EMBED_POLICY
 from memvane.store import types as store_types
 
 from collections.abc import Mapping
+import hashlib
 from pathlib import Path
 import re
 import sqlite3
 import time
+import uuid
 
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.runtime.api import coordinator as Coordinator
@@ -191,9 +193,38 @@ def run(project, *, coordinator=None, report=None, start_service=None):
         if decision.get('state') == 'preview':
             if record['phase'] == 'ready':
                 return {'state': 'unchanged', 'buildPhase': 'ready'}
-            return _run_cold_build(decision, coordinator=coordinator, report=report,
-                                   start_service=start_service)
-    return _run_sync(project, coordinator=coordinator, report=report, start_service=start_service)
+            result = _run_cold_build(decision, coordinator=coordinator, report=report,
+                                     start_service=start_service)
+            _record_build_progress(build.build_lookup(str(project)), result)
+            return result
+    result = _run_sync(project, coordinator=coordinator, report=report, start_service=start_service)
+    if record is not None and record.get('schema') == V1_BUILD_SCHEMA:
+        _record_build_progress(record, result)
+    return result
+
+
+def _record_build_progress(record, result):
+    """Best-effort, bounded status snapshots; build.json remains unchanged."""
+    if not isinstance(record, dict):
+        return
+    ingest = result.get('ingestProgress')
+    vector = result.get('vector') or {}
+    counts = vector.get('statusProgress')
+    vector_state = vector.get('state')
+    if ingest is None and counts is None and vector_state not in (
+            'current', 'published', 'pending', 'deferred', 'blocked', 'provider_blocked'):
+        return
+    stage = ('complete' if vector_state in ('published', 'current')
+             else 'vector' if vector_state not in (None, 'off')
+             else 'ready' if result.get('buildPhase') == 'ready' else 'ingest')
+    try:
+        from memvane.diagnostics import api as diagnostics
+        diagnostics.emit('index.build.progress', outcome='progress',
+                         state_root=record['identity']['stateRoot'],
+                         install=record['identity']['installId'], buildEpoch=record['epoch'],
+                         stage=stage, ingest=ingest, vector=counts)
+    except Exception:
+        pass
 
 
 def _run_cold_build(decision, *, coordinator=None, report=None,
@@ -212,10 +243,9 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
                 proof = writer.admission_proof()
                 expected_build = build.build_lookup(decision['projectRoot'])
                 info = writer.store()
-                # Initial builds never yield to each other (_initial_build_waiting).
-                vectors = _schema3_vector_context(decision, proof, lane, coordinator=coordinator,
-                                                   report=report, start_service=start_service,
-                                                   yield_to_builds=False)
+                # Publish the first complete lexical head without starting the
+                # provider. The selected sync wake fills vectors after activation.
+                vectors = {'spec': None}
                 store = store_api.open_store(info['path'], repository=info['repository'],
                                              scope_id=decision['scopeId'])
                 try:
@@ -228,9 +258,8 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
                         time.monotonic() + SCHEMA3_PASS_SECONDS, {}, vectors, window=True)
                 finally:
                     store.close()
-            vector = result.get('vector') or {}
             complete = (result.get('state') in ('indexed', 'unchanged')
-                        and vector.get('state') in ('published', 'current'))
+                        and result.get('generation') is not None)
             with build.build_owner(state) as owned:
                 if not owned:
                     raise ResourceDeferred('owner_busy')
@@ -241,9 +270,6 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
                                  reason=None if complete else result.get('reason'))
             if complete:
                 return {**result, 'buildPhase': 'ready'}
-            if result.get('state') in ('indexed', 'unchanged'):
-                return {**result, 'state': 'pending',
-                        'reason': vector.get('reason', 'initial_build_vectors_pending')}
             return result
     except ResourceDeferred as exc:
         return _deferred(exc)
@@ -638,10 +664,8 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     result's ``vector`` names why the vectors wait. An unchanged lexical head
     gets its vector generation from the same manifest.
     """
-    import hashlib
     from memvane.store import api as v
     from memvane.store.api import regular as _regular
-    import uuid
     if vectors is None:
         vectors = {'spec': None}
     try:
@@ -695,7 +719,8 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                                       window=window)
             if vector['state'] != 'complete':
                 return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id'],
-                        'vector': vector, 'provenance': provenance}
+                        'vector': vector, 'provenance': provenance,
+                        'ingestProgress': {'done': len(paths), 'total': len(paths)}}
             # The last fill call may run past the pass deadline: the vector
             # generation it completed gets a fresh publish reserve.
             deadline = max(deadline, time.monotonic() + SCHEMA3_PUBLISH_RESERVE)
@@ -715,7 +740,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             return {'state': 'indexed', 'storeFormat': 'schema3', 'generation': generation,
                     'ingested': 0, 'removed': 0, 'pending': 0, 'skipped': skipped,
                     'sources': len(observed), 'vector': vector,
-                    'provenance': provenance}
+                    'provenance': provenance, 'ingestProgress': {'done': len(paths), 'total': len(paths)}}
         # First store write of this pass: the journal fence comes first.
         _mark_schema3_write(writer, proof, marks)
         scan = {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}
@@ -776,7 +801,8 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             return {'state': 'pending', 'reason': 'schema3_view_preparing', 'storeFormat': 'schema3',
                     **({'progressKind': 'ingest'} if ingested else {}),
                     'generation': None, 'prepared': generation, 'ingested': ingested,
-                    'removed': len(removed), 'pending': pending, 'skipped': skipped, 'provenance': provenance}
+                    'removed': len(removed), 'pending': pending, 'skipped': skipped, 'provenance': provenance,
+                    'ingestProgress': {'done': len(members), 'total': len(paths)}}
         if staging:
             # Published cards wait for new bytes: the head stays, the prepared
             # progress is the next pass's carry.
@@ -800,7 +826,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     result = {'state': 'pending' if pending else 'indexed', 'storeFormat': 'schema3',
               'generation': generation, 'ingested': ingested, 'removed': len(removed),
               'pending': pending, 'skipped': skipped, 'sources': len(sources), 'vector': vector,
-              'provenance': provenance}
+              'provenance': provenance, 'ingestProgress': {'done': len(members), 'total': len(paths)}}
     if pending:
         result['reason'] = 'schema3_ingest_backlog'
         if ingested:
@@ -1150,7 +1176,8 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
                     'remaining': len(targets) - at,
                     'progress': v.embedding_coverage(store, targets, recipe_id, profile_id) - before,
                     'cursorMoved': at - cursor, 'ordinal': None if first is None else first[0],
-                    'providerMs': vectors.get('stats', {}).get('providerMs', 0)}
+                    'providerMs': vectors.get('stats', {}).get('providerMs', 0),
+                    'statusProgress': {'done': at, 'total': len(targets)}}
         while not status['complete']:
             left = deadline - SCHEMA3_PUBLISH_RESERVE - time.monotonic()
             first = v.embedding_coverage(store, targets, recipe_id, profile_id, first_from=status['cursor'])
@@ -1218,6 +1245,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
     except _VectorProviderBlocked as exc:
         return {'state': 'provider_blocked', 'reason': str(exc)}
     return {'state': 'complete', 'filled': filled, 'cacheHits': hits, 'targets': len(targets),
+            'statusProgress': {'done': len(targets), 'total': len(targets)},
             'providerMs': vectors.get('stats', {}).get('providerMs', 0)}
 
 
