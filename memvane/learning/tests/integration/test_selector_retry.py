@@ -127,7 +127,7 @@ class MaintenanceRetry(FixtureCase):
 
     def test_real_run_marks_pending_heal_warm_and_publish_contention_nonterminal(self):
         from memvane.learning.context_learning import selector_heal
-        cases = [('pending_runtime', 'selector_ready', 'selector_warm', True, False),
+        cases = [('pending_runtime', 'selector_ready', 'selector_warm', True, None),
                  ('preserved', 'selector_busy', 'selector_warm', True, False),
                  ('preserved', 'selector_ready', 'selector_warm_busy', True, False),
                  ('preserved', 'selector_not_prepared', 'selector_warm', True, True),
@@ -147,7 +147,7 @@ class MaintenanceRetry(FixtureCase):
                         mock.patch('memvane.runtime.api.sync_owner', return_value=nullcontext(object() if available else None)), \
                         mock.patch('memvane.journal.api.publish_plugin_version') as publish:
                     self.assertIs(maintenance._run(self.home, force=True), terminal)
-                self.assertEqual(publish.call_count, int(terminal))
+                self.assertEqual(publish.call_count, int(terminal is True))
                 if healed == 'selector_not_prepared':
                     warm.assert_not_called()
 
