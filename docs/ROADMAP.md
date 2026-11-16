@@ -124,6 +124,7 @@
   - 쓰기 때 현재 원문 판정: 크기만 다른 revision, 관측 오류, raw root 없음, receipt digest 직접 대조, 관측이 바뀐 뒤 재ingest, main과 연결 worktree의 서로 다른 원문.
   - 구조 가드: 함수 인자로 넘어간 handle의 내부 접근, handle 목록에 없는 객체의 공개 멤버.
   - 온보딩 중간 기록(plan·prepare 산출물)이 재부팅으로 `st_dev`만 바뀐 뒤 재개되는지.
+  - Hermes 선택 route 분류 후 import 실패 시험: 부하가 높은 환경에서 분류 subprocess의 시간 초과·실행 오류와 hook 반환을 구분해 관측하고, 선택 이후 실패가 거절로 남는지 검증한다.
   - main CI 전체 조합의 연속 통과 기록.
 - **의존.** 없음. **크기.** M. **불변.** 없음. **열린 결정.** 없음.
 
