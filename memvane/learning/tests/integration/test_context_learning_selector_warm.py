@@ -38,7 +38,10 @@ class WarmTests(unittest.TestCase):
         with patch.object(inference_service, '_policy', return_value=(policy, policy)), \
                 patch.object(inference_service, 'predict', side_effect=predict), \
                 patch.object(selector_heal, '_service_identity', return_value=[1, 2, 3, 'sig']):
-            self.assertEqual(selector_heal.warm('/p', state=self.state), {'status': 'selector_warm'})
+            result = selector_heal.warm('/p', state=self.state)
+            self.assertEqual(result['status'], 'selector_warm')
+            self.assertEqual(result['attempts'], 1)
+            self.assertGreaterEqual(result['timing']['client_validation_seconds'], 0)
         state, used, request, sha, left = sent[0]
         self.assertEqual((state, used, sha), (self.state, policy, self.active['artifact_sha256']))
         self.assertTrue(0 < left <= selector_heal.WARM_SECONDS)

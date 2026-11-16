@@ -93,6 +93,9 @@ class GenerationEngine:
         self.footprint_mib = None
         self.pending = None
         self.last_activation = None
+        # (generation, seconds) of a first load retained after its request
+        # ran out of time; memory only, reported once by a later request.
+        self.cached_load = None
 
     def _pending_key(self,job):
         return (job['apply_id'],job['namespace'],tuple(job['generation']),tuple(job['expected_old']))
@@ -123,7 +126,8 @@ class GenerationEngine:
         self.active,self.footprint_mib=self.pending[2:4]
         self.last_activation=(token,key);self.pending=None
 
-    def run(self, job, *, cancelled, revalidate):
+    def run(self, job, *, cancelled, revalidate, timing=None):
+        """``timing`` (optional, mutated): partial load/forward times survive a failure."""
         def check():
             if cancelled() or time.monotonic() >= job['deadline']:
                 raise ServiceFailure('deadline_expired')
@@ -150,7 +154,7 @@ class GenerationEngine:
         replacement = self.active is not None and self.active[0] != job['generation']
         if replacement and self.active[0][:3] != job['family']:
             raise ServiceFailure('model_family_mismatch')
-        timing = {}
+        timing = {} if timing is None else timing
         pending = None
         warm = None
         try:
@@ -164,11 +168,13 @@ class GenerationEngine:
                             or before + overlap > job['policy']['maxRssMib']):
                         raise ServiceFailure('replacement_deferred')
                 started = time.perf_counter()
+                self.cached_load = None
                 try:
                     candidate = self.load(job)
                 except Exception as exc:
                     raise ServiceFailure('replacement_failed' if replacement else 'load_failed') from exc
-                timing['model_load_seconds'] = round(time.perf_counter() - started, 6)
+                finally:
+                    timing['model_load_seconds'] = round(time.perf_counter() - started, 6)
                 if not replacement:
                     loaded_rss = self.rss()
                     if math.isfinite(loaded_rss) and loaded_rss <= job['policy']['maxRssMib']:
@@ -188,12 +194,19 @@ class GenerationEngine:
                 footprint = max(self.footprint_mib or 0, footprint)
             else:
                 timing['model_load_seconds'] = 0.0
+                if self.cached_load is not None and self.cached_load[0] == job['generation']:
+                    timing['cached_model_load_seconds'] = self.cached_load[1]
+                    self.cached_load = None
                 if self.rss() > job['policy']['maxRssMib']:
                     raise ServiceFailure('resource_deferred')
             check()
             loaded = pending[1] if pending is not None else self.active[1]
-            result = self.forward(loaded, job, limits=limits, timing=timing,
-                                  cancelled=lambda: cancelled() or time.monotonic() >= job['deadline'])
+            began = time.perf_counter()
+            try:
+                result = self.forward(loaded, job, limits=limits, timing=timing,
+                                      cancelled=lambda: cancelled() or time.monotonic() >= job['deadline'])
+            finally:
+                timing.setdefault('forward_seconds', round(time.perf_counter() - began, 6))
             check()
             fresh = revalidate()
             if (fresh['generation'] != job['generation'] or fresh['namespace'] != job['namespace']
@@ -213,6 +226,7 @@ class GenerationEngine:
                 current = self.rss()
                 if math.isfinite(current) and current <= job['policy']['maxRssMib']:
                     self.active, self.footprint_mib = warm
+                    self.cached_load = (job['generation'], timing['model_load_seconds'])
             raise
         if pending is not None:
             self.active = pending
@@ -708,8 +722,16 @@ def _validate_request(envelope):
 
 
 def predict(state, policy, request, artifact_sha, *, deadline, pointer_name='active-checkpoint.json',
-            ensure_service=None):
-    """Called after choose's read-only proof admission; worker rechecks scope."""
+            ensure_service=None, startup_seconds=None):
+    """Called after choose's read-only proof admission; worker rechecks scope.
+
+    ``startup_seconds`` (warm-up opt-in) bounds readiness separately and then
+    sends with a fresh budget (``inference_client.predict_after_startup``).
+    """
+    from .inference_client import answer, predict_after_startup
+    if startup_seconds is not None:
+        return predict_after_startup(state, policy, request, artifact_sha, deadline=deadline,
+            pointer_name=pointer_name, ensure_service=ensure_service, startup_seconds=startup_seconds)
     envelope = _make_envelope(state, request, artifact_sha, deadline, pointer_name)
     root = service_root(create=True)
     started = time.perf_counter()
@@ -726,18 +748,7 @@ def predict(state, policy, request, artifact_sha, *, deadline, pointer_name='act
         if str(exc) == 'resident_handshake_timeout':
             raise ServiceFailure('deadline_expired') from exc
         raise
-    if not isinstance(response, dict) or set(response) != {'status', 'prediction', 'timing'}:
-        raise ServiceFailure('worker_error')
-    if response['status'] != 'ok':
-        code = response['status'] if response['status'] in _CODES else 'worker_error'
-        if code == 'inference_attestation_required':
-            raise ValueError('trainer_inference_attestation_required')
-        raise ServiceFailure(code)
-    timing = response['timing']
-    if not isinstance(timing, dict):
-        raise ServiceFailure('worker_error')
-    return response['prediction'], {**timing,
-        'resident_wall_seconds': round(time.perf_counter()-started, 6)}
+    return answer(response, started)
 
 
 def _validate_apply(envelope):
@@ -847,23 +858,9 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
                             respond(conn,{'status':'prepared' if envelope['command']=='apply_prepare' else 'activated','token':token,'generation':job['generation'][-1]})
                     except ResourceDeferred:raise ServiceFailure('resource_deferred') from None
                     continue
-                with coordinator.inference(deadline,str(envelope.get('namespace',''))), coordinator.inference_compute(deadline):
-                    validation_started = time.perf_counter()
-                    job = validate(envelope)
-                    initial_validation = time.perf_counter()-validation_started
-                    revalidation_seconds = [0.0]
-                    def revalidate():
-                        began = time.perf_counter()
-                        try: return validate(envelope)
-                        finally: revalidation_seconds[0] += time.perf_counter()-began
-                    result, timing = engine.run(job,
-                        cancelled=lambda: resident._cancelled(conn, deadline),
-                        revalidate=revalidate)
-                timing.update(job.get('identity_timing', {}))
-                timing['initial_validation_seconds'] = round(initial_validation,6)
-                timing['revalidation_seconds'] = round(revalidation_seconds[0],6)
-                timing['queue_wait_seconds'] = queue_wait
-                respond(conn, {'status': 'ok', 'prediction': result, 'timing': timing})
+                from .inference_score import infer
+                respond(conn, infer(engine, coordinator, validate, envelope, deadline, queue_wait,
+                                    cancelled=lambda: resident._cancelled(conn, deadline), failure=_failure))
             except Exception as exc:
                 respond(conn, {'status': _failure(exc), 'prediction': None, 'timing': {}})
             finally:

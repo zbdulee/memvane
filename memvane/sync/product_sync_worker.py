@@ -479,6 +479,14 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
             status, proof = resettle_selection(decision, owner)
             if status != 'unchanged':
                 result = {**result, 'readerResettle': status}
+            if result.get('state') in ('indexed', 'unchanged'):
+                try:
+                    from memvane.learning.api import request_selector_maintenance
+                    request_selector_maintenance(decision, owner=owner, origin='sync')
+                except Exception:
+                    from memvane.diagnostics import api as diagnostics
+                    diagnostics.emit('learning.selector.request', outcome='failed',
+                                     reason='sync_retry_failed', decision=decision, origin='sync')
             return result, proof
     except ResourceDeferred as exc:
         return _deferred(exc), proof
