@@ -29,11 +29,15 @@ def published_candidate_rows(pool, wiki_names, scope_id):
     from memvane.learning.context_learning.selection_port import published_candidate_rows as implementation
     return implementation(pool, wiki_names, scope_id)
 
-def request_selector_maintenance(decision, *, force=False, owner=None):
+def request_selector_maintenance(decision, *, force=False, owner=None, origin='session'):
     from memvane.learning.selector_maintenance import request as implementation
     given = {key: value for key, value, default in (
-        ('force', force, False), ('owner', owner, None)) if value is not default}
+        ('force', force, False), ('owner', owner, None), ('origin', origin, 'session')) if value is not default}
     return implementation(decision, **given)
+
+def due_selector_maintenance(project):
+    from memvane.learning.selector_maintenance import due_request as implementation
+    return implementation(project)
 
 def run_selector_maintenance(project, *, force=False):
     from memvane.learning.selector_maintenance import run as implementation

@@ -235,4 +235,4 @@ def prepare(project, state, install_id, *, lease_fd):
     if warm.get('status') not in ('selector_warm', 'selector_warm_current'):
         return warm
     _activate_profile(project, root)
-    return {'status': 'selected', 'warm': warm['status']}
+    return {'status': 'selected', 'warm': warm['status'], 'timing': warm.get('timing', {})}

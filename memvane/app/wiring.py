@@ -60,13 +60,17 @@ def learning(row):
     from memvane.learning.api import ready
     project=Path(row['target'])
     if not project.is_dir():return True
+    # A pending selector retry keeps this wake until it is requested or void;
+    # it never suppresses the ordinary learning step below.
+    maintenance=shared.due_selector_maintenance(project)
+    maintenance_done=maintenance.get('status') in ('none','requested')
     if not ready(project):return False
     cfg=config.find_project_config(str(project))['config'];root=shared.safe_root(cfg,project)
-    if root is None:return True
+    if root is None:return maintenance_done
     if not ready(project):return False
     # The owned child handles teacher and trainer work off the wake dispatcher.
     step=shared.learning_worker_step(root,project,row['revision'])
-    return step['status'] not in ('running','started')
+    return step['status'] not in ('running','started') and maintenance_done
 
 
 def auto(row):

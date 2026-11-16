@@ -8,6 +8,31 @@ base checkpoint 포인터는 `schema_version: 1`을 기록한다. 해당 키만 
 지속 실패 시 최대 1시간까지 지수 backoff를 적용한다. 자원 부족과
 시작 경로·권한·IO 실패는 별도 고정 사유 코드로 기록한다.
 
+warm은 client 검증 30초, resident 준비 대기 60초, 준비 뒤 추론 요청
+30초를 각각 사용한다. 추론 요청 상한은 wire의 30초와 같다. 첫 추론
+요청이 시간 초과하면 같은 resident의 idle을 최대 60초 기다리고 30초
+요청을 한 번 더 보낸다. 기동 시간 초과에는 이 추가 요청을 보내지 않는다.
+성공한 추론만 warm 영수증을 기록한다.
+
+`learning.selector.warm.phase`와 `learning.selector.maintenance`는 성공·실패·미룸의
+기동 대기, 검증, 모델 로드, 추론 시간을 측정한 구간만 숫자로 기록한다.
+닫힌 소켓 때문에 관측하지 못한 서버 구간은 생략한다. 시간 초과 후 같은
+세대 모델을 재사용하면 `cached_model_load_seconds`로 첫 로드 시간을 전달한다.
+
+SessionStart의 owner 경합·요청 게이트·예외는 `learning.selector.request`에
+고정 사유 코드로 기록한다. 실패·미룸은 기존 `learning` wake를 재시도
+하한에 예약하고, 게시를 끝낸 sync는 같은 owner 아래 학습 요청을 다시
+확인한다. 요청 하한과 backoff는 이 경로에도 적용한다.
+sync가 하한보다 먼저 끝나면 `learning`에 남은 지연을 예약한다. 학습 예약은
+`laya-sync`의 편집·vector 재offer due를 바꾸지 않는다. 더 이른 일반 학습
+wake와 합쳐지면 due probe와 기존 큐 backoff로 유지하며 일반 학습 step도
+함께 실행한다. 결과 기록이 owner 경합에 지면 파일을 바꾸지 않고 요청
+하한에 `learning` wake를 남긴다. 요청 파일의 실패 횟수가 아직 0이어도
+미게시 버전이나 profile 활성화 전 기본 namespace의 미완료 warm을
+재시도 대상으로 확인한다. 학습 runtime이나
+모델이 없는 설치는 자동 polling을 예약하지 않고 자연스러운 다음 요청을
+기다린다. 큐 용량 때문에 예약이 버려지면 `retry_offer_dropped`를 기록한다.
+
 기본 namespace의 adapter 경로만 달라진 정책은 heal의 내용·승인 범위
 검증으로 재결속한다. 준비할 selector가 없으면 warm 없이 버전을 게시한다.
 후보 apply의 resident 시작 실패는 재시도를 예약하며, 실행 중인 resident의

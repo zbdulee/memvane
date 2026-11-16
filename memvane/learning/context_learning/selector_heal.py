@@ -257,7 +257,10 @@ def prepare(state, policy):
 
 
 class HealDeferred(RuntimeError):
-    pass
+    """A retryable deferral; ``timing`` is clean numeric phase timing (maybe empty)."""
+    def __init__(self, code, timing=None):
+        super().__init__(code)
+        self.timing = timing if isinstance(timing, dict) else {}
 
 
 PREPARE_LOCK = 'learning-prepare.lock'
@@ -343,7 +346,15 @@ def heal(project, *, home=None, deadline=None, state=None, _lease_fd=None):
     return {'status': 'selector_prepared', 'rebound': rebound}
 
 
+# Warm-up policy caps (seconds). STARTUP bounds readiness of the hosted service
+# once (observed startup/adoption ran 29-40 s); WARM is one request and stays
+# exactly the wire's 30-second window; WARM_DRAIN is a conservative cap on
+# waiting for a cold load that outlived the first request, not a measured load
+# time. Worst case: STARTUP + 2 x WARM + WARM_DRAIN = 180, plus the client
+# policy validation's own bounded WARM allowance.
+STARTUP_SECONDS = 60
 WARM_SECONDS = 30
+WARM_DRAIN_SECONDS = 60
 WARM_LOCK = 'selector-warm.lock'
 WARM_MARKER = 'selector-warm.json'
 
@@ -384,6 +395,13 @@ def warm(project, *, home=None, state=None):
     the next recall is not the cold one. It adds no check and skips none; a
     request that runs out of time still leaves a first load warm.
 
+    Timing (``warm_lifecycle.attempt``): the first request waits for the
+    service within ``STARTUP_SECONDS`` and then gets a fresh ``WARM_SECONDS``;
+    only after it runs out of time, a drain of at most ``WARM_DRAIN_SECONDS``
+    and one ordinary ``WARM_SECONDS`` retry. The marker is written only after
+    a successful prediction; the result carries ``attempts`` and numeric
+    ``timing``, and a ``HealDeferred`` carries ``.timing``.
+
     Coalesced per namespace across workers and hosts: a warm-up already
     running holds ``selector-warm.lock`` (taken non-blocking, so another
     worker skips with ``selector_warm_busy``), and ``selector-warm.json``
@@ -413,27 +431,51 @@ def warm(project, *, home=None, state=None):
             done = None
         if isinstance(done, dict) and done.get('key') == _warm_key(state):
             return {'status': 'selector_warm_current'}
-        deadline = time.monotonic() + WARM_SECONDS
-        _, policy = _policy(state, 'active-checkpoint.json', deadline=deadline)
-        active = read_private_json(state / 'active-checkpoint.json')
-        case = {'request_id': 'selector-warm', 'prompt': 'Which synthetic marker is warm?',
-                'candidates': [{'id': 'synthetic/warm', 'revision_sha256': '0' * 64,
-                                'input_text': 'The synthetic warm-up marker is WARM-1.',
-                                'input_kind': 'full_compact_wiki_body'}]}
-        case['input_sha256'] = digest(canonical(case))
-        request = {'schema_version': 1, 'artifact_path': active['artifact_path'], 'cases': [case]}
-        if active.get('model_input_view') is not None:
-            request['model_input_view'] = active['model_input_view']
+        from .inference_timing import clean, collect
+        from .warm_lifecycle import attempt, emit, reason
+        emit('started', phase='validation')
+        client = {}
+        phase = 'validation'
         try:
-            predict(state, policy, request, active['artifact_sha256'], deadline=deadline)
+            began = time.monotonic()
+            # Client policy validation keeps its own bounded WARM allowance.
+            try:
+                _, policy = _policy(state, 'active-checkpoint.json', deadline=began + WARM_SECONDS)
+            finally:
+                client['client_validation_seconds'] = round(time.monotonic()-began, 6)
+            active = read_private_json(state / 'active-checkpoint.json')
+            case = {'request_id': 'selector-warm', 'prompt': 'Which synthetic marker is warm?',
+                    'candidates': [{'id': 'synthetic/warm', 'revision_sha256': '0' * 64,
+                                    'input_text': 'The synthetic warm-up marker is WARM-1.',
+                                    'input_kind': 'full_compact_wiki_body'}]}
+            case['input_sha256'] = digest(canonical(case))
+            request = {'schema_version': 1, 'artifact_path': active['artifact_path'], 'cases': [case]}
+            if active.get('model_input_view') is not None:
+                request['model_input_view'] = active['model_input_view']
+            phase = 'warm'
+            timing = attempt(predict, state, policy, request, active['artifact_sha256'],
+                             startup_seconds=STARTUP_SECONDS, warm_seconds=WARM_SECONDS,
+                             drain_seconds=WARM_DRAIN_SECONDS, measured=client)
         except Exception as exc:
             from memvane.runtime.types import ServiceFailure
-            if isinstance(exc, ServiceFailure) and exc.code in ('starting', 'deadline_expired', 'resource_deferred'):
-                raise HealDeferred(exc.code) from exc
+            from memvane.kernel.resource_deferred import ResourceDeferred
+            timing = clean({**client, **collect(exc)})
+            phase = getattr(exc, 'phase', phase)
+            exc.timing = timing
+            exc.phase = phase
+            if (isinstance(exc, ResourceDeferred) or isinstance(exc, ServiceFailure)
+                    and exc.code in ('starting', 'deadline_expired', 'resource_deferred')):
+                code = exc.code if isinstance(exc, ServiceFailure) else 'resource_deferred'
+                emit('deferred', code, timing, phase=phase)
+                error = HealDeferred(code, timing)
+                error.phase = phase
+                raise error from exc
+            emit('failed', reason(exc), timing, phase=phase)
             raise
         # Keyed after the request: it may have started (or replaced) the service.
         atomic_json(state / WARM_MARKER, {'schema': 'memvane-selector-warm-v1',
                                           'key': _warm_key(state), 'at': time.time()})
-        return {'status': 'selector_warm'}
+        emit('completed', 'selector_warm', timing)
+        return {'status': 'selector_warm', 'attempts': timing['attempts'], 'timing': timing}
     finally:
         os.close(fd)

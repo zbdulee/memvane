@@ -4,6 +4,9 @@ wake 큐, admission, lease와 자원 정책을 다룬다. wake kind는 `laya-syn
 
 구현: `host_bundle.py`, `qa_model_budget.py`, `resource_controls.py`, `resource_platform.py`, `runtime_admission.py`, `runtime_cpu.py`, `runtime_handlers.py`, `runtime_lease.py`, `runtime_monitor.py`, `runtime_wake_policy.py`, `runtime_work.py`, `wake_cancel.py`.
 
+selector 유지보수의 재시도 예약은 기존 `learning` kind와 canonical project
+target을 사용한다. `laya-sync` 행의 due는 학습 backoff로 미루지 않는다.
+
 백그라운드 프로세스는 호스트 설치 기록과 경로·manifest를 확인한 최신 1.x 번들에서 실행한다. 자기 번들이 사라지거나 바뀌면 timer와 worker는 기존 wake를 보존하고 후속 프로세스에 넘긴다. 설치 기록을 확인할 수 없으면 기존 큐를 남긴 채 재시도한다. 프로젝트의 journal·provider 증명은 후속 worker가 다시 수행한다.
 
 `wake_cancel.py`는 한 (kind, target)의 wake 행과 overflow 여부, 큐 DB에 남아 있을 수 있는 `wake_cancellations` 감사 행을 읽기 전용으로 보여 준다(install의 `build-wake-status`). wake 행을 지우는 경로는 없다.

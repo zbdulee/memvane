@@ -23,12 +23,17 @@ def _selector_state(project):
 
 def _missing_warm_receipt(project):
     """Only a prepared selector needs a same-version warm retry."""
-    from memvane.learning.context_learning import selector_heal
-    from memvane.learning.context_learning.dataset import read_private_json
     try:
         state = _selector_state(project)
     except (OSError, ValueError, TypeError, KeyError):
         return False
+    return _missing_warm_at(state)
+
+
+def _missing_warm_at(state):
+    """A prepared namespace (policy + checkpoint) without a valid warm receipt."""
+    from memvane.learning.context_learning import selector_heal
+    from memvane.learning.context_learning.dataset import read_private_json
     if state is None:
         return False
     if not (state / selector_heal.POLICY).is_file() or not (state / 'active-checkpoint.json').is_file():
@@ -41,8 +46,37 @@ def _missing_warm_receipt(project):
             or not isinstance(receipt.get('key'), str))
 
 
-def _request_owned(decision, owner, *, force):
-    """Apply the existing ten-minute per-install request floor under sync owner."""
+def _request_event(decision, outcome, reason=None, *, origin='session', **fields):
+    from memvane.diagnostics import api as diagnostics
+    origin = origin if origin in ('session', 'sync', 'activation', 'wake') else 'unknown'
+    diagnostics.emit('learning.selector.request', outcome=outcome, reason=reason,
+                     decision=decision, origin=origin, **fields)
+
+
+def _offer_retry(decision, row):
+    """The existing learning wake is the due-time trigger; never delay laya-sync."""
+    from memvane.runtime import api as runtime
+    delay = min(3600, max(0, (row['retryAfterNs'] - time.time_ns()) / 10**9))
+    try:
+        # Same canonical target as the learning worker's own offers (one row).
+        target = str(Path(decision['projectRoot']).resolve())
+        result = runtime.request('learning', target, delay=delay)
+        if isinstance(result, dict) and result.get('status') == 'deferred_queue_capacity':
+            _request_event(decision, 'failed', 'retry_offer_dropped')
+    except Exception:
+        _request_event(decision, 'failed', 'retry_offer_failed')
+
+
+_SKIPPED = {'status': 'skipped'}
+
+
+def _request_owned(decision, owner, *, force, origin='session', reoffer=True):
+    """Apply the existing ten-minute per-install request floor under sync owner.
+
+    Returns ``{'status': 'skipped'|'waiting'|'spawned'}`` (``dueNs`` when
+    waiting). ``reoffer=False`` (the learning-wake probe) never re-offers a
+    delayed learning wake, so it cannot push back its own running row.
+    """
     from memvane.journal.api import inspect_journal
     from memvane.journal.api import ledger_read_json as _read_json, ledger_write as _write
     from memvane.kernel.memvane_version import plugin_version, version_key
@@ -50,16 +84,38 @@ def _request_owned(decision, owner, *, force):
     validate_sync_owner(owner, Path(decision['storePath']))
     row = inspect_journal(decision['journalPath'])
     running, highest = version_key(plugin_version()), version_key(row['maxPluginVersion'])
-    if (row['state'] != 'selected' or row['installId'] != decision['installId']
-            or running is None or highest is None or running < highest):
-        return
+    if row['state'] != 'selected' or row['installId'] != decision['installId']:
+        _request_event(decision, 'skipped', 'not_selected', origin=origin)
+        return dict(_SKIPPED)
+    if running is None or highest is None:
+        _request_event(decision, 'skipped', 'version_invalid', origin=origin)
+        return dict(_SKIPPED)
+    if running < highest:
+        _request_event(decision, 'skipped', 'version_behind', origin=origin)
+        return dict(_SKIPPED)
     from memvane.learning.default_enrollment import record
     enrollment = record(decision['projectRoot'], Path(decision['journalPath']).parent,
                         decision['installId'])
+    if enrollment.get('status') == 'disabled':
+        _request_event(decision, 'skipped', 'learning_disabled', origin=origin)
+        return dict(_SKIPPED)
+    if origin in ('sync', 'wake') and enrollment.get('status') == 'pending_runtime':
+        from memvane.learning.context_learning import selector_heal
+        try:
+            _python, model = selector_heal.official_runtime()
+        except selector_heal.HealRefused as exc:
+            if str(exc) != 'learning_runtime_not_installed':
+                raise
+            model = None
+        if model is None:
+            _request_event(decision, 'skipped', 'learning_runtime_pending', origin=origin)
+            return dict(_SKIPPED)
     retry = running == highest and (enrollment.get('status') == 'pending_runtime'
                                     or _missing_warm_receipt(decision['projectRoot']))
     if not force and running == highest and not retry:
-        return
+        if origin not in ('sync', 'wake'):
+            _request_event(decision, 'skipped', 'version_current', origin=origin)
+        return dict(_SKIPPED)
     state = Path(decision['journalPath']).parent
     path = state / REQUEST_FILE
     now = time.time_ns()
@@ -71,8 +127,15 @@ def _request_owned(decision, owner, *, force):
         last = None
     retry_after = previous.get('retryAfterNs', 0) if isinstance(previous, dict) else 0
     floor = last + REQUEST_SECONDS * 10**9 if type(last) is int and 0 <= now - last else 0
-    if now < max(floor, retry_after if type(retry_after) is int else 0):
-        return
+    due = max(floor, retry_after if type(retry_after) is int else 0)
+    if now < due:
+        _request_event(decision, 'skipped', 'backoff' if retry_after and due == retry_after else 'request_floor',
+                       origin=origin, requestNs=last if type(last) is int else None, retryAfterNs=due)
+        # A sync pass runs before the learning deadline: hand the due time to
+        # the learning wake. The wake probe instead keeps its own row pending.
+        if origin == 'sync' and reoffer:
+            _offer_retry(decision, {'retryAfterNs': due})
+        return {'status': 'waiting', 'dueNs': due}
     attempt = {'requestedNs': now, 'failures': _failure_count(previous), 'retryAfterNs': 0}
     _write(path, attempt, replace=path.exists())
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER',
@@ -81,43 +144,175 @@ def _request_owned(decision, owner, *, force):
            if key in os.environ}
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['MEMVANE_SELECTOR_REQUEST_NS'] = str(now)
-    from memvane.diagnostics import api as diagnostics
     try:
         with tempfile.TemporaryFile(mode='w+b') as stderr:
             subprocess.Popen(entry_argv('selector-maintenance', decision['projectRoot'], 'force' if force or retry else 'newer'),
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=stderr, close_fds=True,
                              start_new_session=True, env=env, cwd='/')
-    except OSError:
-        _write(path, _retry_row(attempt, now, deferred=False), replace=True)
-        diagnostics.emit('learning.selector.request', outcome='failed', reason='spawn_failed', decision=decision)
+    except OSError as exc:
+        updated = _retry_row(attempt, now, deferred=False)
+        _write(path, updated, replace=True)
+        _request_event(decision, 'failed', 'spawn_failed', origin=origin)
+        if not reoffer:
+            # The wake probe retains its own row; no delayed self-offer.
+            return {'status': 'waiting', 'dueNs': updated['retryAfterNs']}
+        _offer_retry(decision, updated)
+        exc._selector_request_logged = True
         raise
-    diagnostics.emit('learning.selector.request', outcome='spawned', decision=decision)
+    _request_event(decision, 'spawned', origin=origin, requestNs=now)
+    return {'status': 'spawned'}
 
 
-def request(decision, *, force=False, owner=None):
+def request(decision, *, force=False, owner=None, origin='session'):
     """Request detached work after activation or a SessionStart, never write journal."""
+    # Fixture/sandbox isolation stays a no-op; every operational gate emits.
     if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' or os.environ.get('QMD_SANDBOX'):
         return
-    if owner is not None:
-        return _request_owned(decision, owner, force=force)
-    from memvane.runtime.api import sync_owner
-    with sync_owner(Path(decision['storePath']), wait=False) as held:
-        if held is not None:
-            return _request_owned(decision, held, force=force)
+    try:
+        if owner is not None:
+            return _request_owned(decision, owner, force=force,
+                                  origin='activation' if force and origin == 'session' else origin)
+        from memvane.runtime.api import sync_owner
+        with sync_owner(Path(decision['storePath']), wait=False) as held:
+            if held is None:
+                _request_event(decision, 'deferred', 'owner_busy', origin=origin)
+            else:
+                return _request_owned(decision, held, force=force, origin=origin)
+    except Exception as exc:
+        if not getattr(exc, '_selector_request_logged', False):
+            _request_event(decision, 'failed', 'request_failed', origin=origin, error=type(exc).__name__)
+
+
+def _unpublished_version(decision):
+    """The executing plugin is newer than the selected journal's maximum."""
+    from memvane.journal.api import inspect_journal
+    from memvane.kernel.memvane_version import plugin_version, version_key
+    try:
+        running = version_key(plugin_version())
+        highest = version_key(inspect_journal(decision['journalPath'])['maxPluginVersion'])
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    return running is not None and highest is not None and running > highest
+
+
+def _missing_default_warm(decision):
+    """A prepared default namespace for this selected install, not yet warmed.
+
+    ``default_enrollment.prepare`` warms before ``_activate_profile``, so the
+    configured namespace may not point here yet. Read-only: no enrollment
+    record or write.
+    """
+    from memvane.learning.default_enrollment import default_namespace
+    try:
+        root = default_namespace(Path(decision['projectRoot']).resolve(strict=True),
+                                 decision['installId'])
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    return _missing_warm_at(root)
+
+
+def _pending_request(row, decision):
+    """A valid row still owed an attempt; None when the row is malformed."""
+    if not isinstance(row, dict):
+        return None
+    requested, failures = row.get('requestedNs'), row.get('failures', 0)
+    retry_after = row.get('retryAfterNs', 0)
+    if not all(type(value) is int and value >= 0 for value in (requested, failures, retry_after)):
+        return None
+    return (retry_after > 0 or failures > 0 or _missing_warm_receipt(decision['projectRoot'])
+            or _unpublished_version(decision) or _missing_default_warm(decision))
+
+
+def _selected_route(project):
+    """Selected route with a journal, else None; never authorizes on its own."""
+    from memvane.journal.api import inspect_journal, select_route
+    decision = select_route(str(Path(project).resolve(strict=True)), action='update')
+    if not isinstance(decision, dict) or not decision.get('journalPath'):
+        return None
+    row = inspect_journal(decision['journalPath'])
+    if row['state'] != 'selected' or row['installId'] != decision['installId']:
+        return None
+    return decision
+
+
+def due_request(project):
+    """Learning-wake probe for an already pending selector request.
+
+    Returns ``{'status': 'none'|'waiting'|'busy'|'requested'}`` (``dueNs``
+    when waiting). A missing or settled request returns ``none`` before any
+    enrollment write or spawn; an irrecoverable route/proof also returns
+    ``none`` so a learning wake never polls it forever.
+    """
+    none = {'status': 'none'}
+    if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' or os.environ.get('QMD_SANDBOX'):
+        return none
+    decision = None
+    try:
+        from memvane.journal.api import ledger_read_json, verify_selected_route_for_write
+        from memvane.runtime.api import sync_owner
+        decision = _selected_route(project)
+        if decision is None:
+            return none
+        path = Path(decision['journalPath']).parent / REQUEST_FILE
+        if not path.exists():
+            return none
+        pending = _pending_request(ledger_read_json(path), decision)
+        if pending is None:
+            _request_event(decision, 'failed', 'request_state_invalid', origin='wake')
+            return none
+        if not pending:
+            return none
+        current = _selected_route(project)
+        if current is None or any(current[key] != decision[key]
+                                  for key in ('journalPath', 'installId', 'storePath', 'projectRoot')):
+            return none
+        decision = current
+        with sync_owner(Path(decision['storePath']), wait=False) as held:
+            if held is None:
+                return {'status': 'busy'}
+            proof = verify_selected_route_for_write(decision)
+            if proof['installId'] != decision['installId']:
+                return none
+            result = _request_owned(decision, held, force=False, origin='wake', reoffer=False)
+        if result['status'] == 'waiting':
+            return {'status': 'waiting', 'dueNs': result['dueNs']}
+        return {'status': 'requested'} if result['status'] == 'spawned' else none
+    except Exception as exc:
+        try:
+            _request_event(decision, 'failed', 'due_probe_failed', origin='wake', error=type(exc).__name__)
+        except Exception:
+            pass
+        return none
 
 
 def run(project, *, force=False):
+    from memvane.diagnostics import api as diagnostics
+    from memvane.journal.api import select_route
+    try:
+        decision = select_route(str(Path(project).resolve(strict=True)), action='update')
+    except Exception:
+        decision = None
+    token = diagnostics.bind(decision=decision)
+    try:
+        return _run_recorded(project, force=force)
+    finally:
+        diagnostics.unbind(token)
+
+
+def _run_recorded(project, *, force=False):
     try:
         result = _run(project, force=force)
         try:
             from memvane.journal.api import select_route
             from memvane.diagnostics import api as diagnostics
             decision = select_route(str(Path(project).resolve(strict=True)), action='update')
-            _record_request_result(decision, completed=result is True, deferred=result is not True)
+            _record_request_result(decision, completed=result is True, deferred=result is not True,
+                                   reschedule=result is not None)
             diagnostics.emit('learning.selector.maintenance', decision=decision,
                              outcome='completed' if result is True else 'deferred',
-                             reason=None if result is True else 'maintenance_incomplete')
+                             reason=None if result is True else
+                             'learning_runtime_pending' if result is None else 'maintenance_incomplete')
         except Exception:
             pass
         return
@@ -160,12 +355,19 @@ def run(project, *, force=False):
                     stage = {'_prepare_namespace': 'prepare', '_activate_profile': 'profile',
                              'publish_plugin_version': 'publish', 'ensure_pending': 'proof'}.get(function, function)
                     break
+            if getattr(exc, 'phase', None) in ('startup', 'warm', 'drain', 'validation'):
+                stage = exc.phase
             diagnostics.emit('learning.selector.maintenance', decision=decision,
                              outcome='deferred' if deferred else 'failed', reason=reason, stage=stage,
-                             error=type(exc).__name__)
+                             error=type(exc).__name__, **_failure_timing(exc))
         except Exception:
             pass
         raise
+
+
+def _failure_timing(exc):
+    from memvane.learning.context_learning.inference_timing import collect
+    return collect(exc)
 
 
 def _failure_count(row):
@@ -185,7 +387,7 @@ def _release_deferred_request(decision):
     _record_request_result(decision, deferred=True)
 
 
-def _record_request_result(decision, *, deferred=False, completed=False):
+def _record_request_result(decision, *, deferred=False, completed=False, reschedule=True):
     """Settle only the selected install's owning request, not product work proof."""
     from memvane.journal.api import inspect_journal, ledger_read_json, ledger_write
     from memvane.runtime.api import sync_owner
@@ -197,6 +399,10 @@ def _record_request_result(decision, *, deferred=False, completed=False):
     with sync_owner(Path(decision['storePath']), wait=True) as owner:
         if owner is None:
             diagnostics.emit('learning.selector.request', outcome='failed', reason='retry_state_busy', decision=decision)
+            # The file stays unsettled; the learning wake re-probes it after
+            # this request's floor instead of waiting for the next sync.
+            if not completed and reschedule:
+                _offer_retry(decision, {'retryAfterNs': int(value) + REQUEST_SECONDS * 10**9})
             return
         try:
             selected = inspect_journal(decision['journalPath'])
@@ -212,6 +418,8 @@ def _record_request_result(decision, *, deferred=False, completed=False):
                 diagnostics.emit('learning.selector.request', outcome='completed' if completed else
                                  'deferred' if deferred else 'failed', requestNs=int(value),
                                  failures=updated['failures'], retryAfterNs=updated['retryAfterNs'], decision=decision)
+                if not completed and reschedule:
+                    _offer_retry(decision, updated)
         except (OSError, ValueError, RuntimeError):
             diagnostics.emit('learning.selector.request', outcome='failed', reason='retry_state_failed', decision=decision)
 
@@ -252,8 +460,12 @@ def _run(project, *, force=False):
         result = prepare(project, Path(decision['journalPath']).parent, decision['installId'], lease_fd=lease)
         if result.get('status') == 'selected':
             from memvane.diagnostics import api as diagnostics
-            diagnostics.emit('learning.selector.warm', outcome=result.get('warm'), decision=decision)
+            from memvane.learning.context_learning.inference_timing import clean
+            diagnostics.emit('learning.selector.warm', outcome=result.get('warm'), decision=decision,
+                             **clean(result.get('timing')))
         if result.get('status') not in ('selected', 'preserved'):
+            if result.get('status') == 'pending_runtime':
+                return None  # Needs installation/model choice, not an hourly poll.
             return False
         if result.get('status') == 'preserved':
             state = _selector_state(project)
@@ -267,7 +479,9 @@ def _run(project, *, force=False):
                 if warmed.get('status') not in ('selector_warm', 'selector_warm_current'):
                     return False
                 from memvane.diagnostics import api as diagnostics
-                diagnostics.emit('learning.selector.warm', outcome=warmed.get('status'), decision=decision)
+                from memvane.learning.context_learning.inference_timing import clean
+                diagnostics.emit('learning.selector.warm', outcome=warmed.get('status'), decision=decision,
+                                 **clean(warmed.get('timing')))
         with sync_owner(Path(decision['storePath']), wait=False) as owner:
             if owner is None:
                 return False

@@ -29,6 +29,10 @@
     "entry/run.py"
   ],
   "modules": {
+    "memvane/learning/context_learning/inference_client.py": {"context": "learning", "layer": "adapter", "pinned": false},
+    "memvane/learning/context_learning/inference_score.py": {"context": "learning", "layer": "adapter", "pinned": false},
+    "memvane/learning/context_learning/inference_timing.py": {"context": "learning", "layer": "adapter", "pinned": false},
+    "memvane/learning/context_learning/warm_lifecycle.py": {"context": "learning", "layer": "adapter", "pinned": false},
     "memvane/host/session_notice.py": {
       "context": "host",
       "layer": "adapter",
