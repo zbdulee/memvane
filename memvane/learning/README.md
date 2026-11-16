@@ -23,6 +23,9 @@ SessionStart의 owner 경합·요청 게이트·예외는 `learning.selector.req
 고정 사유 코드로 기록한다. 실패·미룸은 기존 `laya-sync` wake를 재시도
 하한에 예약하고, 게시를 끝낸 sync는 같은 owner 아래 학습 요청을 다시
 확인한다. 요청 하한과 backoff는 이 경로에도 적용한다.
+sync가 하한보다 먼저 끝나면 남은 지연을 다시 예약한다. 학습 runtime이나
+모델이 없는 설치는 자동 polling을 예약하지 않고 자연스러운 다음 요청을
+기다린다. 큐 용량 때문에 예약이 버려지면 `retry_offer_dropped`를 기록한다.
 
 기본 namespace의 adapter 경로만 달라진 정책은 heal의 내용·승인 범위
 검증으로 재결속한다. 준비할 selector가 없으면 warm 없이 버전을 게시한다.

@@ -458,13 +458,16 @@ def warm(project, *, home=None, state=None):
                              drain_seconds=WARM_DRAIN_SECONDS, measured=client)
         except Exception as exc:
             from memvane.runtime.types import ServiceFailure
+            from memvane.kernel.resource_deferred import ResourceDeferred
             timing = clean({**client, **collect(exc)})
             phase = getattr(exc, 'phase', phase)
             exc.timing = timing
             exc.phase = phase
-            if isinstance(exc, ServiceFailure) and exc.code in ('starting', 'deadline_expired', 'resource_deferred'):
-                emit('deferred', exc.code, timing, phase=phase)
-                error = HealDeferred(exc.code, timing)
+            if (isinstance(exc, ResourceDeferred) or isinstance(exc, ServiceFailure)
+                    and exc.code in ('starting', 'deadline_expired', 'resource_deferred')):
+                code = exc.code if isinstance(exc, ServiceFailure) else 'resource_deferred'
+                emit('deferred', code, timing, phase=phase)
+                error = HealDeferred(code, timing)
                 error.phase = phase
                 raise error from exc
             emit('failed', reason(exc), timing, phase=phase)

@@ -79,9 +79,10 @@ def attempt(predict, state, policy, request, artifact_sha, *, startup_seconds, w
         _, row = predict(state, policy, request, artifact_sha,
                          deadline=time.monotonic() + warm_seconds, startup_seconds=startup_seconds)
         return finish(row)
-    except ServiceFailure as exc:
-        exc.timing = finish(exc.timing)
-        if exc.code != 'deadline_expired' or getattr(exc, 'phase', None) != 'warm':
+    except Exception as exc:
+        exc.timing = finish(getattr(exc, 'timing', {}))
+        if (not isinstance(exc, ServiceFailure) or exc.code != 'deadline_expired'
+                or getattr(exc, 'phase', None) != 'warm'):
             raise
         first = exc
     if 'startup_wait_seconds' in first.timing:
@@ -96,8 +97,9 @@ def attempt(predict, state, policy, request, artifact_sha, *, startup_seconds, w
     fixed['attempts'] = 2
     try:
         _, row = predict(state, policy, request, artifact_sha, deadline=time.monotonic() + warm_seconds)
-    except ServiceFailure as exc:
+    except Exception as exc:
         # Second-attempt phases only: the first attempt's are not this one's.
-        exc.timing = finish(exc.timing)
+        exc.timing = finish(getattr(exc, 'timing', {}))
+        exc.phase = getattr(exc, 'phase', 'warm')
         raise
     return finish(row)

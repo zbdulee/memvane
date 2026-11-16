@@ -53,7 +53,9 @@ def _offer_retry(decision, row):
     from memvane.runtime import api as runtime
     delay = min(3600, max(0, (row['retryAfterNs'] - time.time_ns()) / 10**9))
     try:
-        runtime.request('laya-sync', decision['projectRoot'], delay=delay)
+        result = runtime.request('laya-sync', decision['projectRoot'], delay=delay)
+        if isinstance(result, dict) and result.get('status') == 'deferred_queue_capacity':
+            _request_event(decision, 'failed', 'retry_offer_dropped')
     except Exception:
         _request_event(decision, 'failed', 'retry_offer_failed')
 
@@ -82,10 +84,22 @@ def _request_owned(decision, owner, *, force, origin='session'):
     if enrollment.get('status') == 'disabled':
         _request_event(decision, 'skipped', 'learning_disabled', origin=origin)
         return
+    if origin == 'sync' and enrollment.get('status') == 'pending_runtime':
+        from memvane.learning.context_learning import selector_heal
+        try:
+            _python, model = selector_heal.official_runtime()
+        except selector_heal.HealRefused as exc:
+            if str(exc) != 'learning_runtime_not_installed':
+                raise
+            model = None
+        if model is None:
+            _request_event(decision, 'skipped', 'learning_runtime_pending', origin=origin)
+            return
     retry = running == highest and (enrollment.get('status') == 'pending_runtime'
                                     or _missing_warm_receipt(decision['projectRoot']))
     if not force and running == highest and not retry:
-        _request_event(decision, 'skipped', 'version_current', origin=origin)
+        if origin != 'sync':
+            _request_event(decision, 'skipped', 'version_current', origin=origin)
         return
     state = Path(decision['journalPath']).parent
     path = state / REQUEST_FILE
@@ -102,6 +116,10 @@ def _request_owned(decision, owner, *, force, origin='session'):
     if now < due:
         _request_event(decision, 'skipped', 'backoff' if retry_after and due == retry_after else 'request_floor',
                        origin=origin, requestNs=last if type(last) is int else None, retryAfterNs=due)
+        # A pre-existing edit/vector wake can run before the learning deadline.
+        # Re-offer while that row is running so its ACK retains the due time.
+        if origin == 'sync':
+            _offer_retry(decision, {'retryAfterNs': due})
         return
     attempt = {'requestedNs': now, 'failures': _failure_count(previous), 'retryAfterNs': 0}
     _write(path, attempt, replace=path.exists())
@@ -168,10 +186,12 @@ def _run_recorded(project, *, force=False):
             from memvane.journal.api import select_route
             from memvane.diagnostics import api as diagnostics
             decision = select_route(str(Path(project).resolve(strict=True)), action='update')
-            _record_request_result(decision, completed=result is True, deferred=result is not True)
+            _record_request_result(decision, completed=result is True, deferred=result is not True,
+                                   reschedule=result is not None)
             diagnostics.emit('learning.selector.maintenance', decision=decision,
                              outcome='completed' if result is True else 'deferred',
-                             reason=None if result is True else 'maintenance_incomplete')
+                             reason=None if result is True else
+                             'learning_runtime_pending' if result is None else 'maintenance_incomplete')
         except Exception:
             pass
         return
@@ -246,7 +266,7 @@ def _release_deferred_request(decision):
     _record_request_result(decision, deferred=True)
 
 
-def _record_request_result(decision, *, deferred=False, completed=False):
+def _record_request_result(decision, *, deferred=False, completed=False, reschedule=True):
     """Settle only the selected install's owning request, not product work proof."""
     from memvane.journal.api import inspect_journal, ledger_read_json, ledger_write
     from memvane.runtime.api import sync_owner
@@ -273,7 +293,7 @@ def _record_request_result(decision, *, deferred=False, completed=False):
                 diagnostics.emit('learning.selector.request', outcome='completed' if completed else
                                  'deferred' if deferred else 'failed', requestNs=int(value),
                                  failures=updated['failures'], retryAfterNs=updated['retryAfterNs'], decision=decision)
-                if not completed:
+                if not completed and reschedule:
                     _offer_retry(decision, updated)
         except (OSError, ValueError, RuntimeError):
             diagnostics.emit('learning.selector.request', outcome='failed', reason='retry_state_failed', decision=decision)
@@ -319,6 +339,8 @@ def _run(project, *, force=False):
             diagnostics.emit('learning.selector.warm', outcome=result.get('warm'), decision=decision,
                              **clean(result.get('timing')))
         if result.get('status') not in ('selected', 'preserved'):
+            if result.get('status') == 'pending_runtime':
+                return None  # Needs installation/model choice, not an hourly poll.
             return False
         if result.get('status') == 'preserved':
             state = _selector_state(project)

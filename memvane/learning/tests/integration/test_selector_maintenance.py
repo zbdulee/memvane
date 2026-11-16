@@ -451,7 +451,7 @@ else:
     assert not any(x[0] == 'smoke' for x in seen), seen
     assert len([x for x in seen if x == ('learning.runtime.proof','deferred','learning_deferred_resource','memory_reserve')]) == 1, seen
     assert not (managed/'active.json').exists() and (managed/'pending-activation.json').is_file()
-assert any(x[:3] == ('learning.selector.maintenance','deferred','maintenance_incomplete') for x in seen), seen
+assert any(x[:3] == ('learning.selector.maintenance','deferred','learning_runtime_pending') for x in seen), seen
 '''
         for available in (3000, 2000):
             with self.subTest(available=available), tempfile.TemporaryDirectory(prefix='mvs-admit-') as directory:

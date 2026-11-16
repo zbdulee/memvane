@@ -17,6 +17,41 @@ from memvane.runtime import api as runtime
 
 
 class RequestGates(FixtureCase):
+    def test_sync_reoffers_backoff_but_does_not_poll_an_absent_runtime(self):
+        state = self.home / 'retry-state'
+        state.mkdir(mode=0o700)
+        decision = {'projectRoot': str(self.home), 'journalPath': str(state / 'journal'),
+                    'storePath': str(state / 'store'), 'installId': 'fixture'}
+        row = {'requestedNs': 100 * 10**9, 'failures': 1, 'retryAfterNs': 1200 * 10**9}
+        journal.ledger_write(state / maintenance.REQUEST_FILE, row, replace=False)
+        with mock.patch.object(runtime, 'validate_sync_owner'), \
+                mock.patch.object(journal, 'inspect_journal', return_value={
+                    'state': 'selected', 'maxPluginVersion': '1.0.12', 'installId': 'fixture'}), \
+                mock.patch('memvane.kernel.memvane_version.plugin_version', return_value='1.0.12'), \
+                mock.patch('memvane.learning.default_enrollment.record', return_value={'status': 'pending_runtime'}), \
+                mock.patch.object(maintenance.time, 'time_ns', return_value=1000 * 10**9), \
+                mock.patch.object(selector_heal, 'official_runtime', return_value=('/synthetic/python', '/synthetic/model')) as official, \
+                mock.patch.object(runtime, 'request', return_value={'status': 'queued'}) as offer, \
+                mock.patch.object(maintenance.subprocess, 'Popen') as spawn:
+            maintenance._request_owned(decision, object(), force=False, origin='sync')
+            offer.assert_called_once_with('laya-sync', str(self.home), delay=200)
+            offer.reset_mock()
+            official.side_effect = selector_heal.HealRefused('learning_runtime_not_installed')
+            maintenance._request_owned(decision, object(), force=False, origin='sync')
+            offer.assert_not_called()
+            official.side_effect = None
+            official.return_value = ('/synthetic/python', None)
+            maintenance._request_owned(decision, object(), force=False, origin='sync')
+            offer.assert_not_called()
+            spawn.assert_not_called()
+        self.assertEqual(journal.ledger_read_json(state / maintenance.REQUEST_FILE), row)
+
+    def test_dropped_retry_offer_is_reported(self):
+        with mock.patch.object(runtime, 'request', return_value={'status': 'deferred_queue_capacity'}), \
+                mock.patch('memvane.diagnostics.api.emit') as emit:
+            maintenance._offer_retry({'projectRoot': str(self.home)}, {'retryAfterNs': time.time_ns()})
+        self.assertEqual(emit.call_args.kwargs['reason'], 'retry_offer_dropped')
+
     def test_gates_report_reason_without_spawning_or_rewriting_backoff(self):
         state = self.home / 'state'
         state.mkdir(mode=0o700)
@@ -63,6 +98,21 @@ class RetrySync(FixtureCase):
             installs.append(build_install(self, project, install_id=str(index) * 32))
         return installs
 
+    def test_pending_runtime_does_not_schedule_an_hourly_poll(self):
+        a, _b = self.pair()
+        seed = time.time_ns()
+        journal.ledger_write(a.state / maintenance.REQUEST_FILE,
+            {'requestedNs': seed, 'failures': 0, 'retryAfterNs': 0}, replace=False)
+        with mock.patch.dict(os.environ, {'MEMVANE_SELECTOR_REQUEST_NS': str(seed)}), \
+                mock.patch('memvane.learning.runtime_activation.ensure_pending'), \
+                mock.patch('memvane.learning.default_enrollment.prepare', return_value={'status': 'pending_runtime'}), \
+                mock.patch.object(runtime, 'request') as offer:
+            maintenance.run(a.project.root, force=True)
+        offer.assert_not_called()
+        row = journal.ledger_read_json(a.state / maintenance.REQUEST_FILE)
+        self.assertEqual(row['failures'], 1)
+        self.assertGreater(row['retryAfterNs'], seed)
+
     def test_owner_busy_records_reason_before_any_request_timestamp_write(self):
         a, b = self.pair()
         events = []
@@ -107,10 +157,20 @@ class RetrySync(FixtureCase):
             return maintenance._request_owned(decision, owner, force=force, origin=_kwargs.get('origin', 'sync'))
         now = deferred['retryAfterNs'] + 10**9
         spawn = mock.Mock()
-        with mock.patch.object(maintenance.time, 'time_ns', return_value=now), \
+        with mock.patch.object(maintenance.time, 'time_ns', return_value=now-2*10**9) as clock, \
+                mock.patch.object(selector_heal, 'official_runtime', return_value=('/synthetic/python', '/synthetic/model')), \
                 mock.patch.object(maintenance, 'request', side_effect=request), \
+                mock.patch.object(runtime, 'request', return_value={'status': 'queued'}) as reoffer, \
                 mock.patch.object(maintenance, 'subprocess',
                                   SimpleNamespace(Popen=spawn, DEVNULL=maintenance.subprocess.DEVNULL)):
+            # An edit/vector wake already queued can finish before retryAfter.
+            # Its sync completion must re-offer the remaining delay under owner.
+            result = b.run_sync()
+            self.assertIn(result['state'], ('indexed', 'unchanged'), result)
+            spawn.assert_not_called()
+            self.assertTrue(any(call.args[:2] == ('laya-sync', str(b.project.root))
+                                and call.kwargs.get('delay', 0) > 0 for call in reoffer.call_args_list))
+            clock.return_value = now
             for _ in range(2):
                 result = b.run_sync()
                 self.assertIn(result['state'], ('indexed', 'unchanged'), result)

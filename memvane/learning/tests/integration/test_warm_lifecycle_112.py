@@ -38,11 +38,16 @@ class WarmLifecycle(FixtureCase):
         path.write_text(json.dumps(value), encoding='utf8')
         path.chmod(0o600)
 
-    def run_entry(self, *, startup=0, loading=0, load_error=False, startup_error=None, policy_error=None):
+    def run_entry(self, *, startup=0, loading=0, load_error=False, startup_error=None,
+                  policy_error=None, capacity_error=None):
         stop, ready = threading.Event(), threading.Event()
         self.start_calls = 0
         threads, envelopes, events = [], [], []
-        controller = SimpleNamespace(inference=lambda *a: nullcontext(),
+        def lease(*_args):
+            if capacity_error is not None:
+                raise capacity_error
+            return nullcontext()
+        controller = SimpleNamespace(inference=lease,
                                      inference_compute=lambda *a: nullcontext())
         def load(_job):
             time.sleep(loading)
@@ -138,6 +143,37 @@ class WarmLifecycle(FixtureCase):
         self.assertEqual(failure['stage'], 'validation')
         self.assertGreaterEqual(failure['client_validation_seconds'], 0)
         self.assertEqual(self.start_calls, 0)
+
+    def test_startup_io_failure_retains_phase_timing(self):
+        from memvane.learning.context_learning import inference_client
+        with mock.patch.object(service, 'service_root', side_effect=OSError('/private/path')):
+            with self.assertRaises(OSError) as raised:
+                inference_client.predict_after_startup(self.state, self.policy, {}, 'a' * 64,
+                    deadline=time.monotonic()+1, pointer_name='active-checkpoint.json',
+                    ensure_service=None, startup_seconds=3)
+        self.assertEqual(raised.exception.phase, 'startup')
+        self.assertGreaterEqual(raised.exception.timing['resident_wall_seconds'], 0)
+
+    def test_capacity_deferral_has_matching_phase_and_maintenance_outcomes(self):
+        from memvane.kernel.resource_deferred import ResourceDeferred
+        _envelopes, events = self.run_entry(capacity_error=ResourceDeferred('learning_inference_capacity'))
+        for name in ('learning.selector.warm.phase', 'learning.selector.maintenance'):
+            row = next(fields for event, fields in reversed(events) if event == name)
+            self.assertEqual(row['outcome'], 'deferred')
+            self.assertEqual(row['reason'], 'resource_deferred')
+            self.assertEqual(row['stage'], 'startup')
+
+    def test_followup_io_failure_retains_drain_and_attempt_count(self):
+        from memvane.learning.context_learning import warm_lifecycle
+        first = ServiceFailure('deadline_expired', {'startup_wait_seconds': 1})
+        first.phase = 'warm'
+        with mock.patch.object(warm_lifecycle, '_drained', return_value=True):
+            with self.assertRaises(OSError) as raised:
+                warm_lifecycle.attempt(mock.Mock(side_effect=[first, OSError('/private/path')]),
+                    self.state, self.policy, {}, 'a'*64, startup_seconds=3, warm_seconds=1, drain_seconds=3)
+        self.assertEqual(raised.exception.timing['attempts'], 2)
+        self.assertEqual(raised.exception.timing['startup_wait_seconds'], 1)
+        self.assertGreaterEqual(raised.exception.timing['drain_wait_seconds'], 0)
 
     def test_startup_deadline_does_not_trigger_a_second_startup_as_warm_retry(self):
         envelopes, _events = self.run_entry(startup=3.2)

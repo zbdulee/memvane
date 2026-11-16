@@ -96,6 +96,10 @@ def predict_after_startup(state, policy, request, artifact_sha, *, deadline, poi
         exc.timing = _numeric(measured, started)
         exc.phase = phase
         raise
+    except Exception as exc:
+        exc.timing = _numeric(measured, started)
+        exc.phase = phase
+        raise
     try:
         return answer(response, started, measured)
     except ServiceFailure as exc:
