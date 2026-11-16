@@ -1159,6 +1159,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/store/view/pin_receipt.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/store/view/view_fill.py": {
       "context": "store",
       "layer": "adapter",

@@ -1078,14 +1078,8 @@ class RowsMixin:
         return generation, entry['capture']
 
     def _rows_verified(self, db, head, live_handle, deadline, record=None):
-        stamp = self._commit_stamp(db)
-        cached = None if record is None else record.get('verified')
-        if cached is not None and cached['stamp'] == stamp and cached['ordinal'] == head.ordinal:
-            return cached['generation'], cached['capture']
-        generation, capture = self._rows_verify(db, head, live_handle, deadline)
-        if record is not None:
-            record['verified'] = dict(stamp=stamp, ordinal=head.ordinal, generation=generation, capture=capture)
-        return generation, capture
+        from memvane.store.view.pin_receipt import verified
+        return verified(self, db, head, live_handle, deadline, record)
 
     def _rows_pin(self, handle, deadline):
         from memvane.store.view.view_reader import MAX_PINS, ViewPin, _remaining
