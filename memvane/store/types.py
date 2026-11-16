@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import re
+from contextvars import ContextVar
 from typing import Protocol
+
+FILL_PROFILE = ContextVar('memvane_fill_profile', default=None)
 
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 UUID = re.compile(r'[0-9a-f]{32}\Z')

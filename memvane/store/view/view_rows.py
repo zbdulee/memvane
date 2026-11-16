@@ -16,6 +16,7 @@ import math
 import time
 import uuid
 
+from memvane.store.view.view_fill import profile_fill_plan
 from memvane.store.blob import blob_values as v
 from memvane.store.view import view_fts as fts
 from memvane.store.view import view_values as vals
@@ -271,12 +272,6 @@ def _locators(spans):
             v.fail('legacy_card_trust_invalid')
     ordered = sorted(spans, key=lambda span: (span['path'], span['startLine'], span['endLine']))
     return [source_spans.locator(span) for span in ordered]
-
-
-
-
-
-
 
 
 @dataclass(frozen=True)
@@ -1215,6 +1210,7 @@ class RowsMixin:
             heads[row['blob_sha']] = head
         return heads
 
+    @profile_fill_plan
     def _rows_fill_plan(self, handle, recipe_id, profile_id):
         """Eligible head cards in path order and the head/spec-bound cursor of this view."""
         from memvane.store.view.view_fill import JOB_SCHEMA

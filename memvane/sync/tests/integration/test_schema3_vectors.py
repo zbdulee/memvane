@@ -25,6 +25,20 @@ def stopped_at_once(real, *args, **kwargs):
 
 
 class SyncVectors(SyncCase):
+    def test_sync_records_one_body_free_stage_profile(self):
+        self.edit('profilecanary')
+        before = len(self.events('sync.profile'))
+        self.run_pass()
+        events = self.events('sync.profile')[before:]
+        self.assertEqual(len(events), 1)
+        row = events[0]
+        for name in ('scan', 'plan', 'coverage', 'provider', 'storage', 'publish'):
+            self.assertIsInstance(row[name + 'Ms'], (int, float))
+            self.assertIsInstance(row[name + 'Calls'], int)
+        self.assertGreater(row['scanCalls'], 0)
+        self.assertGreater(row['planCalls'], 0)
+        self.assertNotIn('profilecanary', str(row))
+
     def reader_spec(self):
         from memvane.journal.api import inspect_journal
         reader = inspect_journal(self.target.journal)['reader']

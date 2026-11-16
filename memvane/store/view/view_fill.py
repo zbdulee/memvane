@@ -11,6 +11,7 @@ content filler's OS lease owns per-content work. Job rows hold no body text.
 from __future__ import annotations
 
 import math
+from functools import wraps
 import sqlite3
 import time
 
@@ -19,6 +20,7 @@ from memvane.store.blob.blob_values import BlobStoreError
 from memvane.store.blob.blob_fill import ContentFiller
 from memvane.store.blob.blob_store import _insert
 from memvane.store.types import MAX_FILES
+from memvane.store.types import FILL_PROFILE
 from memvane.store.view import fill_schema as fill_schema
 from memvane.store.view import view_values as vals
 
@@ -26,6 +28,21 @@ MAX_DEADLINE = 300
 MAX_BYTES = 64 * 1024 * 1024
 JOB_SCHEMA = 'memvane-fill-job-v1'
 BUSY = 'content_claim_busy'
+
+
+def profile_fill_plan(function):
+    @wraps(function)
+    def call(self, handle, recipe_id, profile_id):
+        profile = FILL_PROFILE.get()
+        if profile is None:
+            return function(self, handle, recipe_id, profile_id)
+        started = time.monotonic_ns()
+        try:
+            return function(self, handle, recipe_id, profile_id)
+        finally:
+            profile['planCalls'] += 1
+            profile['planNs'] += time.monotonic_ns() - started
+    return call
 
 
 def _deadline(seconds):
