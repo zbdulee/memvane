@@ -34,7 +34,7 @@ class RequestGates(FixtureCase):
                 mock.patch.object(runtime, 'request', return_value={'status': 'queued'}) as offer, \
                 mock.patch.object(maintenance.subprocess, 'Popen') as spawn:
             maintenance._request_owned(decision, object(), force=False, origin='sync')
-            offer.assert_called_once_with('laya-sync', str(self.home), delay=200)
+            offer.assert_called_once_with('learning', str(self.home), delay=200)
             offer.reset_mock()
             official.side_effect = selector_heal.HealRefused('learning_runtime_not_installed')
             maintenance._request_owned(decision, object(), force=False, origin='sync')
@@ -146,7 +146,7 @@ class RetrySync(FixtureCase):
             deferred = journal.ledger_read_json(path)
             self.assertEqual(deferred['failures'], 1)
             self.assertGreaterEqual(deferred['retryAfterNs'], seed + 600 * 10**9)
-            self.assertTrue(any(c.args[:2] == ('laya-sync', str(b.project.root)) and
+            self.assertTrue(any(c.args[:2] == ('learning', str(b.project.root)) and
                                 0 < c.kwargs.get('delay', 0) <= 3600 for c in offer.call_args_list))
         finally:
             os.close(lease)
@@ -168,7 +168,7 @@ class RetrySync(FixtureCase):
             result = b.run_sync()
             self.assertIn(result['state'], ('indexed', 'unchanged'), result)
             spawn.assert_not_called()
-            self.assertTrue(any(call.args[:2] == ('laya-sync', str(b.project.root))
+            self.assertTrue(any(call.args[:2] == ('learning', str(b.project.root))
                                 and call.kwargs.get('delay', 0) > 0 for call in reoffer.call_args_list))
             clock.return_value = now
             for _ in range(2):

@@ -43,25 +43,35 @@ def _missing_warm_receipt(project):
 
 def _request_event(decision, outcome, reason=None, *, origin='session', **fields):
     from memvane.diagnostics import api as diagnostics
-    origin = origin if origin in ('session', 'sync', 'activation') else 'unknown'
+    origin = origin if origin in ('session', 'sync', 'activation', 'wake') else 'unknown'
     diagnostics.emit('learning.selector.request', outcome=outcome, reason=reason,
                      decision=decision, origin=origin, **fields)
 
 
 def _offer_retry(decision, row):
-    """Existing sync wake is the due-time trigger; no new wake kind or target."""
+    """The existing learning wake is the due-time trigger; never delay laya-sync."""
     from memvane.runtime import api as runtime
     delay = min(3600, max(0, (row['retryAfterNs'] - time.time_ns()) / 10**9))
     try:
-        result = runtime.request('laya-sync', decision['projectRoot'], delay=delay)
+        # Same canonical target as the learning worker's own offers (one row).
+        target = str(Path(decision['projectRoot']).resolve())
+        result = runtime.request('learning', target, delay=delay)
         if isinstance(result, dict) and result.get('status') == 'deferred_queue_capacity':
             _request_event(decision, 'failed', 'retry_offer_dropped')
     except Exception:
         _request_event(decision, 'failed', 'retry_offer_failed')
 
 
-def _request_owned(decision, owner, *, force, origin='session'):
-    """Apply the existing ten-minute per-install request floor under sync owner."""
+_SKIPPED = {'status': 'skipped'}
+
+
+def _request_owned(decision, owner, *, force, origin='session', reoffer=True):
+    """Apply the existing ten-minute per-install request floor under sync owner.
+
+    Returns ``{'status': 'skipped'|'waiting'|'spawned'}`` (``dueNs`` when
+    waiting). ``reoffer=False`` (the learning-wake probe) never re-offers a
+    delayed learning wake, so it cannot push back its own running row.
+    """
     from memvane.journal.api import inspect_journal
     from memvane.journal.api import ledger_read_json as _read_json, ledger_write as _write
     from memvane.kernel.memvane_version import plugin_version, version_key
@@ -71,20 +81,20 @@ def _request_owned(decision, owner, *, force, origin='session'):
     running, highest = version_key(plugin_version()), version_key(row['maxPluginVersion'])
     if row['state'] != 'selected' or row['installId'] != decision['installId']:
         _request_event(decision, 'skipped', 'not_selected', origin=origin)
-        return
+        return dict(_SKIPPED)
     if running is None or highest is None:
         _request_event(decision, 'skipped', 'version_invalid', origin=origin)
-        return
+        return dict(_SKIPPED)
     if running < highest:
         _request_event(decision, 'skipped', 'version_behind', origin=origin)
-        return
+        return dict(_SKIPPED)
     from memvane.learning.default_enrollment import record
     enrollment = record(decision['projectRoot'], Path(decision['journalPath']).parent,
                         decision['installId'])
     if enrollment.get('status') == 'disabled':
         _request_event(decision, 'skipped', 'learning_disabled', origin=origin)
-        return
-    if origin == 'sync' and enrollment.get('status') == 'pending_runtime':
+        return dict(_SKIPPED)
+    if origin in ('sync', 'wake') and enrollment.get('status') == 'pending_runtime':
         from memvane.learning.context_learning import selector_heal
         try:
             _python, model = selector_heal.official_runtime()
@@ -94,13 +104,13 @@ def _request_owned(decision, owner, *, force, origin='session'):
             model = None
         if model is None:
             _request_event(decision, 'skipped', 'learning_runtime_pending', origin=origin)
-            return
+            return dict(_SKIPPED)
     retry = running == highest and (enrollment.get('status') == 'pending_runtime'
                                     or _missing_warm_receipt(decision['projectRoot']))
     if not force and running == highest and not retry:
-        if origin != 'sync':
+        if origin not in ('sync', 'wake'):
             _request_event(decision, 'skipped', 'version_current', origin=origin)
-        return
+        return dict(_SKIPPED)
     state = Path(decision['journalPath']).parent
     path = state / REQUEST_FILE
     now = time.time_ns()
@@ -116,11 +126,11 @@ def _request_owned(decision, owner, *, force, origin='session'):
     if now < due:
         _request_event(decision, 'skipped', 'backoff' if retry_after and due == retry_after else 'request_floor',
                        origin=origin, requestNs=last if type(last) is int else None, retryAfterNs=due)
-        # A pre-existing edit/vector wake can run before the learning deadline.
-        # Re-offer while that row is running so its ACK retains the due time.
-        if origin == 'sync':
+        # A sync pass runs before the learning deadline: hand the due time to
+        # the learning wake. The wake probe instead keeps its own row pending.
+        if origin == 'sync' and reoffer:
             _offer_retry(decision, {'retryAfterNs': due})
-        return
+        return {'status': 'waiting', 'dueNs': due}
     attempt = {'requestedNs': now, 'failures': _failure_count(previous), 'retryAfterNs': 0}
     _write(path, attempt, replace=path.exists())
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER',
@@ -139,10 +149,14 @@ def _request_owned(decision, owner, *, force, origin='session'):
         updated = _retry_row(attempt, now, deferred=False)
         _write(path, updated, replace=True)
         _request_event(decision, 'failed', 'spawn_failed', origin=origin)
+        if not reoffer:
+            # The wake probe retains its own row; no delayed self-offer.
+            return {'status': 'waiting', 'dueNs': updated['retryAfterNs']}
         _offer_retry(decision, updated)
         exc._selector_request_logged = True
         raise
     _request_event(decision, 'spawned', origin=origin, requestNs=now)
+    return {'status': 'spawned'}
 
 
 def request(decision, *, force=False, owner=None, origin='session'):
@@ -163,6 +177,79 @@ def request(decision, *, force=False, owner=None, origin='session'):
     except Exception as exc:
         if not getattr(exc, '_selector_request_logged', False):
             _request_event(decision, 'failed', 'request_failed', origin=origin, error=type(exc).__name__)
+
+
+def _pending_request(row, project):
+    """A valid row still owed an attempt; None when the row is malformed."""
+    if not isinstance(row, dict):
+        return None
+    requested, failures = row.get('requestedNs'), row.get('failures', 0)
+    retry_after = row.get('retryAfterNs', 0)
+    if not all(type(value) is int and value >= 0 for value in (requested, failures, retry_after)):
+        return None
+    return retry_after > 0 or failures > 0 or _missing_warm_receipt(project)
+
+
+def _selected_route(project):
+    """Selected route with a journal, else None; never authorizes on its own."""
+    from memvane.journal.api import inspect_journal, select_route
+    decision = select_route(str(Path(project).resolve(strict=True)), action='update')
+    if not isinstance(decision, dict) or not decision.get('journalPath'):
+        return None
+    row = inspect_journal(decision['journalPath'])
+    if row['state'] != 'selected' or row['installId'] != decision['installId']:
+        return None
+    return decision
+
+
+def due_request(project):
+    """Learning-wake probe for an already pending selector request.
+
+    Returns ``{'status': 'none'|'waiting'|'busy'|'requested'}`` (``dueNs``
+    when waiting). A missing or settled request returns ``none`` before any
+    enrollment write or spawn; an irrecoverable route/proof also returns
+    ``none`` so a learning wake never polls it forever.
+    """
+    none = {'status': 'none'}
+    if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' or os.environ.get('QMD_SANDBOX'):
+        return none
+    decision = None
+    try:
+        from memvane.journal.api import ledger_read_json, verify_selected_route_for_write
+        from memvane.runtime.api import sync_owner
+        decision = _selected_route(project)
+        if decision is None:
+            return none
+        path = Path(decision['journalPath']).parent / REQUEST_FILE
+        if not path.exists():
+            return none
+        pending = _pending_request(ledger_read_json(path), decision['projectRoot'])
+        if pending is None:
+            _request_event(decision, 'failed', 'request_state_invalid', origin='wake')
+            return none
+        if not pending:
+            return none
+        current = _selected_route(project)
+        if current is None or any(current[key] != decision[key]
+                                  for key in ('journalPath', 'installId', 'storePath', 'projectRoot')):
+            return none
+        decision = current
+        with sync_owner(Path(decision['storePath']), wait=False) as held:
+            if held is None:
+                return {'status': 'busy'}
+            proof = verify_selected_route_for_write(decision)
+            if proof['installId'] != decision['installId']:
+                return none
+            result = _request_owned(decision, held, force=False, origin='wake', reoffer=False)
+        if result['status'] == 'waiting':
+            return {'status': 'waiting', 'dueNs': result['dueNs']}
+        return {'status': 'requested'} if result['status'] == 'spawned' else none
+    except Exception as exc:
+        try:
+            _request_event(decision, 'failed', 'due_probe_failed', origin='wake', error=type(exc).__name__)
+        except Exception:
+            pass
+        return none
 
 
 def run(project, *, force=False):
@@ -278,6 +365,10 @@ def _record_request_result(decision, *, deferred=False, completed=False, resched
     with sync_owner(Path(decision['storePath']), wait=True) as owner:
         if owner is None:
             diagnostics.emit('learning.selector.request', outcome='failed', reason='retry_state_busy', decision=decision)
+            # The file stays unsettled; the learning wake re-probes it after
+            # this request's floor instead of waiting for the next sync.
+            if not completed and reschedule:
+                _offer_retry(decision, {'retryAfterNs': int(value) + REQUEST_SECONDS * 10**9})
             return
         try:
             selected = inspect_journal(decision['journalPath'])

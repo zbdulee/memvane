@@ -35,6 +35,10 @@ def request_selector_maintenance(decision, *, force=False, owner=None, origin='s
         ('force', force, False), ('owner', owner, None), ('origin', origin, 'session')) if value is not default}
     return implementation(decision, **given)
 
+def due_selector_maintenance(project):
+    from memvane.learning.selector_maintenance import due_request as implementation
+    return implementation(project)
+
 def run_selector_maintenance(project, *, force=False):
     from memvane.learning.selector_maintenance import run as implementation
     given = {'force': force} if force is not False else {}

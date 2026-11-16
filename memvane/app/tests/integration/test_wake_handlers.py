@@ -66,7 +66,7 @@ class LearningHandler(FixtureCase):
         self.project.mkdir()
         self.row = {'kind': 'learning', 'target': str(self.project), 'revision': 1}
 
-    def handler(self, *, ready=(True, True), root='SAME', step=None):
+    def handler(self, *, ready=(True, True), root='SAME', step=None, maintenance='none'):
         """Run the learning handler with ``ready`` answers in turn; returns ``(ack, step calls)``."""
         answers = list(ready)
         calls = []
@@ -75,6 +75,7 @@ class LearningHandler(FixtureCase):
             calls.append((root_, project, revision))
             return step or {'status': 'settled'}
         with mock.patch('memvane.settings.api.find_project_config', return_value={'config': {}}), \
+                mock.patch('memvane.learning.api.due_selector_maintenance', return_value={'status': maintenance}), \
                 mock.patch('memvane.learning.api.safe_root',
                            return_value=self.project if root == 'SAME' else root), \
                 mock.patch('memvane.learning.api.ready', side_effect=lambda _project: answers.pop(0)), \
@@ -92,6 +93,14 @@ class LearningHandler(FixtureCase):
         for status in ('running', 'started'):
             with self.subTest(status=status):
                 self.assertEqual(self.handler(step={'status': status})[0], False)
+
+    def test_pending_maintenance_retains_wake_without_suppressing_normal_learning(self):
+        for status in ('waiting', 'busy'):
+            with self.subTest(status=status):
+                acked, calls = self.handler(maintenance=status)
+                self.assertFalse(acked)
+                self.assertEqual(calls, [(self.project, self.project, 1)])
+                self.assertEqual(self.handler(root=None, maintenance=status), (False, []))
 
     def test_a_gone_project_or_no_learning_root_acks_without_a_step(self):
         self.assertEqual(self.handler(root=None), (True, []))

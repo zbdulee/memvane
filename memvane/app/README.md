@@ -8,6 +8,10 @@ capture supervisor는 45초 제한 뒤 TERM을 보내고 최대 5초 뒤에도 �
 
 구현: `runtime_dispatch.py`, `setup_entry.py`, `setup_activation.py`, `wake_entry.py`.
 
+`wiring.learning`은 기존 요청 파일의 selector 재시도를 먼저 확인한다.
+아직 하한 전이거나 owner가 바쁘면 wake를 유지하며 일반 학습 step도
+실행한다. wake 처리 중에는 자기 행을 긴 delay로 재예약하지 않는다.
+
 - `setup_entry.py`는 인자를 해석하고 승인 플래그를 확인한 뒤 `install.api`의 온보딩 동작을 부른다.
 - `setup_activation.py`는 `install.api.finalize_initial_build`에 app의 `laya-sync` dispatch 확인(`runtime_dispatch.resolve`)을 `resolve_sync_target` port로 넣는다.
 - 온보딩 단계의 재실행 규칙은 `memvane/install/README.md`의 "온보딩 단계의 재실행"을 따른다.
