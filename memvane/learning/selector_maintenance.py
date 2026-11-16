@@ -94,6 +94,28 @@ def request(decision, *, force=False, owner=None):
 
 
 def run(project, *, force=False):
+    try:
+        return _run(project, force=force)
+    except Exception as exc:
+        # Diagnostics cannot authorize work; report only after selected proof.
+        try:
+            from memvane.journal.api import select_route, verify_selected_route_for_write
+            from memvane.diagnostics import api as diagnostics
+            from memvane.kernel.resource_deferred import ResourceDeferred
+            from memvane.learning.context_learning.selector_heal import HealDeferred
+            decision = select_route(str(Path(project).resolve(strict=True)), action='update')
+            verify_selected_route_for_write(decision)
+            deferred = isinstance(exc, (ResourceDeferred, HealDeferred))
+            reason = str(exc) if str(exc) in ('learning_prepare_memory_pressure', 'learning_prepare_busy',
+                                               'learning_pending_changed') else ('resource_deferred' if deferred else 'maintenance_failed')
+            diagnostics.emit('learning.selector.maintenance', decision=decision,
+                             outcome='deferred' if deferred else 'failed', reason=reason)
+        except Exception:
+            pass
+        raise
+
+
+def _run(project, *, force=False):
     """Serialize selector repair and monotonic version publication off-hook."""
     from memvane.learning.context_learning import selector_heal
     from memvane.journal.api import select_route
@@ -104,7 +126,14 @@ def run(project, *, force=False):
     decision = select_route(project, action='update')
     proof = verify_selected_route_for_write(decision)
     from memvane.learning.runtime_activation import ensure_pending
-    ensure_pending(decision=decision)
+    from memvane.kernel.resource_deferred import ResourceDeferred
+    try:
+        ensure_pending(decision=decision)
+    except ResourceDeferred as exc:
+        from memvane.diagnostics import api as diagnostics
+        reason = str(exc) if str(exc) in ('learning_prepare_memory_pressure', 'learning_prepare_busy',
+                                         'learning_pending_changed') else 'resource_deferred'
+        diagnostics.emit('learning.runtime.proof', outcome='deferred', decision=decision, reason=reason)
     lease = selector_heal._prepare_lease(None)
     try:
         row = inspect_journal(decision['journalPath'])
@@ -114,6 +143,9 @@ def run(project, *, force=False):
             return
         from memvane.learning.default_enrollment import prepare
         result = prepare(project, Path(decision['journalPath']).parent, decision['installId'], lease_fd=lease)
+        if result.get('status') == 'selected':
+            from memvane.diagnostics import api as diagnostics
+            diagnostics.emit('learning.selector.warm', outcome=result.get('warm'), decision=decision)
         if result.get('status') not in ('selected', 'preserved'):
             return
         if result.get('status') == 'preserved':
@@ -125,6 +157,8 @@ def run(project, *, force=False):
                 warmed = selector_heal.warm(project, state=state)
                 if warmed.get('status') == 'selector_warm_busy':
                     return
+                from memvane.diagnostics import api as diagnostics
+                diagnostics.emit('learning.selector.warm', outcome=warmed.get('status'), decision=decision)
         with sync_owner(Path(decision['storePath']), wait=False) as owner:
             if owner is None:
                 return

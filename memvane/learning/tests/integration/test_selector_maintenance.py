@@ -11,6 +11,37 @@ from memvane.learning.context_learning import runtime_installer, selector_heal
 
 
 class SelectorMaintenance(unittest.TestCase):
+    def test_entry_continues_existing_selector_after_pending_deferral(self):
+        import runpy
+        import sys
+        from memvane.kernel.resource_deferred import ResourceDeferred
+        with tempfile.TemporaryDirectory(prefix='mvs-') as directory:
+            root = Path(directory).resolve()
+            decision = {'projectRoot': str(root), 'storePath': str(root / 'store.sqlite'),
+                        'journalPath': str(root / 'journal.sqlite'), 'installId': 'test'}
+            events = []
+            fd = os.open(os.devnull, os.O_RDONLY)
+            entry = Path(__file__).resolve().parents[4] / 'entry' / 'run.py'
+            with mock.patch.object(sys, 'argv', [str(entry), 'selector-maintenance', str(root), 'force']), \
+                 mock.patch('memvane.journal.api.select_route', return_value=decision), \
+                 mock.patch('memvane.journal.api.verify_selected_route_for_write', return_value={'installId': 'test'}), \
+                 mock.patch('memvane.learning.runtime_activation.ensure_pending', side_effect=ResourceDeferred('learning_prepare_memory_pressure')), \
+                 mock.patch('memvane.journal.api.inspect_journal', return_value={'maxPluginVersion': '1.0.0'}), \
+                 mock.patch('memvane.kernel.memvane_version.plugin_version', return_value='1.0.1'), \
+                 mock.patch.object(selector_heal, '_prepare_lease', return_value=fd), \
+                 mock.patch('memvane.learning.default_enrollment.prepare', return_value={'status': 'preserved'}), \
+                 mock.patch.object(selector_maintenance, '_selector_state', return_value=root), \
+                 mock.patch.object(selector_heal, 'heal', side_effect=lambda *a, **k: events.append('heal') or {'status': 'selector_ready'}), \
+                 mock.patch.object(selector_heal, 'warm', side_effect=lambda *a, **k: events.append('warm') or {'status': 'selector_warm'}), \
+                 mock.patch('memvane.runtime.api.sync_owner', return_value=nullcontext(object())), \
+                 mock.patch('memvane.journal.api.publish_plugin_version', side_effect=lambda *a: events.append('publish')), \
+                 mock.patch('memvane.diagnostics.api.emit') as emit:
+                with self.assertRaises(SystemExit) as result:
+                    runpy.run_path(str(entry), run_name='__main__')
+            self.assertEqual(result.exception.code, 0)
+            self.assertEqual(events, ['heal', 'warm', 'publish'])
+            self.assertTrue(any(c.args[0] == 'learning.runtime.proof' and c.kwargs.get('outcome') == 'deferred' for c in emit.call_args_list))
+
     def test_deferred_default_preparation_does_not_heal_a_different_namespace(self):
         with tempfile.TemporaryDirectory(prefix='mvs-') as directory:
             root = Path(directory).resolve()
