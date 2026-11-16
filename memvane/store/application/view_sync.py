@@ -63,28 +63,36 @@ def _rows_baseline(store, db, handle, head):
                     'JOIN source_fingerprints f ON f.fingerprint_id=a.fingerprint_id '
                     'WHERE i.job_id=?', (job[0],)):
                 staged_sources[path].add((source, sha, length))
-    spec = head_oid = None
+    spec = head_oid = skip_digest = None
     sources = []
     if not cold:
-        generation = db.execute('SELECT g.recipe_id,g.profile_id,g.coverage,g.capture_json FROM s_heads h '
+        generation = db.execute('SELECT g.recipe_id,g.profile_id,g.coverage,g.capture_json,g.skip_digest FROM s_heads h '
                                 'JOIN s_generations g ON g.view_id=h.view_id AND g.ordinal=h.ordinal '
                                 'WHERE h.view_id=?', (handle.view_id,)).fetchone()
         if generation[2] == 'complete':
             spec = dict(recipe_id=generation[0], profile_id=generation[1])
         head_oid = json.loads(generation[3])['headOid']
+        skip_digest = generation[4]
         sources = store._rows_open_sources(db, handle.view_id)
     return dict(old=staged if cold else opened, carry={} if cold else staged,
                 carry_sources={} if cold else staged_sources, manifest=None,
-                vector_spec=spec, head_oid=head_oid, sources=sources)
+                vector_spec=spec, head_oid=head_oid, skip_digest=skip_digest, sources=sources)
 
 
 def head_same(store, head, baseline, observed, handle):
     """The head was published from exactly this observation at the same HEAD."""
+    from memvane.store.blob import blob_values
     from memvane.store.view import view_values
+    from memvane.store.view.view_store import _skip_patterns
     if baseline['head_oid'] != handle.head_oid:
+        return False
+    skips = _skip_patterns(store._observe(store._check(handle)))
+    if baseline['skip_digest'] != blob_values.digest('memvane-row-skip-v1', skips):
         return False
     wanted = []
     for path in sorted(observed, key=lambda item: item.encode('utf8')):
+        if view_values.skipped(path, skips):
+            continue
         sha, length, tracked = observed[path]
         content = view_values.source_content(sha, length)
         observation = view_values.source_observation(
