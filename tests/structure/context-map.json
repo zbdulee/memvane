@@ -859,6 +859,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/resident/bundle_lifecycle.py": {
+      "context": "resident",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/resident/embed_resident.py": {
       "context": "resident",
       "layer": "adapter",
@@ -905,6 +910,11 @@
       "pinned": false
     },
     "memvane/runtime/bounded_calibration.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/host_bundle.py": {
       "context": "runtime",
       "layer": "adapter",
       "pinned": false

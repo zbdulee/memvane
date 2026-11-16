@@ -10,6 +10,11 @@ from memvane.diagnostics import event_log
 
 
 class DiagnosticRecordTests(FixtureCase):
+    def test_build_progress_reads_only_a_bounded_event_window(self):
+        with patch.object(event_log, 'read', return_value=[]) as read:
+            self.assertEqual(api.build_progress_events(self.state), [])
+        read.assert_called_once_with(self.state, max_bytes=262144)
+
     def setUp(self):
         super().setUp()
         self.state = self.tmp / 'state'

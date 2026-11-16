@@ -196,6 +196,12 @@ def supervisor(root, *, factory=None, clock=None):
         ('factory', factory, None), ('clock', clock, None)) if value is not default}
     return implementation(root, **given)
 
+def background_bundle():
+    """Capture this process's bundle and resolve installed background entries."""
+    from memvane.kernel.bundle_paths import plugin_root
+    from memvane.runtime.host_bundle import BundleIdentity
+    return BundleIdentity(plugin_root())
+
 def calibration_verdict(report, policy, *, now=None):
     from memvane.runtime.bounded_calibration import verdict as implementation
     given = {'now': now} if now is not None else {}

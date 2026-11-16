@@ -21,7 +21,9 @@ the reviewed provider/worker bytes unchanged. Hooks never wait for a model.
 from __future__ import annotations
 
 from contextlib import suppress
-from memvane.kernel.bundle_paths import PROVIDER_RELATIVE_PATH, WORKER_RELATIVE_PATH, bundle_file, entry_argv
+from memvane.kernel.bundle_paths import PROVIDER_RELATIVE_PATH, WORKER_RELATIVE_PATH, bundle_file
+from memvane.runtime.api import background_bundle, environment
+from memvane.resident.bundle_lifecycle import newer, wait_for_successor
 import fcntl
 import hashlib
 import json
@@ -38,6 +40,8 @@ import sys
 import threading
 import time
 
+BACKGROUND_BUNDLE = background_bundle()
+BACKGROUND_ENVIRONMENT = environment({})
 PROTOCOL = 1
 PROTOCOLS = (1,)
 CONTROL = 'control.sock'
@@ -156,26 +160,6 @@ def bundle_identity():
             version = '0'
         _BUNDLE = {'version': version}
     return dict(_BUNDLE)
-
-
-def _version_key(version):
-    """Semver-like order; a prerelease sorts before its release."""
-    from memvane.kernel.memvane_version import version_key
-    return version_key(version)
-
-
-def newer(candidate, current):
-    """True only when ``candidate`` is a strictly newer bundle version.
-
-    Equal versions never replace each other (two host caches of one release),
-    so no two bundles can take turns draining the service.
-    """
-    if not isinstance(current, dict):
-        return True  # a service without bundle identity predates this protocol
-    left, right = _version_key(candidate.get('version')), _version_key(current.get('version'))
-    if left is None:
-        return False
-    return right is None or left > right
 
 
 # ---------------------------------------------------------------- wire helpers
@@ -306,12 +290,12 @@ def default_spawn(argv, *, pass_fds):
     # The same sanitized, offline, one-thread environment as the learning
     # worker: the service may run the trainer interpreter's inference.
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER',
+                                            'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'HERMES_HOME',
                                             'MEMVANE_TEST_RUNTIME_ROOT')
            if key in os.environ}
     env.update(PYTHONDONTWRITEBYTECODE='1', HF_HUB_OFFLINE='1',
                TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1')
-    from memvane.runtime.api import environment
-    env = environment(env)
+    env.update(BACKGROUND_ENVIRONMENT)
     subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, close_fds=True, pass_fds=pass_fds,
                      start_new_session=True, env=env, cwd='/')
@@ -328,8 +312,9 @@ def _spawn(root, *, python=None, learning_root=None, spawn=None):
         if learning_root is None:
             learning_root = _learning_root()
         # -I: the hosted learning inference requires an isolated interpreter.
-        argv = entry_argv('resident-service', 'serve', str(root), str(learning_root) if learning_root else '-', str(fd),
-                          python=_interpreter(root, python), isolated=True)
+        argv = BACKGROUND_BUNDLE.entry('resident-service', 'serve', str(root),
+                                       str(learning_root) if learning_root else '-', str(fd),
+                                       python=_interpreter(root, python), isolated=True)
         fds = (fd,)
         (spawn or default_spawn)(argv, pass_fds=fds)
         return True
@@ -720,6 +705,8 @@ def default_admit():
 def default_start_worker(manifest, admit):
     from memvane.provider.api import hash_file as _hash_file
     from memvane.provider.api import start_owned_embed_service
+    if not BACKGROUND_BUNDLE.preferred():
+        raise _deferred('laya_service_bundle_changed')
     provider, worker = bundle_file(PROVIDER_RELATIVE_PATH), bundle_file(WORKER_RELATIVE_PATH)
     if (_hash_file(str(provider)) != manifest['providerArtifactSha256']
             or _hash_file(str(worker)) != manifest['workerSha256']):
@@ -953,6 +940,8 @@ class Service:
                        if worker.handle is not None]
             self.workers.clear()
         _stop_handles(handles, cleanup_end)
+        if getattr(self, 'drain_for_bundle', False):
+            wait_for_successor(self.stopped, lambda: _spawn(self.root, learning_root=self.learning_root))
         _event(getattr(self, 'drain_targets', ()), 'resident.drain', 'stopped',
                ms=(time.monotonic() - started) * 1000)
         self.stopped.set()
@@ -1017,7 +1006,16 @@ class Service:
         return projects
 
     def _tick_loop(self):
+        next_bundle_check = 0.
         while not self.stopped.is_set() and not self.draining.is_set():
+            now = time.monotonic()
+            check = now >= next_bundle_check
+            if check:
+                next_bundle_check = now + 30
+            if not BACKGROUND_BUNDLE.intact() or (check and not BACKGROUND_BUNDLE.preferred()):
+                self.drain_for_bundle = True
+                self.begin_drain('bundle_changed')
+                return
             if not self.home_intact():  # unreachable now: stop the workers and exit
                 self.begin_drain('service_root_changed')
                 return

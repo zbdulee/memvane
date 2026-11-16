@@ -6,6 +6,16 @@ from memvane.runtime.resource_coordination import Coordinator
 
 
 class DaemonMonitor(FixtureCase):
+    def test_removed_bundle_stops_monitor_without_claiming_work(self):
+        module=self.monitor();from memvane.runtime import runtime_work
+        q=runtime_work.WakeQueue(self.root);q.put('laya-sync','/synthetic/a',now=0)
+        identity=Mock();identity.intact.return_value=False
+        with patch.object(module, 'BACKGROUND_BUNDLE', identity, create=True):
+            result=module.run(q, alive=lambda:True, wait=lambda _:self.fail('waited'),
+                              wake=lambda:self.fail('stale monitor woke a worker'))
+        self.assertEqual(result['status'], 'bundle_changed')
+        self.assertEqual(len(q.pending()), 1)
+
     def setUp(self):
         super().setUp()
         topology=patch("os.cpu_count",return_value=18);topology.start();self.addCleanup(topology.stop)

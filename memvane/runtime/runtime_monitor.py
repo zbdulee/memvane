@@ -1,5 +1,5 @@
 """One model-free child tied to the existing shared daemon's lifecycle pipe."""
-from memvane.kernel.bundle_paths import entry_argv
+from memvane.runtime.host_bundle import entry_argv
 import fcntl
 import os
 from pathlib import Path
@@ -12,6 +12,8 @@ import time
 from memvane.runtime.api import coordinator as Coordinator, coordination_lock as _lock
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.runtime import runtime_work
+
+BACKGROUND_BUNDLE=runtime_work.BACKGROUND_BUNDLE
 
 INTERVAL=5.
 LAYA_KINDS=('laya-sync','laya-compile')
@@ -32,6 +34,8 @@ def run(queue,*,coordinator=None,probe=runtime_work.sample,wake=runtime_work.wak
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return {'status':'busy','samples':0,'wakes':0}
         while alive():
+            if not BACKGROUND_BUNDLE.intact():
+                return {'status':'bundle_changed','samples':samples,'wakes':wakes}
             interval=INTERVAL
             try:
                 rows=queue.pending()

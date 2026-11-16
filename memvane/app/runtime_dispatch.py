@@ -49,7 +49,8 @@ def resolve(kind, value):
 
 def _child_env():
     # Keep only the authorized local runtime, QA ceiling and guard envelope.
-    keys = ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER', 'QMD_QA_CALL_LEDGER',
+    keys = ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'HERMES_HOME',
+            'QMD_QA_CALL_LEDGER',
             'QMD_QA_CALL_LIMIT', 'QMD_DEVELOPMENT_GUARD_RUN',
             'QMD_DEVELOPMENT_GUARD_NONCE',
             'MEMVANE_TEST_RUNTIME_ROOT', 'MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT')
@@ -384,8 +385,11 @@ def run(kind, value, *, owner_fd=None):
 
 
 def _run_target(kind, value, target, owner_fd):
-    from memvane.kernel.bundle_paths import entry_argv
-    argv = entry_argv('wake', kind, target['project'])
+    from memvane.runtime.api import background_bundle
+    try:
+        argv = background_bundle().entry('wake', kind, target['project'])
+    except (OSError, ValueError) as exc:
+        raise DispatchFailure('target_entry_unavailable') from exc
     try:
         options = {'owner_fd': owner_fd} if owner_fd is not None else {}
         child = _run_child(argv, target['project'],

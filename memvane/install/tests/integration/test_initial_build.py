@@ -35,9 +35,9 @@ class InitialBuild(InstallCase):
              buildEpoch=0, stage='complete', ingest={'done': 42, 'total': 42})
         self.assertEqual(self.status()['progress'],
                          {'stage': 'registered', 'ingest': None, 'vector': None})
-        with mock.patch('memvane.diagnostics.event_log.read', return_value=[]) as read:
+        with mock.patch('memvane.diagnostics.api.build_progress_events', return_value=[]) as read:
             self.status()
-        read.assert_called_once_with(self.state, max_bytes=262144)
+        read.assert_called_once_with(self.state)
 
     def test_phase_moves_registered_to_ready_and_status_only_reads_it(self):
         self.assertEqual(self.status(project_root=str(self.project)),

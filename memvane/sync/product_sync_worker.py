@@ -9,10 +9,12 @@ from memvane.resident.types import EMBED_POLICY
 from memvane.store import types as store_types
 
 from collections.abc import Mapping
+import hashlib
 from pathlib import Path
 import re
 import sqlite3
 import time
+import uuid
 
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.runtime.api import coordinator as Coordinator
@@ -662,10 +664,8 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     result's ``vector`` names why the vectors wait. An unchanged lexical head
     gets its vector generation from the same manifest.
     """
-    import hashlib
     from memvane.store import api as v
     from memvane.store.api import regular as _regular
-    import uuid
     if vectors is None:
         vectors = {'spec': None}
     try:
