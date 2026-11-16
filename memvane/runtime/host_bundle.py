@@ -54,12 +54,12 @@ class BundleIdentity:
             return False
         if os.environ.get('MEMVANE_TEST_RUNTIME_ROOT'):
             return True
-        root = latest_installed()
+        root = fast_installed()
         if root is None:
-            return False
+            return True  # An unreadable inventory does not revoke an intact resident.
         try:
-            return self.version is not None and self.version == version_key(
-                _read_json(root / 'plugin.json', limit=65536).get('version'))
+            other = version_key(_read_json(root / 'plugin.json', limit=65536).get('version'))
+            return self.version is not None and (other is None or self.version >= other)
         except (OSError, ValueError, AttributeError, TypeError):
             return False
 
@@ -99,7 +99,6 @@ def _read_json(path, limit=1024 * 1024):
 
 
 def _host_listing(name, home):
-    original = shutil.which(name)
     safe = []
     try:
         cwd = Path.cwd().resolve(strict=True)
@@ -121,8 +120,6 @@ def _host_listing(name, home):
     safe_path = os.pathsep.join(safe)
     executable = shutil.which(name, path=safe_path) if safe_path else None
     if executable is None:
-        if original is not None:
-            raise ValueError('bundle_inventory_unsafe')
         raise FileNotFoundError(name)
     executable = Path(executable).resolve(strict=True)
     info = executable.stat()
@@ -250,16 +247,164 @@ def latest_installed(*, home=None):
     return max(found, key=lambda item: (item[0], str(item[1])))[1] if found else None
 
 
+
+def fast_installed(*, home=None):
+    """Read bounded host records only; never launch a host CLI on a hook."""
+    home = Path.home() if home is None else Path(home)
+    codex = Path(os.environ.get('CODEX_HOME') or home / '.codex')
+    claude = Path(os.environ.get('CLAUDE_CONFIG_DIR') or home / '.claude')
+    found = []
+    try:
+        rows = _read_json(codex / 'plugins' / 'installed_plugins.json').get('installed', [])
+        if isinstance(rows, list) and len(rows) <= 128:
+            for row in rows:
+                if (isinstance(row, dict) and row.get('name') == 'memvane'
+                        and row.get('installed') is True and row.get('enabled') is True):
+                    item = _candidate(codex, row.get('marketplaceName'), row.get('version'), 'codex')
+                    if item is not None:
+                        found.append(item)
+    except (OSError, ValueError, TypeError, AttributeError, UnicodeError):
+        pass
+    try:
+        plugins = _read_json(claude / 'plugins' / 'installed_plugins.json')['plugins']
+        enabled = _read_json(claude / 'settings.json').get('enabledPlugins', {})
+        if isinstance(plugins, dict) and isinstance(enabled, dict) and len(plugins) <= 128:
+            for name, rows in plugins.items():
+                if not isinstance(name, str) or not name.startswith('memvane@') or enabled.get(name) is not True:
+                    continue
+                if not isinstance(rows, list) or len(rows) > 128:
+                    continue
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    item = _candidate(claude, name[len('memvane@'):], row.get('version'), 'claude')
+                    if item is not None and row.get('installPath') == str(item[1]):
+                        found.append(item)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError):
+        pass
+    return max(found, key=lambda item: (item[0], str(item[1])))[1] if found else None
+
 def entry_argv(name, *args, python=None, isolated=False):
-    """Launch the latest installed 1.x copy, or refuse when it is unproved."""
-    # Fixture tests run source checkout code under a private runtime root.
-    # Tests exercising handoff inject a synthetic installed inventory instead.
-    if os.environ.get('MEMVANE_TEST_RUNTIME_ROOT'):
-        from memvane.kernel.bundle_paths import plugin_root
-        root = plugin_root()
+    """Spawn from the newest known bundle, without host CLI calls on hooks."""
+    from memvane.kernel.bundle_paths import plugin_root
+    own = plugin_root()
+    root = None if os.environ.get('MEMVANE_TEST_RUNTIME_ROOT') else fast_installed()
+    if root is not None:
+        own_identity = BundleIdentity(own)
+        other = BundleIdentity(root)
+        if own_identity.intact() and (other.version is None or
+                (own_identity.version is not None and own_identity.version >= other.version)):
+            root = own
     else:
-        root = latest_installed()
-    if root is None:
+        root = own
+        try:
+            from memvane.diagnostics import api as diagnostics
+            diagnostics.emit('runtime.bundle', outcome='fallback', reason='inventory_unavailable')
+        except Exception:
+            pass
+    if not BundleIdentity(root).intact():
         raise ValueError('installed_bundle_unavailable')
     return [python or sys.executable, *(['-I'] if isolated else []), '-B',
             str(root / 'entry' / 'run.py'), name, *args]
+
+
+def _process_rows(pid=None):
+    """Bounded process metadata; the start time guards against PID reuse."""
+    args = ['/bin/ps', '-p', str(pid)] if pid is not None else ['/bin/ps', '-ax']
+    result = subprocess.run([*args, '-o', 'pid=,uid=,lstart=,command='],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3, check=False)
+    if result.returncode or len(result.stdout) > 2_000_000:
+        return []
+    rows = []
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(None, 7)
+        if len(parts) != 8:
+            continue
+        try:
+            rows.append((int(parts[0]), int(parts[1]), ' '.join(parts[2:7]), parts[7]))
+        except ValueError:
+            continue
+    return rows
+
+
+def _holds_path(pid, fd, expected):
+    """Prove the process has the named lock file open before signalling it."""
+    try:
+        target = expected.stat()
+        proc_fd = Path('/proc') / str(pid) / 'fd' / str(fd)
+        if proc_fd.exists():
+            observed = proc_fd.stat()
+            return (observed.st_dev, observed.st_ino) == (target.st_dev, target.st_ino)
+        child = subprocess.run(['/usr/sbin/lsof', '-n', '-a', '-p', str(pid), '-d', str(fd), '-Fn'],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3, check=False)
+        if child.returncode or len(child.stdout) > 65536:
+            return False
+        return any(line == 'n' + str(expected) for line in child.stdout.splitlines())
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
+
+
+def _old_helper(row, queue_root, current):
+    import shlex
+    pid, uid, _started, command = row
+    if uid != os.getuid() or pid == os.getpid():
+        return None
+    try:
+        args = shlex.split(command)
+        if not args or not Path(args.pop(0)).name.lower().startswith('python'):
+            return None
+        while args and args[0] in ('-B', '-I'):
+            args.pop(0)
+        entry = Path(args.pop(0))
+        if not entry.is_absolute() or entry.name != 'run.py' or entry.parent.name != 'entry':
+            return None
+        old = entry.parent.parent
+        roots = [(Path(os.environ.get('CLAUDE_CONFIG_DIR') or Path.home()/'.claude'), 'claude'),
+                 (Path(os.environ.get('CODEX_HOME') or Path.home()/'.codex'), 'codex')]
+        proven = False
+        for base, host in roots:
+            try:
+                relative = old.relative_to(base)
+                parts = relative.parts
+                if len(parts) != 5 or parts[:2] != ('plugins', 'cache') or parts[3] != 'memvane':
+                    continue
+                candidate = _candidate(base, parts[2], parts[4], host)
+                if candidate is not None and candidate[1] == old and current.version is not None and candidate[0] < current.version:
+                    proven = True
+            except (ValueError, OSError):
+                continue
+        if not proven:
+            return None
+        if len(args) == 3 and args[:2] == ['runtime-work', 'timer'] and args[2].isdigit():
+            return int(args[2]), queue_root / 'runtime-wake-timer.lock'
+        if (len(args) == 4 and args[0] == 'runtime-monitor' and Path(args[1]) == queue_root
+                and args[2].isdigit() and args[3].isdigit()):
+            return int(args[2]), queue_root / 'runtime-monitor.lock'
+    except (ValueError, IndexError, TypeError):
+        pass
+    return None
+
+
+def retire_old_helpers(queue_root, current):
+    """Ask only proved older timer/monitor owners to exit; never signal workers."""
+    import signal
+    queue_root = Path(queue_root)
+    if not current.intact() or not current.preferred():
+        return 0
+    try:
+        rows = _process_rows()
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    stopped = 0
+    for row in rows:
+        target = _old_helper(row, queue_root, current)
+        if target is None or not _holds_path(row[0], *target):
+            continue
+        try:
+            if _process_rows(row[0]) != [row] or not _holds_path(row[0], *target):
+                continue
+            os.kill(row[0], signal.SIGTERM)
+            stopped += 1
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return stopped

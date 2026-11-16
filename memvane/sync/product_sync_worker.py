@@ -211,6 +211,8 @@ def _record_build_progress(record, result):
     vector = result.get('vector') or {}
     counts = vector.get('statusProgress')
     vector_state = vector.get('state')
+    if record.get('phase') == 'ready' and vector_state == 'current':
+        return
     if ingest is None and counts is None and vector_state not in (
             'current', 'published', 'pending', 'deferred', 'blocked', 'provider_blocked'):
         return

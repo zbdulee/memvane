@@ -76,7 +76,7 @@ class HostBundleHandoff(FixtureCase):
             {'name': 'memvane', 'marketplaceName': 'market', 'version': version,
              'installed': True, 'enabled': True} for version in ('1.0.1', '1.0.2')]}
         with mock.patch.dict(os.environ, {'MEMVANE_TEST_RUNTIME_ROOT': ''}), \
-                mock.patch.object(host_bundle, '_codex_inventory', return_value=inventory):
+                mock.patch.object(host_bundle, 'fast_installed', return_value=self.home/'.codex/plugins/cache/market/memvane/1.0.2'):
             self.assertFalse(identity.preferred())
 
     def test_installed_hermes_copy_participates_in_version_order(self):
@@ -114,6 +114,31 @@ class HostBundleHandoff(FixtureCase):
         with mock.patch.dict(os.environ, {'PATH': str(self.tmp)}):
             self.assertEqual(host_bundle._codex_inventory(self.home), {'installed': []})
 
+    def test_group_writable_path_does_not_stop_spawn(self):
+        unsafe = self.tmp / 'group-writable'
+        unsafe.mkdir(mode=0o775); unsafe.chmod(0o775)
+        executable = unsafe / 'codex'
+        marker = self.tmp / 'untrusted-executed'
+        executable.write_text(f'#!/bin/sh\n: > "{marker}"\n', encoding='utf8')
+        executable.chmod(0o700)
+        root = self.bundle('codex', 'market', '1.0.3')
+        (root/'entry'/'run.py').write_text('print("SPAWNED")\n')
+        with mock.patch.dict(os.environ, {'PATH':str(unsafe), 'MEMVANE_TEST_RUNTIME_ROOT':''}), \
+             mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=root), \
+             mock.patch.object(host_bundle, 'fast_installed', return_value=None):
+            argv = host_bundle.entry_argv('runtime-work', 'worker', '4')
+            child = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+        self.assertEqual((child.returncode, child.stdout.strip()), (0, 'SPAWNED'))
+        self.assertEqual(argv[-4:], [str(root/'entry'/'run.py'), 'runtime-work', 'worker', '4'])
+        self.assertFalse(marker.exists())
+
+    def test_unknown_inventory_keeps_intact_resident(self):
+        root = self.bundle('codex', 'market', '1.0.3')
+        identity = host_bundle.BundleIdentity(root)
+        with mock.patch.dict(os.environ, {'MEMVANE_TEST_RUNTIME_ROOT':''}), \
+             mock.patch.object(host_bundle, 'fast_installed', return_value=None):
+            self.assertTrue(identity.preferred())
+
     def test_host_cli_is_not_run_from_a_writable_path(self):
         unsafe = self.tmp / 'unsafe'
         unsafe.mkdir(mode=0o777)
@@ -123,8 +148,7 @@ class HostBundleHandoff(FixtureCase):
         codex.write_text(f'#!/bin/sh\n: > "{marker}"\nprintf \'{{"installed":[]}}\\n\'\n', encoding='utf8')
         codex.chmod(0o700)
         with mock.patch.dict(os.environ, {'PATH': str(unsafe)}):
-            with self.assertRaises(ValueError):
-                host_bundle._codex_inventory(self.home)
+            self.assertEqual(host_bundle._codex_inventory(self.home), {'installed': []})
         self.assertFalse(marker.exists())
 
     def test_timer_waits_for_host_installation_gap_without_dropping_wake(self):
@@ -181,6 +205,52 @@ class HostBundleHandoff(FixtureCase):
         with self.assertRaises(OSError):
             os.fstat(lease)
         self.assertEqual(len(queue.pending()), 1)
+
+    def test_present_older_timer_is_retired_before_due_wake_is_processed(self):
+        import fcntl
+        from memvane.runtime import runtime_work as runtime
+        old = self.bundle('codex', 'market', '1.0.1')
+        new = self.bundle('codex', 'market', '1.0.2')
+        (old/'entry'/'run.py').write_text('import time\nprint("READY",flush=True)\ntime.sleep(120)\n')
+        marker = self.tmp/'new-worker.json'
+        source = Path(__file__).resolve().parents[4]
+        (new/'entry'/'run.py').write_text(
+            'import json,os,sys\n'
+            f'sys.path.insert(0,{str(source)!r})\n'
+            'from memvane.runtime import runtime_work\n'
+            f'open({str(marker)!r},"w").write(json.dumps({{"pid":os.getpid(),"entry":__file__}}))\n'
+            'raise SystemExit(runtime_work.main(sys.argv[2:],execute=lambda row: True))\n')
+        queue = runtime.WakeQueue()
+        queue.put('laya-sync', '/synthetic/project', now=0)
+        lock = runtime._lock(queue.root/runtime.TIMER_LOCK)
+        fcntl.flock(lock, fcntl.LOCK_EX|fcntl.LOCK_NB)
+        child = subprocess.Popen([sys.executable,'-B',str(old/'entry'/'run.py'),
+                                  'runtime-work','timer',str(lock)],
+                                 pass_fds=(lock,), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        os.close(lock)
+        spawned = []
+        def spawn(*args, **kwargs):
+            process = subprocess.Popen(*args, **kwargs); spawned.append(process); return process
+        process_api = types.SimpleNamespace(Popen=spawn, DEVNULL=subprocess.DEVNULL)
+        def entry(name, *args, **_kwargs):
+            return [sys.executable,'-B',str(new/'entry'/'run.py'),name,*args]
+        try:
+            self.assertEqual(child.stdout.readline().strip(), 'READY')
+            with mock.patch.dict(os.environ, {'CODEX_HOME':str(self.home/'.codex')}), \
+                 mock.patch.object(runtime, 'BACKGROUND_BUNDLE', host_bundle.BundleIdentity(new)), \
+                 mock.patch.object(runtime, 'entry_argv', side_effect=entry), \
+                 mock.patch.object(runtime, 'subprocess', process_api):
+                self.assertEqual(runtime._wake(queue), 'spawned')
+            self.assertEqual(child.wait(timeout=15), -15)
+            wait_until(lambda: marker.exists() and not queue.pending(), timeout=30)
+            self.assertEqual(json.loads(marker.read_text())['entry'], str(new/'entry'/'run.py'))
+            self.assertEqual(len(spawned), 1)
+            self.assertEqual(spawned[0].wait(timeout=30), 0)
+            self.assertTrue(old.exists() and new.exists())
+        finally:
+            if child.poll() is None:
+                child.terminate(); child.wait(timeout=10)
+            child.stdout.close(); child.stderr.close()
 
     def test_deleted_timer_bundle_hands_due_wake_to_new_bundle_worker(self):
         from memvane.runtime import runtime_work as runtime

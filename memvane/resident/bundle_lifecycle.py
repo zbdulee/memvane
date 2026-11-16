@@ -12,7 +12,9 @@ def newer(candidate, current):
 
 def wait_for_successor(stopped, spawn):
     """Keep the old service lease until a successor is installed or already waiting."""
-    while not stopped.is_set():
+    for _attempt in range(120):
+        if stopped.is_set():
+            return
         try:
             spawn()
             return

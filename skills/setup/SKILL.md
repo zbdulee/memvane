@@ -37,7 +37,7 @@ The installation pointers and wiki keeper must remain untracked so the keeper pr
 .memvane/wiki/.memvane-root
 ```
 
-Activation returns these paths in `gitignoreEntries`; include the recommendation when reporting the completed onboarding.
+Activation returns these paths in `gitignoreEntries`; include the recommendation when reporting the completed onboarding. If a 1.0.1 setup session is waiting for vectors after a 1.0.2+ worker has prepared the lexical head, finish setup from the newer host session.
 
 A project inside an already selected project cannot be onboarded as a separate nested install. An initial build may report `selected_route_unavailable`; explain that the parent project is already selected and use that project or a separate directory outside it. Multiple route records in one ancestor chain are refused as `ambiguous_route_records`.
 
