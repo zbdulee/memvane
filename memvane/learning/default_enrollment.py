@@ -151,14 +151,18 @@ def _prepare_namespace(root, executable, model):
         'live-selector.json': {'schema': 'qmd-live-selector-v1',
                                'trainerArgv': [executable, str(selector_heal.running_adapter()), model],
                                'timeoutSeconds': 30, 'maxRssMib': 4096},
-        'active-checkpoint.json': {'artifact_path': str(base), 'artifact_sha256': file_sha(base),
+        'active-checkpoint.json': {'schema_version': 1, 'artifact_path': str(base), 'artifact_sha256': file_sha(base),
                                    'cycle_id': 'base', 'model_input_view': adapter.EDIT_INPUT_VIEW},
     }
     for name, value in rows.items():
         target = root / name
         if os.path.lexists(target):
-            if read_private_json(target) != value:
-                raise ValueError('default_learning_namespace_changed')
+            current = read_private_json(target)
+            if current != value:
+                legacy = {key: item for key, item in value.items() if key != 'schema_version'}
+                if name != 'active-checkpoint.json' or current != legacy:
+                    raise ValueError('default_learning_namespace_changed')
+                _atomic_json(target, value)
         else:
             _atomic_json(target, value)
 

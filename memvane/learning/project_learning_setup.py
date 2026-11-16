@@ -726,7 +726,7 @@ def _binding_inputs(project,root,*,runtime,adapter,model_dir,base_artifact):
             'files':{'live-selector.json':{'schema':'qmd-live-selector-v1',
                          'trainerArgv':[str(runtime_path),str(adapter),str(model)],
                          'timeoutSeconds':30,'maxRssMib':SYNTHETIC_MAX_RSS_MIB},
-                     'active-checkpoint.json':{'artifact_path':str(artifact),
+                     'active-checkpoint.json':{'schema_version':1,'artifact_path':str(artifact),
                          'artifact_sha256':artifact_sha,'cycle_id':'base'}}}
 
 
