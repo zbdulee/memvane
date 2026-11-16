@@ -2,7 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
-test('isolated real resident embed worker', { timeout: 300000 }, () => {
+test('isolated real resident embed worker', {
+  timeout: 300000,
+  skip: process.env.QMD_REAL_MODEL_TESTS === '1' ? false : 'requires an explicitly guarded real model test',
+}, () => {
   const result = spawnSync('python3', ['-B', 'memvane/resident/tests/model/resident_embed_smoke.py'],
     { cwd: process.cwd(), encoding: 'utf8', timeout: 290000,
       env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
