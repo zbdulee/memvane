@@ -236,6 +236,10 @@ _TEST_G1_EXEMPT_DIRS = ('tests/structure/',)
 # Each entry: (test file, dotted name it may name) -> reason. An entry whose file
 # exists but never names it is itself a finding (unused_exception).
 _TEST_G1_EXCEPTIONS = {
+    # Reattestation E2E drives the real resident with a model-free socket worker.
+    ('memvane/provider/tests/integration/reattest_hook_e2e.py', 'memvane.resident.resident_service'): 'resident adoption boundary',
+    ('memvane/provider/tests/integration/reattest_hook_e2e.py', 'memvane.resident.embed_resident._IDENTITY'): 'resident socket identity',
+    ('memvane/provider/tests/integration/reattest_hook_e2e.py', 'memvane.resident.tests.support'): 'synthetic resident worker',
     # Host entry tests exercise the real entry/adapter boundary in process.
     ('memvane/diagnostics/tests/integration/test_compile_worker_diagnostics.py', 'entry.run'): 'compile entry diagnostics boundary',
     ('memvane/diagnostics/tests/integration/test_dispatch_worker_diagnostics.py', 'entry.run'): 'dispatch entry diagnostics boundary',

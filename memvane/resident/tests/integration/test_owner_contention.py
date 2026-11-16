@@ -173,7 +173,7 @@ class OwnerContention(FixtureCase):
         manifest = {'providerArtifactSha256': 'a' * 64, 'workerSha256': 'b' * 64}
         paths = [self.home / 'provider', self.home / 'worker']
         with patch.object(resident_service, 'bundle_file', side_effect=paths), \
-             patch.object(provider_api, 'hash_file', side_effect=['a' * 64, 'b' * 64]), \
+             patch.object(provider_api, 'hash_file', side_effect=lambda p: 'a' * 64 if p == str(paths[0]) else 'b' * 64), \
              patch.object(provider_api, 'start_owned_embed_service', return_value='handle') as start:
             self.assertEqual(resident_service.default_start_worker(manifest, lambda: True), 'handle')
         self.assertEqual(start.call_args.args[0]['providerPath'], str(paths[0]))

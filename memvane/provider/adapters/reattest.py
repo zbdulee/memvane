@@ -120,12 +120,17 @@ def _attested_identity(state, original, manifest, current, identity):
 
 
 def authorize(state, manifest):
+    from memvane.provider.api import hash_file
     original = {'worker': manifest['workerSha256'], 'provider': manifest['providerArtifactSha256']}
+    actual = {'worker': hash_file(manifest['workerPath']), 'provider': hash_file(manifest['providerPath'])}
+    if original == actual:
+        return actual
     current, identity = _current(manifest)
-    if original != current:
-        old_identity = _attested_identity(state, original, manifest, current, identity)
-        if old_identity != identity or not valid(state, original, current, identity):
-            raise ValueError('reattest_not_authorized')
+    if actual != current:
+        raise ValueError('reattest_not_authorized')
+    old_identity = _attested_identity(state, original, manifest, current, identity)
+    if old_identity != identity or not valid(state, original, current, identity):
+        raise ValueError('reattest_not_authorized')
     return current
 
 
@@ -133,6 +138,8 @@ def check(state, manifest):
     try:
         authorize(state, manifest)
         return True
+    except (OSError, KeyError, TypeError):
+        return False
     except ValueError as exc:
         if str(exc) == 'reattest_not_authorized':
             return False

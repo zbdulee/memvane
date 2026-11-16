@@ -832,7 +832,7 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False, pro
 
     A fixture provider port (``provider``, or the test runtime root's) proves instead.
     """
-    from memvane.provider.api import fixture_port, reviewed_provider, hash_file as _hash_file
+    from memvane.provider.api import fixture_port, reviewed_provider
     port = fixture_port(provider)
     if port is not None:
         from memvane.provider.types import RuntimeUnavailable
@@ -867,13 +867,8 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False, pro
                 or manifest['providerRelativePath'] != profile['providerRelativePath']):
             _fail('worker_attestation_invalid')
         try:
-            local_available = all(_hash_file(manifest[path_key]) == manifest[hash_key]
-                                  for path_key, hash_key in
-                                  (('providerPath', 'providerArtifactSha256'),
-                                   ('workerPath', 'workerSha256')))
-            if not local_available:
-                from memvane.provider.api import reattestation_check
-                local_available = reattestation_check(Path(record['journalPath']).parent, manifest)
+            from memvane.provider.api import reattestation_check
+            local_available = reattestation_check(Path(record['journalPath']).parent, manifest)
         except (OSError, ValueError, KeyError, TypeError):
             local_available = False
         if not local_available:
