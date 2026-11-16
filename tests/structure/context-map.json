@@ -29,6 +29,11 @@
     "entry/run.py"
   ],
   "modules": {
+    "memvane/host/capture_dispatch.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
     "__init__.py": {
       "context": "host",
       "layer": "entry",

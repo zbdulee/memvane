@@ -101,30 +101,8 @@ def _capture_learning(slot: list, started: float) -> None:
 
 def _dispatch_learning_capture(slot: list, started: float) -> None:
     """Send bounded capture input to an owned child after flushing the answer."""
-    import subprocess
-    import tempfile
-    pending, slot[:] = list(slot), []
-    if not pending:
-        return
-    entry = pending[0]
-    try:
-        from memvane.kernel.bundle_paths import entry_argv
-        data = json.dumps({'capture': entry, 'started': started}, ensure_ascii=True,
-                          allow_nan=False, separators=(',', ':')).encode('utf8')
-        if len(data) > 4 * 1024 * 1024:
-            raise ValueError('capture_input_too_large')
-        with tempfile.TemporaryFile(mode='w+b') as payload:
-            payload.write(data)
-            payload.seek(0)
-            subprocess.Popen(entry_argv('learning-capture'), stdin=payload,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             close_fds=True, start_new_session=True, cwd='/')
-    except Exception:
-        try:
-            event_log.emit('learning.capture', outcome='capture_unavailable', reason='dispatch_failed',
-                           decision=entry[1], host=entry[0])
-        except Exception:
-            pass
+    from memvane.host.capture_dispatch import dispatch
+    dispatch(slot, started)
 
 
 def _fail(code: str):
