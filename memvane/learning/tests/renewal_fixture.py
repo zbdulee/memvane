@@ -36,6 +36,7 @@ class RenewalFixture(FixtureCase):
         self.write(root/'memvane/marker.py',marker)
         for path in (root/'package.json', root/('.'+host+'-plugin/plugin.json')):
             self.write(path, {'name':'memvane','version':version})
+            path.chmod(0o644)
         return root
 
     def snapshot(self, root, home):
@@ -95,7 +96,7 @@ class RenewalFixture(FixtureCase):
         self.runtime=self.home/'python'
         self.runtime.write_text('synthetic interpreter',encoding='utf8')
         self.runtime.chmod(0o700)
-        self.select(version='1.0.15',marker='A')
+        self.select(host=getattr(self,'initial_host','codex'),version='1.0.15',marker='A')
         stack=ExitStack()
         self.addCleanup(stack.close)
         for target,kwargs in (

@@ -49,6 +49,9 @@ renewal intent는 다섯 승인 파일의 원래/새 바이트 쌍을 기록하�
 차단한다. 같은 대상은 CAS로 이어서 게시하고, 더 새 대상은 원래 승인으로
 CAS 복원을 끝낸 뒤 다시 계획한다. 설명되지 않는 파일·settings 변경과
 낮은 host는 fence를 유지하며 거절한다.
+설치 manifest는 0644를 허용하고 소유자·경로·link·비신뢰 쓰기 권한과
+읽기 전후 fd/path 정체성을 검사한다. intent와 승인 상태 파일은 별도의
+소유자 전용 읽기 규칙을 유지한다.
 
 legacy 전체 registry SHA의 이행은 고정된 공식 1.0.15 배포의 기존
 code/executable/manifest/adapter 지문과 기본 승인 체인, 현재 공식 remote
