@@ -12,6 +12,7 @@ from . import resident
 from memvane.learning.types import LEARNING_PROFILE_INSTALL as INSTALL
 
 NAME='learning-profile.json'
+RENEWAL='project-learning-renewal.json'
 SCHEMA='qmd-local-learning-profile-v1'
 CHOICES=('local-auto-apply','local-staged','off')
 
@@ -133,6 +134,7 @@ def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False
             'settingsBindingSha256':digest(binding(cfg))}
 
 def _check_scope(row,root,policy,operation,*,settings=True):
+    if os.path.lexists(Path(root)/RENEWAL):raise ValueError('profile_renewal_pending')
     from .runtime_authorization import require_operation,proposal_sha256
     from .adapter import model_identity
     from .inference_identity import code_identity
@@ -153,12 +155,14 @@ def _check_scope(row,root,policy,operation,*,settings=True):
     return row
 
 def require(root,policy,operation):
+    if os.path.lexists(Path(root)/RENEWAL):raise ValueError('profile_renewal_pending')
     envelope=read_private_json(Path(root)/NAME);row=envelope['proposal']
     if envelope!={'acceptedSha256':digest(row),'proposal':row}:raise ValueError('profile_acceptance_invalid')
     return _check_scope(row,root,policy,operation)
 
 def selection_enabled(root,project):
     """Cheap preference binding; inference has its own full identity checks."""
+    if os.path.lexists(Path(root)/RENEWAL):raise ValueError('profile_renewal_pending')
     envelope=read_private_json(Path(root)/NAME);row=envelope['proposal']
     if (envelope!={'acceptedSha256':digest(row),'proposal':row} or row['schema']!=SCHEMA
             or row['namespaceRoot']!=str(root) or row['projectRoot']!=str(project)
