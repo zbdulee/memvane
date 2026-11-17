@@ -66,7 +66,9 @@ def _chain(project, root, install_id, intent):
     from memvane.learning.context_learning.host_self import selection
     rows, _ = selection(project)
     manifest = Path(rows[0]['root'])/('.'+rows[0]['host']+'-plugin/plugin.json')
-    running = version_key(read_private_json(manifest)['version'])
+    # Installed manifests are public-readable; retain owner, link, write-bit
+    # and fd/path stability checks without imposing private-state permissions.
+    running = version_key(json.loads(_recovery_read(manifest, private=False))['version'])
     if running is None or running < version_key(intent['hostVersion']):
         raise ValueError('renewal_owner_newer')
     if running == version_key(intent['hostVersion']) and rows[0]['host'] != intent['host']:
