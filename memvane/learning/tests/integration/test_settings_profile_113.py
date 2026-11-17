@@ -134,6 +134,7 @@ class SettingsProfile(FixtureCase):
             grant_path = root / project_scope.NAME
             self.assertTrue(grant_path.is_file(), stderr.getvalue()[-1000:])
             grant = dataset.read_private_json(grant_path)['proposal']
+            self.assertTrue((root / learning_profile.NAME).is_file(), stderr.getvalue()[-4000:])
             profile = dataset.read_private_json(root / learning_profile.NAME)['proposal']
             self.assertEqual(grant['operations'], ['local_train', 'quality_evaluate'])
             self.assertEqual(profile['choice'], 'local-auto-apply')

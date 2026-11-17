@@ -165,6 +165,11 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
         return {'ack': False, 'due': now + 30, 'reason': failure_reason(error), 'count': 0}
     if (kind == 'laya-compile' and isinstance(error, DispatchFailure)
             and error.code == 'target_deferred'
+            and error.detail == 'deferred:pending:compile_progress'):
+        return {'ack': False, 'due': now + 30,
+                'reason': failure_reason(error), 'count': 0}
+    if (kind == 'laya-compile' and isinstance(error, DispatchFailure)
+            and error.code == 'target_deferred'
             and error.detail == 'deferred:deferred:owner_busy'):
         return {'ack': False, 'due': now + retry_delay(attempts),
                 'reason': failure_reason(error), 'count': 0}

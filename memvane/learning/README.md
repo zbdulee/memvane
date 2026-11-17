@@ -38,11 +38,17 @@ wake와 합쳐지면 due probe와 기존 큐 backoff로 유지하며 일반 학�
 현재 번들의 adapter 경로로 원자적으로 고정한다. interpreter·model·다른
 정책 키가 달라지면 거절하며, 정책 다이제스트가 달라지면 추론 증명을
 재준비한다. 이미 승인된 profile은 이 경로로 재기록하지 않는다.
+중단된 기본 등록은 기존 설치 binding을 검증한 뒤 adapter 경로 고정보다
+먼저 복구한다. 복구는 backup과 source settings의 결속 및 모든 복원 대상의
+경로·권한·내용을 확인한 뒤 단계를 기록한다. settings가 backup과 같으면
+파일을 쓰지 않는다. 다른 사용자 편집은 거절하며, 0644 settings는 허용하지만
+그룹 쓰기가 가능한 0664와 symlink·hardlink는 거절한다. 복구 중단 뒤 재진입은
+검증된 backup 내용으로 이미 복원된 namespace 파일도 허용한다.
 준비할 selector가 없으면 warm 없이 버전을 게시한다.
 후보 apply의 resident 시작 실패는 재시도를 예약하며, 실행 중인 resident의
 정체성·권한 거절은 후보 적용을 차단한다.
 
-구현: `context_learning_auto.py`, `context_learning_cli.py`, `prepare_laya_inference.py`, `project_learning_setup.py`, `selector_maintenance.py`.
+구현: `context_learning_auto.py`, `context_learning_cli.py`, `prepare_laya_inference.py`, `project_learning_setup.py`, `project_learning_recovery.py`, `selector_maintenance.py`.
 
 저장된 recall capture의 후보 출처는 별도 `learning.capture.sources` 진단
 이벤트에 기록한다. `request_id`로 기존 표본과 연결하며 후보 id의 SHA-256과

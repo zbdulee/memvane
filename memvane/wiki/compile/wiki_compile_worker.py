@@ -55,6 +55,8 @@ DEFAULT_SOURCE_QUEUE = cp.rel(ct.SOURCE_QUEUE)
 # 불가 argv)가 스키마에서 사라진 뒤 남은 유일한 쓰임은 빈 key에 대한 폴백이다 —
 # `entries[""]`가 되면 그 항목이 "모든 엔진"처럼 읽히므로 이름을 붙여 둔다.
 _EXTRACTOR_BUDGET = ContextVar('wiki_extractor_budget', default=None)
+STALE_QUEUE_SCAN_MAX_ROWS = 4096
+STALE_QUEUE_SCAN_MAX_BYTES = 8 * 1024 * 1024
 
 
 def run_extractor(argv, payload, timeout, root):
@@ -553,6 +555,68 @@ def dedup_jobs(rows: list) -> tuple[list, list]:
     kept_lines = {latest[key][0] for key in order}
     dropped = [raw for raw, job in rows if job is not None and raw not in kept_lines]
     return kept, dropped
+
+
+def _partition_selected_jobs(rows, bound):
+    """Separate a bounded prefix before dedup; retain unproved identities verbatim.
+
+    The queue reader still owns the complete claim. This bounds identity
+    inspection and audit work, not that reader's existing whole-file read.
+    A 0.x identity has installId/scopeId but no storeIncarnation.
+    """
+    if bound is None:
+        return rows, [], []  # non-selected synthetic fixtures keep their contract
+    from memvane.wiki.workspace import api as selected
+    selected.recheck(bound)
+    identity = selected.route_identity(bound)
+    eligible, preserved, stale = [], [], []
+    scanned_bytes = 0
+    for index, (raw, job) in enumerate(rows):
+        if (index >= STALE_QUEUE_SCAN_MAX_ROWS
+                or len(raw) + 1 > STALE_QUEUE_SCAN_MAX_BYTES - scanned_bytes):
+            preserved.extend(line for line, _ in rows[index:])
+            break
+        size = len(raw.encode('utf-8')) + 1
+        if scanned_bytes + size > STALE_QUEUE_SCAN_MAX_BYTES:
+            preserved.extend(line for line, _ in rows[index:])
+            break
+        scanned_bytes += size
+        queued = job.get('selectedRoute') if isinstance(job, dict) else None
+        if queued == identity:
+            eligible.append((raw, job))
+        elif (isinstance(queued, dict)
+              and all(isinstance(queued.get(key), str)
+                      and re.fullmatch(r'[0-9a-f]{32}', queued[key])
+                      for key in ('installId', 'scopeId'))
+              and queued['installId'] != identity['installId']):
+            stale.append((raw, job))
+        else:
+            # No identity, malformed identities and same-install changes do
+            # not prove abandoned work; none may supersede a current job.
+            preserved.append(raw)
+    return eligible, preserved, stale
+
+
+def _return_source_claim(queue, claimed, remaining):
+    # Checked by exceptions: removing the claim before a failed append loses
+    # work. Retain the claim only when the ordinary queue return itself fails.
+    requeue_lines(queue, remaining)
+    claimed.unlink(missing_ok=True)
+    queue.touch(exist_ok=True)
+
+
+def _commit_source_claim(queue, claimed, remaining, bound, *, stale_lines):
+    if stale_lines:
+        from memvane.wiki.workspace import api as selected
+        try:
+            selected.recheck(bound)
+        except Exception:
+            # A busy owner or changed proof cannot authorize stale removal.
+            # Return only unfinished and stale rows, never completed current
+            # jobs. Ordinary deferrals must not consume orphan retry counts.
+            _return_source_claim(queue, claimed, remaining + stale_lines)
+            raise
+    _return_source_claim(queue, claimed, remaining)
 
 
 def batch_ready(kept: list, idle_seconds: int, max_items: int, flush_all: bool) -> bool:
@@ -1519,18 +1583,33 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
     idle_seconds = int(batch_cfg.get("idleSeconds", 90) or 0)
     max_items = int(batch_cfg.get("maxItems", 5) or 1)
 
-    malformed = [raw for raw, job in rows if job is None]
+    original_rows = rows
+    try:
+        rows, preserved, stale = _partition_selected_jobs(rows, selected_route)
+        # Audit before dropping; append success has no power-loss fsync guarantee.
+        for _, job in stale:
+            append_jsonl(candidate_path(root, compile_cfg),
+                         bounded_failure('skipped', job, 'selected_route_identity_changed'))
+    except Exception:
+        # No job has run yet. Return the exact original lines on proof/audit
+        # failure so repeated owner_busy does not look like worker crashes.
+        _return_source_claim(queue, claimed, [raw for raw, _ in original_rows])
+        raise
+    stale_dropped = len(stale)
+    stale_lines = [raw for raw, _ in stale]
+    malformed = preserved + [raw for raw, job in rows if job is None]
     kept, dropped = dedup_jobs(rows)  # dropped dup lines are discarded (latest wins)
 
     if not batch_ready(kept, idle_seconds, max_items, args.flush_all):
         # not ready: re-queue the deduped jobs (and malformed) and exit
-        requeue_lines(queue, [raw for raw, _ in kept] + malformed)
-        claimed.unlink(missing_ok=True)
-        queue.touch(exist_ok=True)
+        _commit_source_claim(queue, claimed, [raw for raw, _ in kept] + malformed,
+                             selected_route, stale_lines=stale_lines)
         _run_verify_pass(root, config, compile_cfg)
         if args.json:
             print(json.dumps({
                 "processed": 0,
+                "completed": 0,
+                "staleDropped": stale_dropped,
                 "remaining": len(kept) + len(malformed),
                 "wakeAfterSeconds": batch_wake_after_seconds(kept, idle_seconds, max_items, args.flush_all),
             }, ensure_ascii=False))
@@ -1550,6 +1629,7 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
     rows = rows[:max_per_run]
     remaining = list(malformed) + overflow
     processed_count = 0
+    completed_count = 0
     attempt_budget = {'remaining': max_per_run}
     verify_targets: list[str] = []
     try:
@@ -1572,6 +1652,7 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                 if processed and not preserve:
                     from memvane.wiki.intake import api as laya_wiki_backfill
                     laya_wiki_backfill.settle_job(selected_route, job)
+                    completed_count += 1
             except Exception:
                 remaining.append(raw_line)
                 remaining.extend(line for line, _ in rows[idx + 1:])
@@ -1584,19 +1665,20 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                                  if job.get("partialCompile") is True or '_fallbackAttempts' in job
                                  else raw_line)
     finally:
-        requeue_lines(queue, remaining)
-        claimed.unlink(missing_ok=True)
-        queue.touch(exist_ok=True)
+        _commit_source_claim(queue, claimed, remaining, selected_route,
+                             stale_lines=stale_lines)
     _run_verify_pass(root, config, compile_cfg, produced_targets=verify_targets)
     if attempt_budget.get('deferred') and remaining and selected_route is not None:
-        # Productive budget continuation gets a new wake revision. The runtime
-        # owner resets retry accounting on that revision; this is not a failed
-        # extractor attempt and must not exhaust the transient-failure cap.
+        # Re-offer the existing kind for extractor-budget continuation. A new
+        # revision alone does not reset failures; completed/staleDropped below
+        # prove productive pending to the selected execution/wake policy.
         from memvane.wiki.workspace import api as wiki_selected_laya
         wiki_selected_laya.request_compile(root, selected_route)
     if args.json:
         print(json.dumps({
             "processed": processed_count,
+            "completed": completed_count,
+            "staleDropped": stale_dropped,
             "remaining": len(remaining),
             "deferred": len(overflow),
             "verifyQueued": len(verify_targets),
