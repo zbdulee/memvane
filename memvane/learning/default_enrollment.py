@@ -214,6 +214,18 @@ def prepare(project, state, install_id, *, lease_fd):
     reason = selector_heal.pressure(policy)
     if reason is not None:
         raise selector_heal.HealDeferred(reason)
+    from memvane.learning import project_learning_setup as setup
+    journal = root / setup.NAME
+    if os.path.lexists(journal):
+        previous = read_private_json(journal)
+        if previous.get('phase') not in ('activated', 'recovered'):
+            # Recovery uses the existing ownership proof; never manufacture a
+            # missing binding before restoring an interrupted default setup.
+            if (previous.get('plan', {}).get('mode') != setup.DEFAULT_LOCAL
+                    or not os.path.lexists(root / BINDING)
+                    or not authorized(project, root)):
+                raise ValueError('default_learning_scope_changed')
+            setup.recover(project, root)
     _prepare_namespace(root, executable, model)
     intent = read_private_json(Path(state) / NAME)
     binding = root / BINDING
@@ -222,12 +234,6 @@ def prepare(project, state, install_id, *, lease_fd):
             raise ValueError('default_learning_scope_changed')
     else:
         _atomic_json(binding, intent)
-    from memvane.learning import project_learning_setup as setup
-    journal = root / setup.NAME
-    if os.path.lexists(journal):
-        phase = read_private_json(journal).get('phase')
-        if phase not in ('activated', 'recovered'):
-            setup.recover(project, root)
     result = selector_heal.heal(project, state=root, _lease_fd=lease_fd)
     if result.get('status') not in ('selector_ready', 'selector_prepared'):
         return result

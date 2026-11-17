@@ -634,50 +634,8 @@ def activate(plan,*,accepted_sha256,fault=lambda _:None):
 
 
 def recover(project,root):
-    root=Path(root)
-    previous=read_private_json(_path(root/NAME,private=True))
-    project,root=_namespace(project,root,mode=previous.get('plan',{}).get('mode','default'))
-    from memvane.settings.api import settings_lock
-    # Match activation's lock order: namespace first, then the shared project
-    # writer lock. Keep both through verification and every restoration write.
-    with _locked(root), settings_lock(project):
-        journal=read_private_json(_path(root/NAME,private=True))
-        if journal.get('schema')!=SCHEMA or journal.get('plan',{}).get('projectRoot')!=str(project) or journal['plan'].get('namespaceRoot')!=str(root):
-            raise ValueError('setup_recovery_invalid')
-        if journal['phase']=='recovered':return {'status':'already_recovered'}
-        backup=_path(journal['backupRoot'],directory=True,private=True)
-        if backup.parent!=root/BACKUPS:raise ValueError('setup_recovery_invalid')
-        manifest=read_private_json(_path(backup/'manifest.json',private=True))
-        if manifest.get('acceptedSha256')!=journal['acceptedSha256']:raise ValueError('setup_backup_changed')
-        for relative,expected in manifest['files'].items():
-            if '..' in Path(relative).parts or Path(relative).is_absolute():raise ValueError('setup_backup_changed')
-            if file_sha(_path(backup/relative,private=True))!=expected:raise ValueError('setup_backup_changed')
-        settings=_path(_project_settings(project))
-        if file_sha(settings) not in {journal['sourceSettingsSha256'],journal.get('targetSettingsSha256')}:
-            raise ValueError('setup_recovery_settings_changed')
-        # Verify all configuration before changing any of it.
-        allowed=(set(CONFIG_NAMES)-({'project-teacher-consent.json'} if journal['plan'].get('mode') in (SYNTHETIC_STAGED,DEFAULT_LOCAL) else set()))|{'consents/'+_project_key(project)+'.json'}
-        if set(journal['configurationPaths'])!=allowed or not set(journal['written'])<=allowed:
-            raise ValueError('setup_recovery_invalid')
-        affected=set(journal['written'])
-        if journal.get('profileProposal') is not None:affected.add(learning_profile.INSTALL)
-        for relative,expected in journal['written'].items():
-            path=root/relative
-            if path.exists():
-                if file_sha(_path(path,private=True))!=expected:raise ValueError('setup_recovery_configuration_changed')
-        install=root/learning_profile.INSTALL
-        if install.exists() and learning_profile.INSTALL not in journal['written']:
-            row=read_private_json(_path(install,private=True));profile=journal.get('profileProposal')
-            if row.get('proposal')!=profile or row.get('acceptedSha256')!=learning_profile.digest(profile) or row.get('phase') not in ('intent','settings_written','activated'):
-                raise ValueError('setup_recovery_configuration_changed')
-        journal['phase']='recovering';_write(root/NAME,journal)
-        _bytes(settings,(backup/'settings.json').read_bytes(),private_parent=False)
-        for relative in sorted(affected):
-            target=root/relative;original=backup/'namespace'/relative
-            if original.exists():_bytes(target,original.read_bytes())
-            elif target.exists():_path(target,private=True).unlink();_sync(target.parent)
-        journal['phase']='recovered';_write(root/NAME,journal)
-        return {'status':'recovered','backupRoot':str(backup),'dataPreserved':True,'checkpointChanged':False}
+    from memvane.learning.project_learning_recovery import recover as implementation
+    return implementation(project,root)
 
 
 def _binding_inputs(project,root,*,runtime,adapter,model_dir,base_artifact):

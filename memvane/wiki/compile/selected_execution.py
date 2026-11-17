@@ -104,7 +104,12 @@ def _run(project: Path):
     if idle is None:
         return {'state': 'deferred', 'reason': 'compile_refresh_ledger_unavailable'}
     if not idle:
-        return {'state': 'pending', 'processed': answer['processed']}
+        # processed may include a job whose refresh resolution failed and is
+        # still retained. Only committed terminal/removal counts prove progress.
+        progressed = any(type(answer.get(key)) is int and answer[key] > 0
+                         for key in ('completed', 'staleDropped'))
+        return {'state': 'pending', 'processed': answer['processed'],
+                **({'reason': 'compile_progress'} if progressed else {})}
     return {'state': 'drained', 'processed': answer['processed']}
 
 
