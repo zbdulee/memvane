@@ -43,6 +43,8 @@ def _path(path,*,private=False,directory=False):
 
 def _envelope(root):
     root=_path(root,private=True,directory=True)
+    if os.path.lexists(root/'project-learning-renewal.json'):
+        raise ValueError('project_scope_renewal_pending')
     value=read_private_json(_path(root/NAME,private=True))
     if (not isinstance(value,dict) or set(value)!={'acceptedSha256','proposal'}
             or not isinstance(value['proposal'],dict)
@@ -249,21 +251,32 @@ def _model_identity(root,model):
     return value
 
 
-def _binding(project,root,policy,installs,*,local_only=False):
+def _binding(project,root,policy,installs,*,local_only=False,policy_disk=None):
     project=_path(project,directory=True);root=_path(root,private=True,directory=True)
     if root==project or project in root.parents:raise ValueError('project_scope_namespace_invalid')
     settings=_settings_scope(project)
     for source in settings['collectionPaths'].values():
         base=(project/source).resolve(strict=False)
         if root==base or base in root.parents:raise ValueError('project_scope_namespace_invalid')
-    disk=read_private_json(_path(root/'shared-policy.json',private=True))
+    disk=(read_private_json(_path(root/'shared-policy.json',private=True))
+          if policy_disk is None else policy_disk)
     expected={key:value for key,value in policy.items() if not key.startswith('_')}
+    registry=_registry_binding(project) if not local_only else None
+    if local_only:
+        if (not isinstance(installs,list) or len(installs)!=1
+                or not isinstance(installs[0],dict) or set(installs[0])!={'host','root'}):
+            raise ValueError('project_scope_installation_invalid')
+        from .host_self import selection
+        selected,registry=selection(project,host=installs[0]['host'])
+        if selected!=installs:raise ValueError('project_scope_installation_changed')
     # Shared workers resolve the equivalent installed host adapter in memory.
     installed=_installed_binding(installs,local_only=True) if local_only else _installed_binding(installs)
     adapters={str(Path(r['root'])/'memvane/learning/context_learning/adapter.py') for r in installed}
     executing_adapters=adapters
     if local_only:
-        current=_installed_binding(_local_installations(project),local_only=True)
+        from .selector_heal import running_adapter
+        current=(installed if str(running_adapter()) in adapters else
+                 _installed_binding(_local_installations(project),local_only=True))
         executing_adapters=adapters | {str(Path(r['root'])/'memvane/learning/context_learning/adapter.py') for r in current}
     if (not isinstance(expected.get('trainerArgv'),list) or len(expected['trainerArgv'])!=3
             or len(disk.get('trainerArgv',[]))!=3
@@ -275,7 +288,9 @@ def _binding(project,root,policy,installs,*,local_only=False):
     python=_path(Path(disk['trainerArgv'][0]).resolve(strict=True));model=_path(disk['trainerArgv'][2],directory=True)
     from .adapter import MODEL_FILES
     for name in MODEL_FILES:_path(model/name)
-    return {'settingsScope':settings,'hostRegistry':_registry_binding(project),'policySha256':file_sha(root/'shared-policy.json'),
+    policy_sha=(file_sha(root/'shared-policy.json') if policy_disk is None
+                else hashlib.sha256((canonical(disk)+'\n').encode()).hexdigest())
+    return {'settingsScope':settings,'hostRegistry':registry,'policySha256':policy_sha,
             'installations':installed,'codeSha256':code_identity(),
             'pythonPath':disk['trainerArgv'][0],'pythonResolvedPath':str(python),'pythonSha256':file_sha(python),
             'modelDir':str(model),'modelIdentitySha256':_model_identity(root,model),
@@ -339,8 +354,7 @@ def require(root,policy,operation,*,fresh_inventory=False):
     # without changing the account registry or the previously hashed root.
     # Re-resolve the project-effective host inventory on every grant use.
     local_only=value['operations']==LOCAL_OPERATIONS
-    current=_local_installations(project) if local_only else _installations(project)
-    if not local_only and current!=installs:
+    if not local_only and _installations(project)!=installs:
         raise ValueError('project_scope_installation_changed')
     binding=(_binding(project,Path(root),policy,installs,local_only=True)
              if local_only else _binding(project,Path(root),policy,installs))

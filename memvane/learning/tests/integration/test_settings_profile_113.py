@@ -1,5 +1,5 @@
 """Shared project settings reach the real warm/profile/grant entry path."""
-from contextlib import redirect_stderr
+from contextlib import ExitStack, redirect_stderr
 import io
 import json
 import os
@@ -102,6 +102,10 @@ class SettingsProfile(FixtureCase):
             return {'status': 'ok', 'prediction': {}, 'timing': {'forward_seconds': .001}}
         entry = source / 'entry/run.py'
         stderr = io.StringIO()
+        projections = ExitStack()
+        self.addCleanup(projections.close)
+        projections.enter_context(mock.patch('memvane.learning.context_learning.host_self.selection',
+            return_value=(installs, {'schema':'synthetic-host-self'})))
         with mock.patch('memvane.journal.api.select_route', return_value=decision), \
                 mock.patch('memvane.journal.api.verify_selected_route_for_write', return_value={'installId': 'fixture'}), \
                 mock.patch('memvane.journal.api.inspect_journal', return_value={

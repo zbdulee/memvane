@@ -204,7 +204,7 @@ def _same_directory(raw, project, *, strict=True):
             return False
         raise ValueError('history_project_claude_record_changed') from exc
 
-def _project_claude_root(account, project):
+def _project_claude_selection(account, project):
     value = _project_listing(('claude', 'plugin', 'list', '--json'), account, project)
     if isinstance(value, dict):
         value = value.get('plugins', value.get('installed'))
@@ -274,9 +274,14 @@ def _project_claude_root(account, project):
     if len(matches) != 1:
         raise ValueError('history_project_claude_record_missing')
     # Only the effective record is resolved; other marketplaces stay unread.
-    return _claude_load_root(plugins, marketplace, matches[0], _known_loader(plugins))
+    known = _known_loader(plugins)
+    root = _claude_load_root(plugins, marketplace, matches[0], known)
+    return root, marketplace, matches[0], known()[marketplace]
 
-def _project_codex_root(account, project):
+def _project_claude_root(account, project):
+    return _project_claude_selection(account, project)[0]
+
+def _project_codex_selection(account, project):
     value = _project_listing(('codex', 'plugin', 'list', '--json'), account, project)
     rows = value.get('installed') if isinstance(value, dict) else None
     if not isinstance(rows, list):
@@ -300,7 +305,10 @@ def _project_codex_root(account, project):
     root = account / '.codex/plugins/cache' / marketplace / 'memvane' / version
     if not root.is_dir():
         raise ValueError('history_project_codex_record_missing')
-    return root
+    return root, marketplace, enabled[0], enabled[0].get('marketplaceSource')
+
+def _project_codex_root(account, project):
+    return _project_codex_selection(account, project)[0]
 
 def _project_host_roots(account, project):
     """Exactly one enabled qmd root per host, as each CLI resolves it in

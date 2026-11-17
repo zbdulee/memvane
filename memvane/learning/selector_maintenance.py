@@ -468,6 +468,14 @@ def _run(project, *, force=False):
                 return None  # Needs installation/model choice, not an hourly poll.
             return False
         if result.get('status') == 'preserved':
+            from memvane.learning.default_renewal import renew
+            try:
+                renew(project, Path(decision['journalPath']).parent, decision['installId'], lease_fd=lease)
+            except (ValueError, selector_heal.HealRefused) as exc:
+                code = str(exc)
+                diagnostics.emit('learning.selector.maintenance', outcome='failed',
+                                 reason=code if code.startswith('renewal_') else 'renewal_refused', decision=decision)
+                return False
             state = _selector_state(project)
             if state is None:
                 return False

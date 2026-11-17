@@ -38,6 +38,24 @@ wake와 합쳐지면 due probe와 기존 큐 backoff로 유지하며 일반 학�
 현재 번들의 adapter 경로로 원자적으로 고정한다. interpreter·model·다른
 정책 키가 달라지면 거절하며, 정책 다이제스트가 달라지면 추론 증명을
 재준비한다. 이미 승인된 profile은 이 경로로 재기록하지 않는다.
+선택 설치의 기본 자동 학습 profile은 별도 renewal 경계에서 공식 번들
+업데이트의 코드·설치·adapter 경로와 파생 digest만 갱신한다. 정책의 다른
+필드, interpreter·model, project·namespace, operations·cohort 전체, 기존
+만료와 profile 선택은 유지한다. 수동·custom·teacher·opt-out·만료된 승인은
+자동 갱신하지 않는다. settings와 최초 setup 승인 기록은 쓰지 않는다.
+기본 grant는 해당 host가 프로젝트에서 선택한 MemVane marketplace와
+출처·설치 바이트에 결속하며 다른 marketplace 항목은 결속하지 않는다.
+renewal intent는 다섯 승인 파일의 원래/새 바이트 쌍을 기록하고 소비를
+차단한다. 같은 대상은 CAS로 이어서 게시하고, 더 새 대상은 원래 승인으로
+CAS 복원을 끝낸 뒤 다시 계획한다. 설명되지 않는 파일·settings 변경과
+낮은 host는 fence를 유지하며 거절한다.
+
+legacy 전체 registry SHA의 이행은 고정된 공식 1.0.15 배포의 기존
+code/executable/manifest/adapter 지문과 기본 승인 체인, 현재 공식 remote
+출처를 모두 확인한다. 구 캐시가 있으면 저장 지문으로 다시 검증하며
+없으면 저장된 배포 지문을 사용한다. 당시 registry의 source는 전체 SHA로
+복원할 수 없으므로 legacy directory/custom 출처와 다른 배포 지문은
+자동 이행하지 않는다. 새 self binding은 자기 source 변경도 거절한다.
 중단된 기본 등록은 기존 설치 binding을 검증한 뒤 adapter 경로 고정보다
 먼저 복구한다. 복구는 backup과 source settings의 결속 및 모든 복원 대상의
 경로·권한·내용을 확인한 뒤 단계를 기록한다. settings가 backup과 같으면
