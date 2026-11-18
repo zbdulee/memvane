@@ -148,15 +148,15 @@ def _relative_path(raw: object, root: str) -> str:
     return raw
 
 
-def _quoted_body(body: str) -> list[str]:
+def _quoted_body(body: str, limit: int = MAX_BODY_CHARS) -> list[str]:
     # Validate the whole body before truncating. The source port already bounds
     # the scan; a hidden invalid suffix must not be accepted by this boundary.
     if _UNSAFE_BODY.search(body):
         _fail("unsafe_result_body")
-    shown = body[:MAX_BODY_CHARS].replace("\r\n", "\n").replace("\r", "\n")
+    shown = body[:limit].replace("\r\n", "\n").replace("\r", "\n")
     lines = ["  | " + line for line in shown.rstrip("\n").split("\n")]
-    if len(body) > MAX_BODY_CHARS:
-        lines.append(f"  … source excerpt truncated after {MAX_BODY_CHARS} characters")
+    if len(body) > limit:
+        lines.append(f"  … source excerpt truncated after {limit} characters")
     return lines
 
 
@@ -183,26 +183,29 @@ def render_context(decision: dict, rows: object, *, limit: int = MAX_ROWS,
                    ranking: str = "cosine_distance",
                    title_only_paths: frozenset[str] = frozenset(),
                    source_locations: dict | None = None,
-                   allow_mixed_generation: bool = False) -> str:
+                   allow_mixed_generation: bool = False,
+                   body_limits: dict | None = None) -> str:
     """Render fully validated rows or raise; never return a partial context.
 
     ``source_locations`` maps a returned wiki row path to its verified span
     locators. They are optional metadata: if they alone would exceed the
-    context budget they are all dropped, never a subset.
+    context budget they are all dropped, never a subset. ``body_limits``
+    (edit recall) maps a row path to its shown body characters, at most
+    ``MAX_BODY_CHARS``.
     """
     if source_locations:
         try:
             return _render_context(decision, rows, limit, ranking, title_only_paths,
-                                   source_locations, allow_mixed_generation)
+                                   source_locations, allow_mixed_generation, body_limits)
         except HostResponseError as exc:
             if str(exc) != "result_context_too_large":
                 raise
     return _render_context(decision, rows, limit, ranking, title_only_paths, {},
-                           allow_mixed_generation)
+                           allow_mixed_generation, body_limits)
 
 
 def _render_context(decision, rows, limit, ranking, title_only_paths,
-                    source_locations, allow_mixed_generation=False) -> str:
+                    source_locations, allow_mixed_generation=False, body_limits=None) -> str:
     if not isinstance(decision, dict) or decision.get("state") not in ("candidate", "preview"):
         _fail("unselected_route")
     scope = decision.get("scopeId")
@@ -315,7 +318,10 @@ def _render_context(decision, rows, limit, ranking, title_only_paths,
             if path not in title_only_paths:
                 summary, _complete = wiki_card.extract_card_body(normalized, end + 5)
                 if summary:
-                    lines.extend(_quoted_body(summary))
+                    shown = (body_limits or {}).get(row["path"], MAX_BODY_CHARS)
+                    if type(shown) is not int or shown < 1:
+                        _fail("invalid_body_limit")
+                    lines.extend(_quoted_body(summary, min(shown, MAX_BODY_CHARS)))
         else:
             # A raw hit is a locator, not permission to put its source body
             # into the agent's context. The agent may Read the file later.
@@ -778,9 +784,8 @@ def _render_answer(host: str, payload: dict, answer) -> dict:
 
 
 def _render_answer_timed(host: str, payload: dict, answer) -> dict:
-    if answer.capture is not None:
-        capture_payload = dict(payload, _memvane_semantic_sources=answer.capture_sources)
-        _set_learning_capture((host, answer.decision, capture_payload) + tuple(answer.capture))
+    # Prompt recall no longer captures learning cases (design r3 D); edit
+    # recall (the posttool tail) does.
     if not answer.rows:
         return host_payload(host, '')
     context = render_context(answer.decision, answer.rows, limit=answer.limit,
@@ -790,6 +795,9 @@ def _render_answer_timed(host: str, payload: dict, answer) -> dict:
                              allow_mixed_generation=answer.allow_mixed_generation)
     _log_selection(answer.decision, answer.rows, answer.selection_fallback,
                    answer.vector_fallback)
+    if host in ('claude', 'codex'):
+        from memvane.host.edit_recall import remember_cards
+        remember_cards(answer.decision, payload, answer.rows)
     return host_payload(host, context)
 
 
@@ -1087,7 +1095,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if action == "gate":
             from memvane.host.host_rules import gate_response
             return gate_response(host)
-        return {}  # Explicit observer/no-hint PostToolUse; index owns durable sync.
+        return _edit_recall_tail(host, decision, proof, payload)  # index owns durable sync
     if action in ("update", "update-queued", "index", "file-change-event"):
         # A successful agent Bash (git switch/pull, rm, mv) may change any
         # source file, so it wakes the same full-scan owner as an edit.
@@ -1184,6 +1192,35 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if _retry_code(exc) not in _RETRYABLE_READER_CODES:
             exc._memvane_reader_attempted = True
         raise
+
+
+def _edit_recall_tail(host, decision, proof, payload, *, linked=None) -> dict:
+    """The posttool answer after its edit proof: edit recall or ``{}``; never raises.
+
+    The capture input goes to this call's capture slot; ``main`` hands it to
+    the learning-capture child after the answer is flushed.
+    """
+    from memvane.host import edit_recall
+    from memvane.kernel.hook_budget import HookDeadlineExceeded
+    try:
+        if linked is None:
+            current, inside, _outside = _edit_targets(decision, payload, 'posttool',
+                                                      allow_outside=True)
+        else:
+            current, inside, _outside = _edit_targets(
+                {'projectRoot': linked['worktreeProjectRoot']}, payload, 'posttool',
+                allow_outside=True)
+    except (Exception, HookDeadlineExceeded):
+        return {}
+    if not inside:
+        _trace_fields(editRecall='skip_outside_project')
+        return {}
+    response, capture = edit_recall.serve(host, decision, proof, payload, current, inside,
+                                          linked=linked, successful=_successful_edit(payload))
+    if capture is not None:
+        _set_learning_capture(capture)
+    return response
+
 
 def _reconcile_registry(decision: dict) -> None:
     """Bounded opportunistic reconcile of the selected project registry.
@@ -1388,7 +1425,10 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     if action == 'gate':
         from memvane.host.host_rules import gate_response
         return gate_response(host)
-    # posttool/compile/index/file-change-event: the main
+    if action == 'posttool':
+        # Recall from this worktree's own view; no learning capture.
+        return _edit_recall_tail(host, main, proof, payload, linked=decision)
+    # compile/index/file-change-event: the main
     # checkout's own scan owns its sources; nothing is queued from here.
     return {}
 
@@ -1416,6 +1456,11 @@ def main(argv: list[str] | None = None) -> int:
     decision = payload = None
     started = time.monotonic()
     try:
+        from memvane.host.edit_recall import mark_hook_started
+        mark_hook_started(started)
+    except Exception:
+        pass  # Edit recall then counts its budget from its own start.
+    try:
         if payload_file is None:
             body = sys.stdin.buffer.read(MAX_HOOK_BYTES + 1)
             selection = select_hook_payload(action, body, fallback_cwd)
@@ -1436,7 +1481,7 @@ def main(argv: list[str] | None = None) -> int:
                         serve_selected(action, host, decision, payload))
         print(json.dumps(response, ensure_ascii=True, allow_nan=False,
                          separators=(",", ":")), flush=True)
-        if action == "recall":
+        if action == "posttool":
             # Learning work starts only after the context is in the pipe; a
             # host that kills this process on timeout still has the answer.
             _dispatch_learning_capture(capture, started)

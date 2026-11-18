@@ -214,6 +214,24 @@ def _reader_remaining(deadline):
     return remaining
 
 
+def _lexical_signals(timings, queries, lexical):
+    """Shadow signals of the search-need judge (design §N stage 0); counts only.
+
+    The conjunctive lexical lists before any single-term retry: how many
+    queries ran, how many distinct cards they hit and the best list score.
+    Nothing decides on them in this release.
+    """
+    try:
+        paths = {row['path'] for lane in lexical for row in lane}
+        scores = [row['score'] for lane in lexical for row in lane
+                  if type(row['score']) in (int, float) and math.isfinite(row['score'])]
+        timings['lexicalQueries'] = len(queries)
+        timings['lexicalHits'] = len(paths)
+        timings['lexicalTopScore'] = round(float(max(scores)), 6) if scores else None
+    except Exception:
+        pass
+
+
 def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,snapshot,decision,
                              provider,authority,linked=None,timings=None):
     """Read the journal-selected schema3 endpoint at its current view head.
@@ -303,6 +321,8 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
             try:
                 lexical=[shaped(store.search(pin, query, HYBRID_LIST_LIMIT, deadline_seconds=_reader_remaining(deadline)))
                          for query in queries]
+                if timings is not None:
+                    _lexical_signals(timings, queries, lexical)
                 if query_vector is None and not any(lexical):
                     # A cold provider can leave the conjunctive query empty.
                     atoms = list(dict.fromkeys(atom for query in queries for atom in query.split(' AND ') if atom))[:3]

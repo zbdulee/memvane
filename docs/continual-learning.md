@@ -18,6 +18,23 @@ most 3) and logs the reason. Learning capture
 (`context_learning.laya_learning.capture_recall`) runs only after the hook
 response is flushed, never raises, and records only a fixed status.
 
+Cases come only from edit recall (the PostToolUse `posttool` tail, see
+`docs/architecture.md`); a prompt recall stores none (`prompt_capture_retired`).
+An edit case is sample schema v5 (`context_origin: tool_edit`): the text the
+edit added (at most 8,192 characters) as the query, the verified pool of at
+most 15 cards with their frontmatter-free bodies, the selector's choice or the
+ranked card as `baseline_selected_ids`, and an `edit_event` of hashes and ids
+(`path_sha256`, `after_sha256`, `operation`, `session_id`, `tool_use_id`,
+`truncated`, `injected_ids`). The edited path itself is not stored. The case's
+`request_id` is the `recall.edit` event's. Only the main checkout of an
+enrolled project captures, with a pool of at least two cards; a git-ignored
+edited file, a teacher input over 65,536 bytes or credential-shaped text stores
+nothing. v5 cases wait in `queued`: cohort admission skips them and no teacher
+reads them until the teacher release. The first worker pass of a default
+namespace deletes, once, the prompt cases of schema 4 or lower (shared `cases`
+rows and the private `samples` of the same request ids), writes
+`prompt-cases-retired.json` and one `learning.migration` event with the count.
+
 ## Evidence and labels
 
 `contextLearning.capture` records a bounded candidate pool only when enabled.

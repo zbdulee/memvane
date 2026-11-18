@@ -10,8 +10,10 @@ SNAPSHOT_SCHEMA = 'laya-corpus-snapshot-v1'
 # The query-time selector scores at most this many verified rows
 # (``laya_host_response._select_verified_cards``); capture keeps that pool.
 CAPTURE_POOL_LIMIT = 15
-# Capture runs after the hook output is flushed. Past this point of the
-# 22-second recall hook it is skipped rather than risk a host timeout.
+# An in-process capture (``host_response._capture_learning``, the same
+# process and clock as the hook) is skipped past this point of the hook. The
+# detached learning-capture worker passes no start time: its supervisor's own
+# time limit bounds it.
 CAPTURE_START_BUDGET_SECONDS = 12.0
 _POLICY_KEYS = ('collections', 'collectionPaths', 'collectionRoles', 'recallStrategy',
                 'minScore', 'rawFallbackMinScore', 'skipPaths', 'lexicalPatterns',

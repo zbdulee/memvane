@@ -27,6 +27,24 @@ def _search_trace(trace, timings):
     return sources
 
 
+def _vector_off_fallback(decision, main_proof, vector_off, trace):
+    """The vector fallback code of a main-checkout recall with no query vector.
+
+    A prompt recall wakes the off-hook provider owner; an edit recall never
+    wakes the provider owner or the sync owner.
+    """
+    from memvane.recall.recall_scope import _wake_provider, edit_recall
+    if edit_recall() is not None:
+        return 'selected_edit_recall_' + vector_off[0]
+    started = time.monotonic()
+    try:
+        code = _wake_provider(decision, main_proof)
+    finally:
+        trace.fields(providerWakeMs=round((time.monotonic() - started) * 1000, 3))
+    return ('selected_provider_resource_deferred'
+            if vector_off[0] == 'resource_deferred' else code)
+
+
 def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline, main_proof,
                          trace, linked=None):
     """Recall from a journal-selected schema3 view; no v6 store or source file is opened.
@@ -45,7 +63,7 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
     from memvane.kernel.errors import IndexContractError
     from memvane.provider.api import reviewed_provider
     from memvane.recall.recall_scope import (
-        _proof_still_current, _recall_epoch, _recall_open, _recall_sync_wake, _wake_provider)
+        _proof_still_current, _recall_epoch, _recall_open, _recall_sync_wake)
     from memvane.recall.verified_rows import _serve_verified_rows
     degraded = main_proof is None
     _recall_epoch(proof)
@@ -146,13 +164,7 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
     elif vector_off and degraded:
         vector_fallback = 'selected_reader_endpoint_' + vector_off[0]
     elif vector_off:
-        started = time.monotonic()
-        try:
-            code = _wake_provider(decision, main_proof)
-        finally:
-            trace.fields(providerWakeMs=round((time.monotonic() - started) * 1000, 3))
-        vector_fallback = ('selected_provider_resource_deferred'
-                           if vector_off[0] == 'resource_deferred' else code)
+        vector_fallback = _vector_off_fallback(decision, main_proof, vector_off, trace)
     elif unsealed or (vector is not None and result.semantic_status == 'lexical_only'):
         # The second case: a linked worktree view sealed lexical-first.
         vector_fallback = 'selected_view_vectors_pending'
@@ -240,6 +252,10 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, trace, route_d
     from memvane.journal import api as reader
     from memvane.recall.recall_scope import _recall_sync_wake
     deadline = time.monotonic() + hook_budget.remaining()
+    from memvane.recall.recall_scope import edit_recall
+    edit = edit_recall()
+    if edit is not None:
+        deadline = min(deadline, edit['deadline'])
     root = Path(__file__).resolve().parents[2]
     with ExitStack() as stack:
         for attempt in range(2):

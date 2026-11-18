@@ -34,13 +34,15 @@ def selector_prepared(config, project_root):
 
 
 def select_published(pool, *, prompt, config, project_root,
-                     wiki_names, scope_id, deadline=None, ensure_service=None):
+                     wiki_names, scope_id, deadline=None, ensure_service=None, skip_busy=False):
     """Select verified Laya-index cards with the existing local Laya model.
 
     The index query supplies immutable, provenance-checked wiki rows. This
     coordinator never opens source files, queries QMD, or creates learning state.
     A missing/unavailable selector returns no cards and its reason; the Laya
     host then serves its ranked rows. An invalid pool is `candidate_invalid`.
+    ``skip_busy`` (edit recall) answers ``service_busy`` instead of queueing
+    behind a request the inference service is already scoring.
     """
     from . import selection_port
     from .contracts import digest
@@ -92,7 +94,7 @@ def select_published(pool, *, prompt, config, project_root,
             deadline = time.monotonic() + min(30., max(.2, float(config.get('queryTimeout', 5))))
         ids, reason, resources = choose(state, prompt, rows,
             corpus_fingerprint=fingerprint, deadline=deadline, pointer_name=pointer,
-            ensure_service=ensure_service)
+            ensure_service=ensure_service, **({'skip_busy': True} if skip_busy else {}))
         out['reason'], out['resources'] = reason, resources
         if ids is not None:
             out['final_results'] = selection_port.apply_published_selection(pool, ids)

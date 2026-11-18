@@ -295,13 +295,32 @@ work.
 ### 4. PostToolUse Posttool and Index
 
 ```text
-hooks/run-hook posttool <engine>   -> verified edit, route proof, no hint
+hooks/run-hook posttool <engine>   -> verified edit, route proof, edit recall tail
 hooks/run-hook index <engine>      -> laya-sync wake for paths inside the project
 hooks/run-hook file-change-event   -> laya-sync wake after a successful Bash
 ```
 
-`posttool` is an explicit observer: it returns no context; the index owner
-handles durable sync. `index` wakes the same full-scan owner as SessionStart for
+`posttool` verifies the edit and the route proof first, then runs the edit
+recall as a failure-silent tail (`memvane/host/edit_recall.py`): the text the
+edit added (Write content, Edit/MultiEdit new strings, NotebookEdit new source,
+apply_patch `+` lines) searches the selected view, and at most two cards not
+yet shown in the session (a 600-token body budget, one ranked card when the
+selector does not answer) return as PostToolUse `additionalContext` for Claude
+and Codex. The tail answers within 10 seconds of hook entry; a selector past
+its deadline or a busy inference service falls back to the ranked card, and a
+search past the budget, a proof change or any error answers `{}` with exit 0.
+It never records a sync or provider wake. Skipped: tool and dot directories,
+`node_modules`, wiki cards, `skipPaths`, lock/minified/map/binary files, added
+text under 200 characters, a session without an id, and
+`MEMVANE_EDIT_RECALL=off`. Per-session state (cards already shown, including
+prompt recall's, and edit-recall times: 60 seconds apart, 12 per hour) is
+`<install state root>/edit-recall-sessions/<sha256(session)>.json` (0600) under
+a non-blocking `flock`; a held lock skips the call, and idle files go after a
+day. Each run writes one `recall.edit` event (`request_id`, injected `cards`,
+`selected`, `selection`, `pool`, selector measurement, no edited path or
+text). After the answer is flushed the main checkout hands the pool to the
+`learning-capture` child (see `docs/continual-learning.md`). Hermes
+`post_tool_call` stays observer-only. The index owner handles durable sync. `index` wakes the same full-scan owner as SessionStart for
 edited paths inside the project. A path outside the project is not routed
 anywhere; that project's own full-scan sync reconciles it.
 
@@ -750,7 +769,9 @@ Reading (`skills/logs/scripts/logs.py`):
 |---|---|---|
 | `recall`, `gate`, `posttool`, `update`, `update-queued`, `index`, `compile`, `file-change-event` | selected-route hook actions (`memvane/host/host_response.py`) | `ok` / `refused` (`recall`: `served` / `empty` / `refused`); `reason` is a fixed refusal code or a final code such as `sync_requested` |
 | `hook.error` | `memvane/host/hook_main.py` | exception class and `file:line`, never the message |
+| `recall.edit` | posttool edit recall tail (`memvane/host/edit_recall.py`) | `served` / `empty` / `budget_exceeded` / `refused`; `request_id`, injected `cards` and `selected` (`{path, sha}` card ids), `selection` (`selector` / `default_rank` / `none`), `pool`, `repeated`, `selfCited`, selector measurement (`selectorPairs`, `selectorBatches`, `selectorBatchMs`, `selectorDevice`, ...), lexical shadow signals (`lexicalQueries`, `lexicalHits`, `lexicalTopScore`); never the edited path or text |
 | `learning.capture` | context learning capture | capture status |
+| `learning.migration` | first default-namespace worker pass of 1.0.18 | `prompt_cases_deleted`; `count`, `privateSamples` |
 | `wiki` | compile, verify, dedup, pending publish, lifecycle, source retirement | `created` / `updated` / `deleted` / `retired`; `reason` (`compile`, `pending_publish`, `verify_retire`, `dedup`, `lifecycle:<code>`, `source_deleted`), `path`, `title` |
 | `wake.sync`, `wake.compile` | off-hook dispatcher (`memvane/app/runtime_dispatch.py`) | dispatcher outcome, `generation`, `previousGeneration` |
 | `index.publish` | off-hook dispatcher | `generation`, `previousGeneration`, `epoch` |

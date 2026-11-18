@@ -25,6 +25,18 @@ from tests.support.project import make_project
 
 PROMPT = 'Which card keeps the bridge marker?'
 TOPICS = ('bridge', 'harbor', 'lantern')
+EDIT = ('Field notes about the bridge and the harbor. The bridge card keeps its marker and '
+        'the harbor card keeps another one; this paragraph was just written by the author '
+        'and is long enough to be an edit recall query.\n')
+
+
+def edit_payload(text=EDIT, paths=('notes.md',), request_id='edit-request-1', **extra):
+    """The capture payload the posttool edit recall hands to the capture child."""
+    return {'prompt': text, 'context_origin': 'tool_edit', 'session_id': 'edit-session',
+            'edit_event': {'path_sha256': digest('\n'.join(paths)), 'operation': 'write',
+                           'session_id': 'edit-session', 'tool_use_id': 'tool-1',
+                           'truncated': False, 'injected_ids': []},
+            '_memvane_request_id': request_id, '_memvane_edit_paths': list(paths), **extra}
 
 
 class SelectedRoute(FixtureCase):
@@ -103,13 +115,17 @@ class SelectedRoute(FixtureCase):
         current = self.snapshot()
         pool = self.pool(current)
         state = self.private_state()
-        status = learning.capture_recall('codex', self.install.decision, {'prompt': PROMPT},
+        status = learning.capture_recall('codex', self.install.decision, edit_payload(),
                                          self.settings, pool, [pool[0]])
         self.assertEqual(status, 'stored')
         with closing(sqlite3.connect(state / 'learning.sqlite3')) as db:
             (raw,), = db.execute('SELECT body FROM samples').fetchall()
         sample = json.loads(raw)
-        self.assertEqual(sample['schema_version'], 3)
+        self.assertEqual(sample['schema_version'], 5)
+        self.assertEqual((sample['request_id'], sample['prompt']['text']), ('edit-request-1', EDIT))
+        self.assertEqual(sample['edit_event']['after_sha256'],
+                         hashlib.sha256(self.note.read_bytes()).hexdigest())
+        self.assertNotIn('notes.md', raw)
         self.assertEqual(sample['host'], 'codex')
         self.assertEqual([c['candidate_id'] for c in sample['candidates']], [row['path'] for row in pool])
         self.assertEqual(sample['sampling']['baseline_selected_ids'], [pool[0]['path']])
@@ -132,14 +148,15 @@ class SelectedRoute(FixtureCase):
         pool = self.pool(self.snapshot())
         state = self.private_state()
         sources = {row['path']: source for row, source in zip(pool, ('store', 'python', 'lexical'))}
-        payload = {'prompt': 'private capture prompt marker', '_memvane_semantic_sources': sources}
+        payload = edit_payload('private capture prompt marker ' * 8,
+                               _memvane_semantic_sources=sources)
         self.assertEqual(learning.capture_recall('codex', self.install.decision, payload,
                                                 self.settings, pool, pool[:1]), 'stored')
         with closing(sqlite3.connect(state / 'learning.sqlite3')) as db:
             sample = json.loads(db.execute('SELECT body FROM samples').fetchone()[0])
         validate_request(sample)
         self.assertEqual(set(sample), {'schema_version', 'request_id', 'host', 'context_origin',
-                                       'prompt', 'candidates', 'sampling'})
+                                       'prompt', 'candidates', 'sampling', 'edit_event'})
         events = [row for row in self.install.events() if row.get('event') == 'learning.capture.sources']
         self.assertEqual(len(events), 1)
         event = events[0]
@@ -166,7 +183,7 @@ class SelectedRoute(FixtureCase):
         pool[0] = {**pool[0], 'generation': 'gen-incremental',
                    'hash': hashlib.sha256(newer.encode('utf-8')).hexdigest(), 'body': newer}
         state = self.private_state()
-        status = learning.capture_recall('codex', self.install.decision, {'prompt': PROMPT},
+        status = learning.capture_recall('codex', self.install.decision, edit_payload(),
                                          self.settings, pool, [])
         self.assertEqual(status, 'stored')
         with closing(sqlite3.connect(state / 'learning.sqlite3')) as db:
@@ -174,6 +191,34 @@ class SelectedRoute(FixtureCase):
         self.assertEqual(sample['sampling']['snapshot_failures'],
                          [{'candidate_id': pool[0]['path'], 'reason': 'candidate_index_stale'}])
         self.assertFalse(sample['sampling']['complete_within_returned_bound'])
+
+    def test_prompt_recall_cases_are_retired(self):
+        pool = self.pool(self.snapshot())
+        self.private_state()
+        self.assertEqual(learning.capture_recall('codex', self.install.decision, {'prompt': PROMPT},
+                                                 self.settings, pool, pool[:1]),
+                         'prompt_capture_retired')
+        self.assertFalse((self.private_state() / 'learning.sqlite3').exists())
+
+    def test_edit_capture_refusals_store_nothing(self):
+        pool = self.pool(self.snapshot())
+        state = self.private_state()
+        (self.project / '.gitignore').write_text('ignored.md\n', encoding='utf-8')
+        (self.project / 'ignored.md').write_text(EDIT, encoding='utf-8')
+        cases = (('edit_git_ignored', edit_payload(paths=('ignored.md',)), pool),
+                 ('edit_pool_too_small', edit_payload(), pool[:1]),
+                 ('edit_capture_oversize', edit_payload('x' * 8192),
+                  [dict(row, body=row['body']) for row in pool]),
+                 ('edit_capture_egress', edit_payload(EDIT + 'api_key = sk-proj-' + 'A' * 24 + '\n'),
+                  pool),
+                 ('prompt_capture_retired', {'prompt': EDIT}, pool))
+        for status, payload, rows in cases:
+            with self.subTest(status=status):
+                with patch('memvane.learning.context_learning.seam.TEACHER_MAX_INPUT_BYTES',
+                           8192 if status == 'edit_capture_oversize' else 65536):
+                    self.assertEqual(learning.capture_recall('codex', self.install.decision, payload,
+                                                             self.settings, rows, rows[:1]), status)
+        self.assertFalse((state / 'learning.sqlite3').exists())
 
     def test_training_gate_accepts_only_a_verified_selected_route(self):
         lock = self.tmp / 'lease.lock'

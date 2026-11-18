@@ -60,6 +60,16 @@ def set_writer_allowed(allowed):
     return implementation(allowed)
 
 
+def set_edit_recall(*, deadline, selector_deadline):
+    from memvane.recall.recall_scope import set_edit_recall as implementation
+    return implementation(deadline=deadline, selector_deadline=selector_deadline)
+
+
+def edit_recall():
+    from memvane.recall.recall_scope import edit_recall as implementation
+    return implementation()
+
+
 def recall_epoch(proof):
     from memvane.recall.recall_scope import _recall_epoch as implementation
     return implementation(proof)
