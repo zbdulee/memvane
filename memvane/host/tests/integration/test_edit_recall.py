@@ -210,17 +210,17 @@ class EditRecall(HostInstallCase):
 
     def test_search_past_the_budget_injects_nothing_and_captures_nothing(self):
         from memvane.recall import api as recall_api
-        original = recall_api.query_endpoint
+        from memvane.kernel import hook_budget
+        original = recall_api.serve_endpoint_recall
 
         def slow(*args, **kwargs):
-            result = original(*args, **kwargs)
-            time.sleep(0.8)  # the search answers after the tail's budget
-            return result
-        from memvane.kernel import hook_budget
+            answer = original(*args, **kwargs)
+            time.sleep(0.8)  # the answer arrives after the tail's budget
+            return answer
         with mock.patch.object(edit_recall, 'EDIT_RECALL_SECONDS', 0.6), \
                 mock.patch.object(edit_recall, 'SELECTOR_RESERVE_SECONDS', 0.1), \
                 mock.patch.object(hook_budget, '_deadline', time.monotonic() + 18), \
-                mock.patch.object(recall_api, 'query_endpoint', side_effect=slow):
+                mock.patch.object(recall_api, 'serve_endpoint_recall', side_effect=slow):
             edit_recall.mark_hook_started(time.monotonic())
             try:
                 answer, capture = self.posttool(edit_payload('budget'))
@@ -228,7 +228,7 @@ class EditRecall(HostInstallCase):
                 edit_recall.mark_hook_started(None)
         self.assertEqual((answer, capture), ({}, []))
         [row] = self.edit_events('budget')
-        self.assertIn(row['outcome'], ('budget_exceeded', 'refused'))
+        self.assertEqual((row['outcome'], row['reason']), ('budget_exceeded', 'edit_recall_budget'))
 
     def test_a_proof_change_inside_the_tail_answers_empty(self):
         from memvane.recall.types import HostResponseError
@@ -282,6 +282,41 @@ class EditRecall(HostInstallCase):
         self.assertEqual(sample['prompt']['text'], EDIT_TEXT)
         self.assertNotIn(NEW_FILE, raw)
         self.assertNotIn('sources:', raw)
+
+    def test_a_capture_started_13_seconds_after_the_hook_is_still_stored(self):
+        self.fixture.write_card('pond.md', title='North pond', sources=[self.project / 'notes/heron.md'],
+                                body=CARD_BODY.strip() + ' The survey copy.\n')
+        self.fixture.commit('second card')
+        self.install.settle()
+        answer, capture = self.posttool(edit_payload('late'))
+        self.assertIn('zqheronx', context(answer))
+        [row] = self.edit_events('late')
+        host, decision, payload, settings, pool, selected = capture[0]
+        state = self.tmp / 'late-state'
+        state.mkdir(mode=0o700)
+        settings = dict(settings, contextLearning={**settings['contextLearning'],
+                                                   'stateRoot': str(state)})
+        # 13 s before the worker starts on either clock: macOS system Python
+        # 3.9 starts monotonic near zero per process, 3.13 shares one clock.
+        started = min(time.monotonic() - 13, -13.0)
+        data = json.dumps({'capture': [host, decision, payload, settings, pool, selected],
+                           'started': started})
+        env = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONPATH': str(ROOT)}
+        env.pop('QMD_SANDBOX', None)
+        done = subprocess.run([__import__('sys').executable, '-B', str(ROOT / 'entry' / 'run.py'),
+                               'learning-capture-worker'], input=data.encode('utf-8'),
+                              capture_output=True, timeout=120, env=env, cwd='/')
+        self.assertEqual(done.returncode, 0, done.stderr.decode())
+        [database] = state.rglob('learning.sqlite3')
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(str(database))) as db:
+            [(raw,)] = db.execute('SELECT body FROM samples').fetchall()
+        self.assertEqual(json.loads(raw)['request_id'], row['request_id'])
+        statuses = [(event['outcome']) for event in self.install.events()
+                    if event.get('event') == 'learning.capture']
+        self.assertIn('stored', statuses)
+        self.assertNotIn('capture_deadline', statuses)
 
     def test_a_project_without_learning_still_gets_edit_recall(self):
         # The fixture install has no learning enrollment: injection only.

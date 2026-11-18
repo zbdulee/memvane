@@ -75,6 +75,14 @@ class CaptureSupervisor(unittest.TestCase):
                     mock.patch('memvane.learning.api.capture_recall', return_value=status):
                 self.assertEqual(capture_entry.learning_capture_worker(), 0)
 
+    def test_worker_passes_no_hook_start_time(self):
+        # The hook's start is another process's monotonic clock; the detached
+        # worker is bounded by the supervisor's time limit only.
+        with mock.patch.object(sys, 'stdin', self.stream()), \
+                mock.patch('memvane.learning.api.capture_recall', return_value='stored') as capture:
+            self.assertEqual(capture_entry.learning_capture_worker(), 0)
+        self.assertNotIn('started', capture.call_args.kwargs)
+
     def test_supervisor_forwards_inherited_budget_to_worker(self):
         with tempfile.NamedTemporaryFile() as budget:
             os.fchmod(budget.fileno(), 0o600)

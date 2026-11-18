@@ -1455,8 +1455,11 @@ def main(argv: list[str] | None = None) -> int:
         pass
     decision = payload = None
     started = time.monotonic()
-    from memvane.host.edit_recall import mark_hook_started
-    mark_hook_started(started)
+    try:
+        from memvane.host.edit_recall import mark_hook_started
+        mark_hook_started(started)
+    except Exception:
+        pass  # Edit recall then counts its budget from its own start.
     try:
         if payload_file is None:
             body = sys.stdin.buffer.read(MAX_HOOK_BYTES + 1)

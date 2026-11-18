@@ -42,9 +42,14 @@ def _capture_input():
 
 def learning_capture_worker():
     try:
-        capture, started = _capture_input()
+        capture, _started = _capture_input()
         from memvane.learning.api import capture_recall
-        capture_recall(*capture, started=started)
+        # The detached worker is bounded by the supervisor's CAPTURE_SECONDS,
+        # not by the hook's start time: that ``started`` is another process's
+        # monotonic clock, which macOS system Python 3.9 starts near zero in
+        # every process, so comparing it here measured nothing (3.9) or
+        # dropped slow-selector edit cases (3.13).
+        capture_recall(*capture)
         return 0  # The capture API records every handled status itself.
     except (ValueError, TypeError, KeyError, UnicodeError):
         return 2
