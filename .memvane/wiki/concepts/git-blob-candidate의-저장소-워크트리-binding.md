@@ -5,9 +5,8 @@ aliases:
   - "blob candidate 워크트리 등록"
   - "저장소 소유권 binding"
 related:
-  - "laya-blob-candidate"
-  - "laya-blob-wiki-admission"
-  - "laya-blob-private-db"
+  - "laya-blob-store"
+  - "laya-blob-card-admission"
 type: concept
 status: verified
 created: 2026-11-02
@@ -17,28 +16,29 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/development-blob-candidate.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/development-blob-candidate.md", collection: "qmd-auto-context", sha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", size: 12220, mtimeNs: 1793607024895849766}
+  - {kind: "file", path: "docs/development-blob-candidate.md", collection: "qmd-auto-context", sha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", size: 14393, mtimeNs: 1794185295237187644}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T14:49:22.204419Z"
+verifiedAt: "2026-11-15T15:26:47.429447Z"
 verifiedMode: "self"
-verifiedBodyHash: "434ceb8f07fb56b346cef659226f65e0694788d6058837aaa3a5ca8e30b7202f"
+verifiedBodyHash: "5bf0fced204dd98014fc1289f8a1e79e2f60359efefbafafb6400c064d118f75"
 sourceSpans:
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 14, endLine: 14, spanSha256: "a123eb4b19e8a21cb178163925482e6f1e735d13d71de5e474f29f9f0682d97a"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 15, endLine: 15, spanSha256: "633a1e8939cf0d6533a7cdcb56979c1ba2810cccaafcba432fd28bb5c1a89c79"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 16, endLine: 16, spanSha256: "65768ac6027737b278b2f70007430eb47f4aef84c052d5bb412a8df471a8e5b0"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 17, endLine: 17, spanSha256: "31964bbe12f7dffafcb0c9e2ae6266600c120d19687f03d7374066960a9abf4c"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 17, endLine: 18, spanSha256: "2373efbf5bd9a3d9d49339ec88b257a8f9bc97cb8c6f1548acf3c0b01f8c744f"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 18, endLine: 18, spanSha256: "8a9a637e5c06861b392004a6bd647ec97b303da489ce8360f33cd73d5063cd77"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 19, endLine: 19, spanSha256: "3d8de62296aa1158476336cdbe93dc37cce6f916486ef3ff6e3ff425bbc4da69"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 19, endLine: 20, spanSha256: "80bc35d4c43cd2bd9597c76d763be08fcbce952ecb3eab374364faf0606c4a0d"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 18, endLine: 18, spanSha256: "e41a89cae4f8b4e659fbe357f02538fb95ed6ba512143c795b74065d66b4bd42"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 19, endLine: 19, spanSha256: "633a1e8939cf0d6533a7cdcb56979c1ba2810cccaafcba432fd28bb5c1a89c79"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 20, endLine: 20, spanSha256: "b425cc2107c8efda0bc156f7eddf3e40a020b50a4a7d400bb74f2f6061542089"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 21, endLine: 22, spanSha256: "22e90c87b08d36d6ab867f0935ca5c803ce2632465d22f2c166136cd6cd6fdfc"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 22, endLine: 23, spanSha256: "182058e070fcd6c6013650efbfe1511d222e2f4cd93c5f0598232df990ebac84"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 23, endLine: 23, spanSha256: "b2da0447568de2552f002fb6e15bedcf9bdea5ffc288cbe7a63ec585aee67866"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 24, endLine: 24, spanSha256: "0d7e1016f5bc35c202b65c477edd0f783a8f5531727c07b0a1ac2df10c705e4d"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 24, endLine: 25, spanSha256: "669d5da2bd55f721e7df7c286efc793d0d69f930fde555fab4cf7013b647b3d5"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 25, endLine: 26, spanSha256: "cc9936253eff93aaca9937125f3af19c5bb0e576d4edc53a20b9c0e4f7242754"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="fa9fa9fdd8ec8cad" -->
+<!-- qmd:auto:start id="main" sourceHash="9daecdc2f2805103" -->
 ## Summary
-호출자는 PR1 repository/worktree 등록 JSON과 scope UUID를 제공한다. 저장소는 common Git dir 경로·dev/ino·프로젝트 상대 위치에, worktree는 checkout·Git admin 정체성·실제 settings·wiki root에 묶인다. 등록 worktree의 normalized settings policy는 같아야 한다. `skipPaths`도 policy에 포함하며 JSON 공백·키 순서·생략된 기본값·두 설정 폴더 이름은 정규화한다. 실제 settings 바이트 지문은 worktree별로 고정하며 설정이나 root 변경 시 binding을 자동 인계하지 않는다.
+호출자는 `laya_checkout_view`의 repository/worktree 등록 JSON과 scope UUID를 제공한다. repository는 common Git dir의 경로·dev/ino와 프로젝트 상대 위치에, worktree는 checkout·Git admin 정체성·settings 정체성·wiki root 디렉터리 노드에 묶인다. settings 정체성은 v6 route의 `settings_identity_digest`와 같은 프로젝트 root 및 collection별 `{name, role, sourceRoot}` 범위다. policy는 프로젝트 상대 경로로 다이제스트하며 두 설정 폴더 이름을 정규화한다. 등록 worktree의 policy는 같아야 한다. settings 바이트·`skipPaths`·기타 옵션은 binding에 포함하지 않는다. 현재 `skipPaths`는 쓰기 시 읽고 prepare가 세대 stage에 봉인한다. 정체성이나 wiki root 변경 시 binding을 자동 인계하지 않는다.
 <!-- qmd:auto:end -->

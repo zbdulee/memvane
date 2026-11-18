@@ -5,9 +5,8 @@ aliases:
   - "chunk vector set 불변성"
   - "완전한 set 원자성"
 related:
-  - "laya-blob-candidate"
   - "laya-blob-recipe-profile"
-  - "laya-blob-content-filler"
+  - "laya-blob-fill-cache"
 type: concept
 status: verified
 created: 2026-11-02
@@ -17,29 +16,32 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/development-blob-candidate.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/development-blob-candidate.md", collection: "qmd-auto-context", sha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", size: 12220, mtimeNs: 1793607024895849766}
+  - {kind: "file", path: "docs/development-blob-candidate.md", collection: "qmd-auto-context", sha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", size: 14393, mtimeNs: 1794185295237187644}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T14:56:19.111071Z"
+verifiedAt: "2026-11-15T15:28:52.901329Z"
 verifiedMode: "self"
-verifiedBodyHash: "8c6d6a0a64bd7c4f8cb2ff423c80ec065dcfd6fbd4b7f9712e15ac940d81800c"
+verifiedBodyHash: "12fd067c746e72dc5629ce0a7c15b0cee8d62dbe0e3ce494c4cd98086baad5e9"
 sourceSpans:
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 3, endLine: 4, spanSha256: "f8d0c865c4639a7903a4ddfe0d151d3a9930471923916a5af2986c698be12efd"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 77, endLine: 78, spanSha256: "4d1b0613ee768a8e79159c1191e380ba13d05f1a79fe41ad65b7f27bdc50c167"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 78, endLine: 79, spanSha256: "4308fc9cc6daeec3d40ea5783ee9528609bffda098deb6cbcd615e30954a1616"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 79, endLine: 80, spanSha256: "d47a5b9274487371a88484d2c8b6f194ea03430c5fb383d8113020bd41b33475"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 80, endLine: 80, spanSha256: "908a4384fa607038157cd2e1861f4debb5bfae10bb33066f10d49c8855f08ac2"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 82, endLine: 82, spanSha256: "0dce6afe3a8325a5afb072d9b653b9501f7fd439f64adc3200805e6c6634fb94"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 83, endLine: 83, spanSha256: "bf91168e56bdab7ad1f100ad50b1fe6ee0887452e9f1bc2849f4b910262dbbf4"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 84, endLine: 84, spanSha256: "14230333eb7efe04c007d79df98ab5e4a95a6f6af2d18e8f9ebf3329fe733a76"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "5ae140fee99e78d150113ea27f3333b48ae0f5dbc1a5bf8d5298269846f3ecb6", startLine: 85, endLine: 85, spanSha256: "0dda50a066b2bc37f3bf72b5246d9fdc7b50840be0b4fe827db7cb065608c5ed"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 3, endLine: 4, spanSha256: "f8d0c865c4639a7903a4ddfe0d151d3a9930471923916a5af2986c698be12efd"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 67, endLine: 67, spanSha256: "2f95e423e9578a9f060e5c6c4fa1416556d45f4832d47a3d45290a292e31564b"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 68, endLine: 68, spanSha256: "93f7429c5ce22c21c70277dc8a848d9e9d9c22217fb2b2607b91edf45d650eab"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 69, endLine: 69, spanSha256: "c26e453631b785e68c71bb00eb4a6554432f16ebf95e8de3124bb57e96960adb"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 70, endLine: 70, spanSha256: "bfa76a986a22c8b24b991c899ee999dba5c11989098dd8d3b1b91ebbe28483bc"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 94, endLine: 95, spanSha256: "4d1b0613ee768a8e79159c1191e380ba13d05f1a79fe41ad65b7f27bdc50c167"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 95, endLine: 96, spanSha256: "4308fc9cc6daeec3d40ea5783ee9528609bffda098deb6cbcd615e30954a1616"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 96, endLine: 97, spanSha256: "d47a5b9274487371a88484d2c8b6f194ea03430c5fb383d8113020bd41b33475"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 97, endLine: 97, spanSha256: "908a4384fa607038157cd2e1861f4debb5bfae10bb33066f10d49c8855f08ac2"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 99, endLine: 99, spanSha256: "0dce6afe3a8325a5afb072d9b653b9501f7fd439f64adc3200805e6c6634fb94"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 100, endLine: 100, spanSha256: "bf91168e56bdab7ad1f100ad50b1fe6ee0887452e9f1bc2849f4b910262dbbf4"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 101, endLine: 101, spanSha256: "14230333eb7efe04c007d79df98ab5e4a95a6f6af2d18e8f9ebf3329fe733a76"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="8853355e98d5a2fc" -->
+<!-- qmd:auto:start id="main" sourceHash="77aab7a661e6b4ce" -->
 ## Summary
-chunk는 연속 seq·증가 position·카드의 정확한 UTF-16 slice·일치하는 text SHA를 요구한다. vector는 해당 chunk/input SHA·정확한 little-endian float32 길이·유한 값·nonzero norm을 검증한다. provenance는 blob·recipe·profile·seq·input SHA·실제 vector 바이트를 커밋하며 조회도 count·행·digest를 재검증한다. lookup·동일 replay 확인·삽입은 한 `BEGIN IMMEDIATE` transaction이다. 동일 replay는 no-op, 다른 replay는 conflict이며 기존 set을 덮어쓰지 않는다. 실패 시 부모·자식 모두 rollback한다. recipe/profile이 다르면 별도 set이며 모델 실행 callback은 호출자가 소유한다.
+`put_chunk_set(blob_sha, recipe_id, rows)` / `chunks(...)`는 완전한 chunk set을 다룬다. chunk는 연속 seq·증가 position, 정확한 카드 UTF-16 slice와 text SHA를 검증한다. `vector_input_sha(blob_sha, recipe_id, profile_id, seq)`는 provider 입력의 UTF-8 SHA, `embedding_inputs(blob_sha, recipe_id, profile_id)`는 순서 있는 입력 목록이다. `put_embedding_set(blob_sha, recipe_id, profile_id, rows)` / `vectors(...)`는 chunk/input SHA·little-endian float32 길이·유한 값·nonzero norm을 검증한다. vector provenance는 blob·recipe·profile·seq·input SHA·vector 바이트를 커밋한다. 조회도 count·행·digest를 검증한다. lookup·replay·삽입은 한 `BEGIN IMMEDIATE` transaction이다. 동일 replay는 no-op, 다른 replay는 conflict이며 덮어쓰지 않는다. 실패하면 부모·자식 모두 rollback하고 recipe/profile별로 별도 set을 둔다.
 <!-- qmd:auto:end -->

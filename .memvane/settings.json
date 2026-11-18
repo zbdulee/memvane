@@ -1,4 +1,1 @@
-{
-  "name": "qmd-auto-context",
-  "skipPaths": []
-}
+{"contextLearning":{"autoCycle":true,"capture":true},"diagnostics":{"enabled":true},"name":"qmd-auto-context","sharedLearning":{"autoApply":true,"enabled":true,"profile":"qmd-local-learning-profile-v1","root":"/Users/dulee/Library/Application Support/memvane/v1/live-selection/8c0f8befd66eb6efad61bbe2d6788924c215b72af8930e713e459a1db4a29f06"},"skipPaths":[]}

@@ -5,7 +5,7 @@ aliases:
   - "개발 가드 미완료 판정"
   - "개발 가드 체크포인트"
 related:
-  - "memvane-development-guard"
+  - "memvane-development-lease-mechanism"
   - "memvane-development-process-ownership"
 type: concept
 status: verified
@@ -16,28 +16,30 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/development-resource-safety.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/development-resource-safety.md", collection: "qmd-auto-context", sha256: "406bd8c7af694ed5156c8dbab88195b7326c3726137561c2f55d2a9de45aca96", size: 6868, mtimeNs: 1793090713277142231}
+  - {kind: "file", path: "docs/development-resource-safety.md", collection: "qmd-auto-context", sha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", size: 8522, mtimeNs: 1794183670387730541}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T16:45:59.879245Z"
+verifiedAt: "2026-11-15T16:21:01.918536Z"
 verifiedMode: "self"
-verifiedBodyHash: "1050c6065dffeb93ba57e76995ac5e6dead95cdd0aec338dbd43a47cb76f3093"
+verifiedBodyHash: "19f52dea3ba1c77667f31cc8de51319aa9bf4606e08951795e8d708fce705fd7"
 sourceSpans:
-  - {path: "docs/development-resource-safety.md", sourceSha256: "406bd8c7af694ed5156c8dbab88195b7326c3726137561c2f55d2a9de45aca96", startLine: 13, endLine: 14, spanSha256: "f5d286bc4cff02af91a6f27290430d2ba250a9ca968c851f31b3ef9f2ab8e217"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "406bd8c7af694ed5156c8dbab88195b7326c3726137561c2f55d2a9de45aca96", startLine: 44, endLine: 44, spanSha256: "d78fa332f351ebdf457c03a590bc746fe4899885907a508f1c4b9ecc2466b5c5"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "406bd8c7af694ed5156c8dbab88195b7326c3726137561c2f55d2a9de45aca96", startLine: 85, endLine: 87, spanSha256: "7672d22adfbfae86556b698552cb2007eac49b36503c9744f38a9f17f58ce104"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "406bd8c7af694ed5156c8dbab88195b7326c3726137561c2f55d2a9de45aca96", startLine: 87, endLine: 88, spanSha256: "c70c338e15f57988dd07743f17d205f2d82d48128d15a4a24aca692f95fe2a3f"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "406bd8c7af694ed5156c8dbab88195b7326c3726137561c2f55d2a9de45aca96", startLine: 88, endLine: 88, spanSha256: "a02d80d908e4032088c4fdbf61923d4854703f0661b2826f82d5eb26fe6531eb"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "406bd8c7af694ed5156c8dbab88195b7326c3726137561c2f55d2a9de45aca96", startLine: 89, endLine: 90, spanSha256: "3c754f6ed8f959af0c017ff3d6f1753169d8ce933e0fef48780b5441410bb792"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "406bd8c7af694ed5156c8dbab88195b7326c3726137561c2f55d2a9de45aca96", startLine: 90, endLine: 92, spanSha256: "50846656c1c64c4e18bf66192cd2ce81bb98039c3a56e85c5b7d4c32902fc960"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "406bd8c7af694ed5156c8dbab88195b7326c3726137561c2f55d2a9de45aca96", startLine: 105, endLine: 105, spanSha256: "598c3bbd3970fa8263fc9bcd9cd9e890a6686d091feb62572bd118711f49bdea"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 13, endLine: 14, spanSha256: "f5d286bc4cff02af91a6f27290430d2ba250a9ca968c851f31b3ef9f2ab8e217"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 55, endLine: 55, spanSha256: "d78fa332f351ebdf457c03a590bc746fe4899885907a508f1c4b9ecc2466b5c5"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 69, endLine: 70, spanSha256: "2906242a00019a4f4c11586addfe93c6824db8128414f74997ce198d56a23842"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 70, endLine: 72, spanSha256: "5c136af4184d4f36fd24db3f0077afbc982dca98e4234838322f7b8760934ddf"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 72, endLine: 72, spanSha256: "ff5b7a34b145869bb13f3da9dd4e2eeb171a48f6ba5c332f7e6fc2481bb2955c"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 111, endLine: 113, spanSha256: "05891591cc8c8d208a8d3fe36f8a20f0129d046190b72c97d526685c5383f67c"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 113, endLine: 114, spanSha256: "07b15e1235ad468a3a64a6a780b47725728262fb1c9d028023d9d9a5bde9ded7"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 114, endLine: 114, spanSha256: "a02d80d908e4032088c4fdbf61923d4854703f0661b2826f82d5eb26fe6531eb"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 115, endLine: 116, spanSha256: "3c754f6ed8f959af0c017ff3d6f1753169d8ce933e0fef48780b5441410bb792"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 116, endLine: 118, spanSha256: "50846656c1c64c4e18bf66192cd2ce81bb98039c3a56e85c5b7d4c32902fc960"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="d56f0b1b679b2328" -->
+<!-- qmd:auto:start id="main" sourceHash="8aad31a16c442672" -->
 ## Summary
-영속 development log directory의 private `runs/ID/samples.jsonl`은 system pressure/headroom/swap/load와 child별 CPU/RSS/start identity를 기록하며 command arguments·environment secrets는 제외한다. `checkpoint.json`과 `active.json`은 passed·failed·stopped·unsettled cleanup을 구분한다. root identity 불명·cleanup 실패·supervisor 강제 종료는 unsettled checkpoint를 남기고 수동 검사 전까지 다음 guarded job을 차단한다. resource stop은 완료가 아니다. 중단된 test log·partial backup은 자체 완료 증거가 필요하다. child data·test logs·partial backups는 보존하며 cleanup은 이를 삭제하거나 운영 databases·models를 rollback하지 않는다. checkpoints와 logs는 reboot 뒤에도 남는다. 기존 interrupted run은 검사하며 passed로 재표기하지 않는다.
+영속 private `runs/ID/samples.jsonl`은 pressure/headroom/swap/load와 child CPU/RSS/start identity를 기록하며 command arguments·environment secrets는 제외한다. `checkpoint.json`, 단독 실행의 `active.json`, shared 검사의 `active-test-slot-N.json`은 passed·failed·stopped·unsettled cleanup을 구분한다. shared 검사는 unsettled `active.json` 또는 자기 slot record를, exclusive 작업은 모든 unsettled record를 거절한다. older checkouts는 `active.json`만 읽는다. root identity 불명·cleanup 실패·supervisor 강제 종료는 수동 검사 전까지 후속 작업을 차단한다. resource stop은 완료가 아니며 interrupted test log·partial backup에는 자체 완료 증거가 필요하다. child data·logs·partial backups를 보존하고 운영 databases·models를 rollback하지 않는다. checkpoint·logs는 reboot 뒤에도 남는다.
 <!-- qmd:auto:end -->
