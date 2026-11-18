@@ -6,7 +6,7 @@ aliases:
   - "Preflight result"
 related:
   - "release-agent-qa-run-template"
-  - "release-qa-artifact-identity"
+  - "release-qa-evidence-environment"
 type: concept
 status: verified
 created: 2026-11-02
@@ -16,29 +16,29 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/templates/release-agent-qa-run.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/templates/release-agent-qa-run.md", collection: "qmd-auto-context", sha256: "d7edd8887e0e14b1bbf1129d4e510f05b70e8a3dafca830b1a5a83a42dd9ed16", size: 8715, mtimeNs: 1793192853247153314}
+  - {kind: "file", path: "docs/templates/release-agent-qa-run.md", collection: "qmd-auto-context", sha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", size: 9145, mtimeNs: 1794185295243299019}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T12:13:40.462610Z"
+verifiedAt: "2026-11-15T15:51:17.213923Z"
 verifiedMode: "self"
-verifiedBodyHash: "6984c8757cfcf413c47afac15e808c7d23a56cc69e95b9609f33f2f02d477430"
+verifiedBodyHash: "7180de909d06654b7c3de06b8e995949d30316db0217f8b0fef4774dd1b782f5"
 sourceSpans:
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "d7edd8887e0e14b1bbf1129d4e510f05b70e8a3dafca830b1a5a83a42dd9ed16", startLine: 76, endLine: 77, spanSha256: "57d1f4b0520c9668d90a0ca75a134d7d0c56d18b45c2764ad6b7015c14703585"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "d7edd8887e0e14b1bbf1129d4e510f05b70e8a3dafca830b1a5a83a42dd9ed16", startLine: 80, endLine: 80, spanSha256: "141b3b4a7ff45c6192dfa4ebe060476f597559846f74aff638b5a62026f9662d"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "d7edd8887e0e14b1bbf1129d4e510f05b70e8a3dafca830b1a5a83a42dd9ed16", startLine: 82, endLine: 82, spanSha256: "405240de59374c7781368ef64db74b53777f2e5c7ef32ce88d4dfa02fc79220a"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "d7edd8887e0e14b1bbf1129d4e510f05b70e8a3dafca830b1a5a83a42dd9ed16", startLine: 84, endLine: 85, spanSha256: "60646a59c32a6644ea9b4967a7badca90abc9715fbad04497760ce321d69da7f"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "d7edd8887e0e14b1bbf1129d4e510f05b70e8a3dafca830b1a5a83a42dd9ed16", startLine: 85, endLine: 86, spanSha256: "2a776ae35d05513748daf5ada558b229cf23050736e93fe40a66031cd59d54c7"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "d7edd8887e0e14b1bbf1129d4e510f05b70e8a3dafca830b1a5a83a42dd9ed16", startLine: 90, endLine: 96, spanSha256: "8f9e1ef386f3566c89952bb473bf54afa80c381dc285527aa3cc05b15e451535"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "d7edd8887e0e14b1bbf1129d4e510f05b70e8a3dafca830b1a5a83a42dd9ed16", startLine: 97, endLine: 97, spanSha256: "877807ebbf32dec454f8d3df32b2d655deebdfbd81396dcedb2df855e65722ab"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "d7edd8887e0e14b1bbf1129d4e510f05b70e8a3dafca830b1a5a83a42dd9ed16", startLine: 99, endLine: 99, spanSha256: "c474a85f0d3daf9ad68dbfbd6c04e08ae77aa3c970db8adbd1812be35bd0ba63"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "d7edd8887e0e14b1bbf1129d4e510f05b70e8a3dafca830b1a5a83a42dd9ed16", startLine: 99, endLine: 101, spanSha256: "d29abfab034858caeeba0448c94e6d31686d61253d5a51e8771223f2e31e6252"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 81, endLine: 81, spanSha256: "405240de59374c7781368ef64db74b53777f2e5c7ef32ce88d4dfa02fc79220a"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 83, endLine: 84, spanSha256: "60646a59c32a6644ea9b4967a7badca90abc9715fbad04497760ce321d69da7f"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 84, endLine: 85, spanSha256: "2a776ae35d05513748daf5ada558b229cf23050736e93fe40a66031cd59d54c7"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 87, endLine: 87, spanSha256: "029cc549077d34547656fff1bc613d326c832706feec9221d764731e90a5b83a"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 89, endLine: 95, spanSha256: "8f9e1ef386f3566c89952bb473bf54afa80c381dc285527aa3cc05b15e451535"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 92, endLine: 92, spanSha256: "4f32df4125d05c1d2f74497f76e36dce7b9e08bc26ad433e85281a25b2948e19"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 96, endLine: 96, spanSha256: "877807ebbf32dec454f8d3df32b2d655deebdfbd81396dcedb2df855e65722ab"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 98, endLine: 98, spanSha256: "c474a85f0d3daf9ad68dbfbd6c04e08ae77aa3c970db8adbd1812be35bd0ba63"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 98, endLine: 100, spanSha256: "d29abfab034858caeeba0448c94e6d31686d61253d5a51e8771223f2e31e6252"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="a280aa5774e86387" -->
+<!-- qmd:auto:start id="main" sourceHash="3e66dbd6e9676eca" -->
 ## Summary
-`docs/templates/release-agent-qa-run.md`의 preflight는 기능 QA 전에 수행한다. `PF-ID`, `PF-FOLDER`, `PF-TRUST`, `PF-FRESH`, `PF-HOST`, `PF-RUNTIME`, `PF-NET` 각각을 `ready`, `not ready`, `NOT RUN`으로 기록하며 모두 `ready`일 때만 `READY`다. 미준비 분류는 environment unready / approval pending / host unsupported / product defect다. 호스트별 승인 폴더와 설치 hook map의 전체 명령, 승인 경로·시간, hook map SHA-256을 기록하며 wildcard와 "trust all"은 허용하지 않는다. `QMD_SKIP_BACKGROUND_WORKER`, `QMD_FORCE_DEAD_PIDS`, `QMD_QUERY_FIXTURE`, `QMD_FAKE_PLATFORMS`가 없어야 한다. QMD bootstrap 증거와 QMD에 독립적인 Laya readiness 증거를 기록한다.
+`docs/templates/release-agent-qa-run.md`의 preflight는 기능 QA 전에 수행한다. `PF-ID`, `PF-FOLDER`, `PF-TRUST`, `PF-FRESH`, `PF-HOST`, `PF-RUNTIME`, `PF-NET` 결과는 `ready`, `not ready`, `NOT RUN`이며 미수행은 `NOT RUN`이다. 모든 항목이 `ready`일 때만 `READY`다. 미준비 분류는 environment unready / approval pending / host unsupported / product defect이며 증거와 retest rule을 기록한다. 호스트별 Surface, Approved folder, 설치 hook map의 Reviewed hook commands 전체 목록, Host approval route / time, Hook map SHA-256의 후보 일치를 기록한다. wildcard와 "trust all"은 허용하지 않는다. `PF-FRESH`는 install/trust/reload 뒤 fresh session, SessionStart trace, new prompt log path를 요구한다.
 <!-- qmd:auto:end -->

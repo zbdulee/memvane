@@ -12,33 +12,33 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/runtime-resource-coordination.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/runtime-resource-coordination.md", collection: "qmd-auto-context", sha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", size: 42602, mtimeNs: 1793503909942861345}
+  - {kind: "file", path: "docs/runtime-resource-coordination.md", collection: "qmd-auto-context", sha256: "e28119ca84632cd636274bc73788e86627b626c9d49adf52bc22c99b0035d661", size: 47529, mtimeNs: 1794185295241970820}
 triggers:
   - "session_start_source"
 redactions:
 related:
-  - "laya-resident-service-request-limits"
-  - "laya-resident-service-installation-recovery"
+  - "laya-resident-v5-attestation"
+  - "laya-resident-request-limits"
+  - "laya-resident-recovery-lifecycle"
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T13:26:06.165054Z"
+verifiedAt: "2026-11-15T15:48:05.011076Z"
 verifiedMode: "self"
-verifiedBodyHash: "6dedf7b66e4c5ee75173615a729d4afaca9574e9451a0fe717e2e894ed0d264d"
+verifiedBodyHash: "ddeac0269084a54a1e45ca26d16b5be7ba72d398b4e96776a543432bc1282981"
 sourceSpans:
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 32, endLine: 32, spanSha256: "75b1ed55f99c8a2e682975cddeb75f9fc5ecc1bbca5ee7476f084e7071e9c15d"}
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 33, endLine: 36, spanSha256: "b72603c071745cdaa076973569eb30b314df7fba942d39c0b470128647f76625"}
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 34, endLine: 35, spanSha256: "b8ccdd0b9ded2d62597f5dada0d7fa838b7872023079a664bb8a142d860dd767"}
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 36, endLine: 38, spanSha256: "e3042154eba28e5dd5995820dee4f2c39aaed27cac151abb8c560c53221707dc"}
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 38, endLine: 38, spanSha256: "dfe6e852083449827ce810801ca0979bb423e331381b407297d7af2487148e45"}
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 39, endLine: 41, spanSha256: "adb6b16d23bc90035ea258bd7afb4896d99fc62167b7d5ccbf6dd155c787ae50"}
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 41, endLine: 42, spanSha256: "7cb9f40a69d8151b5dc45f5c3241e3a8514cfc6cf7816e439d34a3d73a7355ea"}
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 43, endLine: 44, spanSha256: "d21fa6fffc9b6b75bf47acc54cbf73722c3d40ff4ddd3b149bba1111e5157825"}
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 44, endLine: 45, spanSha256: "42945ad165967eebbc1c9b48f76db870443abe0a4e51a69caee8ebebd10de127"}
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 59, endLine: 61, spanSha256: "e192c4c8ece1b27eb0ae4d659add1dc808de976b0cb0b0f27c1130265d61975d"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "e28119ca84632cd636274bc73788e86627b626c9d49adf52bc22c99b0035d661", startLine: 48, endLine: 51, spanSha256: "2b42140fec68467d134ba0f411da0d8749e551434a95e49673e42161dabb4fae"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "e28119ca84632cd636274bc73788e86627b626c9d49adf52bc22c99b0035d661", startLine: 50, endLine: 51, spanSha256: "b8ccdd0b9ded2d62597f5dada0d7fa838b7872023079a664bb8a142d860dd767"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "e28119ca84632cd636274bc73788e86627b626c9d49adf52bc22c99b0035d661", startLine: 51, endLine: 52, spanSha256: "bacdf0023e0b4a25f845c4b0939f7000f68d2a2b32d9871efdfdb1915c015fa3"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "e28119ca84632cd636274bc73788e86627b626c9d49adf52bc22c99b0035d661", startLine: 52, endLine: 54, spanSha256: "e3042154eba28e5dd5995820dee4f2c39aaed27cac151abb8c560c53221707dc"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "e28119ca84632cd636274bc73788e86627b626c9d49adf52bc22c99b0035d661", startLine: 54, endLine: 54, spanSha256: "dfe6e852083449827ce810801ca0979bb423e331381b407297d7af2487148e45"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "e28119ca84632cd636274bc73788e86627b626c9d49adf52bc22c99b0035d661", startLine: 55, endLine: 56, spanSha256: "c6ba009fb084944575b90a21df373927d238e940691ed9764a519cf268645120"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "e28119ca84632cd636274bc73788e86627b626c9d49adf52bc22c99b0035d661", startLine: 57, endLine: 57, spanSha256: "731dffcc7536b9ff0ffb0c58bb767053610d66a2521a1bed681f1efcbcaf827c"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "e28119ca84632cd636274bc73788e86627b626c9d49adf52bc22c99b0035d661", startLine: 57, endLine: 58, spanSha256: "7cb9f40a69d8151b5dc45f5c3241e3a8514cfc6cf7816e439d34a3d73a7355ea"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "e28119ca84632cd636274bc73788e86627b626c9d49adf52bc22c99b0035d661", startLine: 96, endLine: 98, spanSha256: "dd9874011e5618e9b35ee966f40d1bf3b8deded846a6c16f3e44691d2f53b6c7"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="198751a92eb9de4a" -->
+<!-- qmd:auto:start id="main" sourceHash="3658f55fc82b700f" -->
 ## Summary
-`laya_resident_service.py`는 `<account home>/.local/state/memvane/service/`에서 설치별 임베딩과 학습 추론을 제공하며 모든 socket에 same-owner peer check를 적용한다. vector profile(provider identity, model, dimension)별 worker를 `start_owned_embed_service`로 시작한다. cold load는 서비스 전체에서 한 번에 하나이며 `Coordinator.check(EMBED_POLICY)`부터 준비 완료까지 load lock을 유지한다. free memory 10% 미만이면 거부하고 provider lane은 잡지 않는다. restart를 포함한 새 worker 시작은 full attestation을 요구하며 read-only proof(bundle drift)는 실행 중 worker에만 연결한다. `verify_worker_attestation`의 full artifact rehash는 설치 identity별 binding 때 한 번 수행한다.
+`laya_resident_service.py`는 `<account home>/.local/state/memvane/service/`에서 selected·pending installation의 embedding과 learning inference를 제공하며 모든 socket에 same-owner peer check를 적용한다. vector profile(provider identity, model, dimension)별 worker를 `start_owned_embed_service`로 시작한다. cold load는 서비스 전체에서 하나이며 `Coordinator.check(EMBED_POLICY)`부터 ready까지 load lock을 유지한다. free memory 10% 미만이면 거부하고 provider lane은 잡지 않는다. `verify_worker_attestation`의 full artifact rehash는 binding 시 installation identity별 한 번 실행한다.
 <!-- qmd:auto:end -->

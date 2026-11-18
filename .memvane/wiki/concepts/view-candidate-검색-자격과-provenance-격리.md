@@ -5,8 +5,7 @@ aliases:
   - "View 검색 자격"
   - "View provenance 격리"
 related:
-  - "laya-view-manifest-contract"
-  - "laya-view-vector-coverage"
+  - "laya-view-provenance-binding"
 type: concept
 status: verified
 created: 2026-11-02
@@ -16,28 +15,29 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/development-view-candidate.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/development-view-candidate.md", collection: "qmd-auto-context", sha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", size: 17937, mtimeNs: 1793607024896226767}
+  - {kind: "file", path: "docs/development-view-candidate.md", collection: "qmd-auto-context", sha256: "f2f6d0728bd092419639818dc7ac87e254260a54a455e3714ab27dc7bf239f0e", size: 20907, mtimeNs: 1794183670388025669}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T15:29:41.692307Z"
+verifiedAt: "2026-11-15T16:26:58.819332Z"
 verifiedMode: "self"
-verifiedBodyHash: "256ebfca0565c111e727e34cf1d46cf3db87d0e9c7bf9c19e88de22c148ff217"
+verifiedBodyHash: "2dae7084db95c6821c1fec3241a48002fae75b19294151a4086a33e8f725c240"
 sourceSpans:
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 61, endLine: 62, spanSha256: "8ce3cb0dfd7ebc5bfae2ed056d97cb37a47b888ba8144faf35dd8578c8c03bd9"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 62, endLine: 62, spanSha256: "e254010d1acad872cdaf93e41af0f2dea3e44efcc993bad4545e44a046be628c"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 63, endLine: 63, spanSha256: "9c81bb19d506e9ee27e30bf69f999031684646aadf105eb2716f5eb8ebdb91dd"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 64, endLine: 65, spanSha256: "8b327ed6e2427030daa9d32cfe6e56ed4c766bab1f294105864a99da5e408d9c"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 66, endLine: 67, spanSha256: "197b82de599ba73e6bc6e4810d0f56be4c11acec17720074d735afd0c5e1d8ec"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 69, endLine: 69, spanSha256: "39ca437e9c6fd635e62e5deb61948481b2dc5800af7a8f93d55c72ff2edcb57d"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 70, endLine: 70, spanSha256: "64b169d72d8fe6da8ea3908d178ba766f73268f14a99e301271d9ba2ff85e297"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 71, endLine: 71, spanSha256: "3dd53496edee2b89f4f6fdc74dda486a5ccb9dccd3dfdf4da3bc7fbe37ebff28"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "f2f6d0728bd092419639818dc7ac87e254260a54a455e3714ab27dc7bf239f0e", startLine: 47, endLine: 55, spanSha256: "86864120b8b9ef6e023478d49ca18abe713063e61d7599a7b3cede7003c67117"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "f2f6d0728bd092419639818dc7ac87e254260a54a455e3714ab27dc7bf239f0e", startLine: 57, endLine: 57, spanSha256: "3bf0d09ac7a784ceaec539ce1014439979fb164c1026a78c2e2caa6b249f6b55"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "f2f6d0728bd092419639818dc7ac87e254260a54a455e3714ab27dc7bf239f0e", startLine: 58, endLine: 58, spanSha256: "734939f3b0ffb4a892ffc3575de3bdf671db2cacd89726c66fabf8abb49a53f3"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "f2f6d0728bd092419639818dc7ac87e254260a54a455e3714ab27dc7bf239f0e", startLine: 59, endLine: 59, spanSha256: "2d698a8f3f17f94f4ea3d175280c58e2b7138c266b49d75e2e791bc4dbc1a9d4"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "f2f6d0728bd092419639818dc7ac87e254260a54a455e3714ab27dc7bf239f0e", startLine: 60, endLine: 60, spanSha256: "6ff5fbe0a2f743852262e5eb7eea30b9fdc1e2d7b279b0c081d4b095168f524d"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "f2f6d0728bd092419639818dc7ac87e254260a54a455e3714ab27dc7bf239f0e", startLine: 63, endLine: 63, spanSha256: "1ca4d06ebd0c712ddd82a8ad28b7eba915a5f0d458800d0c9162997843b06478"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "f2f6d0728bd092419639818dc7ac87e254260a54a455e3714ab27dc7bf239f0e", startLine: 65, endLine: 67, spanSha256: "c71d709827a43153a5d526dda982bb283cae8aabaa8a3a41c2baa24ef751311b"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "f2f6d0728bd092419639818dc7ac87e254260a54a455e3714ab27dc7bf239f0e", startLine: 70, endLine: 71, spanSha256: "8b327ed6e2427030daa9d32cfe6e56ed4c766bab1f294105864a99da5e408d9c"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "f2f6d0728bd092419639818dc7ac87e254260a54a455e3714ab27dc7bf239f0e", startLine: 147, endLine: 148, spanSha256: "a8e5e19704cdcc30f9eb12c8302f234bd3ff91603c656166655c8daedb8567e4"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="90e31db3f105dfa0" -->
+<!-- qmd:auto:start id="main" sourceHash="ec84e915fe155c57" -->
 ## Summary
-검색 자격 `eligible`은 저장소가 source·attestation·`skipPaths`에서 도출하며 호출자가 지정하지 않는다. 같은 blob SHA라도 다른 view의 trust를 빌리지 않는다. non-null trust의 blob·policy 불일치나 다른 worktree·branch 출처는 거절한다. source 없음, null trust, 누락·held source, SHA·길이 변경, `legacy_unbound`, 제외된 카드·source는 검색 대상이 아니다. non-Git observed source와 unknown tracked state는 candidate 자격을 가질 수 있지만 삭제 권한은 없다. `card_sources`는 원래 attestation의 지문 ID·순서·span을 보존한다. 새 scan의 같은 경로·SHA·길이 관측으로 provenance를 덮어쓰지 않으며 rebound는 `BlobStore`의 별도 불변 attestation 계약을 따른다.
+manifest 키는 정확히 `scan_id, policy_digest, revocation_epoch, complete: true, sources: [{path, fingerprint_id, presence}], members: [{path, blob_sha, display_title, trust_digest}]`이며 추가 키·중복 경로는 거절한다. source는 프로젝트 상대 경로, member는 wiki 상대 Markdown 경로다. 경로·필터는 UTF-8 인코딩이 가능해야 한다. wiki root의 `SCHEMA.md`·`index.md`·`log.md`는 member가 아니다. `presence`는 `present` 또는 `held_missing`이다. `eligible`은 source·attestation·봉인한 `skipPaths`에서 도출한다. source 부재·null trust·누락·held source·SHA/길이 변경·`legacy_unbound`·제외 카드/source는 검색하지 않는다. `complete: true`는 전체 원문 관측의 증명이 아니다.
 <!-- qmd:auto:end -->

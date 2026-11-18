@@ -5,7 +5,8 @@ aliases:
   - "run-local-cycle 실행 계약"
   - "로컬 학습 실행 경계"
 related:
-  - "memvane-local-checkpoint-promotion"
+  - "memvane-checkpoint-promotion"
+  - "memvane-learning-schedule"
 type: concept
 status: verified
 created: 2026-11-02
@@ -15,28 +16,30 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/continual-learning.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/continual-learning.md", collection: "qmd-auto-context", sha256: "bad248946e31df1fe6a13fff3ff5ea848777728372a6cfbe4a9a09e38973f342", size: 44172, mtimeNs: 1793461015076749917}
+  - {kind: "file", path: "docs/continual-learning.md", collection: "qmd-auto-context", sha256: "24b8e839ecda75fadadcbcc0a62951b0c248fbd54c3173e1f7363f8c306392b0", size: 44296, mtimeNs: 1794185295236727521}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T14:43:53.213345Z"
+verifiedAt: "2026-11-15T15:26:07.349418Z"
 verifiedMode: "self"
-verifiedBodyHash: "075068c29ac65b4ba2902eab9eb7b750be6be3892f5008a2b9ae7836466c73ce"
+verifiedBodyHash: "1d767a55e2c3b6d57cd68ab24ca0519d1535c1d672abe6fe9c70076589d2c1ba"
 sourceSpans:
-  - {path: "docs/continual-learning.md", sourceSha256: "bad248946e31df1fe6a13fff3ff5ea848777728372a6cfbe4a9a09e38973f342", startLine: 78, endLine: 79, spanSha256: "a4d4202fc0b54c6adf4a0a049335473f0b5d06a4c22a9f5be76a8accf085dd68"}
-  - {path: "docs/continual-learning.md", sourceSha256: "bad248946e31df1fe6a13fff3ff5ea848777728372a6cfbe4a9a09e38973f342", startLine: 80, endLine: 81, spanSha256: "62118d9d7141a57b8dfaba939d4dd1a2e386e44929da302a20dea2fc3c9e4c89"}
-  - {path: "docs/continual-learning.md", sourceSha256: "bad248946e31df1fe6a13fff3ff5ea848777728372a6cfbe4a9a09e38973f342", startLine: 81, endLine: 82, spanSha256: "b7c50e7f63d37567eafb8d5e26a8d6a20eb0312f670927cb087634e25ab94aee"}
-  - {path: "docs/continual-learning.md", sourceSha256: "bad248946e31df1fe6a13fff3ff5ea848777728372a6cfbe4a9a09e38973f342", startLine: 82, endLine: 84, spanSha256: "d330692c6e1236409120447fb410de742c0109ff1146a6785733aefcfd48680f"}
-  - {path: "docs/continual-learning.md", sourceSha256: "bad248946e31df1fe6a13fff3ff5ea848777728372a6cfbe4a9a09e38973f342", startLine: 84, endLine: 86, spanSha256: "1e390d9ae3b4cda6c6b523d8f8e4c64a4d12b9ab7cdaa3ffa3c91d0817522ae3"}
-  - {path: "docs/continual-learning.md", sourceSha256: "bad248946e31df1fe6a13fff3ff5ea848777728372a6cfbe4a9a09e38973f342", startLine: 86, endLine: 86, spanSha256: "aa7aa2ca157d1c43b5ecd2e098338c454cbba87e5709dd475679aaa1eb3458e3"}
-  - {path: "docs/continual-learning.md", sourceSha256: "bad248946e31df1fe6a13fff3ff5ea848777728372a6cfbe4a9a09e38973f342", startLine: 86, endLine: 88, spanSha256: "3cdd35e243c6bd5b19162d35cdf108b75bac3816af91dc7f054cecbef3ec3403"}
-  - {path: "docs/continual-learning.md", sourceSha256: "bad248946e31df1fe6a13fff3ff5ea848777728372a6cfbe4a9a09e38973f342", startLine: 88, endLine: 88, spanSha256: "0106ad91e84405a68a6914ac4148fac0a68c1360082fcdb093c4d6bb9d2da153"}
+  - {path: "docs/continual-learning.md", sourceSha256: "24b8e839ecda75fadadcbcc0a62951b0c248fbd54c3173e1f7363f8c306392b0", startLine: 78, endLine: 79, spanSha256: "a4d4202fc0b54c6adf4a0a049335473f0b5d06a4c22a9f5be76a8accf085dd68"}
+  - {path: "docs/continual-learning.md", sourceSha256: "24b8e839ecda75fadadcbcc0a62951b0c248fbd54c3173e1f7363f8c306392b0", startLine: 80, endLine: 81, spanSha256: "62118d9d7141a57b8dfaba939d4dd1a2e386e44929da302a20dea2fc3c9e4c89"}
+  - {path: "docs/continual-learning.md", sourceSha256: "24b8e839ecda75fadadcbcc0a62951b0c248fbd54c3173e1f7363f8c306392b0", startLine: 81, endLine: 82, spanSha256: "b7c50e7f63d37567eafb8d5e26a8d6a20eb0312f670927cb087634e25ab94aee"}
+  - {path: "docs/continual-learning.md", sourceSha256: "24b8e839ecda75fadadcbcc0a62951b0c248fbd54c3173e1f7363f8c306392b0", startLine: 82, endLine: 84, spanSha256: "d330692c6e1236409120447fb410de742c0109ff1146a6785733aefcfd48680f"}
+  - {path: "docs/continual-learning.md", sourceSha256: "24b8e839ecda75fadadcbcc0a62951b0c248fbd54c3173e1f7363f8c306392b0", startLine: 84, endLine: 86, spanSha256: "1e390d9ae3b4cda6c6b523d8f8e4c64a4d12b9ab7cdaa3ffa3c91d0817522ae3"}
+  - {path: "docs/continual-learning.md", sourceSha256: "24b8e839ecda75fadadcbcc0a62951b0c248fbd54c3173e1f7363f8c306392b0", startLine: 85, endLine: 86, spanSha256: "be194c56725b96d7339cf60cc13e823a677a669bb0d10028a3d5acbd23b8d2cc"}
+  - {path: "docs/continual-learning.md", sourceSha256: "24b8e839ecda75fadadcbcc0a62951b0c248fbd54c3173e1f7363f8c306392b0", startLine: 86, endLine: 86, spanSha256: "aa7aa2ca157d1c43b5ecd2e098338c454cbba87e5709dd475679aaa1eb3458e3"}
+  - {path: "docs/continual-learning.md", sourceSha256: "24b8e839ecda75fadadcbcc0a62951b0c248fbd54c3173e1f7363f8c306392b0", startLine: 86, endLine: 87, spanSha256: "d698d1f6fe4906c6902192d8755a8f381ba1188e7b175f2a66d96193ce369088"}
+  - {path: "docs/continual-learning.md", sourceSha256: "24b8e839ecda75fadadcbcc0a62951b0c248fbd54c3173e1f7363f8c306392b0", startLine: 87, endLine: 88, spanSha256: "66d26d636a6f56cb715a83f8860e38f98ad4303cc50ede9434fc1433e80d2555"}
+  - {path: "docs/continual-learning.md", sourceSha256: "24b8e839ecda75fadadcbcc0a62951b0c248fbd54c3173e1f7363f8c306392b0", startLine: 88, endLine: 88, spanSha256: "0106ad91e84405a68a6914ac4148fac0a68c1360082fcdb093c4d6bb9d2da153"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="b1955e8d9fc087bc" -->
+<!-- qmd:auto:start id="main" sourceHash="85d9c9db5ed4795f" -->
 ## Summary
-`run-local-cycle`은 immutable manifest version, private revisions JSON, private trainer argv JSON, owner-only incumbent artifact를 받는다. 고정 로컬 실행 파일은 reviewed train cases만 `train`으로, 라벨 없는 validation/evaluation cases는 `predict`로 받아 opaque artifact 하나와 bounded JSON predictions를 쓴다. 부모는 wall time·sampled process-group RSS·row/file 크기를 제한하고 credentials·proxy 환경 변수를 제거하며 offline Hugging Face/Transformers mode를 요청한다. 이는 OS network sandbox가 아니다. state lock은 한 cycle만 허용한다. 동일 cycle ID는 기존 verdict를 반환하고 중단 학습은 queued phase부터 재개한다. source revisions나 labels 변경은 거절한다.
+`run-local-cycle`은 immutable manifest version, private revisions JSON file, private trainer argv JSON file, owner-only incumbent artifact를 받는다. 신뢰된 fixed local executable은 reviewed train cases로 `train`, unlabeled validation/evaluation cases로 `predict`를 실행하고 opaque artifact 하나와 bounded JSON predictions를 쓴다. parent는 wall time·sampled process-group RSS·row/file sizes를 제한하고 credentials·proxy 환경변수를 제거하며 offline Hugging Face/Transformers mode를 요청한다. 이는 OS network sandbox가 아니다. state lock은 한 cycle만 보유한다. 반복 cycle ID는 기록된 verdict를 반환하고 중단 학습은 queued phase에서 재개한다. source revisions 또는 labels 변경은 거절한다.
 <!-- qmd:auto:end -->

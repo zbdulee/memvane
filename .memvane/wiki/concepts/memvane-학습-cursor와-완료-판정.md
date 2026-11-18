@@ -6,6 +6,7 @@ aliases:
   - "두 head slot 완료 영수증"
 related:
   - "memvane-project-learning-admission"
+  - "memvane-learning-profile-interface"
 type: concept
 status: verified
 created: 2026-11-02
@@ -15,29 +16,27 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/architecture/flows/04-learning.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/architecture/flows/04-learning.md", collection: "qmd-auto-context", sha256: "5b6e3a0ea14d5fcdd387b31cc48f95542897dd3b757f6550c329af7237c0c501", size: 5822, mtimeNs: 1793160699153652872}
+  - {kind: "file", path: "docs/architecture/flows/04-learning.md", collection: "qmd-auto-context", sha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", size: 5846, mtimeNs: 1794185295235338572}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T10:48:41.180000Z"
+verifiedAt: "2026-11-15T16:08:18.589011Z"
 verifiedMode: "self"
-verifiedBodyHash: "6cb0ab7e6bae254173a430806799e28cf43aa5abfcfcf557329c1c6b48a8d4fe"
+verifiedBodyHash: "d8b3fd22fbb3af1ca48d00c91025084e6a83ea1a51aed092b789112700a5e75b"
 sourceSpans:
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "5b6e3a0ea14d5fcdd387b31cc48f95542897dd3b757f6550c329af7237c0c501", startLine: 10, endLine: 10, spanSha256: "3114f91e3f45f52d407f0783f898e35d804c796798e3b2647e1d56b8b21d5708"}
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "5b6e3a0ea14d5fcdd387b31cc48f95542897dd3b757f6550c329af7237c0c501", startLine: 25, endLine: 25, spanSha256: "4ca8ce2f3770e781ef7decfdc0f8be80e3cc9f4dd19b8f80d1c018f7183e1e60"}
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "5b6e3a0ea14d5fcdd387b31cc48f95542897dd3b757f6550c329af7237c0c501", startLine: 32, endLine: 32, spanSha256: "fdadea1cdeb10a528976cd7750a65513c128150c6b35df2fcc2189e6646cb4a2"}
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "5b6e3a0ea14d5fcdd387b31cc48f95542897dd3b757f6550c329af7237c0c501", startLine: 57, endLine: 59, spanSha256: "02491b3c791b7c11874207d2c3ddeced2528c085aa19b2e71b085552a1e036c2"}
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "5b6e3a0ea14d5fcdd387b31cc48f95542897dd3b757f6550c329af7237c0c501", startLine: 64, endLine: 64, spanSha256: "fd6a212600d7e3dd9f7cf91d20392b9f4262e60b4bafbc8d5e129e2f21d90312"}
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "5b6e3a0ea14d5fcdd387b31cc48f95542897dd3b757f6550c329af7237c0c501", startLine: 65, endLine: 65, spanSha256: "843f87dd0d416c9836191f37adad4cf2b2718bf28eba36f130f3bbf31594534c"}
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "5b6e3a0ea14d5fcdd387b31cc48f95542897dd3b757f6550c329af7237c0c501", startLine: 66, endLine: 66, spanSha256: "9386e59a4ee3a9b0f94da515cde7de104f494c04e9ec08f3967b1dc918078be5"}
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "5b6e3a0ea14d5fcdd387b31cc48f95542897dd3b757f6550c329af7237c0c501", startLine: 67, endLine: 67, spanSha256: "8c2b97d7c92b6231db82697c86128bf01592510347a6796f80ed362524ab2118"}
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "5b6e3a0ea14d5fcdd387b31cc48f95542897dd3b757f6550c329af7237c0c501", startLine: 75, endLine: 75, spanSha256: "c0976469f8a5ed1558b8092458683e76d1c53711189a1fc494d35e2350bbdce8"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", startLine: 57, endLine: 59, spanSha256: "02491b3c791b7c11874207d2c3ddeced2528c085aa19b2e71b085552a1e036c2"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", startLine: 64, endLine: 64, spanSha256: "fd6a212600d7e3dd9f7cf91d20392b9f4262e60b4bafbc8d5e129e2f21d90312"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", startLine: 65, endLine: 65, spanSha256: "843f87dd0d416c9836191f37adad4cf2b2718bf28eba36f130f3bbf31594534c"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", startLine: 66, endLine: 66, spanSha256: "9386e59a4ee3a9b0f94da515cde7de104f494c04e9ec08f3967b1dc918078be5"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", startLine: 67, endLine: 67, spanSha256: "8c2b97d7c92b6231db82697c86128bf01592510347a6796f80ed362524ab2118"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", startLine: 74, endLine: 74, spanSha256: "8a1bd83883267e24385fef63ca5b3749b40fd129d3d612d0334b04a36d5e1db2"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", startLine: 75, endLine: 75, spanSha256: "74d325af7d136c0f7813931ca48e7c112c155589e372974b7cb5af7df1310d4d"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="44b09fe03088edde" -->
+<!-- qmd:auto:start id="main" sourceHash="790bb5f9ad162d8f" -->
 ## Summary
-커밋 f89b141의 `core/context_learning/training_cursor.py`는 request·artifact hash에 고정된 완료 영수증을 관리하며 publish 작업은 아니다. `UpdateCursor`는 두 head slot과 `group-plan.json`·`cursor.json`을 사용해 쓰기가 중단되어도 커밋된 head를 덮어쓰지 않는다. `recover_completed`는 완전히 커밋된 cursor만 모델 실행 없이 완료로 처리한다. `core/context_learning/project_worker.py`는 `run_training_pending` 실행 후 `project-last-status.json`을 기록하며 `activeCheckpointChanged`는 상태가 `applied`·`already_applied`일 때만 참이다. checkpoint 선택 pointer인 `live_select` 코드는 원문 발췌 범위 밖이며 실제 학습은 QA에서 실행하지 않았다.
+커밋 f89b141의 `core/context_learning/training_cursor.py`는 request·artifact hash에 고정된 완료 영수증을 관리하며 publish 작업은 아니다. `UpdateCursor`는 두 head slot과 `group-plan.json`·`cursor.json`을 사용해 쓰기가 중단되어도 커밋된 head를 덮어쓰지 않는다. `recover_completed`는 완전히 커밋된 cursor만 모델 실행 없이 완료로 처리한다. `core/context_learning/project_worker.py`는 `run_training_pending` 실행 후 `project-last-status.json`을 기록한다. `activeCheckpointChanged`는 상태가 `applied`·`already_applied`일 때만 참이다. checkpoint 선택 pointer인 `live_select` 코드는 문서 설명 범위 밖이며 실제 학습 실행과 recall 반영은 검증되지 않았다.
 <!-- qmd:auto:end -->
