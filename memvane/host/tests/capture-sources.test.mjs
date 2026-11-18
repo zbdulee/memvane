@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fixtureEnv, fixtureHome, removeTemp } from '../../../tests/support/temp.mjs';
 
-test('host capture carries candidate sources', () => {
+test('host prompt recall keeps no learning capture', () => {
   const fixture = fixtureHome('mvh');
   try {
     const r = spawnSync('python3', ['-B', '-m', 'unittest', '-v',

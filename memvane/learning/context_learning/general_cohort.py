@@ -9,7 +9,7 @@ from memvane.runtime.api import prepared,preparation_checkpoint
 
 import json
 from pathlib import Path
-from .contracts import digest,validate_request
+from .contracts import EDIT_SCHEMA,digest,validate_request
 from .store import canonical
 
 
@@ -54,6 +54,9 @@ def admitted(db,project,grant,statuses=('queued','first_done')):
             if digest(row[3])!=row[2]:continue
             sample=json.loads(row[3]);bodies=json.loads(row[4])
             if sample['request_id']!=row[1]:continue
+            # v5 edit recall cases wait for the 1.0.20 teacher: no exposure is
+            # assigned and no teacher sees them until that release.
+            if sample.get('schema_version')==EDIT_SCHEMA:continue
             keys=_keys(sample,bodies,project)
         except (KeyError,TypeError,ValueError):continue
         previous=db.execute('SELECT input_sha256,role,family FROM project_cohort_assignments WHERE scope=? AND request_id=?',(scope,row[1])).fetchone()

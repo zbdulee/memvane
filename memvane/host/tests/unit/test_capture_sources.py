@@ -1,4 +1,4 @@
-"""Transient recall source metadata reaches capture without mutating hook input."""
+"""Prompt recall keeps no learning capture (design r3 D); edit recall owns capture."""
 import unittest
 
 from memvane.host import host_response
@@ -6,7 +6,7 @@ from memvane.recall.types import RecallAnswer
 
 
 class CaptureSources(unittest.TestCase):
-    def test_render_joins_sources_to_the_post_output_capture_payload(self):
+    def test_prompt_recall_leaves_the_capture_slot_empty(self):
         payload = {'prompt': 'synthetic prompt'}
         pool = [{'path': 'wiki/a.md'}]
         answer = RecallAnswer({}, capture=({}, pool, []))
@@ -14,5 +14,4 @@ class CaptureSources(unittest.TestCase):
         with host_response.learning_capture() as slot:
             host_response._render_answer_timed('codex', payload, answer)
         self.assertEqual(payload, {'prompt': 'synthetic prompt'})
-        self.assertEqual(slot[0][2]['_memvane_semantic_sources'], answer.capture_sources)
-        self.assertEqual(slot[0][3:], ({}, pool, []))
+        self.assertEqual(slot, [])

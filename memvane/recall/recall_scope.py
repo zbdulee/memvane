@@ -45,6 +45,26 @@ def _recall_open() -> bool:
     return _RECALL_STATE.get() is not None
 
 
+def set_edit_recall(*, deadline: float, selector_deadline: float) -> None:
+    """Mark this recall as an edit recall (PostToolUse tail).
+
+    An edit recall answers within its own ``deadline`` (monotonic), asks the
+    selector only until ``selector_deadline``, skips the selector while the
+    inference service is busy and records no sync or provider wake.
+    """
+    state = _RECALL_STATE.get()
+    if state is not None:
+        state['edit'] = {'deadline': float(deadline),
+                         'selector_deadline': float(selector_deadline)}
+        state['writer_allowed'] = False
+
+
+def edit_recall():
+    """The edit recall options of this recall, or None for a prompt recall."""
+    state = _RECALL_STATE.get()
+    return state.get('edit') if state is not None else None
+
+
 def _recall_epoch(proof) -> None:
     """Raise when a proof's journal epoch is below the recall's highest one.
 

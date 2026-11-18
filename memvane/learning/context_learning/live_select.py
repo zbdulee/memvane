@@ -26,8 +26,25 @@ def _file_hash(path):
     return checksum.hexdigest()
 
 
+def service_busy(deadline=None) -> bool:
+    """Whether the per-user inference service is scoring or queueing a request.
+
+    One version probe (at most half a second). No answer, a refused probe or
+    an unreadable answer is not busy: the request then proceeds as before.
+    """
+    from . import inference_service as service
+    try:
+        limit = time.monotonic() + .5 if deadline is None else min(deadline, time.monotonic() + .5)
+        answer = service._version(service.service_root(), limit)
+    except Exception:
+        return False
+    return (isinstance(answer, dict) and
+            (answer.get('busy') is True or (type(answer.get('queued')) is int
+                                            and answer['queued'] > 0)))
+
+
 def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
-           pointer_name='active-checkpoint.json', ensure_service=None):
+           pointer_name='active-checkpoint.json', ensure_service=None, skip_busy=False):
     """Return (selected IDs or None, reason, bounded resource observation).
 
     A real 0-card prediction is []. None means use the preexisting QMD topN.
@@ -39,6 +56,9 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
             or not isinstance(rows, list) or not 1 <= len(rows) <= 30):
         return None, 'invalid_pool', {}
     started = time.perf_counter()
+    if skip_busy and service_busy(deadline):
+        # An edit recall never queues behind another selector request.
+        return None, 'service_busy', {}
     state = Path(state_dir)
     try:
         policy = read_private_json(state / 'live-selector.json')

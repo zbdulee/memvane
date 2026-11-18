@@ -12,6 +12,18 @@ def setup_ready(root):
     except (OSError,ValueError,TypeError,AttributeError):return False
 
 
+def _retire_prompt_cases(root, project, policy, config):
+    """Default namespaces delete retired prompt cases once (decision 10)."""
+    from memvane.learning.default_enrollment import default_local_only
+    try:
+        if not default_local_only(root, project, policy):
+            return None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    from .prompt_retirement import retire_quietly
+    return retire_quietly(root, project, config)
+
+
 def run(root, project, config=None):
     from . import shared
     from memvane.settings import api as qmd_config
@@ -31,6 +43,7 @@ def run(root, project, config=None):
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return {'status':'busy'}
+        _retire_prompt_cases(root,project,policy,config)
         report=shared.resource_report(policy,detailed=True)
         if not report['ready']:
             return {'status':'deferred_resource','resources':report}

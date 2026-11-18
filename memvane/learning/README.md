@@ -75,3 +75,10 @@ code/executable/manifest/adapter 지문과 기본 승인 체인, 현재 공식 r
 이벤트에 기록한다. `request_id`로 기존 표본과 연결하며 후보 id의 SHA-256과
 `store`·`python`·`lexical` 값만 담는다. 표본 스키마·학습 입력은 그대로다.
 capture가 꺼져 있으면 출처 이벤트도 쓰지 않는다.
+
+학습 사례는 편집 recall에서만 수집한다(sample schema v5, `context_origin: tool_edit`).
+질의는 편집이 추가한 텍스트이고 편집 경로는 해시로만 남는다. v5 사례는
+teacher 릴리스 전까지 `queued`로 남고 cohort 배정에서 빠진다. 기본 namespace의
+첫 worker pass는 schema 4 이하 prompt 사례(shared `cases`와 같은 request id의
+private `samples`)를 한 번 지우고 개수를 `prompt-cases-retired.json`과
+`learning.migration` 이벤트에 남긴다(`context_learning/prompt_retirement.py`).

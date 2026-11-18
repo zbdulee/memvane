@@ -720,6 +720,8 @@ def enqueue(config, project, sample, compact_sources):
     validate_request(sample)
     if sample["schema_version"] == 4:
         return "edit_capture_unsupported"
+    # Production capture stores no prompt case (``seam._origin_gate``); v5
+    # edit recall cases share this admission with a 15-card pool.
     if (sample["host"] not in ("codex", "claude") or sample["prompt"]["truncated"]
             or sample["schema_version"] < 2
             or not sample["sampling"]["complete_within_returned_bound"]

@@ -238,7 +238,7 @@ class SelectedActions(HostInstallCase):
         with self.assertRaisesRegex(HostResponseError, '^invalid_edit_event$'):
             self.serve('compile', self.edit('notes/heron.md', event='PreToolUse'))
 
-    def test_capture_slot_is_per_call_and_absent_for_in_process_hosts(self):
+    def test_capture_slot_is_per_call_and_prompt_recall_fills_none(self):
         payload = {'prompt': PROMPT, 'hook_event_name': 'UserPromptSubmit'}
         self.serve('recall', payload, 'hermes')
         self.assertIsNone(response._LEARNING_CAPTURE.get())
@@ -248,8 +248,8 @@ class SelectedActions(HostInstallCase):
                 self.serve('recall', payload, 'claude')
             self.assertIs(response._LEARNING_CAPTURE.get(), outer)
         self.assertIsNone(response._LEARNING_CAPTURE.get())
-        self.assertEqual([entry[0] for entry in outer], ['codex'])
-        self.assertEqual([entry[0] for entry in inner], ['claude'])
+        # Prompt cases are retired (design r3 D): no prompt recall captures.
+        self.assertEqual((outer, inner), ([], []))
 
     def test_main_serves_recall_and_logs_one_event_line(self):
         code, out, err = self.main('recall', {'prompt': PROMPT, 'session_id': 'main-1'})
@@ -572,7 +572,8 @@ class HookEntry(FixtureCase):
                                           str(self.tmp)])
                 self.assertEqual(code, 0)
                 self.assertEqual(json.loads(stdout.getvalue()), answer)
-                self.assertEqual(len(events), 1 if action == 'recall' else 0)
+                # Only the edit recall (posttool) captures; prompt cases are retired.
+                self.assertEqual(len(events), 1 if action == 'posttool' else 0)
                 if events:
                     self.assertEqual(json.loads(events[0]), answer)
                 self.assertIsNone(response._LEARNING_CAPTURE.get())

@@ -4,13 +4,19 @@ from __future__ import annotations
 import hashlib
 
 VERSION = 1
-SUPPORTED_VERSIONS = (1, 2, 3, 4)
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5)
 CLASS_ORDER = ('necessary', 'supporting', 'irrelevant')
 CLASSES = frozenset(CLASS_ORDER)
 MAX_CANDIDATES = 8
 MAX_EXPERIMENT_CANDIDATES = 30
 MAX_PROMPT_CHARS = 2000
 MAX_EDIT_PROMPT_CHARS = 65536
+# v5 edit recall query: the text an edit added, cut by the hook (design r3 A-3).
+MAX_EDIT_QUERY_CHARS = 8192
+EDIT_SCHEMA = 5
+EDIT_OPERATIONS = ('write', 'edit', 'multi_edit', 'notebook_edit', 'apply_patch')
+_EDIT_EVENT_KEYS = frozenset(('path_sha256', 'after_sha256', 'operation', 'session_id',
+                              'tool_use_id', 'truncated', 'injected_ids'))
 MAX_EXCERPT_CHARS = 600
 
 
@@ -51,11 +57,13 @@ def request(payload: dict, candidates: list, *, host: str, request_id: str, samp
     edit = payload.get('context_origin') == 'tool_edit'
     if edit and sampling is None:
         raise ValueError('edit_sampling_required')
-    result = {'schema_version': 4 if edit else
+    # A new edit capture is the v5 edit-recall case. v4 (the retired ticket
+    # flow) stays readable and is never written.
+    result = {'schema_version': EDIT_SCHEMA if edit else
               (3 if 'candidate_limit' in sampling else 2) if sampling is not None else VERSION,
               'request_id': request_id, 'host': host,
               'context_origin': 'tool_edit' if edit else 'user_prompt',
-              'prompt': bounded(payload['prompt'], MAX_EDIT_PROMPT_CHARS if edit else MAX_PROMPT_CHARS),
+              'prompt': bounded(payload['prompt'], MAX_EDIT_QUERY_CHARS if edit else MAX_PROMPT_CHARS),
               'candidates': rows}
     if edit:
         result['edit_event'] = payload.get('edit_event')
@@ -109,9 +117,9 @@ def _validate_request(sample: dict) -> None:
     if not isinstance(sample, dict) or type(sample.get('schema_version')) is not int or sample.get('schema_version') not in SUPPORTED_VERSIONS:
         raise ValueError('unknown_schema')
     keys = {'schema_version', 'request_id', 'host', 'context_origin', 'prompt', 'candidates'}
-    if sample['schema_version'] in (2, 3, 4):
+    if sample['schema_version'] in (2, 3, 4, 5):
         keys.add('sampling')
-    edit = sample['schema_version'] == 4
+    edit = sample['schema_version'] in (4, 5)
     if edit:
         keys.add('edit_event')
     if (set(sample) != keys or sample['context_origin'] !=
@@ -120,11 +128,13 @@ def _validate_request(sample: dict) -> None:
     if sample['host'] not in {'claude', 'codex', 'hermes'} or not isinstance(sample['request_id'], str) or not sample['request_id']:
         raise ValueError('invalid_request')
     rows = sample['candidates']
-    if not isinstance(rows, list) or len(rows) > (MAX_EXPERIMENT_CANDIDATES if sample['schema_version'] in (3, 4) else 16 if sample['schema_version'] == 2 else MAX_CANDIDATES):
+    if not isinstance(rows, list) or len(rows) > (MAX_EXPERIMENT_CANDIDATES if sample['schema_version'] in (3, 4, 5) else 16 if sample['schema_version'] == 2 else MAX_CANDIDATES):
         raise ValueError('invalid_candidates')
-    if sample['schema_version'] in (2, 3, 4):
+    if sample['schema_version'] in (2, 3, 4, 5):
         validate_sampling(sample['sampling'], [c['candidate_id'] for c in rows], version=sample['schema_version'])
-    if edit:
+    if sample['schema_version'] == EDIT_SCHEMA:
+        _validate_edit_event(sample)
+    elif edit:
         event = sample['edit_event']
         required = {'ticket_id', 'parent_sha256', 'path_sha256', 'change_index', 'change_count',
                     'segment_sha256', 'start', 'end', 'index', 'count',
@@ -149,7 +159,9 @@ def _validate_request(sample: dict) -> None:
                     for key in ('session_id', 'turn_id', 'tool_use_id'))):
             raise ValueError('invalid_edit_event')
     seen = set()
-    for item, limit in [(sample['prompt'], MAX_EDIT_PROMPT_CHARS if edit else MAX_PROMPT_CHARS)] + [(c['excerpt'], MAX_EXCERPT_CHARS) for c in rows]:
+    prompt_limit = (MAX_EDIT_QUERY_CHARS if sample['schema_version'] == EDIT_SCHEMA
+                    else MAX_EDIT_PROMPT_CHARS if edit else MAX_PROMPT_CHARS)
+    for item, limit in [(sample['prompt'], prompt_limit)] + [(c['excerpt'], MAX_EXCERPT_CHARS) for c in rows]:
         if set(item) != {'text', 'truncated', 'original_chars', 'sha256'} or not isinstance(item['text'], str):
             raise ValueError('invalid_bounded_text')
         original = item['original_chars']
@@ -170,6 +182,30 @@ def _validate_request(sample: dict) -> None:
             raise ValueError('invalid_revision')
 
 
+def _hex64(value) -> bool:
+    return (isinstance(value, str) and len(value) == 64
+            and all(char in '0123456789abcdef' for char in value))
+
+
+def _validate_edit_event(sample: dict) -> None:
+    """v5 edit event: hashes and ids only, never the edited path or its bytes."""
+    event = sample['edit_event']
+    if not isinstance(event, dict) or set(event) != _EDIT_EVENT_KEYS:
+        raise ValueError('invalid_edit_event')
+    injected = event['injected_ids']
+    if (not _hex64(event['path_sha256'])
+            or not (event['after_sha256'] is None or _hex64(event['after_sha256']))
+            or event['operation'] not in EDIT_OPERATIONS
+            or not isinstance(event['session_id'], str) or not 1 <= len(event['session_id']) <= 160
+            or not isinstance(event['tool_use_id'], str) or len(event['tool_use_id']) > 160
+            or type(event['truncated']) is not bool
+            or not isinstance(injected, list) or len(injected) > 3
+            or any(not isinstance(item, str) or not item for item in injected)
+            or len(set(injected)) != len(injected)
+            or not set(injected) <= set(sample['sampling']['captured_ids'])):
+        raise ValueError('invalid_edit_event')
+
+
 def validate_request(sample: dict) -> None:
     try:
         _validate_request(sample)
@@ -179,14 +215,14 @@ def validate_request(sample: dict) -> None:
 
 def validate_sampling(meta, captured, *, version=2):
     keys = {'mode','scope','phase_counts','per_phase_limit','eligible_ids','captured_ids','baseline_selected_ids','excluded','snapshot_failures','retrieval_truncated','assessment_complete','complete_within_returned_bound','index_revision'}
-    bound = 30 if version in (3, 4) else 8
-    ids_bound = MAX_EXPERIMENT_CANDIDATES if version in (3, 4) else 16
-    if version in (3, 4):
+    bound = 30 if version in (3, 4, 5) else 8
+    ids_bound = MAX_EXPERIMENT_CANDIDATES if version in (3, 4, 5) else 16
+    if version in (3, 4, 5):
         keys.add('candidate_limit')
         if not isinstance(meta, dict) or type(meta.get('candidate_limit')) is not int or not 1 <= meta['candidate_limit'] <= MAX_EXPERIMENT_CANDIDATES:
             raise ValueError('invalid_candidate_limit')
     revision = meta.get('index_revision') if isinstance(meta, dict) else None
-    if not isinstance(meta, dict) or set(meta) != keys or meta['mode'] != ('eligible-policy-pool' if version in (3, 4) else 'eligible-returned-pool') or meta['scope'] != 'queried-phases-only' or not (revision == 'unavailable' or isinstance(revision, str) and len(revision) == 64 and all(x in '0123456789abcdef' for x in revision)) or type(meta['per_phase_limit']) is not int or meta['per_phase_limit'] != bound:
+    if not isinstance(meta, dict) or set(meta) != keys or meta['mode'] != ('eligible-policy-pool' if version in (3, 4, 5) else 'eligible-returned-pool') or meta['scope'] != 'queried-phases-only' or not (revision == 'unavailable' or isinstance(revision, str) and len(revision) == 64 and all(x in '0123456789abcdef' for x in revision)) or type(meta['per_phase_limit']) is not int or meta['per_phase_limit'] != bound:
         raise ValueError('invalid_sampling')
     phases = meta['phase_counts']
     if not isinstance(phases, dict) or not phases or not set(phases) <= {'primary','raw'} or any(type(v) is not int or v < 0 for v in phases.values()):
@@ -195,7 +231,7 @@ def validate_sampling(meta, captured, *, version=2):
         values = meta[name]
         if not isinstance(values,list) or len(values)>(16 if name=='baseline_selected_ids' else ids_bound) or any(not isinstance(v,str) or not v for v in values) or len(set(values))!=len(values):
             raise ValueError('invalid_sampling_ids')
-    if version in (3, 4) and len(meta['eligible_ids']) > meta['candidate_limit']:
+    if version in (3, 4, 5) and len(meta['eligible_ids']) > meta['candidate_limit']:
         raise ValueError('candidate_limit_exceeded')
     if meta['captured_ids'] != captured or not set(captured) <= set(meta['eligible_ids']):
         raise ValueError('invalid_captured_membership')
@@ -211,6 +247,6 @@ def validate_sampling(meta, captured, *, version=2):
             raise ValueError('invalid_sampling_flag')
     if meta['retrieval_truncated'] != any(v>bound for v in phases.values()):
         raise ValueError('hidden_retrieval_truncation')
-    expected = meta['assessment_complete'] and not (version in (3, 4) and any(x['reason']=='candidate_budget' for x in meta['excluded'])) and not meta['retrieval_truncated'] and not meta['snapshot_failures'] and set(meta['eligible_ids'])==set(captured)
+    expected = meta['assessment_complete'] and not (version in (3, 4, 5) and any(x['reason']=='candidate_budget' for x in meta['excluded'])) and not meta['retrieval_truncated'] and not meta['snapshot_failures'] and set(meta['eligible_ids'])==set(captured)
     if meta['complete_within_returned_bound'] != expected:
         raise ValueError('false_completeness')

@@ -11,6 +11,41 @@ def _fail(code: str):
     raise HostResponseError(code)
 
 
+# The live selector refuses a prompt longer than this (``live_select.choose``).
+EDIT_SELECTOR_PROMPT_CHARS = 2000
+
+# Selector work measured by the inference worker (``adapter.predict_loaded``)
+# and its client, renamed for the recall event. Numbers and the device only.
+_SELECTOR_MEASURES = (('pairs', 'selectorPairs'), ('planned_pairs', 'selectorPlannedPairs'),
+                      ('batches', 'selectorBatches'), ('truncated_pairs', 'selectorTruncatedPairs'),
+                      ('max_batch_size', 'selectorBatchLimit'),
+                      ('forward_seconds', 'selectorForwardSeconds'),
+                      ('resident_wall_seconds', 'selectorResidentSeconds'),
+                      ('queue_wait_seconds', 'selectorQueueSeconds'))
+
+
+def _selector_measurement(trace, resources) -> None:
+    """Record the selector's pair, batch and device measurement; never raises."""
+    try:
+        if not isinstance(resources, dict):
+            return
+        fields = {}
+        for key, name in _SELECTOR_MEASURES:
+            value = resources.get(key)
+            if type(value) in (int, float) and value == value and value >= 0:
+                fields[name] = value
+        batches = fields.get('selectorBatches')
+        if batches and 'selectorForwardSeconds' in fields:
+            fields['selectorBatchMs'] = round(fields['selectorForwardSeconds'] * 1000 / batches, 3)
+        device = resources.get('device')
+        if isinstance(device, str) and device.split(':', 1)[0] in ('cpu', 'mps', 'cuda'):
+            fields['selectorDevice'] = device.split(':', 1)[0]
+        if fields:
+            trace.fields(**fields)
+    except Exception:
+        pass
+
+
 def _select_verified_cards(decision, settings, prompt, rows, trace):
     """Card selection after the index proved published wiki rows.
 
@@ -51,12 +86,23 @@ def _select_verified_cards(decision, settings, prompt, rows, trace):
         if result is None:
             try:
                 from memvane.resident.api import ensure_service
+                from memvane.recall.recall_scope import edit_recall
+                edit = edit_recall()
+                options = {}
+                if edit is not None:
+                    # An edit recall asks the selector only until its own
+                    # deadline, never while the service serves another
+                    # request, and with the prompt length the live selector
+                    # accepts (query fragments come with 1.0.19).
+                    prompt = prompt[:EDIT_SELECTOR_PROMPT_CHARS]
+                    options = {'deadline': edit['selector_deadline'], 'skip_busy': True}
                 result = select_published(
                     pool, prompt=prompt, config=settings, project_root=project,
                     wiki_names=names, scope_id=decision['scopeId'],
-                    ensure_service=ensure_service)
+                    ensure_service=ensure_service, **options)
             except Exception:
                 result = {'reason': 'selector_unavailable', 'final_results': []}
+        _selector_measurement(trace, result.get('resources'))
         reason = result['reason']
         selection = selector_action(reason)
         if selection == 'accept':

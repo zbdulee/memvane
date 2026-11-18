@@ -41,6 +41,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/host/edit_recall.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/host/capture_dispatch.py": {
       "context": "host",
       "layer": "adapter",
@@ -637,6 +642,11 @@
       "pinned": false
     },
     "memvane/learning/context_learning/schedule.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/prompt_retirement.py": {
       "context": "learning",
       "layer": "adapter",
       "pinned": false

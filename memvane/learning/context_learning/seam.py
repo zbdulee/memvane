@@ -1,5 +1,7 @@
 """Opt-in capture of current source snapshots; never changes recall selection."""
+import hashlib
 import os
+import subprocess
 from pathlib import Path
 import uuid
 
@@ -176,11 +178,96 @@ def observe(payload, config, project_root, final_results, *, phases=None, verdic
 
 
 def _edit_gate(payload):
-    # Captures come from served recall prompts only. A host edit carries no
-    # selection evidence of its own and is never stored.
+    # ``observe`` is the direct (non-hook) capture API of offline and fixture
+    # callers. No hook calls it; hook cases come from ``observe_published``.
     if payload.get('context_origin') == 'tool_edit':
         return 'edit_capture_unsupported'
     return None
+
+
+def _origin_gate(payload):
+    """Only the edit recall (``context_origin: tool_edit``) stores cases."""
+    if payload.get('context_origin') != 'tool_edit':
+        return 'prompt_capture_retired'
+    return None
+
+
+# Instruction text and protocol keys of the teacher payload besides the query
+# and the card bodies (design r3 B-2); kept out of the input budget.
+TEACHER_INSTRUCTION_RESERVE = 4096
+TEACHER_MAX_INPUT_BYTES = 65536
+GIT_CHECK_SECONDS = 2
+
+
+def _git_ignored(root, rels):
+    """Whether git ignores any edited path; outside a git work tree, False.
+
+    Raises ValueError when git cannot answer, so the case is not stored.
+    """
+    if not (root / '.git').exists():
+        return False
+    try:
+        done = subprocess.run(['git', '-C', str(root), 'check-ignore', '-q', '--stdin'],
+                              input='\n'.join(rels) + '\n', capture_output=True, text=True,
+                              timeout=GIT_CHECK_SECONDS, cwd=str(root),
+                              env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'})
+    except (OSError, subprocess.TimeoutExpired):
+        raise ValueError('edit_git_check_failed') from None
+    if done.returncode == 0:
+        return True
+    if done.returncode == 1:
+        return False
+    raise ValueError('edit_git_check_failed')
+
+
+def _after_sha256(root, rels):
+    """SHA-256 of the one edited file after the edit, or None; bytes are not kept."""
+    if len(rels) != 1:
+        return None
+    try:
+        path = (root / rels[0])
+        if path.is_symlink() or root not in path.resolve(strict=True).parents:
+            return None
+        snap = _snapshot(path)
+        return snap[0]['sha256'] if snap is not None else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _edit_capture(payload, root, rows, pool_ids, selected_ids, compact_sources):
+    """``(capture payload, status)`` of an edit case before it is stored.
+
+    The stored query is only the text the edit added; the edited path stays
+    out of the case (its SHA-256 is kept). Oversize or credential-shaped
+    teacher input is not stored.
+    """
+    rels = payload.get('_memvane_edit_paths')
+    event = payload.get('edit_event')
+    if (not isinstance(rels, list) or not rels or any(not isinstance(rel, str) for rel in rels)
+            or not isinstance(event, dict)):
+        return None, 'edit_capture_invalid'
+    if _git_ignored(root, rels):
+        return None, 'edit_git_ignored'
+    captured = [row['candidate_id'] for row in rows]
+    event = dict(event, after_sha256=_after_sha256(root, rels),
+                 injected_ids=[cid for cid in event.get('injected_ids', ()) if cid in captured])
+    from .compact_input import derive
+    from .store import canonical
+    bodies = []
+    for row in rows:
+        source = compact_sources.get(row['candidate_id'])
+        body = derive(source, row['revision_sha256'])['body_text'] if source is not None else row['excerpt']
+        bodies.append({'id': row['candidate_id'], 'revision_sha256': row['revision_sha256'],
+                       'body': body})
+    teacher_input = {'query': payload['prompt'][:8192], 'candidates': bodies}
+    if (len(canonical(teacher_input).encode('utf-8')) + TEACHER_INSTRUCTION_RESERVE
+            > TEACHER_MAX_INPUT_BYTES):
+        return None, 'edit_capture_oversize'
+    from .egress_guard import inspect_payload
+    if not inspect_payload(teacher_input)['allowed']:
+        return None, 'edit_capture_egress'
+    return {'prompt': payload['prompt'], 'context_origin': 'tool_edit',
+            'edit_event': event}, None
 
 
 def _store(sample, config, root, state, compact_sources, current_corpus):
@@ -245,7 +332,7 @@ def observe_published(payload, config, project_root, pool, selected, *, host, de
     opts = config.get('contextLearning', {})
     if not isinstance(opts, dict) or opts.get('capture') is not True:
         return 'disabled'
-    gate = _edit_gate(payload)
+    gate = _origin_gate(payload)
     if gate is not None:
         return gate
     try:
@@ -258,6 +345,8 @@ def observe_published(payload, config, project_root, pool, selected, *, host, de
             return 'no_snapshot_candidates'
         if len(pool) > CAPTURE_POOL_LIMIT:
             return 'laya_pool_over_limit'
+        if len(pool) < 2:
+            return 'edit_pool_too_small'
         state = _private_state(config, root)
         if state is None:
             return 'unsafe_or_missing_state'
@@ -301,8 +390,14 @@ def observe_published(payload, config, project_root, pool, selected, *, host, de
                     'index_revision': (current_corpus['fingerprint'] if current_corpus
                                        else 'unavailable'),
                     'candidate_limit': CAPTURE_POOL_LIMIT}
-        sample = request(payload, rows, host=host, request_id=str(uuid.uuid4()),
-                         sampling=sampling)
+        edit, status = _edit_capture(payload, root, rows, eligible,
+                                     sampling['baseline_selected_ids'], compact_sources)
+        if edit is None:
+            return status
+        request_id = payload.get('_memvane_request_id')
+        if not isinstance(request_id, str) or not 1 <= len(request_id) <= 128:
+            request_id = str(uuid.uuid4())
+        sample = request(edit, rows, host=host, request_id=request_id, sampling=sampling)
         status = _store(sample, config, root, state, compact_sources, current_corpus)
         if status == 'stored':
             _capture_sources(sample, payload, host, decision)

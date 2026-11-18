@@ -6,8 +6,8 @@ SessionStart는 같은 호스트의 설치 메타데이터와 최근 1시간의 
 최신 번들로 다시 연 세션·다른 호스트·종료한 세션의 기록은 안내하지 않는다.
 hook에서 외부 CLI는 실행하지 않는다. 설치 버전이나 세션을 증명하지 못하면 안내를 생략한다.
 
-recall 응답 뒤 capture는 기존 CPU share를 확보한 경우에만 supervisor를
-시작한다. share FD는 supervisor와 worker가 종료할 때까지 유지한다.
+편집 recall(`posttool`) 응답 뒤 capture는 기존 CPU share를 확보한 경우에만 supervisor를
+시작한다. 프롬프트 recall은 학습 사례를 수집하지 않는다. share FD는 supervisor와 worker가 종료할 때까지 유지한다.
 
 선택 프로젝트 레지스트리(`memvane/registry/memvane_registry.py`, `~/.local/state/memvane/v1/auto-context/registry/projects.sqlite`)는 선택된 main checkout과 연결 worktree 경로의 조회 색인이다. 행은 후보일 뿐이고 소비자는 기존 route 증명을 다시 한다. 활성화 성공 뒤 setup이 등록하고, restore·retire·abandon 성공 뒤 재관측으로 해제가 증명될 때만 `detached`로 바꾸며, 선택 route의 SessionStart와 `snapshot()`이 유계 reconcile을 한다. journal·route·ledger·store·intent를 쓰지 않고 새 lock·wake kind·hook action이 없다. resident service는 레지스트리를 다루지 않는다. 외부 편집 대상 탐색이 이 색인을 쓴다. 상태 규칙·예산·실패 방향은 `docs/project-registry.md`에 있다.
 
@@ -15,6 +15,7 @@ recall 응답 뒤 capture는 기존 CPU share를 확보한 경우에만 supervis
 
 host route: `hooks/run-hook`은 `entry/run.py hook-classify`으로 action을 분류하고 선택된 route를 `memvane/host/host_response.py`에 전달한다. recall은 게시된 위키만 검색하고 질의 시점에 원문을 다시 읽지 않는다. 연결 worktree는 자기 view만 읽으며, 게시 head가 없으면 `view_preparing`, checkout이 읽는 동안 바뀌면 `checkout_changed`로 컨텍스트 없이 종료한다. SessionStart·성공한 편집·성공한 Bash는 main checkout에 `laya-sync` wake를 요청한다. 미온보딩 프로젝트는 색인·recall·compile·학습을 하지 않으며 SessionStart에 setup 안내를 낸다. 연결 worktree의 wiki compile·수명 주기·학습은 main checkout에서만 실행한다. 선택 route의 거절은 fail-closed다.
 - `host_response.py` — 선택된 Laya route의 hook 응답(`recall`·`update`·`update-queued`·`gate`·`posttool`·`index`·`compile` 등). 설치 journal의 선택 증명을 확인한 뒤 runtime을 연다. `wiki_card.py`는 선택 경로와 위키 worker가 공유하는 카드 읽기 헬퍼(frontmatter 파싱·source 해석·본문 추출)다. `event_log.py`는 설치 이벤트 로그(`<state root>/events.jsonl`) writer·reader이고, recall 진단은 `host_response._event_scope`가 hook 호출당 한 줄로 남긴다.
+- `edit_recall.py` — `posttool`의 편집 recall 꼬리. 편집 증명과 route proof 재확인이 끝난 뒤 편집이 추가한 텍스트로 선택된 view를 검색하고, 세션에서 아직 주지 않은 카드를 최대 2장(본문 600토큰, selector가 답하지 못하면 기본 순위 1장) Claude·Codex PostToolUse `additionalContext`로 준다. hook 진입부터 10초 안에 끝나며, 예외·proof 변화·예산 초과는 `{}`·exit 0이고 sync·provider wake를 남기지 않는다. 세션 상태(이미 준 카드, 편집 recall 시각)는 install state root의 `edit-recall-sessions/`에 non-blocking flock으로 둔다. 이벤트는 `recall.edit` 한 줄이고, main checkout은 응답 뒤 `learning-capture` 자식에 후보 pool을 넘긴다. 끄는 스위치는 `MEMVANE_EDIT_RECALL=off`다.
 - `posttool.py` — 편집 hook payload의 경로 추출 helper. hook entrypoint가 아니고 `wiki_compile_enqueue`가 import한다.
 - hook 진입은 `hooks/run-hook`과 `entry/run.py`가 담당한다. `wiki_compile_enqueue`는 선택된 hook 응답이 호출하는 source 큐 함수다.
 ### hooks (`hooks/`) — 유일한 훅 진입점
