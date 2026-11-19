@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import sys
 
-from memvane.learning.context_learning import adapter
+from memvane.learning.context_learning import adapter, pairing
 from memvane.learning.context_learning.contracts import digest
 from memvane.learning.context_learning.store import canonical
 
@@ -51,14 +51,39 @@ for i in range(15):
 started = time.perf_counter()
 adapter._pairs([{'request_id': 'heavy', 'prompt': prompt, 'candidates': heavy}], tok, cfg, with_gold=False)
 heavy_seconds = time.perf_counter() - started
-# The prepare probe overflows both supported budgets (1024 and 8192 tokens).
+# The prepare probes: a legacy-view card is cut; an edit-view case scores every
+# planned chunk pair.
 probes = {}
-for view in (adapter.LEGACY_INPUT_VIEW, adapter.EDIT_INPUT_VIEW):
-    loaded = (model, tok, cfg) if view == adapter.LEGACY_INPUT_VIEW else adapter._load(
-        os.environ['QMD_LAYA_MODEL'], input_view=view)
-    probe = adapter.truncation_probe(loaded)
-    fitted = adapter._pairs([probe], loaded[1], loaded[2], with_gold=False)
-    probes[str(loaded[2]['max_len'])] = [item['truncated'] for item in fitted]
+legacy_probe, legacy_proves = pairing.pairing_probe((model, tok, cfg))
+fitted = adapter._pairs([legacy_probe], tok, cfg, with_gold=False)
+probes['1024'] = [item['truncated'] for item in fitted]
+edit = adapter._load(os.environ['QMD_LAYA_MODEL'], input_view=adapter.EDIT_INPUT_VIEW)
+edit_probe, edit_proves = pairing.pairing_probe(edit)
+edit_timing = {}
+adapter.predict_loaded(*edit, {'schema_version': 1, 'artifact_path': '',
+                               'model_input_view': adapter.EDIT_INPUT_VIEW,
+                               'cases': [edit_probe]}, timing=edit_timing)
+probes['8192'] = [edit_proves(edit_timing)]
+# Edit view on the long fixture pool: chunked pairs, max aggregation, a pair
+# budget, and one training update whose gold card keeps a single positive.
+long_prompt = ''.join('%d번 합성 질문: 모터 드라이버 배선과 전원 설계를 함께 묻는다. ' % i
+                      for i in range(120))
+edit_case = {'request_id': 'real-edit', 'prompt': long_prompt, 'candidates': candidates}
+edit_case['input_sha256'] = digest(canonical(edit_case))
+chunk_timing = {}
+edit_result = adapter.predict_loaded(*edit, {
+    'schema_version': 1, 'artifact_path': '', 'model_input_view': adapter.EDIT_INPUT_VIEW,
+    'query_lane': 'prompt', 'pair_budget': 24, 'cases': [edit_case]}, timing=chunk_timing)
+edit_again = adapter.predict_loaded(*edit, {
+    'schema_version': 1, 'artifact_path': '', 'model_input_view': adapter.EDIT_INPUT_VIEW,
+    'query_lane': 'prompt', 'pair_budget': 24, 'cases': [edit_case]})
+import tempfile
+with tempfile.TemporaryDirectory(prefix='qmd-real-edit-') as temporary:
+    gold = {**edit_case, 'selected_ids': [candidates[0]['id']]}
+    trained = adapter.train(os.environ['QMD_LAYA_MODEL'], {
+        'schema_version': 1, 'model_input_view': adapter.EDIT_INPUT_VIEW,
+        'artifact_path': str(Path(temporary) / 'head.artifact'), 'train': [gold]},
+        max_updates=1)
 print(json.dumps({'heavy_pairing_seconds': round(heavy_seconds, 3), 'probes': probes,'max_len': cfg['max_len'], 'long_card_tokens': [
                       len(tok(body, add_special_tokens=False)['input_ids']) for body in long_cards],
                   'strict_budget_refused': budget_refused,
@@ -66,4 +91,11 @@ print(json.dumps({'heavy_pairing_seconds': round(heavy_seconds, 3), 'probes': pr
                   'max_pair_tokens': max(len(item['ids']) for item in items),
                   'selected_ids': result['predictions'][0]['selected_ids'],
                   'deterministic': result == again,
-                  'tokenize_seconds': timing['tokenize_seconds']}))
+                  'tokenize_seconds': timing['tokenize_seconds'],
+                  'edit': {key: chunk_timing.get(key) for key in (
+                      'query_chunks', 'card_chunks_max', 'chunked_cards', 'pairs',
+                      'planned_pairs', 'dropped_pairs', 'truncated_pairs', 'pair_len_max',
+                      'forward_seconds')},
+                  'edit_selected_ids': edit_result['predictions'][0]['selected_ids'],
+                  'edit_deterministic': edit_result == edit_again,
+                  'edit_trained': trained}))

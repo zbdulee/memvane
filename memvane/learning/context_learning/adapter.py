@@ -26,10 +26,16 @@ EDIT_INPUT_VIEW = 'tool-edit-8192-choice-v1'
 EDIT_INPUT_TOKENS = 8192
 LEGACY_INPUT_VIEW = 'checkpoint-config-v1'
 POLICY = 'binary-needed-p-ge-0.5-top3-v1'
-# Prediction keeps every candidate: an over-budget card body is cut to a
-# budget-sized leading prefix that keeps its heading line (``_fitting``).
-# Training pairs are never truncated.
-PREDICTION_PAIRING = 'leading-body-prefix-v1'
+# Edit view: training and prediction share ``pairing.pair_plan`` (query and
+# card chunks; a card scores its best pair; pairs past the budget are dropped
+# and counted). Other views cut an over-budget prediction body to a leading
+# prefix keeping its heading (``_fitting``) and never cut training pairs.
+PREDICTION_PAIRING = 'chunked-max-v1'
+Q_MAX, B_MAX, Q_CHUNKS, B_CHUNKS = 286, 700, 4, 3
+TITLE_PREFIX_TOKENS = B_MAX // 4  # longer headings do not lead later chunks
+P_HARD = 96
+LANES = ('prompt', 'edit')
+MAX_PREDICT_BATCH, MAX_PREDICT_PADDED = 16, 16384
 MAX_INPUT_BYTES = 16 * 1024
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 QUESTION = {'t': 'noul', 'ins': 'Is this wiki card needed to answer the user request?',
@@ -257,37 +263,6 @@ def _fitting(prompt, body, tok, cfg, question, *, cancelled=None):
     raise ValueError('model_token_budget_exceeded')
 
 
-def truncation_probe(loaded):
-    """A synthetic case whose single card must be cut under this model budget.
-
-    Sized from the loaded model's own budget (1024 or 8192 tokens): the
-    request fills all but a small room, the card's heading fits that room and
-    its body does not. Prepared inference evidence scores it to prove the
-    versioned prediction pairing on this exact tokenizer and budget.
-    """
-    from laya.common import build_sequence
-    _, tok, cfg = loaded
-    question = (EDIT_QUESTION if cfg.get('model_input_view') == EDIT_INPUT_VIEW
-                else QUESTION)
-    skeleton, _ = build_sequence(tok, '', question, max_len=cfg['max_len'],
-        head_max_len=cfg.get('head_max_len', 192), state_ids=[])
-    room = min(cfg['max_len'], tok.model_max_length) - len(skeleton)
-    def tokens(text):
-        return len(tok(text, add_special_tokens=False)['input_ids'])
-    unit = 'synthetic request marker '
-    prompt = unit * max(1, (room - 192) * 64 // tokens(unit * 64))
-    while tokens(prompt) > room - 128 and len(prompt) > len(unit):
-        prompt = prompt[:-len(unit)]
-    filler = 'synthetic overflow body '
-    body = '# Synthetic overflow\n' + filler * (512 * 64 // tokens(filler * 64) + 1)
-    case = {'request_id': 'inference-prepare-truncation', 'prompt': prompt.strip(),
-            'candidates': [{'id': 'synthetic/overflow', 'revision_sha256': '1'*64,
-                            'input_text': body, 'input_kind': 'full_compact_wiki_body'}]}
-    case['input_sha256'] = hashlib.sha256(json.dumps(case, sort_keys=True,
-        separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
-    return case
-
-
 def _pair(prompt, candidate, tok, cfg, *, fit_body=False, cancelled=None):
     """One tokenized pair. Training input is never truncated (``fit_body`` off).
 
@@ -319,24 +294,20 @@ def _pair(prompt, candidate, tok, cfg, *, fit_body=False, cancelled=None):
             'truncated': kept < len(body)}
 
 
-def _pairs(cases, tok, cfg, *, with_gold, cancelled=None):
+def _pairs(cases, tok, cfg, *, with_gold, cancelled=None, lane='edit', pair_budget=None,
+           stats=None):
+    """Tokenized pairs of every case; the edit view follows ``pairing.pair_plan``."""
+    from memvane.learning.context_learning import pairing
     if not isinstance(cases, list) or not cases or len(cases) > 2000:
         raise ValueError('invalid_case_count')
+    if cfg.get('model_input_view') == EDIT_INPUT_VIEW:
+        return pairing.planned_pairs(cases, tok, cfg, with_gold=with_gold, cancelled=cancelled,
+                                     lane=lane, pair_budget=pair_budget, stats=stats)
     result = []
     for case in cases:
         if cancelled is not None and cancelled():
             raise ValueError('prediction_cancelled')
-        if not isinstance(case, dict) or not isinstance(case.get('candidates'), list):
-            raise ValueError('invalid_case')
-        candidates = case['candidates']
-        if not 1 <= len(candidates) <= 30 or len({c.get('id') for c in candidates}) != len(candidates):
-            raise ValueError('invalid_candidate_pool')
-        if with_gold:
-            selected = case.get('selected_ids')
-            if not isinstance(selected, list) or not set(selected) <= {c['id'] for c in candidates}:
-                raise ValueError('invalid_train_selection')
-        elif 'selected_ids' in case:
-            raise ValueError('heldout_gold_exposed')
+        candidates, selected = pairing.case_pool(case, with_gold)
         for candidate in candidates:
             if cancelled is not None and cancelled():
                 raise ValueError('prediction_cancelled')
@@ -497,6 +468,12 @@ def train(model_dir, request, *, max_updates=None, verification=False):
     if guard is not None:guard.mark_loaded(before,_allocation(torch))
     _check_mps_budget(torch, limits)
     items = _pairs(request.get('train'), tok, cfg, with_gold=True)
+    if input_view == EDIT_INPUT_VIEW:
+        # A gold card's positive pair is chosen once, by the base head every
+        # run starts from, so a resumed cursor sees the same groups.
+        from memvane.learning.context_learning import pairing
+        items = pairing.single_positive(items, pairing.head_scorer(
+            torch, model, tok, guard=guard, limits=limits))
     torch.manual_seed(17)
     random.Random(17).shuffle(items)
     params = [p for p in model.parameters() if p.requires_grad]
@@ -568,12 +545,12 @@ def train(model_dir, request, *, max_updates=None, verification=False):
 
 
 def prediction_batches(items, *, max_padded_tokens=8192, max_size=4):
-    if (not isinstance(items, list) or not 1 <= max_size <= 4
-            or not 128 <= max_padded_tokens <= 8192):
+    if (not isinstance(items, list) or not 1 <= max_size <= MAX_PREDICT_BATCH
+            or not 128 <= max_padded_tokens <= MAX_PREDICT_PADDED):
         raise ValueError('invalid_predict_request')
     # Bound the padded tokens in flight, rather than batching an arbitrary
-    # number of long edit windows. A four-card microbatch is safe for the
-    # measured local 8192-position encoder; a near-limit pair runs alone.
+    # number of long pairs. The caller's admission picks the batch size and
+    # padded total within these hard limits; a near-limit pair runs alone.
     batches = []
     current = []
     longest = 0
@@ -617,7 +594,12 @@ def predict(model_dir, request):
 def predict_loaded(model, tok, cfg, request, *, max_batch_size=4,
                    max_padded_tokens=None, timing=None, cancelled=None,
                    memory_limits=None,compute_guard=None):
-    """Use an already loaded, pinned head for a bounded selection batch."""
+    """Use an already loaded, pinned head for a bounded selection batch.
+
+    A card scores the highest probability of its pairs; a card left without
+    a pair by the request's pair budget is not selected. Pairs run in
+    length order, so the padded total per batch stays small.
+    """
     if cancelled is not None and cancelled():
         raise ValueError('prediction_cancelled')
     torch=_torch()
@@ -627,39 +609,51 @@ def predict_loaded(model, tok, cfg, request, *, max_batch_size=4,
     if (request.get('schema_version') != 1
             or _request_view(request) != cfg.get('model_input_view', LEGACY_INPUT_VIEW)):
         raise ValueError('invalid_predict_request')
+    from memvane.learning.context_learning import pairing
+    lane, pair_budget = pairing.request_lane(request)
     if cancelled is not None and cancelled():
         raise ValueError('prediction_cancelled')
     began = time.perf_counter()
+    stats = {}
     if timing is not None:
         timing.update(tokenize_seconds=None, batch_prepare_seconds=None,
                       forward_seconds=None,
                       total_seconds=None, batches=0, pairs=0)
     try:
         items = _pairs(request.get('cases'), tok, cfg, with_gold=False,
-                       cancelled=cancelled)
+                       cancelled=cancelled, lane=lane, pair_budget=pair_budget, stats=stats)
     finally:
         if timing is not None:
             timing['tokenize_seconds'] = round(time.perf_counter() - began, 6)
     if timing is not None:
+        timing.update(stats, **pairing.pair_lengths(items))
         timing['truncated_pairs'] = sum(1 for item in items if item.get('truncated'))
     if cancelled is not None and cancelled():
         raise ValueError('prediction_cancelled')
-    by_request = {}
-    batches = prediction_batches(items,
-        max_padded_tokens=min(cfg['max_len'], max_padded_tokens or cfg['max_len']),
-        max_size=max_batch_size)
+    scores = {}
+    padded_limit = max_padded_tokens or cfg['max_len']
+    if cfg.get('model_input_view') != EDIT_INPUT_VIEW:
+        padded_limit = min(cfg['max_len'], padded_limit)
+    batches = prediction_batches(sorted(items, key=lambda item: len(item['ids'])),
+        max_padded_tokens=padded_limit, max_size=max_batch_size)
     forward_seconds = 0.0
     batch_prepare_seconds = 0.0
     if timing is not None:
         timing.update(planned_pairs=len(items), planned_batches=len(batches),
                       pairs=0, batches=0, batch_prepare_seconds=0.0,
-                      forward_seconds=0.0)
+                      forward_seconds=0.0,
+                      padded_total=sum(max(len(i['ids']) for i in group) * len(group)
+                                       for group in batches))
+    def stop(done):
+        if cancelled is not None and cancelled():
+            if timing is not None:
+                timing['cancelled_after_batches'] = done
+            raise ValueError('prediction_cancelled')
     with torch.no_grad():
-        for group in batches:
+        for done, group in enumerate(batches):
             with compute_guard.step() if compute_guard is not None else nullcontext():
                 _check_mps_budget(torch, memory_limits)
-                if cancelled is not None and cancelled():
-                    raise ValueError('prediction_cancelled')
+                stop(done)
                 preparing = time.perf_counter()
                 try:
                     batch = _batch(group, tok, next(model.parameters()).device)
@@ -684,19 +678,23 @@ def predict_loaded(model, tok, cfg, request, *, max_batch_size=4,
                     timing['pairs'] += len(group)
                     timing['batches'] += 1
                 for item, probability in zip(group, probabilities):
-                    by_request.setdefault(item['request_id'], []).append(
-                        (item['candidate_id'], probability))
-                if cancelled is not None and cancelled():
-                    raise ValueError('prediction_cancelled')
+                    cards = scores.setdefault(item['request_id'], {})
+                    cards[item['candidate_id']] = max(probability,
+                                                      cards.get(item['candidate_id'], 0.0))
+                stop(done + 1)
     predictions = []
     for case in request['cases']:
+        # Plan order lists every scored card in pool order: ties keep it.
+        ranked = dict.fromkeys(i['candidate_id'] for i in items
+                               if i['request_id'] == case['request_id'])
+        cards = scores.get(case['request_id'], {})
         predictions.append({'request_id':case['request_id'],
             'input_sha256':case['input_sha256'],
-            'selected_ids':select_ids(by_request[case['request_id']])})
+            'selected_ids':select_ids([(card, cards[card]) for card in ranked])})
     if timing is not None:
         timing.update(total_seconds=round(time.perf_counter() - began, 6),
                       max_batch_size=max_batch_size,
-                      max_padded_tokens=max_padded_tokens or cfg['max_len'],
+                      max_padded_tokens=padded_limit,
                       device=str(next(model.parameters()).device))
     return {'schema_version':1,'predictions':predictions}
 
@@ -755,6 +753,8 @@ def smoke(model_dir, directory):
             if str(exc) != 'model_token_budget_exceeded': raise
         else:
             raise ValueError('silent_model_token_truncation')
+        from memvane.learning.context_learning.pairing import smoke_chunk_plan
+        smoke_chunk_plan(tokenizer, checkpoint, encoder)
         with torch.no_grad():
             batch = _batch([item], tok, next(model.parameters()).device)
             reloaded_logits, _ = model(**batch)

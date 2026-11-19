@@ -26,7 +26,7 @@ SCHEMA = 'qmd-laya-inference-proof-v1'
 # The last entry versions the prediction pairing (laya_adapter.PREDICTION_PAIRING):
 # a receipt prepared before it fails admission and is prepared again.
 CHECKS = ['read_only_load', 'synthetic_forward', 'fixed_selection_mapping',
-          'prediction_leading_body_prefix_v1']
+          'prediction_chunked_max_v1']
 
 
 def file_sha(path):
@@ -340,13 +340,15 @@ def prepare(state, argv, *, max_seconds=30, max_rss_mib=4096):
         raise ValueError('inference_prepare_resource_deferred')
     _module_scope(runtime_roots())
     _forward(loaded, job, limits=limits, timing={}, cancelled=lambda:time.monotonic() >= deadline)
-    # The versioned prediction pairing, proven on this model's own budget.
-    from .adapter import truncation_probe
-    probe = {**job, 'request': {**request, 'cases': [truncation_probe(loaded)]}}
+    # The versioned prediction pairing, proven on this model's own view:
+    # chunked query and card pairs (edit view) or one cut card (other views).
+    from .pairing import pairing_probe
+    case, proves = pairing_probe(loaded)
+    probe = {**job, 'request': {**request, 'cases': [case]}}
     timing = {}
     _forward(loaded, probe, limits=limits, timing=timing, cancelled=lambda:time.monotonic() >= deadline)
-    if timing.get('truncated_pairs') != 1:
-        raise ValueError('inference_prepare_truncation_not_exercised')
+    if not proves(timing):
+        raise ValueError('inference_prepare_pairing_not_exercised')
     # Measured growth of this load and its scoring: the next first-load
     # admission for this model and view uses it instead of the RSS ceiling.
     peak = max(peak, _rss_mib())

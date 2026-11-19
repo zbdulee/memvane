@@ -646,6 +646,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/learning/context_learning/pairing.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/learning/context_learning/prompt_retirement.py": {
       "context": "learning",
       "layer": "adapter",

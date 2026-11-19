@@ -34,7 +34,7 @@ class RealLaya(unittest.TestCase):
         self.assertGreater(report['head_bytes'], 0)
         self.assertTrue(all(v is True for v in report['synthetic_proof'].values()))
 
-    def test_over_budget_cards_are_scored_from_their_leading_prefix(self):
+    def test_legacy_prefix_and_edit_chunk_pairing(self):
         env = {key: os.environ[key] for key in ('HOME', 'PATH', 'TMPDIR', 'QMD_LAYA_MODEL') if key in os.environ}
         env.update(PYTHONPATH=str(REPO), HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1')
         raw = subprocess.check_output([os.environ['QMD_LAYA_PYTHON'], '-s', '-B', str(HERE / 'real_laya_pairing.py')],
@@ -48,6 +48,16 @@ class RealLaya(unittest.TestCase):
         self.assertTrue(isinstance(report['selected_ids'], list) and len(report['selected_ids']) <= 3)
         self.assertIs(report['deterministic'], True)
         self.assertEqual(report['probes'], {'1024': [True], '8192': [True]})
+        edit = report['edit']
+        self.assertEqual(edit['query_chunks'], 4)
+        self.assertGreaterEqual(edit['card_chunks_max'], 2)
+        self.assertEqual((edit['pairs'], edit['planned_pairs']), (24, 24))
+        self.assertGreater(edit['dropped_pairs'], 0)
+        self.assertEqual(edit['truncated_pairs'], 0)
+        self.assertLessEqual(edit['pair_len_max'], 2048)
+        self.assertTrue(len(report['edit_selected_ids']) <= 3)
+        self.assertIs(report['edit_deterministic'], True)
+        self.assertEqual(report['edit_trained'], {'schema_version': 1, 'status': 'trained'})
         # Moved as-is from the old wrapper; a wall-clock bound (timing-flaky-deferred list).
         self.assertLess(report['heavy_pairing_seconds'], 1)
 
