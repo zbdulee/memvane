@@ -242,7 +242,11 @@ with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as fo
   if isinstance(out,int):return SimpleNamespace(returncode=out,stdout='',stderr='')
   return SimpleNamespace(returncode=0,stdout=json.dumps(out),stderr='')
  resolve=lambda:ha._project_host_roots(home,project)
- with patch('memvane.learning.context_learning.host_inventory.subprocess.run',fake_run),patch.dict(os.environ,{'PATH':str(trusted)}):
+ # Listing rules only: each scenario changes the CLI answer, not the host
+ # records, so the per-records listing cache and the failure memo are off.
+ with patch('memvane.learning.context_learning.host_inventory.subprocess.run',fake_run),patch.dict(os.environ,{'PATH':str(trusted)}), \
+   patch('memvane.learning.context_learning.host_inventory._read_cache',lambda *a:None), \
+   patch('memvane.learning.context_learning.host_inventory.SETTLE_SECONDS',-1):
   for name in ('CLAUDE_CONFIG_DIR','CODEX_HOME'):os.environ.pop(name,None)
   # Single effective root per host; the stale marketplace is never read.
   listing.update(claude=claude_list(),codex=codex_list(0))
@@ -335,7 +339,11 @@ with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as fo
   listing['codex']=codex_list(0)
   # CLI failure or a redirected host config home is not an inventory.
   listing['claude']=1
-  expect('inventory_unavailable',resolve)
+  # A failed CLI without a recorded listing defers the step that reads it.
+  from memvane.learning.context_learning.selector_heal import HealDeferred
+  try:resolve()
+  except HealDeferred as exc:assert str(exc)=='host_inventory_unavailable',str(exc)
+  else:raise AssertionError('accepted host_inventory_unavailable')
   listing['claude']=claude_list()
   with patch.dict(os.environ,{'CLAUDE_CONFIG_DIR':str(base/'elsewhere')}):
    expect('redirected',resolve)

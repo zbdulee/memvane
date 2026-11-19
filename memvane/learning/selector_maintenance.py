@@ -335,7 +335,8 @@ def _run_recorded(project, *, force=False):
                      'starting', 'deadline_expired', 'learning_runtime_not_installed',
                      'learning_runtime_not_official', 'learning_runtime_changed', 'learning_profile_rebind_required',
                      'learning_prepare_lock_unsafe', 'selector_policy_invalid', 'selector_warm_lock_unsafe',
-                     'adapter_not_official', 'inference_prepare_failed', 'inference_prepare_unverified')
+                     'adapter_not_official', 'inference_prepare_failed', 'inference_prepare_unverified',
+                     'host_inventory_unavailable')
             fixed += ('start_refused', 'start_path_invalid', 'start_io_failed', 'start_failed', 'permission_denied')
             service_codes = ('starting', 'deadline_expired', 'resource_deferred', 'queue_full',
                              'replacement_deferred', 'model_family_mismatch', 'load_failed',
@@ -456,6 +457,13 @@ def _run(project, *, force=False):
             return False
         if running < highest or (not force and running == highest):
             return True
+        # Host plugin listings first, outside the bounded preparation steps:
+        # a slow host CLI runs here once and later steps read its record.
+        from memvane.learning.context_learning import host_inventory
+        for inventory_host, outcome in host_inventory.refresh(project):
+            diagnostics.emit('learning.selector.inventory', outcome=outcome,
+                             reason='host_inventory_' + outcome, inventoryHost=inventory_host,
+                             decision=decision)
         from memvane.learning.default_enrollment import prepare
         result = prepare(project, Path(decision['journalPath']).parent, decision['installId'], lease_fd=lease)
         if result.get('status') == 'selected':

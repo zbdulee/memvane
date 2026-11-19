@@ -7,6 +7,7 @@ import re
 import shutil
 import stat
 import subprocess
+import time
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 HOST_FILES = tuple(sorted({str(path.relative_to(_PLUGIN_ROOT)) for pattern in
@@ -16,6 +17,23 @@ HOST_FILES = tuple(sorted({str(path.relative_to(_PLUGIN_ROOT)) for pattern in
                            for path in _PLUGIN_ROOT.glob(pattern) if path.is_file()}))
 _SAFE_SEGMENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}')
 _CLI_ENV = ('PATH', 'LANG', 'LC_ALL', 'TMPDIR', 'USER', 'LOGNAME')
+
+# A host CLI's ``plugin list --json`` can take about a minute (a bundled Codex
+# refreshes its marketplaces first). One project listing is kept per host and
+# project while the host's installation records keep their stat stamp, so the
+# CLI runs only when they change. A run is bounded; when it fails, a listing
+# recorded within STALE_SECONDS stands in, and without one the caller defers
+# (``host_inventory_unavailable``). Every listing is still checked against the
+# installation records by the selection that reads it.
+INVENTORY_SECONDS = 120
+STALE_SECONDS = 7 * 24 * 3600
+CACHE_SCHEMA = 'memvane-host-inventory-v1'
+_MAX_CACHE_BYTES = 2 * 1024 * 1024
+# A failed run is not repeated for SETTLE_SECONDS while the records keep their
+# stamp, so one maintenance pass waits for a slow CLI at most once per host.
+SETTLE_SECONDS = 600
+_NOTES = []
+_SETTLED = {}
 
 def _owner_json(path, reason):
     path = Path(path)
@@ -170,6 +188,109 @@ def _safe_project_cli(argv, project):
         raise ValueError('history_project_cli_unsafe')
     return (str(executable), *argv[1:]), path
 
+def _record_paths(host, account, project):
+    """The installation records a host's project listing is read from."""
+    if host == 'codex':
+        codex = account / '.codex'
+        paths = [codex / 'config.toml', project / '.codex' / 'config.toml']
+        cache = codex / 'plugins' / 'cache'
+        try:
+            markets = sorted(cache.iterdir()) if cache.is_dir() and not cache.is_symlink() else []
+        except OSError:
+            markets = []
+        for market in markets:
+            plugin = market / 'memvane'
+            if plugin.is_dir() and not plugin.is_symlink():
+                paths.append(plugin)
+                paths.extend(sorted(plugin.iterdir()))
+        return paths
+    claude = account / '.claude'
+    return [claude / 'settings.json', claude / 'settings.local.json',
+            claude / 'plugins' / 'installed_plugins.json',
+            claude / 'plugins' / 'known_marketplaces.json',
+            project / '.claude' / 'settings.json', project / '.claude' / 'settings.local.json']
+
+def _records_stamp(host, account, project, executable):
+    """Stat stamp of the CLI and its records; no device number (it moves per boot)."""
+    rows = []
+    for path in (Path(executable), *_record_paths(host, account, project)):
+        try:
+            info = os.lstat(path)
+            rows.append([str(path), info.st_ino, info.st_size, info.st_mtime_ns,
+                         info.st_ctime_ns, info.st_mode])
+        except FileNotFoundError:
+            rows.append([str(path), None])
+    return hashlib.sha256(json.dumps(rows).encode()).hexdigest()
+
+def _cache_path(account, host, project):
+    from .runtime_setup import learning_state_base
+    key = hashlib.sha256((host + '\0' + str(project)).encode()).hexdigest()[:32]
+    return learning_state_base(account) / 'host-inventory' / (key + '.json')
+
+def _read_cache(account, host, project):
+    """The recorded listing for this host and project, or None (never raises)."""
+    path = _cache_path(account, host, project)
+    try:
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1
+                or info.st_mode & 0o077 or info.st_size > _MAX_CACHE_BYTES):
+            return None
+        row = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(row, dict) or row.get('schema') != CACHE_SCHEMA or row.get('host') != host
+            or row.get('project') != str(project) or not isinstance(row.get('stamp'), str)
+            or not isinstance(row.get('executable'), str)
+            or not isinstance(row.get('listing'), (dict, list))
+            or type(row.get('recordedAt')) not in (int, float)):
+        return None
+    return row
+
+def _write_cache(account, host, project, row):
+    """Best effort: a missing record only costs another CLI run later."""
+    path = _cache_path(account, host, project)
+    try:
+        os.makedirs(path.parent, mode=0o700, exist_ok=True)
+        info = path.parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077):
+            return
+        temporary = path.with_name('.%s.%d.tmp' % (path.name, os.getpid()))
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(fd, 'w') as out:
+                json.dump(row, out, sort_keys=True)
+                out.flush()
+                os.fsync(out.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.lexists(temporary):
+                os.unlink(temporary)
+    except (OSError, ValueError, TypeError):
+        pass
+
+def take_notes():
+    """``(host, outcome)`` of listings refreshed, stale or unavailable since the last call."""
+    notes = list(_NOTES)
+    del _NOTES[:]
+    return notes
+
+def refresh(project, hosts=('claude', 'codex')):
+    """Settle each host's project listing before bounded preparation steps.
+
+    Selector maintenance calls this first, outside any short preparation
+    budget, so a slow CLI runs at most once per host and process. Returns the
+    notes of what happened; a host without a listing defers only the steps
+    that read it.
+    """
+    account, project = Path.home().resolve(), Path(project).resolve(strict=True)
+    for host in hosts:
+        try:
+            _project_listing((host, 'plugin', 'list', '--json'), account, project)
+        except Exception:
+            pass  # Recorded in the notes; the step that needs it reports it.
+    return take_notes()
+
 def _project_listing(argv, account, project):
     """One official read-only ``plugin list --json`` as seen from ``project``.
 
@@ -182,15 +303,50 @@ def _project_listing(argv, account, project):
         if value and Path(value) != default:
             raise ValueError('history_project_inventory_redirected')
     command, path = _safe_project_cli(argv, project)
+    host = Path(argv[0]).name
+    key = (host, str(account), str(project))
+    stamp = _records_stamp(host, account, project, command[0])
+    settled = _SETTLED.get(key)
+    if (settled is not None and settled[1] == stamp
+            and 0 <= time.monotonic() - settled[0] <= SETTLE_SECONDS):
+        if settled[2] is None:
+            from .selector_heal import HealDeferred
+            raise HealDeferred('host_inventory_unavailable')
+        return settled[2]
+    cached = _read_cache(account, host, project)
+    if cached is not None and cached['stamp'] == stamp and cached['executable'] == command[0]:
+        return cached['listing']
     env = {key: os.environ[key] for key in _CLI_ENV if key in os.environ}
     env['PATH'] = path
     env.update(HOME=str(account), QMD_SANDBOX='1', PYTHONDONTWRITEBYTECODE='1')
-    listed = subprocess.run(command, cwd=str(project), env=env,
-                            stdin=subprocess.DEVNULL, capture_output=True,
-                            text=True, timeout=10, check=False)
-    if listed.returncode != 0 or len(listed.stdout) > 1024 * 1024:
-        raise ValueError('history_project_inventory_unavailable')
-    return json.loads(listed.stdout)
+    try:
+        listed = subprocess.run(command, cwd=str(project), env=env,
+                                stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=INVENTORY_SECONDS, check=False)
+        if listed.returncode != 0 or len(listed.stdout) > 1024 * 1024:
+            raise ValueError('history_project_inventory_unavailable')
+        value = json.loads(listed.stdout)
+        # Claude prints a list of installed plugins; Codex an object.
+        if not isinstance(value, (dict, list)):
+            raise ValueError('history_project_inventory_unavailable')
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        age = time.time() - cached['recordedAt'] if cached is not None else None
+        if (cached is not None and cached['executable'] == command[0]
+                and 0 <= age <= STALE_SECONDS):
+            _NOTES.append((host, 'stale'))
+            _SETTLED[key] = (time.monotonic(), stamp, cached['listing'])
+            return cached['listing']
+        _NOTES.append((host, 'unavailable'))
+        _SETTLED[key] = (time.monotonic(), stamp, None)
+        from .selector_heal import HealDeferred
+        raise HealDeferred('host_inventory_unavailable') from exc
+    if _records_stamp(host, account, project, command[0]) == stamp:
+        _write_cache(account, host, project, {
+            'schema': CACHE_SCHEMA, 'host': host, 'project': str(project),
+            'executable': command[0], 'stamp': stamp, 'recordedAt': time.time(), 'listing': value})
+    _NOTES.append((host, 'refreshed'))
+    _SETTLED.pop(key, None)
+    return value
 
 def _same_directory(raw, project, *, strict=True):
     """Directory identity, not spelling: APFS folds case and Unicode form, so

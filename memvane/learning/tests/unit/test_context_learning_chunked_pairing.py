@@ -368,6 +368,30 @@ class Proofs(unittest.TestCase):
         self.assertEqual(legacy['request_id'], 'inference-prepare-truncation')
         self.assertTrue(legacy_proof({'truncated_pairs': 1}))
 
+    def test_the_prepare_probe_fits_the_pressure_padded_limit(self):
+        # Under memory pressure the service admits 4,096 padded tokens. The
+        # earlier edit-view probe filled the 8,192-token window and was refused
+        # there (inference_prepare_model_token_budget_exceeded); every pair of
+        # the chunking probe fits and all planned pairs are scored.
+        with patch.dict(sys.modules, _stub_laya()):
+            old = pairing.truncation_probe((None, TOK, EDIT))
+            old_items = adapter._pairs([old], TOK, {**EDIT, 'model_input_view': None},
+                                       with_gold=False)
+        self.assertGreater(max(len(i['ids']) for i in old_items), 4096)
+        with self.assertRaisesRegex(ValueError, 'model_token_budget_exceeded'):
+            adapter.prediction_batches(old_items, max_padded_tokens=4096, max_size=1)
+        with patch.dict(sys.modules, _stub_laya()):
+            case, proves = pairing.pairing_probe((None, TOK, EDIT))
+        timing = {}
+        model = TableModel({})
+        with patch.dict(sys.modules, {**_stub_laya(), 'torch': FAKE_TORCH}), \
+                patch.object(adapter, '_batch', side_effect=lambda group, *_: {'items': group}):
+            adapter.predict_loaded(model, TOK, EDIT, {
+                'schema_version': 1, 'model_input_view': adapter.EDIT_INPUT_VIEW,
+                'cases': [case]}, max_batch_size=1, max_padded_tokens=4096, timing=timing)
+        self.assertLessEqual(timing['pair_len_max'], 4096)
+        self.assertTrue(proves(timing))
+
     def test_the_smoke_plan_check_counts_what_it_drops(self):
         with patch.dict(sys.modules, _stub_laya()):
             pairing.smoke_chunk_plan(TOK, {'max_len': 1024, 'head_max_len': 256},
