@@ -122,10 +122,11 @@ class QueryChunks(unittest.TestCase):
         prompt = sentences('질문', 300) + ' 마지막 요청: 배선을 알려줘'
         edit, _ = plan(make_case(prompt, ['# c\nb.']), lane='edit')
         last, _ = plan(make_case(prompt, ['# c\nb.']), lane='prompt')
-        self.assertFalse(state_parts(edit[-1])[0].endswith('배선을 알려줘'))
-        self.assertTrue(state_parts(last[-1])[0].endswith('배선을 알려줘'))
-        self.assertEqual([state_parts(i)[0] for i in edit[:3]],
-                         [state_parts(i)[0] for i in last[:3]])
+        edit = {i['query_chunk']: state_parts(i)[0] for i in edit}
+        last = {i['query_chunk']: state_parts(i)[0] for i in last}
+        self.assertFalse(edit[3].endswith('배선을 알려줘'))
+        self.assertTrue(last[3].endswith('배선을 알려줘'))
+        self.assertEqual([edit[i] for i in range(3)], [last[i] for i in range(3)])
 
     def test_a_short_query_is_one_chunk(self):
         items, stats = plan(make_case('ESP32 배선?', ['# c\nb.']))
@@ -198,6 +199,31 @@ class PairBudget(unittest.TestCase):
             self.assertEqual([(i['candidate_id'], i['query_chunk'], i['card_chunk'])
                               for i in kept], order[:budget])
             self.assertEqual(counted['dropped_pairs'], len(order) - budget)
+
+    def test_the_prompt_tail_is_scored_within_the_shipped_budget(self):
+        # Ten candidates, four query chunks and the prompt lane's 24 pairs:
+        # after the ten first-chunk pairs the tail chunk goes to every card.
+        prompt = sentences('질문', 300) + ' 마지막 요청: 배선을 알려줘'
+        bodies = ['# 카드 %d\n짧은 본문.' % i for i in range(10)]
+        items, stats = plan(make_case(prompt, bodies), lane='prompt', pair_budget=24)
+        self.assertEqual(stats['query_chunks'], 4)
+        order = [(i['candidate_id'], i['query_chunk']) for i in items]
+        self.assertEqual(order[:10], [('wiki/%d.md' % i, 0) for i in range(10)])
+        self.assertEqual(order[10:20], [('wiki/%d.md' % i, 3) for i in range(10)])
+        self.assertEqual(order[20:], [('wiki/%d.md' % i, 1) for i in range(4)])
+        tail = [i for i in items if i['query_chunk'] == 3]
+        self.assertTrue(all(state_parts(i)[0].endswith('배선을 알려줘') for i in tail))
+        # The edit lane keeps chunk order: its last chunk is not reached.
+        edit, _ = plan(make_case(prompt, bodies), lane='edit', pair_budget=24)
+        self.assertEqual(sorted({i['query_chunk'] for i in edit}), [0, 1, 2])
+
+    def test_a_three_chunk_prompt_takes_its_last_chunk_first(self):
+        self.assertEqual(pairing.plan_order([('a', 3, 1), ('b', 3, 1)], 'prompt'),
+                         [('a', 0, 0), ('b', 0, 0), ('a', 2, 0), ('b', 2, 0),
+                          ('a', 1, 0), ('b', 1, 0)])
+        self.assertEqual(pairing.plan_order([('a', 3, 1), ('b', 3, 1)], 'edit'),
+                         [('a', 0, 0), ('b', 0, 0), ('a', 1, 0), ('b', 1, 0),
+                          ('a', 2, 0), ('b', 2, 0)])
 
     def test_the_hard_limit_caps_every_request(self):
         prompt = sentences('질문', 300)

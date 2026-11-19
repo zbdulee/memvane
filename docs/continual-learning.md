@@ -80,8 +80,9 @@ Chunk ends prefer a sentence or paragraph end in the last quarter of the
 window and always fall on a token offset, so no UTF-8 sequence is split. The
 tokens left outside the chunk limits are counted (`dropped_query`,
 `dropped_card`). The pairs run in a fixed order: every card with the first
-query and card chunks, then the remaining query chunks in rank order, then the
-remaining card chunks. A request's `pair_budget` (at most 96) drops the tail
+query and card chunks, then the remaining query chunks (the prompt lane takes
+its tail chunk first), each over every card in rank order, then the remaining
+card chunks. A request's `pair_budget` (at most 96) drops the tail
 of that order and counts it (`dropped_pairs`); a card left without a pair is
 not selected. A card scores the highest probability of its pairs and the
 fixed policy (p ≥ 0.5, top three) maps the scores to cards. In training, a

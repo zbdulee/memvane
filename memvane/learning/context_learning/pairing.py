@@ -93,13 +93,19 @@ def card_chunks(body, tok):
     return chunks, len(spans) - kept[-1][1]
 
 
-def plan_order(ranked):
+def plan_order(ranked, lane='edit'):
     """Pair order over ``(card, query chunks, card chunks)`` in rank order:
     every card with the first query and card chunks, then the remaining query
-    chunks in rank order, then the remaining card chunks."""
+    chunks (each over every card in rank order), then the remaining card
+    chunks. The prompt lane takes its last query chunk first among the
+    remaining ones, so a request written after a long paste is scored before
+    the middle of the paste; the edit lane keeps chunk order."""
     order = [(card, 0, 0) for card, _queries, _chunks in ranked]
     queries = max((count for _card, count, _chunks in ranked), default=0)
-    for query in range(1, queries):
+    rest = list(range(1, queries))
+    if lane == 'prompt' and len(rest) > 1:
+        rest = rest[-1:] + rest[:-1]
+    for query in rest:
         order += [(card, query, 0) for card, count, _chunks in ranked if query < count]
     for card, count, chunks in ranked:
         order += [(card, query, chunk) for chunk in range(1, chunks) for query in range(count)]
@@ -129,7 +135,7 @@ def pair_plan(case, tok, cfg, *, lane='edit', pair_budget=None, cancelled=None, 
         chunked += len(chunks) > 1
         card_max = max(card_max, len(chunks))
         ranked.append((candidate['id'], chunks))
-    order = plan_order([(card, len(queries), len(chunks)) for card, chunks in ranked])
+    order = plan_order([(card, len(queries), len(chunks)) for card, chunks in ranked], lane)
     texts = dict(ranked)
     items = []
     for card, query, chunk in order[:budget]:
