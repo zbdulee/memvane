@@ -19,15 +19,19 @@ warm은 client 검증 30초, resident 준비 대기 60초, 준비 뒤 추론 요
 닫힌 소켓 때문에 관측하지 못한 서버 구간은 생략한다. 시간 초과 후 같은
 세대 모델을 재사용하면 `cached_model_load_seconds`로 첫 로드 시간을 전달한다.
 
-학습 승인과 갱신이 쓰는 host plugin 목록(`claude|codex plugin list --json`, 프로젝트에서
-실행)은 host·프로젝트마다 기록해 두고(`host_inventory.py`, learning state의
-`host-inventory/`, 0600), CLI 실행 파일과 host 설치 기록 파일(Codex `config.toml`과
-plugin cache 디렉터리, Claude settings·plugin 기록)의 stat stamp가 같으면 CLI를 다시
-부르지 않는다. 기록을 쓴 뒤에도 목록이 가리키는 설치는 매번 설치 기록과 대조한다.
-CLI는 stamp가 바뀌었을 때만 120초 안에서 실행한다. 실패하면 7일 안의 마지막 목록을
-쓰고(`stale`), 없으면 그 목록이 필요한 단계만 `host_inventory_unavailable`로 미룬다.
-selector maintenance는 짧은 준비 예산 단계 전에 두 host의 목록을 먼저 확보하고
-결과를 `learning.selector.inventory`(`refreshed`·`stale`·`unavailable`)로 남긴다.
+학습 승인과 갱신이 쓰는 host plugin 목록(`claude|codex plugin list --json`을 프로젝트에서
+실행한 것, Codex의 `--marketplace` 목록)은 host·종류·프로젝트마다 기록해 두고
+(`host_inventory.py`, learning state의 `host-inventory/`, 0600), CLI 실행 파일과 host 설치
+기록 파일(Codex `config.toml`과 plugin cache 디렉터리, Claude settings·plugin 기록)의 stat
+stamp가 같으면 CLI를 부르지 않는다. 목록이 가리키는 설치는 매번 설치 기록과 대조한다.
+느린 CLI를 기다리는 곳은 selector maintenance뿐이다. maintenance는 짧은 준비 예산 단계
+전에 기록이 없거나 stamp가 바뀐 목록을 120초 안에서 다시 받고, 실패하면 7일 안의 기록을
+쓰거나(`stale`) 그 목록이 필요한 단계를 `host_inventory_unavailable`로 미룬다. 결과는
+`learning.selector.inventory`(`refreshed`·`stale`·`unavailable`)로 남는다. 그 밖의 호출부
+(index 뒤 wake, project worker, capture worker, recall의 adapter 확인, setup)는 기록을 쓰고,
+stamp가 바뀌었으면 7일 안의 기록을 쓰며, 기록이 아예 없을 때만 원래의 짧은 제한(프로젝트
+목록 10초, Codex marketplace 목록 2초 또는 남은 예산)으로 CLI를 부른다. 그 실패는 원래
+오류 그대로다. setup 명령은 목록 시간 초과를 `deferred`·`host_inventory_unavailable`로 끝낸다.
 
 SessionStart의 owner 경합·요청 게이트·예외는 `learning.selector.request`에
 고정 사유 코드로 기록한다. 실패·미룸은 기존 `learning` wake를 재시도

@@ -159,13 +159,28 @@ def _codex_installed(home, deadline):
            if key in os.environ}
     env.update(HOME=str(home), CODEX_HOME=str(home / '.codex'),
                QMD_SANDBOX='1', PYTHONDONTWRITEBYTECODE='1')
-    listed = subprocess.run(['codex', 'plugin', 'list', '--marketplace',
-                             MARKETPLACE, '--json'], env=env,
-                            stdin=subprocess.DEVNULL, capture_output=True,
-                            text=True, timeout=_inventory_timeout(deadline), check=False)
-    if listed.returncode or len(listed.stdout) > 1024 * 1024:
+    short = _inventory_timeout(deadline)
+    import shutil
+    executable = shutil.which('codex', path=env.get('PATH'))
+    if executable is None:
+        raise FileNotFoundError('codex')
+
+    def run(timeout):
+        listed = subprocess.run(['codex', 'plugin', 'list', '--marketplace',
+                                 MARKETPLACE, '--json'], env=env,
+                                stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=timeout, check=False)
+        if listed.returncode or len(listed.stdout) > 1024 * 1024:
+            raise ValueError('unsupported_adapter')
+        return json.loads(listed.stdout)
+    # The recorded listing while Codex's installation records are unchanged
+    # (``host_inventory.recorded``); the CLI otherwise, within ``short``.
+    from .host_inventory import recorded
+    listing = recorded('codex', 'marketplace', home, None, str(Path(executable).resolve()), run,
+                       short_seconds=short)
+    if not isinstance(listing, dict):
         raise ValueError('unsupported_adapter')
-    entries = json.loads(listed.stdout)['installed']
+    entries = listing['installed']
     matches = [item for item in entries if isinstance(item, dict)
                and item.get('pluginId') == PLUGIN_ID]
     if len(matches) != 1:

@@ -339,11 +339,14 @@ with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as fo
   listing['codex']=codex_list(0)
   # CLI failure or a redirected host config home is not an inventory.
   listing['claude']=1
-  # A failed CLI without a recorded listing defers the step that reads it.
+  # A failed CLI without a recorded listing keeps its earlier error outside
+  # selector maintenance, and defers the step inside it.
+  expect('inventory_unavailable',resolve)
   from memvane.learning.context_learning.selector_heal import HealDeferred
-  try:resolve()
-  except HealDeferred as exc:assert str(exc)=='host_inventory_unavailable',str(exc)
-  else:raise AssertionError('accepted host_inventory_unavailable')
+  with patch.dict(ha._MODE,{'maintenance':True,'refreshing':False}):
+   try:resolve()
+   except HealDeferred as exc:assert str(exc)=='host_inventory_unavailable',str(exc)
+   else:raise AssertionError('accepted host_inventory_unavailable')
   listing['claude']=claude_list()
   with patch.dict(os.environ,{'CLAUDE_CONFIG_DIR':str(base/'elsewhere')}):
    expect('redirected',resolve)

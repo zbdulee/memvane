@@ -258,6 +258,8 @@ _TEST_G1_EXCEPTIONS = {
     ('memvane/host/tests/integration/test_selector_budget_119.py', 'memvane.learning.tests.unit'): 'model-free tokenizer and table model fixture',
     ('memvane/host/tests/integration/test_selector_budget_119.py', 'memvane.recall.verified_rows'): 'selector lane budget and measure table',
     ('memvane/learning/tests/integration/test_adapter_update_119.py', 'memvane.recall.verified_rows'): 'recall answer before renewal',
+    # 1.0.19 setup entry: a real host inventory timeout reaches the setup command.
+    ('memvane/app/tests/unit/test_setup_entry_inventory_119.py', 'memvane.learning.context_learning'): 'host inventory timeout and deferral boundary',
     # Onboarding E2E injects interruption at durable write and transition boundaries.
     ('tests/e2e/onboarding_fixture.py', 'memvane.host.route_input.main'): 'hook classification entry',
     ('tests/e2e/onboarding_fixture.py', 'memvane.host.host_response.main'): 'hook response entry',
