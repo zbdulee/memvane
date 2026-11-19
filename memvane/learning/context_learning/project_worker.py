@@ -24,6 +24,12 @@ def _retire_prompt_cases(root, project, policy, config):
     return retire_quietly(root, project, config)
 
 
+def _delete_unchecked_edit_cases(root, project, config):
+    """Pre-fix edit cases of a project inside a parent work tree go once (decision 8)."""
+    from .edit_git_migration import migrate_quietly
+    return migrate_quietly(root, project, config)
+
+
 def run(root, project, config=None):
     from . import shared
     from memvane.settings import api as qmd_config
@@ -44,6 +50,7 @@ def run(root, project, config=None):
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return {'status':'busy'}
         _retire_prompt_cases(root,project,policy,config)
+        _delete_unchecked_edit_cases(root,project,config)
         report=shared.resource_report(policy,detailed=True)
         if not report['ready']:
             return {'status':'deferred_resource','resources':report}

@@ -82,3 +82,18 @@ teacher 릴리스 전까지 `queued`로 남고 cohort 배정에서 빠진다. �
 첫 worker pass는 schema 4 이하 prompt 사례(shared `cases`와 같은 request id의
 private `samples`)를 한 번 지우고 개수를 `prompt-cases-retired.json`과
 `learning.migration` 이벤트에 남긴다(`context_learning/prompt_retirement.py`).
+
+편집 사례는 편집 경로를 git이 무시하면 저장하지 않는다. 프로젝트 루트가 상위
+디렉터리의 git work tree 안에 있어도 같은 검사를 적용하고, git이 답하지 못하면
+사례를 저장하지 않는다. capture는 프로젝트의 첫 편집 사례를 shared queue에
+넣기 전에 이 검사의 적용 시각 파일(`edit-git-check-fixed.<project key>.json`)을
+한 번 만들고 갱신하지 않는다. worker pass는 루트에 `.git`이 없고 상위 work tree
+안에 있는 프로젝트에서 적용 시각과 자신의 시작 시각 중 이른 시각보다 먼저
+저장된 v5 편집 사례(shared `cases`와 같은 request id의 schema 5 private
+`samples`)를 한 번 지운다. 삭제 전에 예정 개수를 pending 파일에 기록하고,
+완료 개수는 `edit-git-migration.<project key>.json`과 `learning.migration`
+이벤트에 남긴다. 해당하지 않는 프로젝트는 개수 0으로 표시만 하고, git이 답하지
+못하면 표시 없이 다음 pass에 다시 확인한다(`context_learning/edit_git_migration.py`).
+v5 사례는 teacher가 저장된 snapshot만으로 판정하므로 후보 카드의 원문이 바뀌어도
+`historical`로 바뀌지 않는다. 동의·설정·tombstone·private 표본 대조는 그대로
+적용한다.

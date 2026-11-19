@@ -646,6 +646,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/learning/context_learning/edit_git_migration.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/learning/context_learning/pairing.py": {
       "context": "learning",
       "layer": "adapter",
