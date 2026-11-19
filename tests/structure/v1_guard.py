@@ -252,6 +252,12 @@ _TEST_G1_EXCEPTIONS = {
     ('memvane/diagnostics/tests/integration/test_dispatch_worker_diagnostics.py', 'entry.run'): 'dispatch entry diagnostics boundary',
     ('memvane/diagnostics/tests/integration/test_hermes_diagnostics.py', 'hermes_adapter.core_bridge.recall_context'): 'Hermes adapter diagnostics boundary',
     ('memvane/diagnostics/tests/integration/test_recall_retry_event.py', 'entry.run'): 'recall entry retry event boundary',
+    # 1.0.19 selector budget: the real hook entry drives recall into the learning
+    # selector and a model-free in-process inference service.
+    ('memvane/host/tests/integration/test_selector_budget_119.py', 'memvane.learning.context_learning'): 'selector client and inference service boundary',
+    ('memvane/host/tests/integration/test_selector_budget_119.py', 'memvane.learning.tests.unit'): 'model-free tokenizer and table model fixture',
+    ('memvane/host/tests/integration/test_selector_budget_119.py', 'memvane.recall.verified_rows'): 'selector lane budget and measure table',
+    ('memvane/learning/tests/integration/test_adapter_update_119.py', 'memvane.recall.verified_rows'): 'recall answer before renewal',
     # Onboarding E2E injects interruption at durable write and transition boundaries.
     ('tests/e2e/onboarding_fixture.py', 'memvane.host.route_input.main'): 'hook classification entry',
     ('tests/e2e/onboarding_fixture.py', 'memvane.host.host_response.main'): 'hook response entry',

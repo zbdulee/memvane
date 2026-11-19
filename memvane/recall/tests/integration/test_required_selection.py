@@ -38,11 +38,12 @@ class RequiredSelection(RecallInstallCase):
         return pools
 
     def test_a_prepared_selector_decides_the_bounded_pool(self):
-        pools = self.select(lambda pool: {'reason': 'selected', 'final_results': [pool[14], pool[3]]})
+        pools = self.select(lambda pool: {'reason': 'selected', 'final_results': [pool[9], pool[3]]})
         context, _err, event = self.recall(PROMPT)
         self.assertEqual(len(pools), 1)
-        self.assertEqual(len(pools[0]), 15)
-        self.assertEqual(served(context), [pools[0][14]['path'], pools[0][3]['path']])
+        # The selector scores the ten best ranked of the 15 verified cards.
+        self.assertEqual(len(pools[0]), 10)
+        self.assertEqual(served(context), [pools[0][9]['path'], pools[0][3]['path']])
         self.assertNotIn(pools[0][0]['path'], served(context))
         self.assertIn('local Laya model selected', context)
         self.assertEqual((event['outcome'], event['count']), ('served', 2))

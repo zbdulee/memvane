@@ -67,27 +67,82 @@ option markers and the complete state token IDs, and rejects a training case
 if the model's configured sequence budget cannot hold it. The multilingual
 checkpoint declares `max_len=1024` even though its tokenizer advertises 8192;
 the adapter uses the **model's 1024-token budget**. Thus 16 KiB is a storage
-ceiling, not a guarantee that every body fits Laya. Training input is never
-truncated. Prediction (live selection and held-out evaluation) keeps every
-candidate under the versioned pairing `leading-body-prefix-v1`: the whole user
-request plus a leading prefix of the card body. The body is tokenized once
-with offsets and cut at a body-token end (a codepoint index, so no UTF-8
-sequence is split) sized from the token room left beside the request; the
-whole state is then re-tokenized and, while still too long, the cut steps back
-by the measured excess (at most 16 checks). The same input always keeps the
-same prefix; it is budget-sized, not a proven longest prefix, because a
-tokenizer may merge across the cut. The prefix keeps the card's whole first
-heading line, found after any leading blank lines (a compact body keeps the
-blank line after its frontmatter): a request that leaves no room for it fails
-closed (`input_budget_exceeded`), like a request that is over budget by
-itself. Missing or malformed tokenizer offsets also fail closed.
-Fifteen 16 KiB cards pair in about 0.07 s with the 1024-token checkpoint. For
-selection, a body over 16 KiB is first cut to its leading 16 KiB on a
-codepoint boundary. The inference receipt records the pairing in its `checks`
-(`prediction_leading_body_prefix_v1`); a receipt without it fails admission
-and the selector heal prepares it again. Preparation proves the pairing on the
-model's own budget (1024 or 8192 tokens) with a synthetic case whose request
-fills all but a small room and whose card must be cut. `raw.py` is a separate raw-data adapter with an assumed 0.3.23
+ceiling, not a guarantee that every body fits Laya.
+
+The edit view (`tool-edit-8192-choice-v1`, every live namespace) pairs a
+request and a card under the versioned pairing `chunked-max-v1`
+(`memvane/learning/context_learning/pairing.py`, limits in `adapter.py`).
+Training and prediction call the same plan. A query over 286 tokens becomes
+at most four query chunks: the edit lane keeps the first four, the prompt lane
+the first three and the tail. A card body over 700 tokens becomes at most three
+card chunks; every chunk after the first starts with the card's heading line.
+Chunk ends prefer a sentence or paragraph end in the last quarter of the
+window and always fall on a token offset, so no UTF-8 sequence is split. The
+tokens left outside the chunk limits are counted (`dropped_query`,
+`dropped_card`). The pairs run in a fixed order: every card with the first
+query and card chunks, then the remaining query chunks in rank order, then the
+remaining card chunks. A request's `pair_budget` (at most 96) drops the tail
+of that order and counts it (`dropped_pairs`); a card left without a pair is
+not selected. A card scores the highest probability of its pairs and the
+fixed policy (p ≥ 0.5, top three) maps the scores to cards. In training, a
+gold card keeps one positive pair, the one the base head every run starts
+from scores highest, and drops its other pairs; every pair of another card is
+negative. Content checks (mask token, complete input, pool size and unique
+ids) run on the whole input before chunking. Prediction sorts pairs by length
+before batching; the resident service's memory admission sets the batch size
+and padded total within the adapter's limits (16 pairs, 16,384 padded tokens).
+
+The legacy and experiment views keep their leading-prefix pairing
+(`leading-body-prefix-v1` semantics): training input is never truncated, and
+prediction keeps the whole user request plus a leading prefix of the card body.
+The body is tokenized once with offsets and cut at a body-token end sized from
+the token room left beside the request; the whole state is then re-tokenized
+and, while still too long, the cut steps back by the measured excess (at most
+16 checks). The prefix keeps the card's whole first heading line, found after
+any leading blank lines: a request that leaves no room for it fails closed
+(`input_budget_exceeded`). The edit view uses the same fit only as a safety
+net for a single chunk pair. Missing or malformed tokenizer offsets fail
+closed. For selection, a body over 16 KiB is first cut to its leading 16 KiB on
+a codepoint boundary.
+
+The inference receipt records the pairing in its `checks`
+(`prediction_chunked_max_v1`); a receipt without it fails admission and the
+selector heal prepares it again. Preparation proves the pairing on the
+model's own view: an edit-view synthetic case whose query and card each split
+into two or more chunks must score every planned pair, and a legacy-view case
+whose request fills all but a small room must cut its card. The adapter smoke
+also checks the edit-view plan on the tokenizer: over-budget input becomes
+chunks and the length beyond the chunk limits is counted.
+
+### Selector budget
+
+Recall sends the selector the ten best ranked cards of the verified pool; the
+capture keeps the whole pool (at most 15). A prompt recall gives the selector
+`min(queryTimeout, 3 s)`, kept one second inside the hook deadline, and 24 pairs; an edit recall gives it its own tail
+deadline (hook entry + 10 s, less one second) and 91 pairs. Past the budget a
+prompt recall serves the hybrid rank and an edit recall its first ranked card.
+A prompt over 64 KiB keeps its first 48 KiB and its last 16 KiB. The values
+come from the 1.0.19 synthetic measurement on an Apple M5 Pro: about 62 ms per
+1,024-token pair whatever the batch size, and about 0.8 s of identity checks
+outside the forward before the per-process caches below. `pairs = (budget -
+0.8 s) / 0.063 s x 0.7`; the candidate count is the largest of 6, 8 and 10
+whose single-chunk forward fits 1.5 s with that fixed cost. Recall events
+record each part (`selectorCandidates`, `selectorLane`, `selectorBudgetMs`,
+`selectorQueryChunks`, `selectorDroppedPairs`, `selectorPairLenP95`,
+`selectorValidationSeconds`, `selectorRevalidationSeconds` and the rest of
+`recall/verified_rows._SELECTOR_MEASURES`).
+
+The inference service keeps per-process results it would otherwise repeat for
+every request, without changing what is proven. Code files are hashed again
+only when their stat stamp (device, inode, size, mtime and ctime) moves, and
+the client's wire signature reuses those file hashes. Loaded modules already
+placed inside the runtime roots are not walked again. A request whose model
+was already loaded revalidates after its forward without a second runtime stat
+sweep and module walk: receipt, policy, attestation, pointer, artifact,
+adapter and code checks still run, every request's initial validation sweeps
+the runtime and model directory, and a request that loads a model sweeps again
+after the load and after its forward. A runtime change during a warm forward is
+therefore found by the next request's initial validation. `raw.py` is a separate raw-data adapter with an assumed 0.3.23
 candidate pin, not this verified 0.3.20 integration.
 
 ## One local cycle
@@ -323,7 +378,7 @@ The per-project resident module (`context_learning/resident.py`) provides compat
 
 Training compatibility's 24h/five-check rules apply unchanged. Explicit inference preparation uses a currently valid approval anchor, then separately verifies a read-only synthetic load/forward and binds content, code, private namespace/policy/checkpoint, closed runtime generation and device. Unchanged prepared inference has no daily training requirement. Missing/revoked/changed inference evidence fails closed; any evidence file makes the complete binding mandatory. Changed evidence requires a fresh worker, except same-family head preparation/application under the candidate protocol below. Runtime/base/view changes require reviewed preparation and a fresh worker. Learning grants, source/gold authorization and teacher transmission remain separate. Prediction never invokes prepare/smoke/train or renews proof/grants.
 
-`memvane/learning/context_learning/inference_identity.py` defines the inference evidence; three private files in the project state directory hold it. `laya-inference-manifest.json` records content hashes of the runtime roots and model directory. `laya-inference-proof.json` (schema `qmd-laya-inference-proof-v1`) records the namespace, executable, model directory, input view, verified identities, plugin version, code SHA-256 (a hash of every `core/**/*.py`), device, manifest SHA-256, the checks `read_only_load`, `synthetic_forward` and `fixed_selection_mapping`, and the SHA-256 of `live-selector.json`, `laya-synthetic-attestation.json` and `active-checkpoint.json`. `laya-inference-binding.json` holds the proof's SHA-256. Only `prepare()` creates all three, run explicitly through `memvane/learning/prepare_laya_inference.py` (at most 120 seconds). Candidate application rewrites the proof and binding with the new checkpoint digest and leaves the manifest unchanged. Prediction (`admit()`) only reads them: if any of the three exists, all must match or selection fails closed with an `inference_identity_*` reason. The receipt is usable only by the plugin version it records; other versions fall back until their own evidence is prepared.
+`memvane/learning/context_learning/inference_identity.py` defines the inference evidence; three private files in the project state directory hold it. `laya-inference-manifest.json` records content hashes of the runtime roots and model directory. `laya-inference-proof.json` (schema `qmd-laya-inference-proof-v1`) records the namespace, executable, model directory, input view, verified identities, plugin version, code SHA-256 (a hash of every `core/**/*.py`), device, manifest SHA-256, the checks `read_only_load`, `synthetic_forward`, `fixed_selection_mapping` and the prediction pairing version (`prediction_chunked_max_v1`), and the SHA-256 of `live-selector.json`, `laya-synthetic-attestation.json` and `active-checkpoint.json`. `laya-inference-binding.json` holds the proof's SHA-256. Only `prepare()` creates all three, run explicitly through `memvane/learning/prepare_laya_inference.py` (at most 120 seconds). Candidate application rewrites the proof and binding with the new checkpoint digest and leaves the manifest unchanged. Prediction (`admit()`) only reads them: if any of the three exists, all must match or selection fails closed with an `inference_identity_*` reason. The receipt is usable only by the plugin version it records; other versions fall back until their own evidence is prepared.
 
 The policy's `trainerArgv[1]` anchors the approved adapter. Hosts remove superseded plugin caches, including every cache of the pre-rename plugin id, so the anchor file can disappear. When it no longer exists, selection uses the running bundle's adapter only if that adapter is an installed official copy (or the registered local source) whose bytes equal `adapter_sha256` in `laya-synthetic-attestation.json`; otherwise selection serves the hybrid rank with `adapter_anchor_missing`. The recall hook prints the reason: `[memvane] local selection unavailable (<reason>); serving hybrid rank`.
 

@@ -43,8 +43,20 @@ def service_busy(deadline=None) -> bool:
                                             and answer['queued'] > 0)))
 
 
+def _request(active, artifact, case, pair_budget, lane):
+    """The prediction request; ``pair_budget`` and ``lane`` (``prompt``/``edit``)
+    reach the adapter's pair plan only when given."""
+    request = {'schema_version': 1, 'artifact_path': str(artifact), 'cases': [case]}
+    for key, value in (('model_input_view', active.get('model_input_view')),
+                       ('pair_budget', pair_budget), ('query_lane', lane)):
+        if value is not None:
+            request[key] = value
+    return request
+
+
 def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
-           pointer_name='active-checkpoint.json', ensure_service=None, skip_busy=False):
+           pointer_name='active-checkpoint.json', ensure_service=None, skip_busy=False,
+           pair_budget=None, lane=None):
     """Return (selected IDs or None, reason, bounded resource observation).
 
     A real 0-card prediction is []. None means use the preexisting QMD topN.
@@ -76,6 +88,7 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
             return None, 'invalid_policy', {}
         adapter = Path(__file__).with_name('adapter.py').resolve()
         from .adapter_binding import BindingTimeout, attested_adapter, inference_argv
+        argv_started = time.perf_counter()
         try:
             argv = inference_argv(policy['trainerArgv'], adapter, deadline=deadline,
                                   attested_adapter_sha256=attested_adapter(state))
@@ -84,6 +97,7 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
         except ValueError as exc:
             return None, ('adapter_anchor_missing' if str(exc) == 'adapter_anchor_missing'
                           else 'unsupported_adapter'), {}
+        argv_seconds = time.perf_counter() - argv_started
         policy = {**policy, 'trainerArgv': argv}
         if pointer_name not in ('active-checkpoint.json', 'experimental-checkpoint.json'):
             return None, 'invalid_pointer', {}
@@ -133,10 +147,7 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
         remaining = deadline - time.monotonic() if deadline is not None else policy['timeoutSeconds']
         if remaining < 1:
             return None, 'timeout', {}
-        request = {'schema_version': 1,
-                   'artifact_path': str(artifact), 'cases': [case]}
-        if active.get('model_input_view') is not None:
-            request['model_input_view'] = active['model_input_view']
+        request = _request(active, artifact, case, pair_budget, lane)
         # Validate before creating a shared process or socket. No prediction
         # can mint training evidence, even when capture/autoCycle are disabled.
         from .inference_identity import admit
@@ -168,8 +179,8 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
                 any(not isinstance(x, str) or x not in seen for x in selected)):
             return None, 'invalid_prediction', resources
         return selected, 'selected', {
-            **resources, 'client_identity_seconds': round(client_identity_seconds, 6), 'model_version': active.get('cycle_id'),
-            'model_input_view': active.get('model_input_view'),
+            **resources, 'client_identity_seconds': round(client_identity_seconds, 6), 'argv_seconds': round(argv_seconds, 6),
+            'model_version': active.get('cycle_id'), 'model_input_view': active.get('model_input_view'),
             'selector_wall_seconds': round(time.perf_counter() - started, 6)}
     except (OSError, ValueError, KeyError, TypeError, IndexError, json.JSONDecodeError) as exc:
         reason = str(exc)
