@@ -56,16 +56,19 @@ class RenewalFixture(FixtureCase):
         self.running=self.bundle(host,version,marker)
         self.host=host
         shared.__file__=str(self.running/'memvane/learning/context_learning/shared.py')
+        # Repository identity comes from the production allowlist, in each
+        # host's real shape: Codex lists {git, url}, Claude records {github, repo}.
+        from memvane.learning.context_learning import adapter_binding
+        url='https://github.com/'+adapter_binding.REPOSITORY+'.git'
         row={'name':'memvane','pluginId':'memvane@memvane-marketplace',
              'marketplaceName':'memvane-marketplace','version':version,'installed':True,'enabled':True,
-             'source':{'source':'github','repo':'dulee/memvane'}}
-        # Repository identity comes from the production allowlist.
-        from memvane.learning.context_learning import adapter_binding
-        row['source']['repo']=adapter_binding.REPOSITORY
+             'source':{'source':'git','url':url},
+             'marketplaceSource':{'sourceType':'git','source':url}}
         self.codex=row
         plugins=self.home/'.claude/plugins'
         self.write(plugins/'known_marketplaces.json', {'memvane-marketplace':{
-            'source':row['source'],'installLocation':str(plugins/'marketplaces/memvane-marketplace')}})
+            'source':{'source':'github','repo':adapter_binding.REPOSITORY},
+            'installLocation':str(plugins/'marketplaces/memvane-marketplace')}})
         croot=self.bundle('claude',version,marker)
         self.claude={'id':'memvane@memvane-marketplace','enabled':True,'version':version,
                      'installPath':str(croot),'scope':'user'}

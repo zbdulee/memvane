@@ -59,6 +59,9 @@ wake와 합쳐지면 due probe와 기존 큐 backoff로 유지하며 일반 학�
 자동 갱신하지 않는다. settings와 최초 setup 승인 기록은 쓰지 않는다.
 기본 grant는 해당 host가 프로젝트에서 선택한 MemVane marketplace와
 출처·설치 바이트에 결속하며 다른 marketplace 항목은 결속하지 않는다.
+다른 host의 사본이 갱신하면 marketplace id·scope·projectPath가 같고 두
+host의 출처가 모두 공식 MemVane repo여야 한다(Claude는 `{github, repo}`,
+Codex는 `{git, url}`로 기록한다).
 renewal intent는 다섯 승인 파일의 원래/새 바이트 쌍을 기록하고 소비를
 차단한다. 같은 대상은 CAS로 이어서 게시하고, 더 새 대상은 원래 승인으로
 CAS 복원을 끝낸 뒤 다시 계획한다. 설명되지 않는 파일·settings 변경과

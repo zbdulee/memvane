@@ -243,12 +243,91 @@ class DefaultRenewal(RenewalFixture):
                 project_scope._MODEL_CACHE.clear()
 
     def test_own_source_and_same_version_bytes_changes_are_refused(self):
-        self.codex['source']['repo']='different/source'
+        self.codex['source']['url']='https://github.com/different/source.git'
         with self.assertRaises(ValueError):project_scope.require(self.root,self.read('shared-policy.json'),'local_train')
         self.select(version='1.0.15',marker='different bytes')
         before=self.snapshot_targets()
         with self.assertRaises(ValueError):self.renew()
         self.assertEqual(before,self.snapshot_targets())
+
+
+OFFICIAL_CLAUDE={'source':'github','repo':'zbdulee/memvane'}
+OFFICIAL_CODEX={'source':'git','url':'https://github.com/zbdulee/memvane.git'}
+
+
+class CrossHostRenewal:
+    """1.0.20: an update renewed by the other host's copy compares sources by
+    official repository, since Claude and Codex record it in different shapes."""
+
+    def registry(self):
+        return self.read(project_scope.NAME)['proposal']['binding']['hostRegistry']
+
+    def renewed_on(self, host, source):
+        other={'codex':'claude','claude':'codex'}[host]
+        self.assertEqual(self.registry()['host'],other)
+        self.select(host,'1.0.16','B')
+        self.assertEqual(self.renew()['status'],'renewed')
+        grant=project_scope.require(self.root,shared._policy(self.root),'local_train')
+        self.assertEqual(grant['binding']['installations'][0]['host'],host)
+        self.assertEqual((grant['binding']['hostRegistry']['host'],
+                          grant['binding']['hostRegistry']['marketplace']['source']),(host,source))
+        self.assertFalse((self.root/'project-learning-renewal.json').exists())
+
+    def refused(self, host, *, current=None, previous=None):
+        """The cross-host source comparison itself; the separate current-source proof
+        (``_official``) is bypassed so only this branch can refuse."""
+        from memvane.learning import default_renewal_plan as planning
+        self.select(host,'1.0.16','B')
+        if current is not None:
+            if host=='codex':
+                self.codex['source']=current
+            else:
+                path=self.home/'.claude/plugins/known_marketplaces.json'
+                known=json.loads(path.read_text())
+                known['memvane-marketplace']['source']=current
+                self.write(path,known)
+        authority=planning._authority
+        def recorded(*args):
+            grant,accepted,journal=authority(*args)
+            if previous is not None:
+                grant=deepcopy(grant)
+                grant['binding']['hostRegistry']['marketplace']['source']=previous
+            return grant,accepted,journal
+        before=self.snapshot_targets()
+        with mock.patch.object(planning,'_authority',side_effect=recorded), \
+                mock.patch.object(selector_heal,'_official',return_value=None), \
+                self.assertRaisesRegex(ValueError,'renewal_source_changed'):
+            self.renew()
+        self.assertEqual(before,self.snapshot_targets())
+        self.assertFalse((self.root/'project-learning-renewal.json').exists())
+
+
+class CodexGrantRenewal(CrossHostRenewal, RenewalFixture):
+    initial_host='codex'
+
+    def test_codex_grant_renews_from_the_claude_copy(self):
+        self.assertEqual(self.registry()['marketplace']['source'],OFFICIAL_CODEX)
+        self.renewed_on('claude',OFFICIAL_CLAUDE)
+
+    def test_unofficial_current_claude_source_is_refused(self):
+        self.refused('claude',current={'source':'github','repo':'someone/else'})
+
+    def test_unofficial_recorded_codex_source_is_refused(self):
+        self.refused('claude',previous={'source':'git','url':'https://github.com/someone/else.git'})
+
+
+class ClaudeGrantRenewal(CrossHostRenewal, RenewalFixture):
+    initial_host='claude'
+
+    def test_claude_grant_renews_from_the_codex_copy(self):
+        self.assertEqual(self.registry()['marketplace']['source'],OFFICIAL_CLAUDE)
+        self.renewed_on('codex',OFFICIAL_CODEX)
+
+    def test_unofficial_current_codex_source_is_refused(self):
+        self.refused('codex',current={'source':'git','url':'https://github.com/someone/else.git'})
+
+    def test_unofficial_recorded_claude_source_is_refused(self):
+        self.refused('codex',previous={'source':'github','repo':'someone/else'})
 
 
 if __name__=='__main__':
