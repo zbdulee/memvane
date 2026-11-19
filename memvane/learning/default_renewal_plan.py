@@ -167,9 +167,11 @@ def plan(project, root, values):
         previous_projection = binding.get('hostRegistry', {})
         previous_market = previous_projection.get('marketplace', {})
         market = projection['marketplace']
+        # Claude records the official repository as {github, repo} and Codex
+        # as {git, url}: across hosts both must name it, not match as objects.
         if (previous_projection.get('schema') != host_self.SCHEMA
                 or previous_market.get('id') != market['id']
-                or previous_market.get('source') != market['source']
+                or not _official_source(previous_market.get('source'))
                 or not _official_source(market['source'])
                 or previous_projection.get('scope') != projection['scope']
                 or previous_projection.get('projectPath') != projection['projectPath']):
