@@ -56,6 +56,24 @@ def _exception_detail(exc):
     return None
 
 
+def _failure(exc):
+    """The fixed result of a setup action that raised."""
+    import subprocess
+    from memvane.kernel.resource_deferred import ResourceDeferred
+    if isinstance(exc, ResourceDeferred):
+        return {'status': 'deferred', 'reason': str(exc), 'changesApplied': 0}
+    if (isinstance(exc, subprocess.TimeoutExpired)
+            or (isinstance(exc, RuntimeError) and str(exc) == 'host_inventory_unavailable')):
+        # A host plugin listing CLI past its bound: a fixed retryable code,
+        # never the command line or a traceback.
+        return {'status': 'deferred', 'reason': 'host_inventory_unavailable', 'changesApplied': 0}
+    result = {'status': 'rejected', 'reason': str(exc), 'changesApplied': 0}
+    detail = _exception_detail(exc)
+    if detail is not None:
+        result['detail'] = detail
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('plan-learning-profile','activate-learning-profile',
@@ -194,15 +212,7 @@ def main(argv=None):
         elif args.action=='plan-learning-profile':result=learning_plan(args)
         else:result=select_learning(args)
     except Exception as exc:
-        from memvane.kernel.resource_deferred import ResourceDeferred
-        if isinstance(exc, ResourceDeferred):
-            result = {'status': 'deferred', 'reason': str(exc),
-                      'changesApplied': 0}
-        else:
-            result = {'status': 'rejected', 'reason': str(exc), 'changesApplied': 0}
-            detail = _exception_detail(exc)
-            if detail is not None:
-                result['detail'] = detail
+        result = _failure(exc)
     try:
         # The selected project registry is a lookup index: it reflects a
         # finished activation or release and never changes this result.

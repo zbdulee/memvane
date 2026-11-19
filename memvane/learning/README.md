@@ -19,6 +19,20 @@ warm은 client 검증 30초, resident 준비 대기 60초, 준비 뒤 추론 요
 닫힌 소켓 때문에 관측하지 못한 서버 구간은 생략한다. 시간 초과 후 같은
 세대 모델을 재사용하면 `cached_model_load_seconds`로 첫 로드 시간을 전달한다.
 
+학습 승인과 갱신이 쓰는 host plugin 목록(`claude|codex plugin list --json`을 프로젝트에서
+실행한 것, Codex의 `--marketplace` 목록)은 host·종류·프로젝트마다 기록해 두고
+(`host_inventory.py`, learning state의 `host-inventory/`, 0600), CLI 실행 파일과 host 설치
+기록 파일(Codex `config.toml`과 plugin cache 디렉터리, Claude settings·plugin 기록)의 stat
+stamp가 같으면 CLI를 부르지 않는다. 목록이 가리키는 설치는 매번 설치 기록과 대조한다.
+느린 CLI를 기다리는 곳은 selector maintenance뿐이다. maintenance는 짧은 준비 예산 단계
+전에 기록이 없거나 stamp가 바뀐 목록을 120초 안에서 다시 받고, 실패하면 7일 안의 기록을
+쓰거나(`stale`) 그 목록이 필요한 단계를 `host_inventory_unavailable`로 미룬다. 결과는
+`learning.selector.inventory`(`refreshed`·`stale`·`unavailable`)로 남는다. 그 밖의 호출부
+(index 뒤 wake, project worker, capture worker, recall의 adapter 확인, setup)는 기록을 쓰고,
+stamp가 바뀌었으면 7일 안의 기록을 쓰며, 기록이 아예 없을 때만 원래의 짧은 제한(프로젝트
+목록 10초, Codex marketplace 목록 2초 또는 남은 예산)으로 CLI를 부른다. 그 실패는 원래
+오류 그대로다. setup 명령은 목록 시간 초과를 `deferred`·`host_inventory_unavailable`로 끝낸다.
+
 SessionStart의 owner 경합·요청 게이트·예외는 `learning.selector.request`에
 고정 사유 코드로 기록한다. 실패·미룸은 기존 `learning` wake를 재시도
 하한에 예약하고, 게시를 끝낸 sync는 같은 owner 아래 학습 요청을 다시
@@ -82,3 +96,18 @@ teacher 릴리스 전까지 `queued`로 남고 cohort 배정에서 빠진다. �
 첫 worker pass는 schema 4 이하 prompt 사례(shared `cases`와 같은 request id의
 private `samples`)를 한 번 지우고 개수를 `prompt-cases-retired.json`과
 `learning.migration` 이벤트에 남긴다(`context_learning/prompt_retirement.py`).
+
+편집 사례는 편집 경로를 git이 무시하면 저장하지 않는다. 프로젝트 루트가 상위
+디렉터리의 git work tree 안에 있어도 같은 검사를 적용하고, git이 답하지 못하면
+사례를 저장하지 않는다. capture는 프로젝트의 첫 편집 사례를 shared queue에
+넣기 전에 이 검사의 적용 시각 파일(`edit-git-check-fixed.<project key>.json`)을
+한 번 만들고 갱신하지 않는다. worker pass는 루트에 `.git`이 없고 상위 work tree
+안에 있는 프로젝트에서 적용 시각과 자신의 시작 시각 중 이른 시각보다 먼저
+저장된 v5 편집 사례(shared `cases`와 같은 request id의 schema 5 private
+`samples`)를 한 번 지운다. 삭제 전에 예정 개수를 pending 파일에 기록하고,
+완료 개수는 `edit-git-migration.<project key>.json`과 `learning.migration`
+이벤트에 남긴다. 해당하지 않는 프로젝트는 개수 0으로 표시만 하고, git이 답하지
+못하면 표시 없이 다음 pass에 다시 확인한다(`context_learning/edit_git_migration.py`).
+v5 사례는 teacher가 저장된 snapshot만으로 판정하므로 후보 카드의 원문이 바뀌어도
+`historical`로 바뀌지 않는다. 동의·설정·tombstone·private 표본 대조는 그대로
+적용한다.

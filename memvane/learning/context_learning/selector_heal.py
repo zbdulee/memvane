@@ -54,12 +54,16 @@ def _official(adapter, home, deadline):
     from .adapter_binding import (_installed_current, _local_binding,
                                   _official_cache)
     try:
-        target = _official_cache(adapter, home)
-        _installed_current(*target[:3], home, deadline)
-        return
-    except ValueError:
-        pass
-    _local_binding(adapter, home, deadline, execution=True)
+        try:
+            target = _official_cache(adapter, home)
+            _installed_current(*target[:3], home, deadline)
+            return
+        except ValueError:
+            pass
+        _local_binding(adapter, home, deadline, execution=True)
+    except subprocess.TimeoutExpired as exc:
+        # A host inventory CLI past its bound defers the step; never a failure.
+        raise HealDeferred('host_inventory_unavailable') from exc
 
 
 def _policy(state):
@@ -201,6 +205,8 @@ def rebind(state, *, home=None, deadline=None, canonicalize=False):
             raise HealRefused('learning_profile_rebind_required')
         try:
             _official(adapter, Path(home) if home is not None else Path.home(), deadline)
+        except HealDeferred:
+            raise
         except Exception as exc:
             raise HealRefused('adapter_not_official') from exc
         candidate = {**policy, 'trainerArgv': [argv[0], str(adapter), argv[2]]}

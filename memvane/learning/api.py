@@ -14,11 +14,12 @@ def capture_recall(host, decision, payload, settings, pool, chosen, *, started=N
     return implementation(host, decision, payload, settings, pool, chosen, **given)
 
 def select_published(pool, *, prompt, config, project_root, wiki_names, scope_id, deadline=None,
-                     ensure_service=None, skip_busy=False):
+                     ensure_service=None, skip_busy=False, pair_budget=None, lane=None):
     from memvane.learning.context_learning.selection_read import select_published as implementation
     given = {key: value for key, value, default in (
         ('deadline', deadline, None), ('ensure_service', ensure_service, None),
-        ('skip_busy', skip_busy, False)) if value is not default}
+        ('skip_busy', skip_busy, False), ('pair_budget', pair_budget, None),
+        ('lane', lane, None)) if value is not default}
     return implementation(pool, prompt=prompt, config=config, project_root=project_root,
                           wiki_names=wiki_names, scope_id=scope_id, **given)
 

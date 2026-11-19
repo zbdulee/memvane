@@ -3,8 +3,17 @@
 Only prepare() publishes evidence. Prediction never calls prepare, train or
 smoke. Full content hashes establish identity; stat snapshots only detect
 changes within an owner-controlled generation between verified uses.
+
+One process keeps three results it would otherwise recompute per request:
+code file hashes by stat stamp (``cached_file_sha``), the loaded modules it
+has already placed inside the runtime roots (``_module_scope``), and, for a
+request that loaded no model, the runtime stat sweep of its own initial
+validation (``light_revalidation``). The sweep still runs at every request's
+initial validation and around every model load.
 """
 from __future__ import annotations
+from contextlib import contextmanager
+import contextvars
 import hashlib
 import json
 import math
@@ -26,7 +35,7 @@ SCHEMA = 'qmd-laya-inference-proof-v1'
 # The last entry versions the prediction pairing (laya_adapter.PREDICTION_PAIRING):
 # a receipt prepared before it fails admission and is prepared again.
 CHECKS = ['read_only_load', 'synthetic_forward', 'fixed_selection_mapping',
-          'prediction_leading_body_prefix_v1']
+          'prediction_chunked_max_v1']
 
 
 def file_sha(path):
@@ -38,9 +47,55 @@ def _sha(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
+# path -> ((dev, ino, size, mtime_ns, ctime_ns), sha256) of code files.
+_FILE_SHAS = {}
+
+
+def _file_stamp(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def cached_file_sha(path):
+    """SHA-256 of one code file, hashed again only when its stat stamp moved.
+
+    A stamp that changes while the file is read is not kept. A content write
+    always moves ``ctime``, which no owner call can set back.
+    """
+    key = str(path)
+    stamp = _file_stamp(os.stat(path))
+    cached = _FILE_SHAS.get(key)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    digest = file_sha(path)
+    if _file_stamp(os.stat(path)) == stamp:
+        _FILE_SHAS[key] = (stamp, digest)
+    else:
+        _FILE_SHAS.pop(key, None)
+    return digest
+
+
 def code_identity():
-    return _sha({str(p.relative_to(Path(__file__).resolve().parents[2])): file_sha(p)
-                 for p in sorted(Path(__file__).resolve().parents[2].rglob('*.py'))})
+    root = Path(__file__).resolve().parents[2]
+    return _sha({str(p.relative_to(root)): cached_file_sha(p) for p in sorted(root.rglob('*.py'))})
+
+
+_LIGHT = contextvars.ContextVar('memvane_light_revalidation', default=False)
+
+
+@contextmanager
+def light_revalidation():
+    """Revalidation after a forward that loaded no model in its request.
+
+    ``IdentityCache.verify`` then skips the runtime stat sweep and the module
+    scope check its initial validation already ran for the same generation.
+    Receipt, policy, attestation, pointer, artifact, adapter and code checks
+    still run.
+    """
+    token = _LIGHT.set(True)
+    try:
+        yield
+    finally:
+        _LIGHT.reset(token)
 
 
 def _private_state(state):
@@ -75,9 +130,16 @@ def runtime_roots():
     return result
 
 
+# roots -> {module name: module object already placed inside those roots}.
+# Holding the object keeps its id from being reused by a later import.
+_SCOPED = {}
+
+
 def _module_scope(roots):
     code = Path(__file__).resolve().parents[3]
+    seen = _SCOPED.setdefault(tuple(str(root) for root in roots), {})
     for name, module in tuple(sys.modules.items()):
+        if seen.get(name) is module: continue
         origin = getattr(module, '__file__', None)
         if module is sys.modules.get('__main__') or not origin: continue
         # PyTorch exposes two virtual modules whose relative __file__ is a
@@ -99,6 +161,7 @@ def _module_scope(roots):
         p = Path(origin).resolve()
         if not (p == code or code in p.parents or any(p == r or r in p.parents for r in roots)):
             raise ValueError('inference_external_library_scope')
+        seen[name] = module
 
 
 def device_identity():
@@ -248,11 +311,13 @@ class IdentityCache:
         if receipt['code_sha256'] != self.code_at_start:
             raise ValueError('inference_identity_changed')
         roots = [*runtime_roots(), Path(argv[2]).resolve()]
-        _module_scope(runtime_roots())
+        key = receipt['manifest_sha256']
+        light = _LIGHT.get() and self.generation == key and key in self.content
+        if not light:
+            _module_scope(runtime_roots())
         if (receipt['roots'] != [str(p) for p in roots] or argv[0] != sys.executable
                 or receipt['device'] != device_identity()):
             raise ValueError('inference_identity_changed')
-        key = receipt['manifest_sha256']
         if self.generation is not None and self.generation != key:
             # Imported libraries/loaded objects cannot be refreshed by hashing
             # new files in the same process. Require a newly started worker.
@@ -274,7 +339,7 @@ class IdentityCache:
             # Failed changes never adopt a new identity implicitly.
             self.content[key] = manifest
             self.generation = key
-        elif not _persistent_snapshot_equal(_stamps(manifest), snapshot(roots)):
+        elif not light and not _persistent_snapshot_equal(_stamps(manifest), snapshot(roots)):
             self.content.pop(key, None)
             raise ValueError('inference_identity_changed')
         # Manifest deletion/replacement/revocation remains visible on warm
@@ -285,7 +350,8 @@ class IdentityCache:
             raise ValueError('inference_identity_changed')
         # Full receipt/approval/scope are re-read at each admission above.
         self.last_timing = {'identity_seconds': round(time.perf_counter()-started,6),
-                            'identity_cache_hit': hit, 'metadata_subprocesses': 0}
+                            'identity_cache_hit': hit, 'identity_light': light,
+                            'metadata_subprocesses': 0}
         return {**receipt['verified'], 'runtime_identity_sha256': _sha([
             receipt['verified']['runtime_identity_sha256'], key,
             receipt['device'], receipt['code_sha256']])}
@@ -340,13 +406,15 @@ def prepare(state, argv, *, max_seconds=30, max_rss_mib=4096):
         raise ValueError('inference_prepare_resource_deferred')
     _module_scope(runtime_roots())
     _forward(loaded, job, limits=limits, timing={}, cancelled=lambda:time.monotonic() >= deadline)
-    # The versioned prediction pairing, proven on this model's own budget.
-    from .adapter import truncation_probe
-    probe = {**job, 'request': {**request, 'cases': [truncation_probe(loaded)]}}
+    # The versioned prediction pairing, proven on this model's own view:
+    # chunked query and card pairs (edit view) or one cut card (other views).
+    from .pairing import pairing_probe
+    case, proves = pairing_probe(loaded)
+    probe = {**job, 'request': {**request, 'cases': [case]}}
     timing = {}
     _forward(loaded, probe, limits=limits, timing=timing, cancelled=lambda:time.monotonic() >= deadline)
-    if timing.get('truncated_pairs') != 1:
-        raise ValueError('inference_prepare_truncation_not_exercised')
+    if not proves(timing):
+        raise ValueError('inference_prepare_pairing_not_exercised')
     # Measured growth of this load and its scoring: the next first-load
     # admission for this model and view uses it instead of the RSS ceiling.
     peak = max(peak, _rss_mib())

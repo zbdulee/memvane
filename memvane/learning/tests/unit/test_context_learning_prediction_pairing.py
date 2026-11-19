@@ -1,4 +1,4 @@
-"""Prediction keeps every candidate: an over-budget body is cut to its leading prefix.
+"""Legacy and experiment views: an over-budget prediction body is cut to its leading prefix.
 
 A codepoint tokenizer and a stub ``laya.common`` reproduce the real sequence
 layout ([CLS] head [SEP] [MASK] options [SEP] state [SEP]); no ML runs.
@@ -94,6 +94,7 @@ def _stub_laya():
 with patch.dict(sys.modules, _stub_laya()):
     from memvane.learning.context_learning import adapter
     from memvane.learning.context_learning import compact_input
+from memvane.learning.context_learning import pairing  # noqa: E402
 
 TOK = CodepointTokenizer()
 CFG = {'max_len': 256, 'head_max_len': 128}
@@ -252,7 +253,7 @@ class PredictionPairingTests(unittest.TestCase):
         for max_len, head in ((1024, 256), (8192, 256)):
             cfg = {'max_len': max_len, 'head_max_len': head}
             with patch.dict(sys.modules, _stub_laya()):
-                probe = adapter.truncation_probe((None, TOK, cfg))
+                probe = pairing.truncation_probe((None, TOK, cfg))
                 items = adapter._pairs([probe], TOK, cfg, with_gold=False)
                 with self.assertRaisesRegex(ValueError, 'model_token_budget_exceeded'):
                     adapter._pairs([{**probe, 'selected_ids': []}], TOK, cfg, with_gold=True)

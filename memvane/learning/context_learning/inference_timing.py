@@ -12,8 +12,11 @@ import math
 SECONDS = ('startup_wait_seconds', 'client_validation_seconds', 'initial_validation_seconds',
            'validation_seconds', 'identity_seconds', 'revalidation_seconds', 'model_load_seconds',
            'cached_model_load_seconds', 'forward_seconds', 'queue_wait_seconds',
-           'resident_wall_seconds', 'warm_wait_seconds', 'drain_wait_seconds')
-KEYS = frozenset(SECONDS + ('attempts',))
+           'resident_wall_seconds', 'warm_wait_seconds', 'drain_wait_seconds',
+           'tokenize_seconds', 'batch_prepare_seconds', 'envelope_seconds')
+# Whole counts of a prediction the worker stopped (or finished) partway.
+COUNTS = ('attempts', 'batches', 'pairs', 'planned_pairs', 'cancelled_after_batches')
+KEYS = frozenset(SECONDS + COUNTS)
 _CHAIN = 8
 
 
@@ -32,9 +35,10 @@ def clean(timing):
         value = _seconds(timing.get(key))
         if value is not None:
             row[key] = value
-    attempts = timing.get('attempts')
-    if type(attempts) is int and attempts >= 0:
-        row['attempts'] = attempts
+    for key in COUNTS:
+        value = timing.get(key)
+        if type(value) is int and value >= 0:
+            row[key] = value
     return row
 
 

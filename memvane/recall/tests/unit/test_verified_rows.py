@@ -5,6 +5,7 @@ boundaries, so no store, model or install state is opened.
 """
 import contextlib
 import io
+import time
 import unittest
 from unittest import mock
 
@@ -102,6 +103,11 @@ class ServeVerifiedRows(unittest.TestCase):
             self.serve(lambda found: (found[:1], 'selected', None), current=False)
 
 
+# A prompt recall asks the selector for the best ten of the 15-card pool with
+# min(queryTimeout, 3 s); the 3,000 ms budget is the default 5 s timeout's cap.
+LANE = ('fields', {'selectorLane': 'prompt', 'selectorCandidates': 10, 'selectorBudgetMs': 3000})
+
+
 class SelectVerifiedCards(unittest.TestCase):
     def select(self, *, prepared, selected=None, published=None):
         trace = Recorded()
@@ -130,7 +136,20 @@ class SelectVerifiedCards(unittest.TestCase):
         (chosen, reason, fallback), events, _err = self.select(
             prepared=True, selected=lambda *_a, **_k: answer)
         self.assertEqual((chosen, reason, fallback), (rows(2), 'selected', None))
-        self.assertEqual(events, [])
+        self.assertEqual(events, [LANE])
+
+    def test_the_prompt_budget_stays_inside_the_hook_deadline(self):
+        from memvane.kernel import hook_budget
+        seen = []
+        def selected(*_a, **kwargs):
+            seen.append(kwargs['deadline'])
+            return {'reason': 'timeout', 'final_results': []}
+        limit = time.monotonic() + 1.5
+        with mock.patch.object(hook_budget, '_deadline', limit):
+            (_chosen, reason, fallback), events, _err = self.select(prepared=True, selected=selected)
+        self.assertEqual((reason, fallback), ('ranked', 'laya_selector_timeout'))
+        self.assertEqual(seen, [limit - verified_rows.HOOK_RESERVE_SECONDS])
+        self.assertLessEqual(events[0][1]['selectorBudgetMs'], 500)
 
     def test_unavailable_selector_falls_back_with_a_note(self):
         answer = {'reason': 'candidate_unavailable', 'final_results': []}
@@ -138,7 +157,7 @@ class SelectVerifiedCards(unittest.TestCase):
             prepared=True, selected=lambda *_a, **_k: answer)
         self.assertEqual((chosen, reason, fallback),
                          (rows(15), 'ranked', 'laya_selector_candidate_unavailable'))
-        self.assertEqual(events, [('note', 'laya_selector_candidate_unavailable')])
+        self.assertEqual(events, [LANE, ('note', 'laya_selector_candidate_unavailable')])
         self.assertIn('serving hybrid rank', err)
 
     def test_invalid_pool_serves_nothing(self):
@@ -146,7 +165,7 @@ class SelectVerifiedCards(unittest.TestCase):
         (chosen, reason, _fallback), events, _err = self.select(
             prepared=True, selected=lambda *_a, **_k: answer)
         self.assertEqual((chosen, reason), ([], 'candidate_invalid'))
-        self.assertEqual(events, [('note', 'laya_selector_candidate_invalid')])
+        self.assertEqual(events, [LANE, ('note', 'laya_selector_candidate_invalid')])
         (chosen, reason, _fallback), events, _err = self.select(
             prepared=False, published=ValueError('invalid'))
         self.assertEqual((chosen, reason), ([], 'candidate_invalid'))

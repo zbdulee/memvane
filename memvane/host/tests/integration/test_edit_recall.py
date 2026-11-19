@@ -210,22 +210,19 @@ class EditRecall(HostInstallCase):
 
     def test_search_past_the_budget_injects_nothing_and_captures_nothing(self):
         from memvane.recall import api as recall_api
-        from memvane.kernel import hook_budget
         original = recall_api.serve_endpoint_recall
 
         def slow(*args, **kwargs):
             answer = original(*args, **kwargs)
             time.sleep(0.8)  # the answer arrives after the tail's budget
             return answer
+        # No hook entry time: the tail's budget counts from its own start, so
+        # route proof time before the tail cannot spend it.
         with mock.patch.object(edit_recall, 'EDIT_RECALL_SECONDS', 0.6), \
                 mock.patch.object(edit_recall, 'SELECTOR_RESERVE_SECONDS', 0.1), \
-                mock.patch.object(hook_budget, '_deadline', time.monotonic() + 18), \
+                mock.patch.object(edit_recall, '_HOOK_STARTED', None), \
                 mock.patch.object(recall_api, 'serve_endpoint_recall', side_effect=slow):
-            edit_recall.mark_hook_started(time.monotonic())
-            try:
-                answer, capture = self.posttool(edit_payload('budget'))
-            finally:
-                edit_recall.mark_hook_started(None)
+            answer, capture = self.posttool(edit_payload('budget'))
         self.assertEqual((answer, capture), ({}, []))
         [row] = self.edit_events('budget')
         self.assertEqual((row['outcome'], row['reason']), ('budget_exceeded', 'edit_recall_budget'))

@@ -81,6 +81,24 @@ class RebindTests(Fixture):
             self.rebind(late)
         self.assertEqual((self.state / selector_heal.POLICY).read_bytes(), before)
 
+    # 1.0.19: an unavailable host listing defers the rebind proof instead of refusing it.
+    def test_unavailable_inventory_defers_the_official_proof(self):
+        before = (self.state / selector_heal.POLICY).read_bytes()
+        def unsupported(argv, adapter, **kw): raise ValueError('unsupported_adapter')
+        unavailable = selector_heal.HealDeferred('host_inventory_unavailable')
+        with patch.object(selector_heal, 'running_adapter', return_value=self.codex), \
+                patch.object(adapter_binding, 'inference_argv', side_effect=unsupported), \
+                patch.object(selector_heal, '_official', side_effect=unavailable), \
+                self.assertRaises(selector_heal.HealDeferred) as caught:
+            selector_heal.rebind(self.state, home=self.state)
+        self.assertEqual(str(caught.exception), 'host_inventory_unavailable')
+        self.assertEqual((self.state / selector_heal.POLICY).read_bytes(), before)
+        with patch.object(selector_heal, 'running_adapter', return_value=self.codex), \
+                patch.object(adapter_binding, 'inference_argv', side_effect=unsupported), \
+                patch.object(selector_heal, '_official', side_effect=ValueError('record_missing')), \
+                self.assertRaisesRegex(selector_heal.HealRefused, 'adapter_not_official'):
+            selector_heal.rebind(self.state, home=self.state)
+
 
 class HealTests(Fixture):
     def test_kept_other_host_anchor_still_prepares_missing_evidence(self):

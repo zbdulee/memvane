@@ -11,17 +11,72 @@ def _fail(code: str):
     raise HostResponseError(code)
 
 
-# The live selector refuses a prompt longer than this (``live_select.choose``).
-EDIT_SELECTOR_PROMPT_CHARS = 2000
+# The selector scores the SELECTOR_CANDIDATES best ranked cards of the
+# verified pool (the capture keeps the whole pool). Each lane has a selector
+# budget and a pair budget; past the budget the ranked rows are served.
+# Values and their measurement: docs/continual-learning.md "Selector budget".
+SELECTOR_CANDIDATES = 10
+PROMPT_SELECTOR_SECONDS = 3.0
+PROMPT_PAIR_BUDGET = 24
+HOOK_RESERVE_SECONDS = 1.0
+EDIT_PAIR_BUDGET = 91
+# The live selector refuses a prompt over this many UTF-8 bytes.
+SELECTOR_PROMPT_BYTES = 65536
 
-# Selector work measured by the inference worker (``adapter.predict_loaded``)
-# and its client, renamed for the recall event. Numbers and the device only.
+# Selector work measured by the inference worker (``adapter.predict_loaded``),
+# the service and its client, renamed for the recall event (no field name may
+# contain "token": the event log drops it). Numbers and the device only.
 _SELECTOR_MEASURES = (('pairs', 'selectorPairs'), ('planned_pairs', 'selectorPlannedPairs'),
                       ('batches', 'selectorBatches'), ('truncated_pairs', 'selectorTruncatedPairs'),
                       ('max_batch_size', 'selectorBatchLimit'),
+                      ('max_padded_tokens', 'selectorPaddedLimit'),
                       ('forward_seconds', 'selectorForwardSeconds'),
                       ('resident_wall_seconds', 'selectorResidentSeconds'),
-                      ('queue_wait_seconds', 'selectorQueueSeconds'))
+                      ('queue_wait_seconds', 'selectorQueueSeconds'),
+                      ('client_identity_seconds', 'selectorClientIdentitySeconds'),
+                      ('argv_seconds', 'selectorArgvSeconds'),
+                      ('envelope_seconds', 'selectorEnvelopeSeconds'),
+                      ('initial_validation_seconds', 'selectorValidationSeconds'),
+                      ('identity_seconds', 'selectorIdentitySeconds'),
+                      ('revalidation_seconds', 'selectorRevalidationSeconds'),
+                      ('model_load_seconds', 'selectorLoadSeconds'),
+                      ('tokenize_seconds', 'selectorPrepareSeconds'),
+                      ('batch_prepare_seconds', 'selectorBatchPrepareSeconds'),
+                      ('selector_wall_seconds', 'selectorWallSeconds'),
+                      ('pair_len_p50', 'selectorPairLenP50'),
+                      ('pair_len_p95', 'selectorPairLenP95'),
+                      ('pair_len_max', 'selectorPairLenMax'),
+                      ('padded_total', 'selectorPadded'),
+                      ('query_chunks', 'selectorQueryChunks'),
+                      ('card_chunks_max', 'selectorCardChunksMax'),
+                      ('chunked_cards', 'selectorChunkedCards'),
+                      ('dropped_pairs', 'selectorDroppedPairs'),
+                      ('dropped_query', 'selectorDroppedQuery'),
+                      ('dropped_card', 'selectorDroppedCard'),
+                      ('cancelled_after_batches', 'selectorCancelledAfter'))
+
+
+def _selector_prompt(prompt: str) -> str:
+    """The prompt within the selector's byte limit: its head and its tail.
+
+    The prompt lane's pair plan reads the first chunks and the last one, so
+    an over-limit middle is never scored anyway.
+    """
+    data = prompt.encode('utf-8')
+    if len(data) <= SELECTOR_PROMPT_BYTES:
+        return prompt
+    head = data[:SELECTOR_PROMPT_BYTES * 3 // 4].decode('utf-8', 'ignore')
+    tail = data[-(SELECTOR_PROMPT_BYTES // 4 - 2):].decode('utf-8', 'ignore')
+    return head + '\n' + tail
+
+
+def _prompt_selector_seconds(settings) -> float:
+    """``min(queryTimeout, 3 s)``; the timeout clamp of the selection read."""
+    try:
+        timeout = min(30., max(.2, float(settings.get('queryTimeout', 5))))
+    except (AttributeError, TypeError, ValueError):
+        timeout = 5.
+    return min(PROMPT_SELECTOR_SECONDS, timeout)
 
 
 def _selector_measurement(trace, resources) -> None:
@@ -88,18 +143,25 @@ def _select_verified_cards(decision, settings, prompt, rows, trace):
                 from memvane.resident.api import ensure_service
                 from memvane.recall.recall_scope import edit_recall
                 edit = edit_recall()
-                options = {}
                 if edit is not None:
                     # An edit recall asks the selector only until its own
-                    # deadline, never while the service serves another
-                    # request, and with the prompt length the live selector
-                    # accepts (query fragments come with 1.0.19).
-                    prompt = prompt[:EDIT_SELECTOR_PROMPT_CHARS]
-                    options = {'deadline': edit['selector_deadline'], 'skip_busy': True}
+                    # deadline, never while the service serves another request.
+                    lane, budget, deadline = 'edit', EDIT_PAIR_BUDGET, edit['selector_deadline']
+                    options = {'skip_busy': True}
+                else:
+                    from memvane.kernel.hook_budget import deadline as hook_deadline
+                    lane, budget, options = 'prompt', PROMPT_PAIR_BUDGET, {}
+                    # Inside the armed hook deadline, one second kept for the answer.
+                    deadline = min(time.monotonic() + _prompt_selector_seconds(settings),
+                                   hook_deadline() - HOOK_RESERVE_SECONDS)
+                candidates = pool[:SELECTOR_CANDIDATES]
+                trace.fields(selectorLane=lane, selectorCandidates=len(candidates),
+                             selectorBudgetMs=max(0, round((deadline - time.monotonic()) * 1000)))
                 result = select_published(
-                    pool, prompt=prompt, config=settings, project_root=project,
-                    wiki_names=names, scope_id=decision['scopeId'],
-                    ensure_service=ensure_service, **options)
+                    candidates, prompt=_selector_prompt(prompt), config=settings,
+                    project_root=project, wiki_names=names, scope_id=decision['scopeId'],
+                    ensure_service=ensure_service, deadline=deadline, pair_budget=budget,
+                    lane=lane, **options)
             except Exception:
                 result = {'reason': 'selector_unavailable', 'final_results': []}
         _selector_measurement(trace, result.get('resources'))

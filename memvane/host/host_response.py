@@ -796,8 +796,12 @@ def _render_answer_timed(host: str, payload: dict, answer) -> dict:
     _log_selection(answer.decision, answer.rows, answer.selection_fallback,
                    answer.vector_fallback)
     if host in ('claude', 'codex'):
-        from memvane.host.edit_recall import remember_cards
-        remember_cards(answer.decision, payload, answer.rows)
+        try:
+            from memvane.host.edit_recall import remember_cards
+        except Exception:
+            remember_cards = None  # The recall answer never depends on edit recall.
+        if remember_cards is not None:
+            remember_cards(answer.decision, payload, answer.rows)
     return host_payload(host, context)
 
 
@@ -1200,9 +1204,9 @@ def _edit_recall_tail(host, decision, proof, payload, *, linked=None) -> dict:
     The capture input goes to this call's capture slot; ``main`` hands it to
     the learning-capture child after the answer is flushed.
     """
-    from memvane.host import edit_recall
     from memvane.kernel.hook_budget import HookDeadlineExceeded
     try:
+        from memvane.host import edit_recall
         if linked is None:
             current, inside, _outside = _edit_targets(decision, payload, 'posttool',
                                                       allow_outside=True)

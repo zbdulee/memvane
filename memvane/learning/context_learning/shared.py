@@ -319,7 +319,10 @@ def _current_config(root, project):
 def _case_active(root, row, *, cfg=None, private_db=None, source_cache=None,
                  deadline=None, ticket_validated=False,
                  create_private_state=True):
-    """Read-only continuing-consent, tombstone and source-revision check."""
+    """Read-only continuing-consent, tombstone and source-revision check.
+
+    A v5 edit case skips the source-revision part; its other checks stay.
+    """
     if deadline is not None and time.monotonic() >= deadline:
         return False
     project, rid, sample_json = Path(row[0]), row[1], row[2]
@@ -350,6 +353,10 @@ def _case_active(root, row, *, cfg=None, private_db=None, source_cache=None,
         local = private_db.execute("SELECT body FROM samples WHERE request_id=?", (rid,)).fetchone()
         if local is None or digest(local[0]) != digest(sample_json):
             return False
+        if sample.get('schema_version') == 5 and sample.get('context_origin') == 'tool_edit':
+            # Decision 12: the teacher judges an edit case from its immutable
+            # snapshot (``cases.bodies``), so a regenerated card keeps it active.
+            return True
         for candidate in sample["candidates"]:
             if deadline is not None and time.monotonic() >= deadline:
                 return False

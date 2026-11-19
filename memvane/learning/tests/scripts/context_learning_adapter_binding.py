@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 
+from memvane.learning.context_learning.runtime_setup import learning_state_base
+
 SOURCE = Path.cwd()
 MARKET = 'memvane-marketplace'
 PLUGIN = 'memvane@' + MARKET
@@ -103,6 +105,9 @@ with tempfile.TemporaryDirectory(prefix='qmd-adapter-binding-') as temporary:
 
     def invoke(host, expected='selected', *, budget=None):
         global constructor_calls
+        # Each run reads the synthetic CLI: the host listing record (keyed by
+        # installation records this script never moves) is a cache it does not cover.
+        shutil.rmtree(learning_state_base(home)/'host-inventory', ignore_errors=True)
         before={p.name:p.read_bytes() for p in state.iterdir() if p.is_file()}
         inode=state.stat().st_ino
         report=json.loads(subprocess.check_output([sys.executable,'-c',DRIVER,

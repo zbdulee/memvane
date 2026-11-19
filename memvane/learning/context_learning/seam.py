@@ -199,12 +199,32 @@ TEACHER_MAX_INPUT_BYTES = 65536
 GIT_CHECK_SECONDS = 2
 
 
+def inside_git_work_tree(root):
+    """Whether ``root`` lies inside a git work tree, also below its top level.
+
+    Raises ValueError('edit_git_check_failed') when git cannot answer.
+    """
+    # git's own messages are matched below, so they must not be translated.
+    env = {key: value for key, value in os.environ.items() if key != 'LANGUAGE'}
+    try:
+        done = subprocess.run(['git', '-C', str(root), 'rev-parse', '--is-inside-work-tree'],
+                              capture_output=True, text=True, timeout=GIT_CHECK_SECONDS,
+                              cwd=str(root), env={**env, 'GIT_OPTIONAL_LOCKS': '0', 'LC_ALL': 'C'})
+    except (OSError, subprocess.TimeoutExpired):
+        raise ValueError('edit_git_check_failed') from None
+    if done.returncode == 0 and done.stdout.strip() in ('true', 'false'):
+        return done.stdout.strip() == 'true'
+    if done.returncode != 0 and 'not a git repository' in done.stderr:
+        return False
+    raise ValueError('edit_git_check_failed')
+
+
 def _git_ignored(root, rels):
     """Whether git ignores any edited path; outside a git work tree, False.
 
     Raises ValueError when git cannot answer, so the case is not stored.
     """
-    if not (root / '.git').exists():
+    if not inside_git_work_tree(root):
         return False
     try:
         done = subprocess.run(['git', '-C', str(root), 'check-ignore', '-q', '--stdin'],
@@ -281,7 +301,13 @@ def _store(sample, config, root, state, compact_sources, current_corpus):
         # It never runs an external teacher in the prompt hook.
         failure = {}; stage = 'enqueue'
         try:
-            from .shared import enqueue, launch
+            from .shared import _safe_root, enqueue, launch
+            if sample.get('context_origin') == 'tool_edit':
+                # Before the first checked edit case is queued (decision 8).
+                shared_root = _safe_root(config, root)
+                if shared_root is not None:
+                    from .edit_git_migration import record_fix_time
+                    record_fix_time(shared_root, root)
             shared_status = enqueue(config, root, sample, compact_sources)
             if shared_status == 'queued':
                 stage = 'launch'

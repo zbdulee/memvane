@@ -1,6 +1,7 @@
 """One plugin-owned inference process per OS user; never a training transport."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 import hashlib
 import math
 import os
@@ -208,7 +209,11 @@ class GenerationEngine:
             finally:
                 timing.setdefault('forward_seconds', round(time.perf_counter() - began, 6))
             check()
-            fresh = revalidate()
+            # A request that loaded no model already swept the runtime at its
+            # initial validation; a load is swept again after it (above).
+            from .inference_identity import light_revalidation
+            with light_revalidation() if pending is None else nullcontext():
+                fresh = revalidate()
             if (fresh['generation'] != job['generation'] or fresh['namespace'] != job['namespace']
                     or fresh['policy'] != job['policy']):
                 raise ServiceFailure('request_changed')
@@ -280,10 +285,13 @@ def _signature():
     except (OSError, ValueError, KeyError, TypeError):
         version = '0'
     digest.update(str(version).encode('utf-8') + b'\0')
+    # Per-file hashes shared with ``code_identity``: a hook process reads
+    # each code file once for both.
+    from .inference_identity import cached_file_sha
     for path in sorted([*core.glob('memvane/**/*.py'), *core.glob('memvane/**/*.mjs'),
                         *core.glob('entry/*.py')]):
         digest.update(path.relative_to(core).as_posix().encode() + b'\0')
-        digest.update(path.read_bytes())
+        digest.update(bytes.fromhex(cached_file_sha(path.resolve())))
     return digest.hexdigest()
 
 
@@ -663,11 +671,16 @@ def _validate_request(envelope):
     if argv[0] != sys.executable:
         raise ServiceFailure('model_family_mismatch')
     request = envelope['request']
-    if (not isinstance(request, dict) or set(request) not in (
-            {'schema_version', 'artifact_path', 'cases'},
-            {'schema_version', 'artifact_path', 'cases', 'model_input_view'})
+    from .adapter import LANES, P_HARD
+    if (not isinstance(request, dict)
+            or not {'schema_version', 'artifact_path', 'cases'} <= set(request) <= {
+                'schema_version', 'artifact_path', 'cases', 'model_input_view',
+                'pair_budget', 'query_lane'}
             or request['schema_version'] != 1 or not isinstance(request['cases'], list)
-            or len(request['cases']) != 1):
+            or len(request['cases']) != 1
+            or ('pair_budget' in request and (type(request['pair_budget']) is not int
+                                              or not 1 <= request['pair_budget'] <= P_HARD))
+            or ('query_lane' in request and request['query_lane'] not in LANES)):
         raise ServiceFailure('request_rejected')
     active = read_private_json(state / envelope['pointer_name'])
     if envelope['pointer_name']=='active-checkpoint.json' and active.get('application') is not None:
@@ -732,7 +745,9 @@ def predict(state, policy, request, artifact_sha, *, deadline, pointer_name='act
     if startup_seconds is not None:
         return predict_after_startup(state, policy, request, artifact_sha, deadline=deadline,
             pointer_name=pointer_name, ensure_service=ensure_service, startup_seconds=startup_seconds)
+    envelope_started = time.perf_counter()
     envelope = _make_envelope(state, request, artifact_sha, deadline, pointer_name)
+    envelope_seconds = round(time.perf_counter() - envelope_started, 6)
     root = service_root(create=True)
     started = time.perf_counter()
     try:
@@ -748,7 +763,12 @@ def predict(state, policy, request, artifact_sha, *, deadline, pointer_name='act
         if str(exc) == 'resident_handshake_timeout':
             raise ServiceFailure('deadline_expired') from exc
         raise
-    return answer(response, started)
+    try:
+        prediction, timing = answer(response, started)
+    except ServiceFailure as exc:
+        exc.timing = {**exc.timing, 'envelope_seconds': envelope_seconds}
+        raise
+    return prediction, {**timing, 'envelope_seconds': envelope_seconds}
 
 
 def _validate_apply(envelope):

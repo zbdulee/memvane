@@ -112,11 +112,12 @@ class IdentityChecks(unittest.TestCase):
         with patch.object(identity,'code_identity',return_value='c'*64):self.validate()
         with self.assertRaises(ValueError):self.cache.verify(self.state,self.argv,'other-view')
     def probe(self):
-        from memvane.learning.context_learning import adapter as laya_adapter
         case={'request_id':'probe','prompt':'synthetic request','input_sha256':'0'*64,
               'candidates':[{'id':'synthetic/overflow','revision_sha256':'1'*64,
                              'input_text':'# Synthetic overflow\nbody','input_kind':'full_compact_wiki_body'}]}
-        return patch.object(laya_adapter,'truncation_probe',return_value=case)
+        # The view's pairing proof reads the probe's prediction timing.
+        return patch('memvane.learning.context_learning.pairing.pairing_probe',return_value=(
+            case,lambda timing:timing.get('truncated_pairs')==1))
     def test_explicit_prepare_never_calls_train_or_smoke_and_rechecks_expiry(self):
         from memvane.learning.context_learning import inference_service as service, local_cycle, runtime_setup
         clock=[100.0];expired=[False];forwards=[]
@@ -146,7 +147,7 @@ class IdentityChecks(unittest.TestCase):
                 identity.prepare(self.state,self.argv)
         self.assertEqual(forwards,['synthetic/cobalt','synthetic/overflow'])
         self.assertEqual(before,(self.state/identity.RECEIPT).read_bytes())
-    def test_prepare_requires_the_versioned_truncation_to_run(self):
+    def test_prepare_requires_the_versioned_pairing_to_run(self):
         from memvane.learning.context_learning import inference_service as service, local_cycle
         class Trainer:
             def __init__(inner,*args,**kw):pass
@@ -159,7 +160,7 @@ class IdentityChecks(unittest.TestCase):
              patch.object(service,'_forward',side_effect=lambda *a,**kw:kw['timing'].update(truncated_pairs=0)), self.probe(), \
              patch.object(service,'_rss_mib',return_value=100), \
              patch.object(service.resident,'_admission',return_value=({},{})):
-            with self.assertRaisesRegex(ValueError,'inference_prepare_truncation_not_exercised'):
+            with self.assertRaisesRegex(ValueError,'inference_prepare_pairing_not_exercised'):
                 identity.prepare(self.state,self.argv)
         self.assertEqual(before,(self.state/identity.RECEIPT).read_bytes())
     def test_prepare_load_deadline_and_rss_guard(self):
