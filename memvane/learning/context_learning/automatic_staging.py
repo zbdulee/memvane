@@ -65,7 +65,7 @@ def _trainer(policy, factory, *, root=None, control=None, fds=(), coordination_f
     return trainer
 
 
-def _quality_ready(train, validation, cohort):
+def _quality_ready(train, validation, cohort, *, min_nonempty=0):
     train_families = len({row[12] for row in train})
     validation_families = len({row[12] for row in validation})
     empty = sum(not json.loads(row[5])['selected_ids'] for row in validation)
@@ -73,7 +73,8 @@ def _quality_ready(train, validation, cohort):
              and train_families >= cohort['minTrainFamilies']
              and len(validation) >= cohort['minValidationCases']
              and validation_families >= cohort['minValidationFamilies']
-             and empty >= cohort['minEmptyValidation'])
+             and empty >= cohort['minEmptyValidation']
+             and len(validation) - empty >= min_nonempty)
     return ready, empty, train_families, validation_families
 
 
@@ -123,8 +124,12 @@ def _prepare_staged(root,policy,grant):
         return {'status':'multilingual_policy_required'}
     if (root/'experimental-checkpoint.json').exists():
         return {'status':'existing_trial_requires_review'}
+    from . import prequential
+    sequential=prequential.default_teacher_grant(grant)
     with _db(root) as db:
         cohort_train, validation = training_and_validation(db, _project(root, grant), grant)
+        frozen=prequential.candidate_job(db,grant) if sequential else None
+    if frozen is not None and frozen['id'] in prequential.rejected_cycles(root):frozen=None
     if len(cohort_train)>2000 or len(validation)>2000:
         return {'status':'cohort_source_revoked'}
     from memvane.runtime.api import preparation_checkpoint
@@ -161,11 +166,18 @@ def _prepare_staged(root,policy,grant):
         if existing and (existing['status']=='blocked' or existing['attempts']>=5):
             return {'status':'synthetic_training_budget_exhausted'}
     from .project_scope import SCOPE
-    job=(existing if synthetic and existing else queue.plan(
+    if frozen is not None:
+        # A promotion-sized candidate stays pinned until applied or rejected (S2).
+        job=queue.get(frozen['id'])
+        if job is None or job['status']!='staged':frozen=None
+    if frozen is None:job=(existing if synthetic and existing else queue.plan(
         cohort_train,approval=proposal_sha256(grant),cohort=grant['cohort']['id'],
         family=family,minimum=minimum,maximum=policy['batchMax'],
         roles=['train']*len(cohort_train),cumulative=grant.get('scope')==SCOPE))
     if job is None:return {'status':'waiting_fresh_batch','threshold':minimum}
+    if sequential and frozen is None and job['status']=='staged' and _closed(root,job['id']):
+        # A finished (rejected) candidate is never evaluated again.
+        return {'status':'waiting_fresh_batch','threshold':minimum}
     if synthetic and (len(job['members'])>100 or job['approval']!=proposal_sha256(grant)):
         return {'status':'synthetic_training_budget_exhausted'}
     with _db(root) as db:
@@ -173,7 +185,9 @@ def _prepare_staged(root,policy,grant):
     if previous and previous[0]=='applied':return {'status':'already_applied','cycle_id':job['id']}
     try: train=queue.rows(job,cohort_train)
     except ValueError:
+        if frozen is not None:prequential.close(root,job['id'],'source_revoked')
         return {'status':'staged_source_revoked','cycle_id':job['id']}
+    if sequential:validation=prequential.split(cohort_train,job)
     if job['status']=='blocked':
         return {'status':'staged_source_revoked' if job['reason']=='source_revoked' else 'learning_job_blocked','cycle_id':job['id']}
     if synthetic and sum(len(json.loads(row[3])['candidates']) for row in train)>100:
@@ -271,7 +285,7 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
                 'sourceActiveAtStage': source_active,
                 'publication': 'forbidden_without_separate_apply_authorization'}
             with _db(root) as db:
-                latest, _ = training_and_validation(db, project, grant)
+                latest, _ = training_and_validation(db, project, grant, job)
                 if _case_evidence(queue.rows(job, latest)) != train_sha:
                     stage['sourceActiveAtStage'] = False
                 db.execute("UPDATE cycles SET status='staged',evidence=? "
@@ -332,7 +346,9 @@ def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*
     with queue.claim(evaluation['id']) as claim:
         if claim is None:
             if evaluation['status']=='waiting_quality':
-                _,empty,tf,vf=_quality_ready(train,validation,grant['cohort'])
+                from .prequential import min_nonempty_validation
+                _,empty,tf,vf=_quality_ready(train,validation,grant['cohort'],
+                    min_nonempty=min_nonempty_validation(grant))
                 return {'status':'staged_waiting_quality_cohort','cycle_id':cycle_id,
                     'train':len(train),'validation':len(validation),'train_families':tf,
                     'validation_families':vf,'empty_validation':empty,
@@ -340,7 +356,7 @@ def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*
                     'required_validation':grant['cohort']['minValidationCases']}
             return {'status':'staged_evaluation_deferred','cycle_id':cycle_id}
         result=_evaluate_impl(root,policy,grant,stage,train,validation,cohort_train,
-            cycle_id=cycle_id,project=project,grant_sha=grant_sha,folder=folder,
+            cycle_id=cycle_id,project=project,grant_sha=grant_sha,folder=folder,job=job,
             incumbent=incumbent,trainer_factory=trainer_factory,control=control,
             fds=(claim,coord_fd),coord_fd=coord_fd,
             quality_epoch=digest(canonical([evaluation['id'],queue.get(evaluation['id'])['attempts']])))
@@ -385,12 +401,20 @@ def _prepare_evaluation(root,policy,cycle_id):
     if job is None or job['approval']!=proposal_sha256(grant):return {'status':'staged_authorization_expired','cycle_id':cycle_id}
     with _db(root) as db:
         old=db.execute('SELECT status,evidence FROM cycles WHERE cycle_id=?',(cycle_id,)).fetchone()
-        cohort_train,validation=training_and_validation(db,_project(root, grant),grant)
+        cohort_train,validation=training_and_validation(db,_project(root, grant),grant,job)
     if old is None or old[0] not in ('staged','staged_evaluated'):return {'status':'evaluation_stage_unavailable','cycle_id':cycle_id}
-    stage=json.loads(old[1]);train=queue.rows(job,cohort_train)
-    if (not stage['sourceActiveAtStage'] or stage['artifactSha256']!=_hash(stage['artifactPath'])
+    from . import prequential
+    sequential=prequential.default_teacher_grant(grant)
+    stage=json.loads(old[1])
+    try:train=queue.rows(job,cohort_train)
+    except ValueError:
+        if not sequential:raise
+        train=None
+    if (train is None or not stage['sourceActiveAtStage'] or stage['artifactSha256']!=_hash(stage['artifactPath'])
             or stage['baseArtifactSha256']!=_hash(policy['baseArtifact'])
             or any(not _case_active(root,(r[7],r[1],r[3])) for r in train+validation)):
+        # A revoked prequential candidate is closed so the next job can be planned.
+        if sequential:prequential.close(root,cycle_id,'source_revoked')
         return {'status':'staged_source_revoked','cycle_id':cycle_id}
     if old[0]=='staged_evaluated':
         from .learning_profile import present,require
@@ -413,7 +437,7 @@ def _prepare_evaluation(root,policy,cycle_id):
     return root,grant,queue,job,stage,train,validation,cohort_train,evaluations,evaluation
 
 
-def _evaluate_impl(root,policy,grant,stage,train,validation,cohort_train,*,cycle_id,project,grant_sha,folder,incumbent,trainer_factory,control,fds,coord_fd,quality_epoch):
+def _evaluate_impl(root,policy,grant,stage,train,validation,cohort_train,*,cycle_id,project,grant_sha,folder,incumbent,trainer_factory,control,fds,coord_fd,quality_epoch,job=None):
     from .shared import _db,_predict,_case,_case_active
     from .adapter import EDIT_INPUT_VIEW
     artifact=Path(stage['artifactPath'])
@@ -432,8 +456,10 @@ def _evaluate_impl(root,policy,grant,stage,train,validation,cohort_train,*,cycle
         return {'status':'staged_evaluation_deferred','cycle_id':cycle_id,'reason':str(exc)}
     except ValueError:
         return {'status': 'staged_authorization_expired', 'cycle_id': cycle_id}
+    from . import prequential
+    required_nonempty = prequential.min_nonempty_validation(grant)
     ready, empty, train_families, validation_families = _quality_ready(
-        train, validation, grant['cohort'])
+        train, validation, grant['cohort'], min_nonempty=required_nonempty)
     if not ready:
         return {'status': 'staged_waiting_quality_cohort', 'cycle_id': cycle_id,
             'train': len(train), 'validation': len(validation),
@@ -446,6 +472,7 @@ def _evaluate_impl(root,policy,grant,stage,train,validation,cohort_train,*,cycle
             'required_validation_families':
                 grant['cohort']['minValidationFamilies'],
             'required_empty': grant['cohort']['minEmptyValidation'],
+            'required_nonempty': required_nonempty,
             'artifact_sha256': stage['artifactSha256']}
     if any(not _case_active(root, (r[7], r[1], r[3]))
            for r in train + validation):
@@ -474,7 +501,7 @@ def _evaluate_impl(root,policy,grant,stage,train,validation,cohort_train,*,cycle
             if active_anchor is not None and read_private_json(root/'active-checkpoint.json')!=active_anchor:
                 return {'status':'staged_cohort_changed','cycle_id':cycle_id}
             latest_train, latest_validation = training_and_validation(
-                db, project, grant)
+                db, project, grant, job)
             if (_case_evidence(latest_train) != _case_evidence(cohort_train)
                     or _case_evidence(latest_validation) !=
                        _case_evidence(validation)):
@@ -496,6 +523,12 @@ def _evaluate_impl(root,policy,grant,stage,train,validation,cohort_train,*,cycle
     except Exception as exc:
         return {'status': 'staged_evaluation_deferred', 'cycle_id': cycle_id,
                 'reason': str(exc)[:80],'failure':not isinstance(exc,ResourceDeferred)}
+
+
+def _closed(root,cycle_id):
+    from .evaluation_queue import EvaluationQueue
+    evaluation=EvaluationQueue(root).get('evaluate:'+cycle_id)
+    return evaluation is not None and evaluation['status']=='blocked'
 
 
 def _train_once(trainer,request,folder):

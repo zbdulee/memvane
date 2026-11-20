@@ -3,6 +3,8 @@
 Admission is the project cohort's (`general_cohort`). Every captured
 candidate (including distractors) counts toward exposure, so a validation
 case never shares a question, document, revision or body with training.
+A default-teacher grant uses the prequential path instead (`prequential`):
+every gold case trains and a job's evaluation cases follow its cutoff.
 """
 from __future__ import annotations
 
@@ -39,6 +41,9 @@ def admitted(db, project, grant, statuses=('queued', 'first_done')):
     from .project_scope import SCOPE
     if grant.get('scope') != SCOPE:
         raise ValueError('runtime_authorization_cohort_scope_changed')
+    from . import prequential
+    if prequential.default_teacher_grant(grant):
+        return prequential.admitted(db, project, grant, statuses=statuses)
     from .general_cohort import admitted as general_admitted
     return general_admitted(db, project, grant, statuses=statuses)
 
@@ -48,7 +53,14 @@ def gold_rows(db, project, grant):
     return admitted(db, project, grant, statuses=('gold',))
 
 
-def training_and_validation(db, project, grant):
+def training_and_validation(db, project, grant, job=None):
+    """``(train, validation)``; ``job`` selects a prequential job's evaluation cases."""
+    from . import prequential
+    if prequential.default_teacher_grant(grant):
+        from .project_scope import SCOPE
+        if grant.get('scope') != SCOPE:
+            raise ValueError('runtime_authorization_cohort_scope_changed')
+        return prequential.training_and_validation(db, project, grant, job)
     rows = gold_rows(db, project, grant)
     train, validation = [], []
     train_keys = set().union(*(_exposure(row) for role, row in rows
