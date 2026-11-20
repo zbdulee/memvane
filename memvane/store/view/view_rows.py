@@ -1349,9 +1349,9 @@ class RowsMixin:
         query = vectors.query_values(query_vector)
         record = self._pinned(pin)
         entry = record['entry']
-        vectors._left(deadline)
-        self._observe(entry, deadline=deadline, timeout_reason=vectors.DEADLINE_EXCEEDED)
-        vectors._left(deadline)
+        vectors._left(deadline);started = vectors.clock()
+        self._observe(entry, deadline=deadline, timeout_reason=vectors.DEADLINE_EXCEEDED);vectors.mark(timings, 'vectorObserveMs', started)
+        vectors._left(deadline);started = vectors.clock()
         with self._reading(deadline) as db:
             head = self._rows_head_row(db, pin.view_id)
             if (head.ordinal, head.gen_id, head.epoch) != (record['ordinal'], pin.gen_id, pin.epoch):
@@ -1367,13 +1367,14 @@ class RowsMixin:
             dimension = self._profile(profile_id)['dimension']
             if len(query) != dimension:
                 v.fail('vector_query_invalid')
+            vectors.mark(timings, 'vectorOpenMs', started);started = vectors.clock()
             cards = [row for row in self._rows_open(db, pin.view_id, head.ordinal) if row['eligible']
                      and _path_allowed(row['path'], path_prefixes, excluded_paths)]
             heads = self._rows_coverage(db, cards, generation, full=False, deadline=deadline)
             groups = {}
             for row in cards:
                 groups.setdefault(row['blob_sha'], []).append(row)
-            from memvane.store.view import vector_accel
+            vectors.mark(timings, 'vectorCardsMs', started);from memvane.store.view import vector_accel
             native = vector_accel.kernel()
             stats = timings if timings is not None else {}
             stats.update(vectorKernel='accelerate' if native is not None else 'python',
@@ -1390,14 +1391,14 @@ class RowsMixin:
                 top = vectors._python_top(self, db, groups, heads, recipe_id, profile_id,
                                           dimension, query, limit, max_float_work, deadline,
                                           stats, preferred_paths)
-            state = self._snapshot_state(entry['capture'], v.parse_canonical(generation['capture_json']), deadline)
-            answer = [dict(path=ref['path'], blob_sha=ref['blob_sha'], body=self._blob(ref['blob_sha']),
+            started = vectors.clock();state = self._snapshot_state(entry['capture'], v.parse_canonical(generation['capture_json']), deadline)
+            vectors.mark(timings, 'vectorSnapshotMs', started);started = vectors.clock();answer = [dict(path=ref['path'], blob_sha=ref['blob_sha'], body=self._blob(ref['blob_sha']),
                            display_title=ref['display_title'], score=-negative, view_id=pin.view_id,
                            gen_id=pin.gen_id, evidence='commitment-only', owner_verified=False,
                            snapshot_state=state) for negative, _, _, ref in top]
-            vectors._left(deadline)
-        self._observe(entry, deadline=deadline, timeout_reason=vectors.DEADLINE_EXCEEDED)
-        vectors._left(deadline)
+            vectors.mark(timings, 'vectorBodyMs', started);vectors._left(deadline)
+        started = vectors.clock();self._observe(entry, deadline=deadline, timeout_reason=vectors.DEADLINE_EXCEEDED)
+        vectors.mark(timings, 'vectorObserveMs', started);vectors._left(deadline)
         return answer
 
     # -- pinned generation reads ---------------------------------------------

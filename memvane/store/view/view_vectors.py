@@ -312,6 +312,7 @@ class VectorMixin:
     def search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work=DEFAULT_WORK,
                      deadline_seconds=2, path_prefixes=None, excluded_paths=None, timings=None,
                      preferred_paths=None):
+        began = clock()
         try:
             return self._rows_search_exact(pin, query_vector, limit, profile_id=profile_id,
                                            max_float_work=max_float_work, deadline_seconds=deadline_seconds,
@@ -319,6 +320,9 @@ class VectorMixin:
                                            preferred_paths=preferred_paths)
         except MemoryError:
             v.fail(WORK_EXCEEDED)
+        finally:
+            if timings is not None:
+                timings['vectorTotalMs'] = round((clock() - began) * 1000, 3)
 
     def search_hybrid(self, pin, fts_query, query_vector, limit, *, profile_id=None,
                       max_float_work=DEFAULT_WORK, deadline_seconds=2, path_prefixes=None,
@@ -362,6 +366,19 @@ class VectorMixin:
                 raise
             return dict(lexical=lexical, semantic=[], semantic_status=DEFERRED[exc.reason])
         return dict(lexical=lexical, semantic=semantic, semantic_status='complete')
+
+
+clock = time.perf_counter
+
+
+def mark(timings, key, since):
+    """Add one exact-search phase to the caller's ``timings`` (``vector*Ms``); None times nothing.
+
+    The phases outside the vector kernel (observe, open, cards, snapshot,
+    body) are written as each ends, so a deadline keeps the ones it reached.
+    """
+    if timings is not None:
+        timings[key] = round(timings.get(key, 0.0) + (clock() - since) * 1000, 3)
 
 
 def _check_preferred(paths):

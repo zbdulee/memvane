@@ -3,15 +3,20 @@ import os
 
 
 class CpuThreads:
+    LIMITS=('OMP_NUM_THREADS','MKL_NUM_THREADS','OPENBLAS_NUM_THREADS',
+            'OPENBLAS_DEFAULT_NUM_THREADS','VECLIB_MAXIMUM_THREADS',
+            'NUMEXPR_NUM_THREADS','RAYON_NUM_THREADS')
+    FIXED={'QMD_CPU_THREADS':'1','OMP_MAX_ACTIVE_LEVELS':'1','OMP_DYNAMIC':'FALSE',
+           'MKL_DYNAMIC':'FALSE','TOKENIZERS_PARALLELISM':'false'}
+    # Every key ``environment`` sets; nothing else is added to the base.
+    KEYS=frozenset(LIMITS)|frozenset(FIXED)
+
     @staticmethod
     def environment(base=None):
         env=dict(os.environ if base is None else base)
-        for key in ('OMP_NUM_THREADS','MKL_NUM_THREADS','OPENBLAS_NUM_THREADS',
-                    'OPENBLAS_DEFAULT_NUM_THREADS','VECLIB_MAXIMUM_THREADS',
-                    'NUMEXPR_NUM_THREADS','RAYON_NUM_THREADS'):
+        for key in CpuThreads.LIMITS:
             env[key]='1'
-        env.update(QMD_CPU_THREADS='1',OMP_MAX_ACTIVE_LEVELS='1',OMP_DYNAMIC='FALSE',
-                   MKL_DYNAMIC='FALSE',TOKENIZERS_PARALLELISM='false')
+        env.update(CpuThreads.FIXED)
         return env
 
     @staticmethod

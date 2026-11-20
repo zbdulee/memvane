@@ -736,6 +736,9 @@ def trial_eligible(root, *, deadline=None, max_seconds=.2):
         return False
 
 
+CASE_LIMIT = 2000  # Case rows of any status; capture stops here (``queue_full``).
+
+
 def enqueue(config, project, sample, compact_sources):
     """Copy an exact eligible capture once; no current source reread is needed."""
     root = _safe_root(config, project)
@@ -773,7 +776,7 @@ def enqueue(config, project, sample, compact_sources):
                          (key, sample["request_id"])).fetchone()
         if old:
             return "duplicate" if old[0] == digest(encoded) else "conflict"
-        if (db.execute("SELECT COUNT(*) FROM cases").fetchone()[0] >= 2000
+        if (db.execute("SELECT COUNT(*) FROM cases").fetchone()[0] >= CASE_LIMIT
                 or (root / DATABASE_NAME).stat().st_size > 512 * 1024 * 1024):
             return "queue_full"
         # A target can have several paraphrased questions. Their provisional
@@ -2177,10 +2180,8 @@ def run_training_pending(root,project):
                 if intent['phase']=='activated':
                     candidate_apply.readable(root);candidate_apply._finish_cycle(root,intent['cycle_id'])
             if (root/DATABASE_NAME).exists():
-                # A plugin update changes the approval: carry the frozen candidate to it
-                # (default teacher) and close every cycle of an earlier approval, before
-                # the staged selection below picks one that can never be applied.
-                from .prequential import supersede
+                # Before the staged selection: carry or close cycles of an earlier approval.
+                from .candidate_close import supersede
                 supersede(root,policy,project)
         # Existing fixtures without a shared ledger have no evaluation work.
         if (root/DATABASE_NAME).exists():
@@ -2216,25 +2217,11 @@ def _profile_apply(root,policy,profile,result):
         from .candidate_apply import apply_candidate
         answer=apply_candidate(root,policy,result['cycle_id'])
         if (root/DATABASE_NAME).exists():
-            from .candidate_apply import JUDGED
+            from .candidate_close import close_judged
             from .evaluation_queue import EvaluationQueue
-            from .prequential import rejected_cycles
-            cycle=result['cycle_id']
-            queue=EvaluationQueue(root);job=queue.get('evaluate:'+cycle)
-            # A judged candidate, or one whose application journal ended rejected
-            # whatever this pass returned, is closed for both profiles: no later
-            # pass applies it again and the next job can be planned.
-            judged=(answer.get('reason') if answer['status']=='apply_blocked' and answer.get('reason') in JUDGED
-                    else 'candidate_rejected' if cycle in rejected_cycles(root) else None)
-            if judged is not None:
-                queue.reject(cycle,judged)
-                # An older candidate whose evaluation completed without being applied was
-                # judged before (a refusal that, before closing existed, left it open):
-                # with the newer one closed the selection would pick it again.
-                with _db(root) as db:
-                    older=[row[0] for row in db.execute("SELECT c.cycle_id FROM cycles c JOIN learning_jobs j ON j.job_id=c.cycle_id JOIN learning_evaluations e ON e.cycle_id=c.cycle_id AND e.namespace=j.namespace WHERE j.namespace=? AND c.status='staged_evaluated' AND e.status='completed' AND c.cycle_id!=? AND c.started_at<=(SELECT started_at FROM cycles WHERE cycle_id=?)",(queue.scope,cycle,cycle))]
-                for other in older:queue.reject(other,'superseded_by_judged')
-            elif job is not None:
+            queue=EvaluationQueue(root);job=queue.get('evaluate:'+result['cycle_id'])
+            # Both profiles: a judged candidate is closed so no later pass applies it again.
+            if close_judged(root,result['cycle_id'],answer,queue) is None and job is not None:
                 if answer['status']=='apply_deferred':queue.defer(job['id'],'apply_resource')
                 elif answer['status'] in ('applied','already_applied'):queue.finish(job['id'],'completed')
                 elif answer['status']=='apply_blocked':queue.finish(job['id'],'blocked')

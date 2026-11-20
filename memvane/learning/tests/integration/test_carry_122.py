@@ -14,8 +14,8 @@ import time
 from contextlib import redirect_stdout
 from unittest import mock
 
-from memvane.learning.context_learning import (automatic_staging, candidate_apply, general_teacher,
-                                               prequential, project_scope, runtime_authorization, shared)
+from memvane.learning.context_learning import (automatic_staging, candidate_apply, candidate_close,
+                                               general_teacher, prequential, project_scope, runtime_authorization, shared)
 from memvane.learning.context_learning.learning_queue import LearningQueue
 from memvane.learning.context_learning.contracts import digest
 from memvane.learning.context_learning.store import canonical
@@ -191,7 +191,7 @@ class CarryFixture(RenewalFixture):
         self.assertEqual(result['cycle']['status'], 'staged_waiting_quality_cohort', result)
         self.assertEqual(self.trained, [100])
         job = self.jobs()[-1]
-        self.assertEqual(job['lineage'], prequential.lineage(self.grant()))
+        self.assertEqual(job['lineage'], candidate_close.lineage(self.grant()))
         return job
 
 
@@ -254,7 +254,7 @@ class Carry(CarryFixture):
             return real(db, table)
         with mock.patch.object(prequential, '_has', side_effect=interrupted):
             with self.assertRaises(Exception):
-                prequential.supersede(self.root, self.policy(), self.project)
+                candidate_close.supersede(self.root, self.policy(), self.project)
         self.assertEqual((self.jobs(), self.cycle_rows(), self.evaluations()), before)
         result = self.worker()['cycle']
         self.assertEqual(result['cycle_id'], job['id'])
@@ -270,9 +270,9 @@ class Carry(CarryFixture):
                 self.write(path, {'cycle_id': job['id'], 'phase': phase, 'apply_id': 'f' * 32})
                 with mock.patch.object(candidate_apply, 'read_journal',
                                        side_effect=lambda root: json.loads(path.read_text())):
-                    self.assertIsNone(prequential.carry_candidate(self.root, self.policy(), grant, self.project))
+                    self.assertIsNone(candidate_close.carry_candidate(self.root, self.policy(), grant, self.project))
                 path.unlink()
-        self.assertIsNotNone(prequential.carry_candidate(self.root, self.policy(), grant, self.project))
+        self.assertIsNotNone(candidate_close.carry_candidate(self.root, self.policy(), grant, self.project))
 
     def test_t2_11_an_expired_grant_closes_nothing(self):
         self.frozen()
@@ -280,7 +280,7 @@ class Carry(CarryFixture):
         before = (self.jobs(), self.cycle_rows(), self.evaluations())
         policy = self.policy()
         with mock.patch('time.time', return_value=time.time() + 20 * 365 * 86400):
-            self.assertIsNone(prequential.supersede(self.root, policy, self.project))
+            self.assertIsNone(candidate_close.supersede(self.root, policy, self.project))
         self.assertEqual((self.jobs(), self.cycle_rows(), self.evaluations()), before)
 
 
@@ -294,11 +294,11 @@ class Lineage(CarryFixture):
                     'projectRoot': dict(grant, projectRoot=str(self.home))}
         for name, other in variants.items():
             with self.subTest(field=name):
-                self.assertNotEqual(prequential.lineage(other), prequential.lineage(grant))
-                self.assertNotEqual(prequential.lineage(other), job['lineage'])
+                self.assertNotEqual(candidate_close.lineage(other), candidate_close.lineage(grant))
+                self.assertNotEqual(candidate_close.lineage(other), job['lineage'])
         # Only the binding differs from the renewed grant: same lineage.
-        self.assertEqual(job['lineage'], prequential.lineage(grant))
-        with mock.patch.object(prequential, 'lineage', return_value='0' * 64):
+        self.assertEqual(job['lineage'], candidate_close.lineage(grant))
+        with mock.patch.object(candidate_close, 'lineage', return_value='0' * 64):
             self.worker()
         self.assertEqual(self.evaluations()[job['id']][:2], ('blocked', 'authorization_superseded'))
         self.assertEqual(self.promotions('carried'), [])

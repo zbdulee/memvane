@@ -214,11 +214,16 @@ def enable_requests_stopped(state, plugin_version):
 
 
 UNAVAILABLE = 'teacher_host_unavailable'
+UNSAFE_PATH = 'teacher_cli_unsafe_path'
 REST_REASONS = {'teacher_isolation_incomplete': '격리 점검 실패',
-                'teacher_model_unresolved': '사용할 모델 없음'}
+                'teacher_model_unresolved': '사용할 모델 없음',
+                'teacher_codex_home_redirected': 'CODEX_HOME 재지정'}
 _NOTICE_NAMES = {'claude': ('Claude', 'Claude Code CLI(claude)'), 'codex': ('Codex', 'Codex CLI(codex)')}
 ENABLE_NOTICE = ('[memvane] 학습 설정 전환이 끝나지 않아 학습과 선택 모델이 멈췄습니다. '
                  'setup skill로 학습 설정 복구를 요청하세요.')
+# No intent left: the enable requests stopped after repeated failures; nothing is fenced.
+ENABLE_DEFERRED_NOTICE = ('[memvane] 학습 설정 전환이 미뤄졌습니다. 검색과 수집은 계속됩니다. '
+                          'setup skill로 학습 설정 상태를 확인하세요.')
 
 
 def _host_notice(row, host, now):
@@ -229,6 +234,9 @@ def _host_notice(row, host, now):
     if reason == UNAVAILABLE:
         line = ('[memvane] 학습 라벨링에는 %s가 필요합니다. CLI를 설치하면 대기 중인 학습 사례를 '
                 '처리합니다. 검색과 수집은 계속됩니다.' % cli)
+    elif reason == UNSAFE_PATH:
+        line = ('[memvane] %s가 있는 폴더의 권한 때문에 학습 라벨링에 쓰지 않습니다. '
+                '검색과 수집은 계속됩니다.' % cli)
     elif (reason in REST_REASONS and row['waitingSinceUnixMs'] is not None
           and cooldown.window_elapsed(row['waitingSinceUnixMs'] / 1000, now / 1000, LONG_REST_SECONDS)):
         line = ('[memvane] %s 학습 라벨링이 하루 넘게 멈춰 있습니다(%s). memvane:logs로 확인하세요. '
@@ -254,8 +262,12 @@ def session_notices(root, host, plugin_version, now=None):
     now = now_ms() if now is None else now
     state = read_state(root)
     lines = []
-    if enable_intent_stale(root, now / 1000) or (
-            enable_requests_stopped(state, plugin_version) and not teacher_off(root)):
+    if enable_intent_stale(root, now / 1000):
+        lines.append(ENABLE_NOTICE)
+    elif (not enable_intent_present(root) and enable_requests_stopped(state, plugin_version)
+          and not teacher_off(root)):
+        lines.append(ENABLE_DEFERRED_NOTICE)
+    elif enable_requests_stopped(state, plugin_version) and not teacher_off(root):
         lines.append(ENABLE_NOTICE)
     if _host_notice(state['hosts'][host], host, now) is None:
         return lines

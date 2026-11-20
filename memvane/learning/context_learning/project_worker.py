@@ -50,6 +50,50 @@ def _default_teacher_pass(root, project, policy):
         return {'status': 'teacher_failed', 'reason': type(exc).__name__}
 
 
+def _number(value):
+    import math
+    return value if type(value) in (int, float) and math.isfinite(value) else None
+
+
+def _record_deferral(root, project, policy, cycle, started):
+    """One ``learning.cycle`` row for a cycle the resource admission deferred; never raises.
+
+    The inner reason and the numbers come from this pass's ``resource-defer.json``
+    (admission result and the observation it judged). Counts and MiB only.
+    """
+    try:
+        from .dataset import read_private_json
+        try:
+            defer = read_private_json(Path(root) / 'resource-defer.json')
+            if not isinstance(defer, dict) or not _number(defer.get('recordedAt')) or defer['recordedAt'] < started:
+                defer = {}
+        except (OSError, ValueError):
+            defer = {}
+        resources = defer.get('resources') if isinstance(defer.get('resources'), dict) else {}
+        observed = resources.get('observed') if isinstance(resources.get('observed'), dict) else resources
+        admission = resources.get('memory_admission') if isinstance(resources.get('memory_admission'), dict) else {}
+        reserve, extra = _number(admission.get('reserve_mib')), _number(admission.get('required_additional_mib'))
+        latch = None
+        try:
+            from memvane.runtime.api import coordinator as Coordinator
+            state = read_private_json(Coordinator().root / 'resource-recovery.json')
+            latch = state.get('paused') if isinstance(state, dict) and type(state.get('paused')) is bool else None
+        except (OSError, ValueError, TypeError):
+            pass
+        reason = resources.get('reason') or defer.get('reason') or cycle.get('reason')
+        from memvane.journal.api import select_route
+        from memvane.diagnostics.api import emit
+        emit('learning.cycle', decision=select_route(str(project), action='update'),
+             outcome='deferred_resource', reason=str(reason)[:80] if reason else None,
+             deferredBy=str(defer.get('reason'))[:80] if defer.get('reason') else None,
+             availableMib=_number(observed.get('available_mib')),
+             requiredMib=reserve + extra if reserve is not None and extra is not None else None,
+             loadPerCpu=_number(observed.get('load_per_cpu')),
+             loadLimit=_number(policy.get('maxLoadPerCpu')), latchPaused=latch)
+    except Exception:
+        pass  # Diagnostic only: the cycle's own retry state is the record.
+
+
 def run(root, project, config=None):
     from . import shared
     from memvane.settings import api as qmd_config
@@ -112,7 +156,11 @@ def run(root, project, config=None):
                 return {'status':'deferred_quota','reason':str(exc) if str(exc) in (
                     'weekly_quota_checkpoint','weekly_quota_unavailable') else 'weekly_quota_unavailable',
                     'teacher':teacher}
+        import time
+        started=time.time()
         cycle=shared.run_training_pending(root,project)
+        if cycle.get('status')=='deferred_resource':
+            _record_deferral(root,project,policy,cycle,started)
         if kind=='default-teacher':
             from . import prequential
             prequential.record_pass(root,project,grant,cycle)

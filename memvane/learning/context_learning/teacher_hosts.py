@@ -29,6 +29,7 @@ from . import teacher_model_tiers as tiers
 
 HOSTS = ('claude', 'codex')
 UNAVAILABLE = 'teacher_host_unavailable'
+UNSAFE_PATH = 'teacher_cli_unsafe_path'
 CODEX_HOME_REDIRECTED = 'teacher_codex_home_redirected'
 QUOTA = 'deferred_quota'
 QUOTA_FLOOR = 30
@@ -73,7 +74,13 @@ def child_environment(host, environ):
 
 def resolve_executable(host, env, project=None):
     """The host CLI from safe PATH entries of the child env, or None."""
+    return _scan_path(host, env, project)[0]
+
+
+def _scan_path(host, env, project=None):
+    """``(cli, refused)``: the first safe CLI, and whether one was refused for its folder or file."""
     root = Path(project).resolve() if project is not None else None
+    refused = False
     for raw in str(env.get('PATH', '')).split(os.pathsep):
         if not raw or not os.path.isabs(raw):
             continue
@@ -85,6 +92,7 @@ def resolve_executable(host, env, project=None):
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.getuid())
                 or info.st_mode & 0o022
                 or (root is not None and (directory == root or root in directory.parents))):
+            refused = refused or (stat.S_ISDIR(info.st_mode) and os.path.lexists(Path(raw) / host))
             continue
         candidate = Path(raw) / host
         try:
@@ -95,9 +103,10 @@ def resolve_executable(host, env, project=None):
         if (not stat.S_ISREG(found.st_mode) or not os.access(target, os.X_OK)
                 or found.st_uid not in (0, os.getuid()) or found.st_mode & 0o022
                 or (root is not None and (target == root or root in target.parents))):
+            refused = refused or stat.S_ISREG(found.st_mode)
             continue
-        return str(candidate)
-    return None
+        return str(candidate), refused
+    return None, refused
 
 
 def build_argv(host, executable, model, system_prompt):
@@ -154,9 +163,10 @@ def prepare(host, *, project, environ, system_prompt, read_quota=None):
         # ~/.codex could reach another account, so only the Codex host rests.
         return {'ready': False, 'reason': CODEX_HOME_REDIRECTED}
     env = child_environment(host, environ)
-    executable = resolve_executable(host, env, project)
+    executable, refused = _scan_path(host, env, project)
     if executable is None:
-        return {'ready': False, 'reason': UNAVAILABLE}
+        # Acceptance is unchanged; only the notice tells a refused CLI from a missing one.
+        return {'ready': False, 'reason': UNSAFE_PATH if refused else UNAVAILABLE}
     result = {'ready': True, 'host': host, 'executable': executable, 'tier': tiers.TIER,
               'env': env}
     if host == 'codex':

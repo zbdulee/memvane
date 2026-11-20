@@ -236,7 +236,7 @@ def process_pending_default(root,project,worker_policy,*,max_cases=8,environ=Non
 
 def _default_pass(root,project,worker_policy,policy,grant,consent,key,environ,max_cases,
                   result,teacher_hosts,teacher_state):
-    from .prequential import admitted,gold_annotation
+    from .prequential import admitted,admitted_one,gold_annotation
     from .teacher_isolation import IsolationRefused,REASON as ISOLATION
     # Before the empty-queue return: a kept answer needs no queued case to commit.
     confirmed=_confirm_parked(root,project,grant,key,result)
@@ -304,7 +304,7 @@ def _default_pass(root,project,worker_policy,policy,grant,consent,key,environ,ma
         scanned+=1
         status=_default_case(root,project,worker_policy,grant,consent,key,environ,row,host,
                              ready,counts,result,teacher_hosts,teacher_state,
-                             IsolationRefused,ISOLATION,admitted,gold_annotation)
+                             IsolationRefused,ISOLATION,admitted_one,gold_annotation)
         if status is not None:return finish(status)
     return finish('processed')
 
@@ -327,7 +327,7 @@ def _finish(root,project,result,status,counts,ready,queue,mark,queued_by_host,te
 
 
 def _default_case(root,project,worker_policy,grant,consent,key,environ,row,host,ready,counts,
-                  result,teacher_hosts,teacher_state,IsolationRefused,ISOLATION,admitted,
+                  result,teacher_hosts,teacher_state,IsolationRefused,ISOLATION,admitted_one,
                   gold_annotation):
     """One case. Returns a pass status to stop the pass, or None to continue."""
     rid,input_sha,sample_json,bodies_json=row[1],row[2],row[3],row[4]
@@ -364,9 +364,10 @@ def _default_case(root,project,worker_policy,grant,consent,key,environ,row,host,
         if not _gt()._case_active(root,(str(project),rid,sample_json)):raise ValueError('teacher_scope_changed')
         with _db(root) as db:
             current=db.execute("SELECT input_sha256,sample,bodies,use_state FROM cases WHERE project_key=? AND request_id=?",(key,rid)).fetchone()
-            eligible=admitted(db,project,grant,statuses=('queued','first_running'))
+            # One row: called every half second while the CLI runs.
+            eligible=admitted_one(db,project,grant,rid,statuses=('queued','first_running'))
         if current!=(input_sha,sample_json,bodies_json,'active'):raise ValueError('gold_capture_changed')
-        if rid not in {item[1][1] for item in eligible}:raise ValueError('teacher_cohort_changed')
+        if eligible is None:raise ValueError('teacher_cohort_changed')
 
     try:plan=teacher_hosts.call_plan(ready[host],system_prompt=INSTRUCTION_V2,environ=environ,project=project)
     except IsolationRefused as exc:
