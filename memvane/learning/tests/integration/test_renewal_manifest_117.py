@@ -16,6 +16,9 @@ from memvane.learning.tests.renewal_fixture import RenewalFixture
 
 
 class ManifestCases:
+    # Manifest/renewal recovery of a default-local install (worker stays local-only).
+    teacher_off_switch = True
+
     def manifest(self):
         return self.running/('.'+self.host+'-plugin/plugin.json')
 

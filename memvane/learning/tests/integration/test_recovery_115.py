@@ -101,8 +101,9 @@ class Recovery115(FixtureCase):
             return {'status': 'selector_ready'}
         # Selected host inventory is already synthetic in the 113 entry fixture.
         with mock.patch.object(selector_heal, '_official'):
+            # Recovery of a default-local setup: the teacher-off switch pins the profile.
             root = settings_fixture.SettingsProfile.run_profile_entry(
-                self, seed_namespace=seed, heal_impl=healed)
+                self, seed_namespace=seed, heal_impl=healed, teacher_off=True)
         self.assertEqual(json.loads((root / setup.NAME).read_text())['phase'], 'activated')
         return root
 

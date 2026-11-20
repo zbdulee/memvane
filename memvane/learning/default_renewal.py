@@ -106,8 +106,13 @@ def _publish(project, root, install_id, intent):
     if _read_targets(root) != new:
         raise ValueError('renewal_mixed_state')
     # Re-prove source, settings, runtime/model, expiry and all authority fields
-    # against the original snapshot before admitting any consumer.
-    target = planning.plan(project, root, _decode(old))
+    # (including the profile kind and its consent files) against the original
+    # snapshot before admitting any consumer; a changed authority restores old.
+    try:
+        target = planning.plan(project, root, _decode(old))
+    except ValueError:
+        _restore(project, root, install_id, intent)
+        raise
     if target is None or {name: planning.raw(value) for name, value in target.items()} != new:
         raise ValueError('renewal_target_changed')
     _drop(root)
@@ -125,6 +130,9 @@ def renew(project, state, install_id, *, lease_fd):
         fd = coordination_lock(root/'learning-profile.lock')
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
+            if os.path.lexists(root/profile.TEACHER_ENABLE):
+                # The default-teacher enable transaction owns the targets until it settles.
+                return {'status': 'teacher_enable_pending'}
             path = root/profile.RENEWAL
             if os.path.lexists(path):
                 intent = read_private_json(setup._path(path, private=True))

@@ -23,6 +23,9 @@ from memvane.learning.tests.renewal_fixture import RenewalFixture
 
 
 class DefaultRenewal(RenewalFixture):
+    # Renewal of a default-local install, including the worker's local-only branch.
+    teacher_off_switch = True
+
     def test_other_marketplace_changes_do_not_invalidate_grant(self):
         plugins=self.home/'.claude/plugins'
         known=json.loads((plugins/'known_marketplaces.json').read_text())
