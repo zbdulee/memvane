@@ -185,6 +185,18 @@ class WorkerFlow(WorkerFixture):
                 self.assertEqual(result['quota'], {'status': 'not_applicable_default_teacher'})
         self.assertEqual(self.weekly.call_count, 0)
 
+    def test_redirected_codex_home_rests_codex_only_and_claude_learning_continues(self):
+        self.environ['MEMVANE_CODEX_HOME_REDIRECTED'] = '1'
+        self.add('codex-r', host='codex', tag='cr')
+        self.add('claude-r', host='claude', tag='lr')
+        self.training.reset_mock()
+        result = project_worker.run(self.root, self.project, self.cfg)
+        self.assertEqual(result['teacher']['hosts']['codex'], 'teacher_codex_home_redirected')
+        self.assertEqual(self.training.call_count, 1)
+        self.assertEqual(self.cases()['claude-r'][0], 'gold')
+        self.assertEqual(self.cases()['codex-r'][0], 'queued')
+        self.assertEqual(self.runs('codex'), 0)
+
     def test_w1_host_waits_from_real_cli_runs_the_cycle(self):
         cases = {'teacher_host_unavailable': lambda: (self.bin / 'claude').unlink(),
                  'teacher_model_unresolved': lambda: self.catalog([]),

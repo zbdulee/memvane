@@ -65,8 +65,8 @@ def run_teacher(sample, *, enabled=False, **options):
 
 
 def _run_teacher_admitted(sample, *, enabled=False, host=None, timeout=DEFAULT_TIMEOUT,
-                cancel=None, accept_security_policy=False,
-                optional_hooks_audited=False, disabled_plugin_ids=(), model=None):
+                cancel=None, optional_hooks_audited=False, disabled_plugin_ids=(),
+                model=None):
     """One bounded CLI start, no fallback/retries. Return labels, never review.
 
     For Codex, optional_hooks_audited acknowledges caller verified installed
@@ -86,7 +86,7 @@ def _run_teacher_admitted(sample, *, enabled=False, host=None, timeout=DEFAULT_T
         validate_request(sample)
         if host not in ('claude', 'codex') or host != sample['host']:
             raise TransportFailure('host_mismatch')
-        if type(accept_security_policy) is not bool or type(optional_hooks_audited) is not bool:
+        if type(optional_hooks_audited) is not bool:
             raise TransportFailure('invalid_authorization')
         if host == 'codex' and not optional_hooks_audited:
             raise TransportFailure('optional_hooks_not_audited')
@@ -197,8 +197,7 @@ def _run_teacher_admitted(sample, *, enabled=False, host=None, timeout=DEFAULT_T
                             if host == 'claude':
                                 try:
                                     metadata = claude_adapter.inspect_event(event,
-                                        inventory_ids=disabled_plugin_ids,
-                                        allow_security_policy=accept_security_policy)
+                                        inventory_ids=disabled_plugin_ids)
                                 except claude_adapter.StartupRejected as exc:
                                     report['startup'] = exc.metadata
                                     raise TransportFailure('startup_rejected')
@@ -213,7 +212,8 @@ def _run_teacher_admitted(sample, *, enabled=False, host=None, timeout=DEFAULT_T
                                         raise TransportFailure('duplicate_init')
                                     initialized = True
                                     report['startup'] = metadata
-                                    report['catalog_evidence'] = 'runtime-empty-except-accepted-policy' if metadata['retained_security_policy_only'] else 'runtime-empty'
+                                    report['catalog_evidence'] = 'runtime-empty-except-plugins' if metadata['plugin_warnings'] else 'runtime-empty'
+                                    report['plugin_warnings'] = metadata['plugin_warnings']
                                     report['resolved_model'] = metadata['resolved_model']
                                     report['resolved_effort'] = metadata['reported_effort']
                                 elif kind != 'system' and not initialized:

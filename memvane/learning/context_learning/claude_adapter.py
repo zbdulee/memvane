@@ -99,10 +99,7 @@ def plugin_ids(plugins):
     return sorted(ids)
 
 
-def inspect_event(event, *, inventory_ids=(), allow_security_policy=False, model_ok=None):
-    # ``allow_security_policy`` is kept for callers; plugins never end a call now.
-    if type(allow_security_policy) is not bool:
-        raise ValueError('invalid_security_policy_allowance')
+def inspect_event(event, *, inventory_ids=(), model_ok=None):
     if not isinstance(event, dict):
         raise ValueError('invalid_event')
     kind = event.get('type', '')
@@ -122,7 +119,6 @@ def inspect_event(event, *, inventory_ids=(), allow_security_policy=False, model
         # any plugin still listed could not be turned off and is a warning only, by
         # id, whatever its kind. Tools, MCP servers and skills still end the call.
         metadata['plugin_warnings'] = plugin_ids(event.get('plugins'))
-        metadata['retained_security_policy_only'] = bool(metadata['plugin_warnings'])
         for name, row in metadata['catalogs'].items():
             if name == 'plugins' and row['state'] == 'nonempty':
                 continue

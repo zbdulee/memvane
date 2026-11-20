@@ -17,12 +17,12 @@ def _check():
  a=argv();assert a[a.index("--model")+1]=="sonnet" and a[a.index("--effort")+1]=="low" and a[a.index("--tools")+1]==""
  assert inspect_event({"type":"system","subtype":"init","model":"claude-sonnet-synthetic","tools":[],"mcp_servers":[],"plugins":[],"skills":[]})["catalogs"]["tools"]["state"]=="empty"
  policy={'type':'system','subtype':'init','model':'claude-sonnet-synthetic','tools':[],'mcp_servers':[],'skills':[],'plugins':[{'name':'cc-plugin-sec-default','source':'cc-plugin-sec-default@builtin','path':'builtin'}]}
- assert inspect_event(policy,allow_security_policy=True)['retained_security_policy_only'] is True
+ assert inspect_event(policy)['plugin_warnings']==['cc-plugin-sec-default@builtin']
  # Plugins that stay listed are a warning by id (user decision 2026-11-20).
  for change,ids in [({'plugins':policy['plugins']+[{'name':'other','source':'other@builtin'}]},['cc-plugin-sec-default@builtin','other@builtin']), ({'plugins':[{'name':'cc-plugin-sec-default','source':'cc-plugin-sec-default@untrusted'}]},['cc-plugin-sec-default@untrusted']), ({'plugins':[{'name':'cc-plugin-sec-default'}]},['cc-plugin-sec-default'])]:
-  assert inspect_event(dict(policy,**change),allow_security_policy=True)['plugin_warnings']==ids
+  assert inspect_event(dict(policy,**change))['plugin_warnings']==ids
  for change in [{'tools':['Read']}, {'mcp_servers':['server']}, {'skills':['skill']}]:
-  try:inspect_event(dict(policy,**change),allow_security_policy=True)
+  try:inspect_event(dict(policy,**change))
   except StartupRejected:pass
   else:raise AssertionError('a tool, MCP server or skill was accepted')
  assert inspect_event(policy)['plugin_warnings']==['cc-plugin-sec-default@builtin']

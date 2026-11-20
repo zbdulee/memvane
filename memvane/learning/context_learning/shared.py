@@ -34,6 +34,8 @@ from .safe_source import snapshot_beneath
 
 POLICY_NAME = "shared-policy.json"
 DATABASE_NAME = "shared-learning.sqlite3"
+# Set by the owned-worker spawn when the session redirected CODEX_HOME.
+CODEX_HOME_REDIRECTED = "MEMVANE_CODEX_HOME_REDIRECTED"
 SCHEMA = "qmd-shared-learning-v1"
 STATUSES = ("awaiting_local", "queued", "first_running", "first_done", "second_running",
             "gold", "pending_review", "failed")
@@ -1870,9 +1872,18 @@ def _spawn_owned(root, project, command, lease_fd, spawn, *, job, job_id):
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError("unsafe_shared_log")
         # A whitelist, so a gold-only or test override never reaches the child.
-        # CODEX_HOME keeps the default teacher on the session's own Codex account.
-        env = {k: os.environ[k] for k in ("PATH", "LANG", "TMPDIR", "HOME", "USER", "CODEX_HOME",
+        env = {k: os.environ[k] for k in ("PATH", "LANG", "TMPDIR", "HOME", "USER",
                                           "MEMVANE_TEST_RUNTIME_ROOT") if k in os.environ}
+        # The host inventory reads only ~/.codex and refuses a redirected Codex
+        # home for every host, so a redirected CODEX_HOME would stop Claude work
+        # too. The default home passes through; a redirected one stays out and
+        # only marks the Codex teacher to rest (hook capture also refuses it).
+        codex_home = os.environ.get("CODEX_HOME")
+        if codex_home and "HOME" in env:
+            if Path(codex_home) == Path(env["HOME"]) / ".codex":
+                env["CODEX_HOME"] = codex_home
+            else:
+                env[CODEX_HOME_REDIRECTED] = "1"
         env.update(PYTHONDONTWRITEBYTECODE="1", HF_HUB_OFFLINE="1",
                    TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1", **job)
         from memvane.kernel.bundle_paths import entry_argv

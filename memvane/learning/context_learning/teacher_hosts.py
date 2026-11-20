@@ -28,6 +28,7 @@ from . import teacher_model_tiers as tiers
 
 HOSTS = ('claude', 'codex')
 UNAVAILABLE = 'teacher_host_unavailable'
+CODEX_HOME_REDIRECTED = 'teacher_codex_home_redirected'
 QUOTA = 'deferred_quota'
 QUOTA_FLOOR = 30
 INIT_REQUEST_ID = 'memvane-teacher-initialize'
@@ -147,6 +148,10 @@ def prepare(host, *, project, environ, system_prompt, read_quota=None):
     """Once per pass: ``{'ready': True, ...}`` or ``{'ready': False, 'reason': ...}``."""
     if host not in HOSTS:
         return {'ready': False, 'reason': UNAVAILABLE}
+    if host == 'codex' and environ.get('MEMVANE_CODEX_HOME_REDIRECTED') == '1':
+        # The worker did not get the session's redirected CODEX_HOME; calling with
+        # ~/.codex could reach another account, so only the Codex host rests.
+        return {'ready': False, 'reason': CODEX_HOME_REDIRECTED}
     env = child_environment(host, environ)
     executable = resolve_executable(host, env, project)
     if executable is None:
@@ -615,61 +620,76 @@ def invoke_claude(plan, raw, *, seconds, max_output, monitor, guard, before_laun
     session = _ClaudeSession(raw)
     try:
         run.launch(before_launch, after_launch)
-        process = run.process
-        pending, offset, buffer = session.init, 0, b''
-        with selectors.DefaultSelector() as selector:
-            os.set_blocking(process.stdin.fileno(), False)
-            os.set_blocking(process.stdout.fileno(), False)
-            selector.register(process.stdout, selectors.EVENT_READ, 'output')
-            selector.register(process.stdin, selectors.EVENT_WRITE, 'input')
-            while 'output' in {key.data for key in selector.get_map().values()}:
-                run.tick(session.sent)
-                for key, _ in selector.select(.05):
-                    if key.data == 'input':
-                        if offset < len(pending):
-                            try:
-                                offset += os.write(key.fd, pending[offset:])
-                            except BlockingIOError:
-                                continue
-                            except BrokenPipeError:
-                                session.fail('gold_incomplete')
-                        if offset == len(pending):
-                            selector.unregister(key.fileobj)
-                        continue
-                    chunk = run.read(key.fd, session.sent)
-                    if chunk is None:
-                        continue
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    buffer += chunk
-                    for line, rest in _lines(buffer):
-                        if line is None:
-                            buffer = rest
-                            break
-                        change = session.line(line)
-                        if change == 'send':
-                            pending, offset = session.body, 0
-                            if key_for(selector, 'input') is None:
-                                selector.register(process.stdin, selectors.EVENT_WRITE, 'input')
-                        elif change == 'done':
-                            # The single answer is in; end the input stream so the CLI exits.
-                            entry = key_for(selector, 'input')
-                            if entry is not None:
-                                selector.unregister(entry.fileobj)
-                            process.stdin.close()
-        if buffer.strip() or not session.completed or session.text is None:
-            session.fail('gold_incomplete')
-        if not session.initialized or not tiers.claude_model_ok(session.init_model):
-            raise CallFailure('unknown', tiers.UNRESOLVED)
-        run.finish(True)
-        answer = _parse_answer(session.text)
+        try:
+            return _claude_exchange(run, session)
+        except CallFailure as exc:
+            # A CLI that never answers the pre-send controls (timeout or exit before
+            # the body) is a host failure like an error answer: the host rests, the
+            # case stays queued and neither its attempts nor the breaker move.
+            if (not session.sent and exc.kind == 'pre_send'
+                    and exc.code in ('gold_timeout', 'gold_incomplete')):
+                raise CallFailure('host', isolation.REASON, isolation_state='refused',
+                                  detail='control_' + exc.code[len('gold_'):]) from exc
+            raise
     finally:
         run.close()
+
+
+def _claude_exchange(run, session):
+    """The stream-json exchange of one launched Claude call; the caller closes it."""
+    process = run.process
+    pending, offset, buffer = session.init, 0, b''
+    with selectors.DefaultSelector() as selector:
+        os.set_blocking(process.stdin.fileno(), False)
+        os.set_blocking(process.stdout.fileno(), False)
+        selector.register(process.stdout, selectors.EVENT_READ, 'output')
+        selector.register(process.stdin, selectors.EVENT_WRITE, 'input')
+        while 'output' in {key.data for key in selector.get_map().values()}:
+            run.tick(session.sent)
+            for key, _ in selector.select(.05):
+                if key.data == 'input':
+                    if offset < len(pending):
+                        try:
+                            offset += os.write(key.fd, pending[offset:])
+                        except BlockingIOError:
+                            continue
+                        except BrokenPipeError:
+                            session.fail('gold_incomplete')
+                    if offset == len(pending):
+                        selector.unregister(key.fileobj)
+                    continue
+                chunk = run.read(key.fd, session.sent)
+                if chunk is None:
+                    continue
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                buffer += chunk
+                for line, rest in _lines(buffer):
+                    if line is None:
+                        buffer = rest
+                        break
+                    change = session.line(line)
+                    if change == 'send':
+                        pending, offset = session.body, 0
+                        if key_for(selector, 'input') is None:
+                            selector.register(process.stdin, selectors.EVENT_WRITE, 'input')
+                    elif change == 'done':
+                        # The single answer is in; end the input stream so the CLI exits.
+                        entry = key_for(selector, 'input')
+                        if entry is not None:
+                            selector.unregister(entry.fileobj)
+                        process.stdin.close()
+    if buffer.strip() or not session.completed or session.text is None:
+        session.fail('gold_incomplete')
+    if not session.initialized or not tiers.claude_model_ok(session.init_model):
+        raise CallFailure('unknown', tiers.UNRESOLVED)
+    run.finish(True)
+    answer = _parse_answer(session.text)
     return {'answer': answer, 'usage': session.usage, 'toolWarnings': [],
-            'pluginWarnings': session.plugin_warnings,
-            'elapsed_seconds': round(time.monotonic() - run.began, 3),
-            'model': session.init_model, 'modelReported': True}
+        'pluginWarnings': session.plugin_warnings,
+        'elapsed_seconds': round(time.monotonic() - run.began, 3),
+        'model': session.init_model, 'modelReported': True}
 
 
 def key_for(selector, tag):

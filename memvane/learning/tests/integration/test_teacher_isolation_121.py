@@ -280,6 +280,41 @@ class Isolation(TeacherFixture):
         self.assertEqual(len(self.records('claude', 'body')), 0)
         self.assertEqual(self.cases()['model'][0], 'queued')
 
+    def test_i3_unanswered_pre_send_control_rests_the_host_only(self):
+        """No answer to a pre-send control (exit or timeout) never burns the case."""
+        from memvane.learning.context_learning import general_gold_ledger as ledger, shared, teacher_state
+        self.proposal['timeoutSeconds'] = 1
+        for name, scenario in (('exit', {'silent': ['mcp_status'], 'silentExit': True}),
+                               ('timeout', {'silent': ['get_context_usage'], 'seconds': 10})):
+            with self.subTest(silent=name):
+                state = teacher_state.read_state(self.root)
+                state['hosts']['claude'].update(consecutiveFailures=0, waitUntilUnixMs=None, reason=None)
+                self.assertTrue(teacher_state.write_state(self.root, state))
+                (self.logs / 'calls.jsonl').unlink(missing_ok=True)
+                rid = 'silent-' + name
+                self.add(rid, tag=rid)
+                self.scenario('claude', scenario)
+                for _ in range(6):
+                    result = self.run_pass()
+                    self.assertEqual(result['hosts']['claude'], isolation.REASON)
+                    state = teacher_state.read_state(self.root)
+                    state['hosts']['claude'].update(waitUntilUnixMs=None, reason=None)
+                    self.assertTrue(teacher_state.write_state(self.root, state))
+                self.assertEqual(len(self.records('claude', 'body')), 0)
+                self.assertEqual(self.cases()[rid][0], 'queued')
+                with shared._db(self.root) as db:
+                    self.assertEqual(ledger.retries(db, shared._project_key(self.project), rid), 0)
+                self.assertEqual(teacher_state.read_state(self.root)['hosts']['claude']['consecutiveFailures'], 0)
+                # Queued cases keep their capture order, so the earliest queued case is
+                # the one each pass tries; every one of them stays queued.
+                row = [e for e in self.teacher_events() if e.get('outcome') == 'pre_send_rejected'][-1]
+                self.assertEqual((row['isolation'], row.get('isolationDetail')),
+                                 ('refused', 'control_' + ('incomplete' if name == 'exit' else 'timeout')))
+                with shared._db(self.root) as db:
+                    for other in [c for c in self.cases() if c.startswith('silent-')]:
+                        self.assertEqual(ledger.retries(db, shared._project_key(self.project), other), 0)
+                        self.assertEqual(self.cases()[other][0], 'queued')
+
     def test_i4_user_home_kept_and_auth_never_opened(self):
         auth = self.user / '.codex' / 'auth.json'
         auth.write_text('{"fixture": true}')

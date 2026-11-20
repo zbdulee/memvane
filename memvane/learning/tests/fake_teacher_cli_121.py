@@ -131,6 +131,12 @@ CONTEXT = {'categories': [{'id': 'system_prompt', 'tokens': 200}, {'id': 'messag
 
 def answer_control(request):
     subtype = request.get('request', {}).get('subtype')
+    if subtype in sc.get('silent', ()):
+        # A CLI that never answers this control: exit, or hang until stopped.
+        if sc.get('silentExit'):
+            sys.exit(0)
+        time.sleep(sc.get('seconds', 30))
+        sys.exit(0)
     if subtype in sc.get('unsupported', ()):
         emit({'type': 'control_response', 'response': {'subtype': 'error',
               'request_id': request.get('request_id'),

@@ -380,11 +380,16 @@ checks do not count.
   (each host adapter's isolation options), the child environment allow list
   and an empty temporary working folder with no `.git`, `CLAUDE.md` or
   `AGENTS.md` above it; any miss sends nothing. The CLIs run with the user's
-  own `~/.codex` and Claude settings (`CODEX_HOME` reaches the worker). Claude
+  own `~/.codex` and Claude settings. A `CODEX_HOME` that is `~/.codex` reaches
+  the worker; a redirected one does not (the plugin inventory and edit capture
+  read only `~/.codex`), and the Codex teacher then rests
+  (`teacher_codex_home_redirected`) while Claude labeling and local training
+  continue. Claude
   gets the body only after three control answers pass: `initialize` reports
   the allowed model and no commands, `mcp_status` no MCP server, and
   `get_context_usage` no tool, skill, MCP tool, agent or memory file and the
-  allowed model. Claude reports its plugin catalog only in the init event that
+  allowed model. A CLI that errors, exits or times out before answering them
+  rests the host without touching the case's attempts or the breaker. Claude reports its plugin catalog only in the init event that
   follows the body. The per-run settings turn plugins off; any plugin still
   listed there could not be turned off and is only a warning, whatever its kind
   (`pluginWarnings` in the event and the gold's `teacher`), and the label is
