@@ -148,6 +148,6 @@ cutoff 뒤 사례로 판정한다. 승격 판정에는 grant의 cohort 한도에
 
 hook은 teacher 전송·격리·tier·전환 모듈을 import하지 않는다. SessionStart 안내는
 `teacher_state.py`(stdlib와 kernel만 import)로 `teacher-host-state.json`과 전환 intent의
-존재만 본다. 끄기는 환경 변수 `MEMVANE_TEACHER=off`와 setup skill의 `teacher-off`·
-`teacher-on`(`teacher-switch.json`)이다. 계약 전체는 `docs/continual-learning.md`의
+존재만 본다. 끄기는 setup skill의 `teacher-off`·`teacher-on`(`teacher-switch.json`) 하나다.
+환경 변수는 끄기 수단이 아니다. 계약 전체는 `docs/continual-learning.md`의
 Default teacher 절에 있다.

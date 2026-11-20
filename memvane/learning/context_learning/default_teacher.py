@@ -203,7 +203,7 @@ def process_pending_default(root,project,worker_policy,*,max_cases=8,environ=Non
     if type(max_cases) is not int or not 1<=max_cases<=8:raise ValueError('invalid_gold_batch')
     environ=dict(os.environ if environ is None else environ)
     result={'status':'drained','outcomes':[],'hosts':{},'quotaRemaining':None,'calls':0}
-    if teacher_state.teacher_off(root,environ):return dict(result,status='teacher_off')
+    if teacher_state.teacher_off(root):return dict(result,status='teacher_off')
     policy=_gt()._policy(root)
     try:
         grant=_gt()._scope_default(root,policy)
@@ -415,6 +415,7 @@ def _call(root,project,worker_policy,consent,key,rid,host,plan,raw,sample,input_
         except ValueError as exc:raise teacher_hosts.CallFailure('unknown',str(exc)[:80],tools=answer['toolWarnings'])
         gold={'selected_ids':choice['selected_ids'],'input_sha256':input_sha,'review':'single_pass',
               'usage':choice['usage'],'teacher':{'host':host,'model':answer['model'],'tier':info['tier']}}
+        if answer.get('pluginWarnings'):gold['teacher']['pluginWarnings']=answer['pluginWarnings']
         try:
             with _db(root) as db:
                 changed=db.execute("UPDATE cases SET status='gold',first=?,gold=?,error=NULL WHERE project_key=? AND request_id=? AND status='first_running' AND use_state='active' AND sample=? AND bodies=?",
@@ -434,6 +435,7 @@ def _call(root,project,worker_policy,consent,key,rid,host,plan,raw,sample,input_
                     selectedCount=len(choice['selected_ids']),isolation='ok',
                     gold=[{'path':cid,'sha':next(c['revision_sha256'] for c in sample['candidates'] if c['candidate_id']==cid)} for cid in choice['selected_ids']],
                     toolWarnings=answer['toolWarnings'] or None,
+                    pluginWarnings=answer.get('pluginWarnings') or None,
                     **_usage_fields(host,answer['usage'],len(raw)),
                     **gold_annotation(sample,choice['selected_ids'],root=root,project=project))
         _gt()._emit(project,'learning.teacher',outcome='gold',reason='single_pass',ms=elapsed,**fields)

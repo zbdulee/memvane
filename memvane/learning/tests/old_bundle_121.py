@@ -45,7 +45,7 @@ from tests.support.case import FixtureCase, require_fixture_env, wait_until
 from tests.support.install_builder import ROOT, build_install
 from tests.support.project import make_project
 
-TAGS = ('v1.0.18', 'v1.0.19')
+TAGS = ('v1.0.18', 'v1.0.19', 'v1.0.20')
 NOTE = 'The emerald heron nests beside the north pond.\n'
 CARD_BODY = 'The emerald heron keeps marker token zqheronx beside the north pond.\n'
 PROMPT = 'what marker does the emerald heron keep?'
@@ -371,6 +371,6 @@ class EnabledInstall(RenewalFixture):
     def learning_main(self, *argv):
         out = io.StringIO()
         with mock.patch.dict(os.environ), redirect_stdout(out):
-            os.environ.pop(teacher_state.ENV_SWITCH, None)
+            os.environ.pop('MEMVANE_TEACHER', None)
             code = __import__('memvane.learning.api', fromlist=['learning_main']).learning_main(list(argv))
         return code, json.loads(out.getvalue())

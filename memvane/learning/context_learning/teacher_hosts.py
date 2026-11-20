@@ -31,6 +31,16 @@ UNAVAILABLE = 'teacher_host_unavailable'
 QUOTA = 'deferred_quota'
 QUOTA_FLOOR = 30
 INIT_REQUEST_ID = 'memvane-teacher-initialize'
+# Control requests answered before any user message (Claude Code stream-json). The
+# body follows only after all three pass; the ``system/init`` plugin catalog still
+# arrives only after the body, so plugins stay a running check.
+PRE_SEND_CONTROLS = ((INIT_REQUEST_ID, 'initialize'),
+                     ('memvane-teacher-mcp', 'mcp_status'),
+                     ('memvane-teacher-context', 'get_context_usage'))
+# Context categories an isolated run reports; tools, skills, MCP tools or memory
+# files would add categories of their own.
+CLAUDE_CONTEXT_CATEGORIES = frozenset({'system_prompt', 'messages', 'autocompact_buffer',
+                                       'free_space'})
 REFUSED_CODES = frozenset({'provider_quota_waiting', 'provider_model_unavailable',
                            'provider_auth_waiting'})
 
@@ -402,7 +412,7 @@ def invoke_codex(plan, raw, *, seconds, max_output, monitor, guard, before_launc
         raise
     finally:
         run.close()
-    return {'answer': answer, 'usage': usage, 'toolWarnings': _tool_list(tools),
+    return {'answer': answer, 'usage': usage, 'toolWarnings': _tool_list(tools), 'pluginWarnings': [],
             'elapsed_seconds': round(time.monotonic() - run.began, 3),
             'model': plan['model'], 'modelReported': False}
 
@@ -443,6 +453,22 @@ def _models_ok(response, request):
     return len(rows) == 1 and tiers.claude_model_ok(rows[0].get('resolvedModel'))
 
 
+def _context_ok(inner):
+    """The pre-send context report: no tool, skill, MCP or memory content, tier model."""
+    categories = inner.get('categories')
+    if (not isinstance(categories, list)
+            or any(not isinstance(row, dict) or row.get('id') not in CLAUDE_CONTEXT_CATEGORIES
+                   for row in categories)):
+        raise CallFailure('host', isolation.REASON, isolation_state='violated',
+                          detail='control_context_categories')
+    for key in ('mcpTools', 'memoryFiles', 'agents'):
+        if inner.get(key) != []:
+            raise CallFailure('host', isolation.REASON, isolation_state='violated',
+                              detail='control_context_' + key)
+    if not tiers.claude_model_ok(inner.get('model')):
+        raise CallFailure('host', tiers.UNRESOLVED)
+
+
 class _ClaudeSession:
     """Event state of one Claude call. ``sent`` turns true only after initialize passes.
 
@@ -451,13 +477,15 @@ class _ClaudeSession:
 
     def __init__(self, raw):
         self.request = tiers.claude_request()
-        self.init = (json.dumps({'type': 'control_request', 'request_id': INIT_REQUEST_ID,
-                                 'request': {'subtype': 'initialize'}}, separators=(',', ':'))
-                     + '\n').encode()
+        self.init = ''.join(json.dumps({'type': 'control_request', 'request_id': rid,
+                                        'request': {'subtype': subtype}}, separators=(',', ':'))
+                            + '\n' for rid, subtype in PRE_SEND_CONTROLS).encode()
+        self.awaiting = {rid for rid, _ in PRE_SEND_CONTROLS}
         self.body = (json.dumps({'type': 'user', 'message': {'role': 'user', 'content': raw.decode()}},
                                 separators=(',', ':')) + '\n').encode()
         self.sent = self.answered = self.initialized = self.completed = False
         self.assistant_error = self.init_model = self.text = None
+        self.plugin_warnings = []
         self.usage = {}
 
     def fail(self, code):
@@ -469,18 +497,33 @@ class _ClaudeSession:
         raise CallFailure('host', isolation.REASON, isolation_state='violated', detail=code)
 
     def control_response(self, event):
-        """True when the body may now be sent (model and commands checked)."""
+        """True when the body may now be sent: every pre-send control answer passed."""
         outer = event.get('response')
-        if self.sent or not isinstance(outer, dict) or outer.get('request_id') != INIT_REQUEST_ID:
+        rid = outer.get('request_id') if isinstance(outer, dict) else None
+        if self.sent or rid not in self.awaiting:
             self.fail('gold_unexpected_event')
         inner = outer.get('response')
         if outer.get('subtype') != 'success' or not isinstance(inner, dict):
-            raise CallFailure('pre_send', 'gold_initialize_failed')
-        if not _models_ok(inner, self.request):
-            raise CallFailure('host', tiers.UNRESOLVED)
-        if inner.get('commands') != []:
-            raise CallFailure('host', isolation.REASON, isolation_state='violated',
-                              detail='control_commands')
+            if rid == INIT_REQUEST_ID:
+                raise CallFailure('pre_send', 'gold_initialize_failed')
+            # A CLI that cannot answer the check cannot be verified before the body.
+            raise CallFailure('host', isolation.REASON, isolation_state='refused',
+                              detail='control_unsupported')
+        if rid == INIT_REQUEST_ID:
+            if not _models_ok(inner, self.request):
+                raise CallFailure('host', tiers.UNRESOLVED)
+            if inner.get('commands') != []:
+                raise CallFailure('host', isolation.REASON, isolation_state='violated',
+                                  detail='control_commands')
+        elif rid == 'memvane-teacher-mcp':
+            if inner.get('mcpServers') != []:
+                raise CallFailure('host', isolation.REASON, isolation_state='violated',
+                                  detail='control_mcp_servers')
+        else:
+            _context_ok(inner)
+        self.awaiting.discard(rid)
+        if self.awaiting:
+            return False
         # Only now does any payload byte leave this process.
         self.sent = True
         return True
@@ -489,7 +532,7 @@ class _ClaudeSession:
         try:
             metadata = claude_adapter.inspect_event(
                 event, inventory_ids=isolation.CLAUDE_BUILTIN_PLUGINS,
-                allow_security_policy=True, model_ok=tiers.claude_model_ok)
+                model_ok=tiers.claude_model_ok)
         except claude_adapter.StartupRejected as exc:
             if str(exc) == 'unexpected_resolved_model':
                 raise CallFailure('unknown' if self.sent else 'host', tiers.UNRESOLVED)
@@ -552,6 +595,7 @@ class _ClaudeSession:
                 self.fail('gold_duplicate_init')
             self.initialized = True
             self.init_model = metadata['resolved_model']
+            self.plugin_warnings = metadata.get('plugin_warnings', [])
             return None
         if kind == 'system' or not self.sent:
             self.fail('gold_unexpected_event')
@@ -623,6 +667,7 @@ def invoke_claude(plan, raw, *, seconds, max_output, monitor, guard, before_laun
     finally:
         run.close()
     return {'answer': answer, 'usage': session.usage, 'toolWarnings': [],
+            'pluginWarnings': session.plugin_warnings,
             'elapsed_seconds': round(time.monotonic() - run.began, 3),
             'model': session.init_model, 'modelReported': True}
 

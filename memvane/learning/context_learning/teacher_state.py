@@ -6,7 +6,7 @@ teacher, transport or learning-database module (structure test X-1).
 Files (namespace root, 0600):
 - ``teacher-host-state.json``: per-host waits, circuit breaker, queued counts,
   notice times, and the default-teacher enable failure counter.
-- ``teacher-switch.json``: the setup skill's ``teacher-off``/``teacher-on``.
+- ``teacher-switch.json``: the setup skill's ``teacher-off``/``teacher-on``, the only off switch.
 - ``project-teacher-enable.json``: the enable transaction intent (presence only here).
 """
 from __future__ import annotations
@@ -29,7 +29,6 @@ SWITCH_NAME = 'teacher-switch.json'
 SWITCH_SCHEMA = 'memvane-teacher-switch-v1'
 ENABLE_INTENT = 'project-teacher-enable.json'
 HOSTS = ('claude', 'codex')
-ENV_SWITCH = 'MEMVANE_TEACHER'
 MAX_STATE_BYTES = 65536
 # Same-reason enable failures after which maintenance stops requesting (§5-1).
 ENABLE_FAILURE_LIMIT = 5
@@ -161,11 +160,12 @@ def wait_until_ms(now, seconds):
     return int(cooldown.expiry_value(now / 1000, seconds) * 1000)
 
 
-def teacher_off(root, environ=None):
-    """True when MEMVANE_TEACHER=off or the setup skill switched the teacher off."""
-    environ = os.environ if environ is None else environ
-    if str(environ.get(ENV_SWITCH, '')).strip().lower() == 'off':
-        return True
+def teacher_off(root):
+    """True when the setup skill's ``teacher-off`` switched the teacher off.
+
+    The switch is the namespace file only. Process environment does not reach the
+    worker, maintenance or onboarding children, so no variable turns the teacher off.
+    """
     return switch_off(root)
 
 

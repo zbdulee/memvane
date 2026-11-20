@@ -137,7 +137,7 @@ if mode=='nonzero':sys.exit(2)
             self.assertEqual(review_view(self.state,host,'synthetic')['status'],'reviewer-approved')
 
     def test_invalid_streams_labels_and_privacy(self):
-        cases=[('codex',m) for m in ('bad-json','duplicate-key','tool','error','bad-label','no-init','two-turns','incomplete','nonzero','unsupported','after-completion')]+[('claude',m) for m in ('plugin','catalog','wrong-model','tool','stream-tool','hook','bad-label','no-init')]
+        cases=[('codex',m) for m in ('bad-json','duplicate-key','tool','error','bad-label','no-init','two-turns','incomplete','nonzero','unsupported','after-completion')]+[('claude',m) for m in ('catalog','wrong-model','tool','stream-tool','hook','bad-label','no-init')]
         for host,mode in cases:
             with self.subTest(host=host,mode=mode):
                 self.cli(host,mode)
@@ -147,9 +147,13 @@ if mode=='nonzero':sys.exit(2)
                 self.assertNotIn('labels',r)
                 self.assertNotIn(SECRET,json.dumps(r))
                 self.assertNotIn(str(self.root),json.dumps(r))
-        self.cli('claude')
-        r=run_teacher(dict(self.sample,host='claude'),enabled=True,host='claude',timeout=2)
-        self.assertEqual(r['reason'],'startup_rejected')
+        # A plugin still loaded is a warning, not a failure (user decision 2026-11-20).
+        for mode in ('plugin', None):
+            with self.subTest(host='claude', warned=mode):
+                self.cli('claude', mode or 'success')
+                r=run_teacher(dict(self.sample,host='claude'),enabled=True,host='claude',timeout=2)
+                self.assertEqual(r['status'],'completed',r)
+                self.assertNotIn(SECRET,json.dumps(r))
 
     def test_bounds_cancellation_busy_and_owned_descendant(self):
         self.cli('codex','flood')

@@ -174,12 +174,13 @@ class Isolation(TeacherFixture):
         self.assertEqual(record['entries'], [])
 
     def test_i3_claude_catalog_and_events(self):
-        names = ('tools', 'mcp_servers', 'plugins', 'skills')
+        # Plugins are a warning (test_i3_plugins_left_by_the_settings_are_a_warning).
+        names = ('tools', 'mcp_servers', 'skills')
         for index, name in enumerate(names):
             with self.subTest(catalog=name, before_body=True):
                 rid = f'pre-{name}'
                 self.add(rid, tag=rid)
-                self.scenario('claude', {'initBeforeBody': True, name: [{'name': 'x'}] if name == 'plugins' else ['x']})
+                self.scenario('claude', {'initBeforeBody': True, name: ['x']})
                 result = self.run_pass()
                 self.assertEqual(len(self.records('claude', 'body')), 0)
                 self.assertEqual(result['hosts']['claude'], isolation.REASON)
@@ -211,6 +212,73 @@ class Isolation(TeacherFixture):
         self.scenario('claude', {'commands': [{'name': 'review'}]})
         self.run_pass()
         self.assertEqual(self.cases()['commands'][0], 'queued')
+
+    def test_i3_plugins_left_by_the_settings_are_a_warning(self):
+        """User decision: any plugin still in init is a warning by id; the label is kept."""
+        import json as _json
+        observed = [{'name': 'cc-plugin-sec-default', 'path': 'builtin',
+                     'source': 'cc-plugin-sec-default@builtin'},
+                    {'name': 'cc-plugin-privacy', 'path': 'builtin',
+                     'source': 'cc-plugin-privacy@builtin'}]
+        cases = [('observed', observed,
+                  ['cc-plugin-privacy@builtin', 'cc-plugin-sec-default@builtin']),
+                 ('mixed', observed + [{'name': 'helper', 'source': 'helper@market'},
+                                       {'name': 'bare'}, {'path': '/x'}],
+                  ['bare', 'cc-plugin-privacy@builtin', 'cc-plugin-sec-default@builtin',
+                   'helper@market', 'unidentified'])]
+        for rid, plugins, ids in cases:
+            with self.subTest(plugins=rid):
+                self.add(rid, tag=rid)
+                self.scenario('claude', {'plugins': plugins})
+                self.run_pass()
+                self.assertEqual(self.cases()[rid][0], 'gold')
+                gold = _json.loads(self.cases()[rid][5])
+                self.assertEqual(gold['teacher']['pluginWarnings'], ids)
+                row = [e for e in self.teacher_events() if e.get('request_id') == rid][-1]
+                self.assertEqual((row['outcome'], row['isolation'], row['pluginWarnings']),
+                                 ('gold', 'ok', ids))
+        from memvane.learning.context_learning import teacher_state
+        self.assertEqual(teacher_state.read_state(self.root)['hosts']['claude']['consecutiveFailures'], 0)
+        argv = self.records('claude')[0]['argv']
+        settings = _json.loads(argv[argv.index('--settings') + 1])
+        self.assertIs(settings['enabledPlugins']['cc-plugin-privacy@builtin'], False)
+
+    def test_i3_claude_pre_send_controls_gate_the_body(self):
+        """MCP, tool, skill and memory content are refused before any body byte."""
+        from memvane.learning.context_learning import teacher_state
+        self.add('ok', tag='ok')
+        self.run_pass()
+        self.assertEqual(self.cases()['ok'][0], 'gold')
+        self.assertEqual(self.records('claude')[0]['controls'],
+                         ['initialize', 'mcp_status', 'get_context_usage'])
+        refusals = [
+            ('mcp', {'mcpServers': [{'name': 'x', 'status': 'connected'}]}),
+            ('tools', {'context': {'categories': [{'id': 'system_prompt', 'tokens': 9},
+                                                  {'id': 'system_tools', 'tokens': 900}]}}),
+            ('mcp-tools', {'context': {'mcpTools': [{'name': 'x'}]}}),
+            ('memory', {'context': {'memoryFiles': [{'path': 'CLAUDE.md'}]}}),
+            ('agents', {'context': {'agents': [{'name': 'x'}]}}),
+            ('unsupported', {'unsupported': ['get_context_usage']}),
+        ]
+        for name, scenario in refusals:
+            with self.subTest(refusal=name):
+                (self.logs / 'calls.jsonl').unlink(missing_ok=True)
+                state = teacher_state.read_state(self.root)
+                state['hosts']['claude'].update(consecutiveFailures=0, waitUntilUnixMs=None, reason=None)
+                self.assertTrue(teacher_state.write_state(self.root, state))
+                rid = 'pre-' + name
+                self.add(rid, tag=rid)
+                self.scenario('claude', scenario)
+                result = self.run_pass()
+                self.assertEqual(result['hosts']['claude'], isolation.REASON)
+                self.assertEqual(len(self.records('claude', 'body')), 0)
+                self.assertEqual(self.cases()[rid][0], 'queued')
+        self.scenario('claude', {'context': {'model': 'claude-sonnet-5-5'}})
+        (self.logs / 'calls.jsonl').unlink(missing_ok=True)
+        self.add('model', tag='model')
+        result = self.run_pass()
+        self.assertEqual(len(self.records('claude', 'body')), 0)
+        self.assertEqual(self.cases()['model'][0], 'queued')
 
     def test_i4_user_home_kept_and_auth_never_opened(self):
         auth = self.user / '.codex' / 'auth.json'

@@ -74,8 +74,8 @@ day, at most once a week per host and reason.
 When the user asks to stop sending cases to the teacher, run `teacher-off
 --project "$PROJECT_ROOT"`; `teacher-on` turns it back on. The command writes
 only the namespace switch `teacher-switch.json` and reports `teacher_off` or
-`teacher_on` with `teacherOff` (the effective state; an environment value
-`MEMVANE_TEACHER=off` in the worker's environment also keeps it off). While it
+`teacher_on` with `teacherOff` (the effective state; this switch is the only
+way to turn the teacher off). While it
 is off, a default local profile is not moved to the teacher, and an already
 moved profile keeps its files while the teacher makes no calls. Capture,
 recall and local training continue. The switch can be written before

@@ -380,10 +380,16 @@ checks do not count.
   (each host adapter's isolation options), the child environment allow list
   and an empty temporary working folder with no `.git`, `CLAUDE.md` or
   `AGENTS.md` above it; any miss sends nothing. The CLIs run with the user's
-  own `~/.codex` and Claude settings. Claude gets the body only after its
-  initialize answer reports the allowed model and no commands; a tool, MCP
-  server, plugin or skill in its init catalog, or a tool event, ends the call
-  as an isolation violation (`violated`). A built-in tool the host cannot
+  own `~/.codex` and Claude settings (`CODEX_HOME` reaches the worker). Claude
+  gets the body only after three control answers pass: `initialize` reports
+  the allowed model and no commands, `mcp_status` no MCP server, and
+  `get_context_usage` no tool, skill, MCP tool, agent or memory file and the
+  allowed model. Claude reports its plugin catalog only in the init event that
+  follows the body. The per-run settings turn plugins off; any plugin still
+  listed there could not be turned off and is only a warning, whatever its kind
+  (`pluginWarnings` in the event and the gold's `teacher`), and the label is
+  kept. A tool, MCP server or skill in the init catalog, or a tool event, ends
+  the call as an isolation violation (`violated`). A built-in tool the host cannot
   disable that runs during a Codex
   call is a warning (`toolWarnings`); the label is kept. Codex adds the
   user's global `AGENTS.md` to the model input; its size is recorded as
@@ -430,10 +436,10 @@ deleted.
 
 ### Turning the teacher off
 
-`MEMVANE_TEACHER=off` in the worker's environment, or the setup skill's
-`teacher-off` (namespace file `teacher-switch.json`, 0600), keeps the teacher
-from calling and stops the default-local change; `teacher-on` removes the
-switch's effect. An already enabled profile keeps its files. Capture, recall
+The setup skill's `teacher-off` (namespace file `teacher-switch.json`, 0600)
+keeps the teacher from calling and stops the default-local change; `teacher-on`
+removes it. It is the only off switch: no environment variable turns the
+teacher off. An already enabled profile keeps its files. Capture, recall
 and local training continue. Project `settings.json` has no teacher key.
 
 ### SessionStart notices and logs

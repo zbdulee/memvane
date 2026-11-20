@@ -8,7 +8,7 @@ import pathlib
 import shutil
 from unittest import mock
 
-from memvane.learning.context_learning import general_teacher, seam
+from memvane.learning.context_learning import general_teacher, seam, teacher_state
 from memvane.learning.context_learning.contracts import digest
 from memvane.learning.context_learning.store import canonical
 from memvane.learning.tests.fake_teacher_cli_121 import TeacherFixture, edit_sample, prompt_sample
@@ -121,12 +121,18 @@ class Payload(TeacherFixture):
     def test_teacher_off_and_missing_consent(self):
         self.add('a1')
         self.environ['MEMVANE_TEACHER'] = 'off'
-        self.assertEqual(self.run_pass()['status'], 'teacher_off')
+        # The environment is not an off switch; only the namespace switch file is.
+        self.assertEqual(self.run_pass()['status'], 'processed')
         del self.environ['MEMVANE_TEACHER']
+        self.add('a2')
+        self.assertTrue(teacher_state.write_switch(self.root, False))
+        self.assertEqual(self.run_pass()['status'], 'teacher_off')
+        self.assertTrue(teacher_state.write_switch(self.root, True))
         general_teacher._consent_file_v2.side_effect = ValueError('teacher_consent_required')
         result = self.run_pass()
         self.assertEqual((result['status'], result['reason']), ('consent_required', 'teacher_consent_required'))
-        self.assertEqual(self.runs(), 0)
+        # One call only: the pass with the environment variable set.
+        self.assertEqual(self.runs(), 1)
 
     def test_consent_refusal_inside_scope_check_is_a_status(self):
         self.add('a1')

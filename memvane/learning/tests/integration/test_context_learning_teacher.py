@@ -18,13 +18,14 @@ def _check():
  assert inspect_event({"type":"system","subtype":"init","model":"claude-sonnet-synthetic","tools":[],"mcp_servers":[],"plugins":[],"skills":[]})["catalogs"]["tools"]["state"]=="empty"
  policy={'type':'system','subtype':'init','model':'claude-sonnet-synthetic','tools':[],'mcp_servers':[],'skills':[],'plugins':[{'name':'cc-plugin-sec-default','source':'cc-plugin-sec-default@builtin','path':'builtin'}]}
  assert inspect_event(policy,allow_security_policy=True)['retained_security_policy_only'] is True
- for change in [{'plugins':policy['plugins']+[{'name':'other','source':'other@builtin'}]}, {'plugins':[{'name':'cc-plugin-sec-default','source':'cc-plugin-sec-default@untrusted'}]}, {'plugins':[{'name':'cc-plugin-sec-default'}]}, {'tools':['Read']}, {'mcp_servers':['server']}, {'skills':['skill']}]:
+ # Plugins that stay listed are a warning by id (user decision 2026-11-20).
+ for change,ids in [({'plugins':policy['plugins']+[{'name':'other','source':'other@builtin'}]},['cc-plugin-sec-default@builtin','other@builtin']), ({'plugins':[{'name':'cc-plugin-sec-default','source':'cc-plugin-sec-default@untrusted'}]},['cc-plugin-sec-default@untrusted']), ({'plugins':[{'name':'cc-plugin-sec-default'}]},['cc-plugin-sec-default'])]:
+  assert inspect_event(dict(policy,**change),allow_security_policy=True)['plugin_warnings']==ids
+ for change in [{'tools':['Read']}, {'mcp_servers':['server']}, {'skills':['skill']}]:
   try:inspect_event(dict(policy,**change),allow_security_policy=True)
   except StartupRejected:pass
-  else:raise AssertionError('policy allowance broadened isolation')
- try:inspect_event(policy)
- except StartupRejected:pass
- else:raise AssertionError('policy allowance enabled implicitly')
+  else:raise AssertionError('a tool, MCP server or skill was accepted')
+ assert inspect_event(policy)['plugin_warnings']==['cc-plugin-sec-default@builtin']
  metadata=startup_metadata({'model':'claude-sonnet-synthetic','effort':'low','tools':[],'mcp_servers':[],'skills':[],'plugins':[{'name':'synthetic-private-name','path':'/synthetic/private/location'}],'apiKeySource':'synthetic-secret'})
  identified=startup_metadata({'plugins':[{'name':'synthetic-known'},{'name':'synthetic-new@builtin'},{'name':'unmatched','path':'/private/secret'}]},inventory_ids=['synthetic-known@verified-market'])
  assert identified['plugin_identities'][0]['candidate_ids']==['synthetic-known@verified-market']
@@ -36,9 +37,9 @@ def _check():
  assert '/private/path' not in json.dumps(unsafe_meta) and 'secret.example' not in json.dumps(unsafe_meta)
  assert metadata['catalogs']['plugins']=={'state':'nonempty','count':1} and metadata['reported_effort']=='low'
  assert metadata['plugin_identities'][0]['name']=='synthetic-private-name' and 'private/location' not in json.dumps(metadata) and 'synthetic-secret' not in json.dumps(metadata)
- try:inspect_event({'type':'system','subtype':'init','model':'claude-sonnet-synthetic','tools':[],'mcp_servers':[],'skills':[],'plugins':[{'name':'synthetic-private-name'}]})
- except StartupRejected as exc:assert exc.metadata['resolved_model']=='claude-sonnet-synthetic' and exc.metadata['catalogs']['plugins']['count']==1
- else:raise AssertionError('loaded plugin accepted')
+ # A plugin still loaded is a warning by id, not a rejection (user decision 2026-11-20).
+ kept=inspect_event({'type':'system','subtype':'init','model':'claude-sonnet-synthetic','tools':[],'mcp_servers':[],'skills':[],'plugins':[{'name':'synthetic-private-name'}]})
+ assert kept['plugin_warnings']==['synthetic-private-name'] and kept['catalogs']['plugins']['count']==1
  for value in [None,False,'',{},0]:
   try:inspect_event({'type':'system','subtype':'init','model':'claude-sonnet-synthetic','tools':value,'mcp_servers':[],'plugins':[],'skills':[]})
   except StartupRejected:pass

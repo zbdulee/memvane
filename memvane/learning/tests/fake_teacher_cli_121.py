@@ -115,7 +115,6 @@ if HOST == 'codex':
 sc = scenario()
 init = sys.stdin.readline()
 record['init'] = init
-log(record)
 request = json.loads(init)
 if sc.get('initBeforeBody'):
     # Startup init before the initialize answer: the body must never follow.
@@ -124,9 +123,39 @@ if sc.get('initBeforeBody'):
           'plugins': sc.get('plugins', []), 'skills': sc.get('skills', [])})
 resolved = sc.get('resolvedModel', 'claude-haiku-5-5')
 models = [] if resolved is None else [{'value': 'haiku', 'resolvedModel': resolved}]
-emit({'type': 'control_response', 'response': {'subtype': 'success',
-      'request_id': request.get('request_id'),
-      'response': {'commands': sc.get('commands', []), 'models': models}}})
+CONTEXT = {'categories': [{'id': 'system_prompt', 'tokens': 200}, {'id': 'messages', 'tokens': 10},
+                          {'id': 'autocompact_buffer', 'tokens': 33000},
+                          {'id': 'free_space', 'tokens': 966000}],
+           'mcpTools': [], 'memoryFiles': [], 'agents': []}
+
+
+def answer_control(request):
+    subtype = request.get('request', {}).get('subtype')
+    if subtype in sc.get('unsupported', ()):
+        emit({'type': 'control_response', 'response': {'subtype': 'error',
+              'request_id': request.get('request_id'),
+              'error': 'Unsupported control request subtype: ' + str(subtype)}})
+        return
+    if subtype == 'initialize':
+        body = {'commands': sc.get('commands', []), 'models': models}
+    elif subtype == 'mcp_status':
+        body = {'mcpServers': sc.get('mcpServers', [])}
+    else:
+        body = dict(CONTEXT, model=sc.get('contextModel', resolved), **sc.get('context', {}))
+    emit({'type': 'control_response', 'response': {'subtype': 'success',
+          'request_id': request.get('request_id'), 'response': body}})
+
+
+controls = [request]
+for _ in range(2):
+    extra = sys.stdin.readline()
+    if not extra:
+        break
+    controls.append(json.loads(extra))
+record['controls'] = [c.get('request', {}).get('subtype') for c in controls]
+log(record)
+for control in controls:
+    answer_control(control)
 
 
 def init_event():

@@ -27,7 +27,7 @@ class SwitchMixin:
         """(exit code, printed result) of ``learning_main([action, '--project', P, ...])``."""
         out = io.StringIO()
         with mock.patch.dict(os.environ), redirect_stdout(out):
-            os.environ.pop(teacher_state.ENV_SWITCH, None)
+            os.environ.pop('MEMVANE_TEACHER', None)
             code = learning_api.learning_main([action, '--project', str(self.project),
                                                *(['--plan'] if plan else [])])
         return code, json.loads(out.getvalue())
@@ -53,19 +53,22 @@ class TeacherSwitch(SwitchMixin, RenewalFixture):
         self.assertEqual(result['namespaceRoot'], str(self.root))
         switch = self.root / teacher_state.SWITCH_NAME
         self.assertEqual(switch.stat().st_mode & 0o777, 0o600)
-        self.assertTrue(teacher_state.teacher_off(self.root, environ={}))
+        self.assertTrue(teacher_state.teacher_off(self.root))
         # An enabled profile is not turned back: grant, profile, journal and consent stay.
         self.assertEqual(self.snapshot_targets(), self.original)
         self.assertEqual((self.root / teacher_consent.NAME).read_bytes(), consent)
         result = self.ok('teacher-on')
         self.assertEqual((result['status'], result['teacherOff']), ('teacher_on', False))
-        self.assertFalse(teacher_state.teacher_off(self.root, environ={}))
+        self.assertFalse(teacher_state.teacher_off(self.root))
         self.assertEqual(self.snapshot_targets(), self.original)
 
-    def test_environment_switch_still_wins_after_teacher_on(self):
+    def test_environment_is_not_an_off_switch(self):
         self.assertEqual(self.ok('teacher-on')['status'], 'teacher_on')
-        self.assertTrue(teacher_state.teacher_off(self.root, environ={'MEMVANE_TEACHER': 'off'}))
-        self.assertFalse(teacher_state.teacher_off(self.root, environ={'MEMVANE_TEACHER': 'on'}))
+        with mock.patch.dict(os.environ, {'MEMVANE_TEACHER': 'off'}):
+            self.assertFalse(teacher_state.teacher_off(self.root))
+        self.assertEqual(self.ok('teacher-off')['status'], 'teacher_off')
+        with mock.patch.dict(os.environ, {'MEMVANE_TEACHER': 'on'}):
+            self.assertTrue(teacher_state.teacher_off(self.root))
 
     def test_unwritten_switch_fails_and_changes_nothing(self):
         before = self.switch_bytes()
@@ -102,7 +105,7 @@ class TeacherSwitchLocal(SwitchMixin, RenewalFixture):
         self.assertTrue(selector_maintenance._teacher_enable_needed(self.decision))
         self.assertEqual(self.ok('teacher-off')['status'], 'teacher_off')
         with mock.patch.dict(os.environ):
-            os.environ.pop(teacher_state.ENV_SWITCH, None)
+            os.environ.pop('MEMVANE_TEACHER', None)
             self.assertFalse(selector_maintenance._teacher_enable_needed(self.decision))
         self.assertEqual(self.snapshot_targets(), self.original)
         self.assertEqual(self.ok('teacher-on')['status'], 'teacher_on')

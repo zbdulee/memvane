@@ -47,9 +47,8 @@ Codex instructions file to the model input.
 
 The call runs in an empty temporary working directory with the host CLI's
 isolation options enforced before launch; the plugin never reads or moves the
-CLI's credentials. Asking the setup skill to turn the teacher off, or setting
-`MEMVANE_TEACHER=off`, stops these calls while capture, recall and local training
-continue.
+CLI's credentials. Asking the setup skill to turn the teacher off for a project
+stops these calls while capture, recall and local training continue.
 
 ## Event log
 

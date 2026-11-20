@@ -80,7 +80,27 @@ def startup_metadata(event, *, inventory_ids=(), model_ok=None):
     return summary
 
 
+_PLUGIN_ID = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9._-]*@[a-zA-Z0-9][a-zA-Z0-9._-]*')
+_PLUGIN_NAME = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}')
+
+
+def plugin_ids(plugins):
+    """Sorted identifiers of init plugin entries: full id, else bare name, else 'unidentified'."""
+    ids = set()
+    for entry in plugins if isinstance(plugins, list) else ():
+        source = entry.get('source') if isinstance(entry, dict) else None
+        name = entry.get('name') if isinstance(entry, dict) else None
+        if isinstance(source, str) and len(source) <= 160 and _PLUGIN_ID.fullmatch(source):
+            ids.add(source)
+        elif isinstance(name, str) and _PLUGIN_NAME.fullmatch(name):
+            ids.add(name)
+        else:
+            ids.add('unidentified')
+    return sorted(ids)
+
+
 def inspect_event(event, *, inventory_ids=(), allow_security_policy=False, model_ok=None):
+    # ``allow_security_policy`` is kept for callers; plugins never end a call now.
     if type(allow_security_policy) is not bool:
         raise ValueError('invalid_security_policy_allowance')
     if not isinstance(event, dict):
@@ -98,16 +118,13 @@ def inspect_event(event, *, inventory_ids=(), allow_security_policy=False, model
                 raise ValueError('unexpected_tool_block')
     if kind == 'system' and subtype == 'init':
         metadata = startup_metadata(event, inventory_ids=inventory_ids, model_ok=model_ok)
-        policy_only = False
-        # Runtime plugin entries also contain path/version metadata: identity is exact,
-        # extra ordinary metadata is not authorization for any other plugin.
-        plugins = event.get('plugins')
-        if allow_security_policy and isinstance(plugins, list) and len(plugins) == 1:
-            entry = plugins[0]
-            policy_only = isinstance(entry, dict) and entry.get('name') == 'cc-plugin-sec-default' and entry.get('source') == 'cc-plugin-sec-default@builtin'
-        metadata['retained_security_policy_only'] = bool(policy_only)
+        # User decision (2026-11-20): the run turns plugins off through its settings;
+        # any plugin still listed could not be turned off and is a warning only, by
+        # id, whatever its kind. Tools, MCP servers and skills still end the call.
+        metadata['plugin_warnings'] = plugin_ids(event.get('plugins'))
+        metadata['retained_security_policy_only'] = bool(metadata['plugin_warnings'])
         for name, row in metadata['catalogs'].items():
-            if name == 'plugins' and policy_only:
+            if name == 'plugins' and row['state'] == 'nonempty':
                 continue
             if row['state'] == 'nonempty':
                 raise StartupRejected('unexpected_startup_' + name, metadata)

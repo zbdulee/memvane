@@ -480,6 +480,10 @@ def _teacher_summary(window):
                 if isinstance(item, dict) and type(item.get('count')) is int and item['count'] > 0:
                     tools[str(item.get('name'))] += item['count']
         print(f'WARNING teacher tool calls: {len(warned)} call(s); {_tally(tools)}')
+    kept = [row for row in calls if isinstance(row.get('pluginWarnings'), list) and row['pluginWarnings']]
+    if kept:
+        plugins = Counter(str(name) for row in kept for name in row['pluginWarnings'])
+        print(f'WARNING teacher plugins not turned off: {len(kept)} call(s); {_tally(plugins)}')
     scores = {}
     for row in window:
         if row.get('event') == 'learning.score' and row.get('checkpoint') is not None:

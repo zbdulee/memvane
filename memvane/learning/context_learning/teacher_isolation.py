@@ -14,11 +14,14 @@ import stat
 
 REASON = 'teacher_isolation_incomplete'
 
+# Plugins the per-run settings turn off. One that stays in the init catalog (for
+# example ``cc-plugin-sec-default``, manual call 2026-11-20) is only a warning.
 CLAUDE_BUILTIN_PLUGINS = ('cc-plugin-agents-md@builtin', 'cc-plugin-plugin-authoring@builtin',
-                          'cc-plugin-telemetry@builtin')
+                          'cc-plugin-privacy@builtin', 'cc-plugin-telemetry@builtin')
 CLAUDE_SETTINGS = ('{"disableAllHooks":true,"enabledPlugins":{'
                    '"cc-plugin-agents-md@builtin":false,'
                    '"cc-plugin-plugin-authoring@builtin":false,'
+                   '"cc-plugin-privacy@builtin":false,'
                    '"cc-plugin-telemetry@builtin":false}}')
 # flag -> exact value (None: a flag without a value). '--model' and
 # '--system-prompt' are compared with the caller's expected values.
