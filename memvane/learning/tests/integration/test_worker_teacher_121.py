@@ -355,28 +355,27 @@ class PromptCases(WorkerFixture):
 class Learning(WorkerFixture):
     """L-1, L-7, L-8, L-9 through the worker entry."""
 
-    def test_l1_five_gold_release_the_fresh_train_wait_with_no_holdout(self):
+    def test_l1_no_job_below_the_promotion_size_and_no_holdout(self):
+        # 1.0.22 A-4: a default-teacher job below minQualityTrainCases is never planned.
         self.golds('g', 4, empty=1)
         self.assertEqual(self.worker()['cycle']['status'], 'waiting_fresh_train')
         self.assertEqual(self.jobs(), [])
         self.gold('g-004')
         result = self.worker()
-        self.assertEqual(result['cycle']['status'], 'staged_waiting_quality_cohort')
-        self.assertEqual(result['cycle']['validation'], 0)
-        self.assertEqual(len(self.jobs()), 1)
-        self.assertEqual(self.trained, [[f'g-{i:03d}' for i in range(5)]])
+        self.assertEqual(result['cycle'], {'status': 'waiting_fresh_train', 'train': 5, 'required': 100})
+        self.assertEqual((self.jobs(), self.trained), ([], []))
         with shared._db(self.root) as db:
             self.assertFalse(db.execute("SELECT 1 FROM sqlite_master WHERE name='project_cohort_assignments'")
                              .fetchone())
 
     def freeze(self):
-        """99 gold train a small candidate; 5 more train the frozen 104-case one."""
+        """99 gold train nothing; 5 more train the frozen 104-case candidate."""
         self.golds('t', 99, empty=20)
         self.worker()
-        self.assertEqual([len(job['members']) for job in self.jobs()], [99])
+        self.assertEqual(self.jobs(), [])
         self.golds('u', 5)
         self.worker()
-        self.assertEqual([len(job['members']) for job in self.jobs()], [99, 104])
+        self.assertEqual([len(job['members']) for job in self.jobs()], [104])
         return self.jobs()[-1]
 
     def evaluation(self, job):
@@ -386,13 +385,13 @@ class Learning(WorkerFixture):
 
     def test_l7_promotion_sized_candidate_is_frozen_while_gold_arrives(self):
         frozen = self.freeze()
-        self.assertEqual(len(self.trained), 2)
+        self.assertEqual(len(self.trained), 1)
         self.golds('v', 12, empty=3)
         for _ in range(2):
             result = self.worker()
             self.assertEqual(result['cycle']['status'], 'staged_waiting_quality_cohort')
-        self.assertEqual(len(self.jobs()), 2)
-        self.assertEqual(len(self.trained), 2)
+        self.assertEqual(len(self.jobs()), 1)
+        self.assertEqual(len(self.trained), 1)
         self.assertEqual(result['cycle']['cycle_id'], frozen['id'])
         self.assertEqual(result['cycle']['validation'], 12)
         self.assertEqual(sorted(self.evaluation(frozen)), [f'v-{i:03d}' for i in range(12)])
@@ -414,7 +413,7 @@ class Learning(WorkerFixture):
         self.gold('w-000')
         self.worker()
         jobs = self.jobs()
-        self.assertEqual(len(jobs), 3)
+        self.assertEqual(len(jobs), 2)
         members = {m['request_id'] for m in jobs[-1]['members']}
         self.assertLessEqual({f'v-{i:03d}' for i in range(50)}, members)
         outcomes = [(row['outcome'], row['evalCases'], row['evalEmpty']) for row in self.promotions()]
@@ -438,7 +437,7 @@ class Learning(WorkerFixture):
         self.assertEqual(json.loads((self.root / 'active-checkpoint.json').read_text())['cycle_id'], 'base')
         self.worker()
         jobs = self.jobs()
-        self.assertEqual(len(jobs), 3)
+        self.assertEqual(len(jobs), 2)
         members = {m['request_id'] for m in jobs[-1]['members']}
         self.assertLessEqual({f'v-{i:03d}' for i in range(51)}, members)
         # The rejected candidate is never evaluated again.

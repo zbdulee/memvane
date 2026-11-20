@@ -110,6 +110,13 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None, coordinator=N
 
 
 
+def job_family(policy):
+    """A job's family: trainer interpreter, model identity, base artifact and input view."""
+    from .adapter import EDIT_INPUT_VIEW, model_identity
+    return digest(canonical([policy['trainerArgv'][0],model_identity(policy['trainerArgv'][2]),
+                            _hash(policy['baseArtifact']),EDIT_INPUT_VIEW]))
+
+
 def _prepare_staged(root,policy,grant):
     from .shared import _db, _case_active
     from .adapter import EDIT_INPUT_VIEW, model_identity
@@ -130,6 +137,8 @@ def _prepare_staged(root,policy,grant):
         cohort_train, validation = training_and_validation(db, _project(root, grant), grant)
         frozen=prequential.candidate_job(db,grant) if sequential else None
     if frozen is not None and frozen['id'] in prequential.rejected_cycles(root):frozen=None
+    # The shared case table stops capture at 2,000 rows (``shared.enqueue`` ``queue_full``),
+    # so a default-teacher namespace never reaches this bound.
     if len(cohort_train)>2000 or len(validation)>2000:
         return {'status':'cohort_source_revoked'}
     from memvane.runtime.api import preparation_checkpoint
@@ -147,8 +156,11 @@ def _prepare_staged(root,policy,grant):
             return {'status':'synthetic_training_budget_exhausted'}
     if len(cohort_train)<grant['cohort']['minTrainCases']:
         return {'status':'waiting_fresh_train','train':len(cohort_train),'required':grant['cohort']['minTrainCases']}
-    family=digest(canonical([policy['trainerArgv'][0],model_identity(policy['trainerArgv'][2]),
-                            _hash(policy['baseArtifact']),EDIT_INPUT_VIEW]))
+    if sequential and frozen is None and len(cohort_train)<grant['cohort']['minQualityTrainCases']:
+        # Below the promotion size no candidate can be judged: train once at the size.
+        return {'status':'waiting_fresh_train','train':len(cohort_train),
+                'required':grant['cohort']['minQualityTrainCases']}
+    family=job_family(policy)
     from . import learning_profile
     minimum=policy['batchMin']
     if learning_profile.present(root):
@@ -173,7 +185,9 @@ def _prepare_staged(root,policy,grant):
     if frozen is None:job=(existing if synthetic and existing else queue.plan(
         cohort_train,approval=proposal_sha256(grant),cohort=grant['cohort']['id'],
         family=family,minimum=minimum,maximum=policy['batchMax'],
-        roles=['train']*len(cohort_train),cumulative=grant.get('scope')==SCOPE))
+        roles=['train']*len(cohort_train),cumulative=grant.get('scope')==SCOPE,
+        **(dict(minimum_members=grant['cohort']['minQualityTrainCases'],recent_replay=True,
+                lineage=prequential.lineage(grant)) if sequential else {})))
     if job is None:return {'status':'waiting_fresh_batch','threshold':minimum}
     if frozen is None and job['status']=='staged' and _closed(root,job['id']):
         # A finished (rejected) candidate is never evaluated again, in either profile.

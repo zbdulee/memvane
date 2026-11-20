@@ -2176,6 +2176,12 @@ def run_training_pending(root,project):
                     return _profile_apply(root,policy,profile,{'status':'already_staged_evaluated','cycle_id':intent['cycle_id']})
                 if intent['phase']=='activated':
                     candidate_apply.readable(root);candidate_apply._finish_cycle(root,intent['cycle_id'])
+            if (root/DATABASE_NAME).exists():
+                # A plugin update changes the approval: carry the frozen candidate to it
+                # (default teacher) and close every cycle of an earlier approval, before
+                # the staged selection below picks one that can never be applied.
+                from .prequential import supersede
+                supersede(root,policy,project)
         # Existing fixtures without a shared ledger have no evaluation work.
         if (root/DATABASE_NAME).exists():
             from .evaluation_queue import EvaluationQueue

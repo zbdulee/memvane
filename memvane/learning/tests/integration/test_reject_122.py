@@ -122,6 +122,22 @@ class Explicit(ApplyCounter):
         self.assertEqual(result['status'], 'waiting_fresh_batch')
 
 
+    def test_t2_8_reapproval_closes_the_earlier_cycle_and_the_next_job_trains(self):
+        self.golds('t', 100, empty=20)
+        self.worker()
+        first = self.jobs()[-1]
+        self.assertNotIn('lineage', first)
+        self.assertEqual(self.trained and len(self.trained), 1)
+        # A new explicit approval (its own setup) with the same cases.
+        self.grant = dict(self.grant, expiresAtUnixMs=self.grant.get('expiresAtUnixMs', 0) + 1)
+        self.profile['runtimeApprovalSha256'] = runtime_authorization.proposal_sha256(self.grant)
+        self.golds('u', 5)
+        self.worker()
+        self.assertEqual(self.evaluation(first['id']), ('blocked', 'authorization_superseded'))
+        self.assertEqual(len(self.trained), 2)
+        self.assertNotEqual(self.jobs()[-1]['id'], first['id'])
+
+
 class DefaultTeacher(ApplyCounter):
     def test_t3_3_rejection_closes_without_the_worker_recovery(self):
         self.base_style, self.candidate_style = 'gold', 'empty'
@@ -137,7 +153,7 @@ class DefaultTeacher(ApplyCounter):
             self.assertEqual((result['status'], result['reason']), ('apply_blocked', 'apply_quality_regression'))
             self.assertEqual(self.evaluation(frozen['id']), ('blocked', 'apply_quality_regression'))
             self.worker()
-            self.assertEqual(len(self.jobs()), 3)
+            self.assertEqual(len(self.jobs()), 2)
             self.assertEqual(self.applied, [frozen['id']])
 
 
