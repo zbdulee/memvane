@@ -204,10 +204,11 @@ class GuardChecks(unittest.TestCase):
         sample={'total_bytes':10000,'available_percent':70,'pressure':'normal',
                 'swap_bytes':0,'load_per_cpu':0,'cpu_count':4}
         self.assertIsNone(guard.violation(policy,{**sample,'pressure':'warning'},[],0))
+        self.assertIsNone(guard.violation(policy,{**sample,'swap_bytes':1000},[],0))
         for changes,reason in [({'pressure':'critical'},'os_memory_pressure'),
                 ({'available_percent':19},'relative_available'),
                 ({'available_percent':None},'monitor_unavailable'),
-                ({'swap_bytes':101},'swap_growth'),({'load_per_cpu':2},'system_load')]:
+                ({'swap_bytes':1001},'swap_growth'),({'load_per_cpu':2},'system_load')]:
             self.assertEqual(guard.violation(policy,{**sample,**changes},[],0),reason)
 
     def test_ordinary_regression_does_not_use_model_resource_limits(self):
