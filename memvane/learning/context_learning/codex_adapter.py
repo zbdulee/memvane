@@ -24,32 +24,38 @@ def _provider_failure(event, fallback):
         return 'provider_quota_waiting'
     if re.search(r'(unknown|unsupported|unavailable|not found).{0,40}model|model.{0,40}(unknown|unsupported|unavailable|not found)', detail):
         return 'provider_model_unavailable'
+    if re.search(r'unauthori[sz]ed|\b401\b|not logged in|log ?in again|authenticat|invalid api key|(?:access|refresh) token', detail):
+        return 'provider_auth_waiting'
+    if re.search(r'content.?policy|usage.?polic|safety system|flagged|invalid_prompt', detail):
+        return 'provider_content_rejected'
     if re.search(r'network|connection|websocket|transport|timed? out|http 50[234]', detail):
         return 'provider_transport_waiting'
     return fallback
 
 
+OVERRIDES = (
+    'model_reasoning_effort="low"', 'approval_policy="never"',
+    'project_doc_max_bytes=0', 'web_search="disabled"',
+    'features.plugins=false', 'features.apps=false',
+    'features.browser_use=false', 'features.in_app_browser=false',
+    'features.computer_use=false', 'features.shell_tool=false',
+    'features.multi_agent=false', 'features.multi_agent_v2=false',
+    'features.view_image=false', 'features.skip_host_skill_discovery=true',
+    'features.memories=false', 'features.goals=false',
+    'model_provider="openai"', 'suppress_unstable_features_warning=true',
+    # Suppress the available-skills prompt block, not mandatory policy.
+    # Skills may still exist and an explicit invocation may load one.
+    'skills.include_instructions=false',
+)
+FLAGS = ('exec', '--ignore-user-config', '--ignore-rules', '--ephemeral',
+         '--skip-git-repo-check', '--sandbox', 'read-only', '--json', '--color', 'never')
+
+
 def argv(*, model=MODEL):
     if not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,79}', model):
         raise ValueError('invalid_model')
-    overrides = (
-        'model_reasoning_effort="low"', 'approval_policy="never"',
-        'project_doc_max_bytes=0', 'web_search="disabled"',
-        'features.plugins=false', 'features.apps=false',
-        'features.browser_use=false', 'features.in_app_browser=false',
-        'features.computer_use=false', 'features.shell_tool=false',
-        'features.multi_agent=false', 'features.multi_agent_v2=false',
-        'features.view_image=false', 'features.skip_host_skill_discovery=true',
-        'features.memories=false', 'features.goals=false',
-        'model_provider="openai"', 'suppress_unstable_features_warning=true',
-        # Suppress the available-skills prompt block, not mandatory policy.
-        # Skills may still exist and an explicit invocation may load one.
-        'skills.include_instructions=false',
-    )
-    result = ['codex', 'exec', '--ignore-user-config', '--ignore-rules',
-              '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only',
-              '--json', '--color', 'never', '--model', model]
-    for override in overrides:
+    result = ['codex', *FLAGS, '--model', model]
+    for override in OVERRIDES:
         result.extend(('-c', override))
     return result + ['-']
 
@@ -64,7 +70,22 @@ def child_environment(parent):
     return result
 
 
-def inspect_event(event, *, max_response_bytes=MAX_RESPONSE_BYTES):
+def _tool_name(item, item_type):
+    name = item_type if isinstance(item_type, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,40}', item_type) else 'unnamed'
+    tool = item.get('tool') if isinstance(item.get('tool'), str) else item.get('name')
+    if isinstance(tool, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,39}', tool):
+        name += ':' + tool
+    return name
+
+
+def inspect_event(event, *, max_response_bytes=MAX_RESPONSE_BYTES, count_tools=False):
+    """``count_tools`` (default-teacher only) reports an action item instead of raising.
+
+    The reported item carries only its id and an identifier-shaped name, never
+    arguments or output.
+    """
+    if type(count_tools) is not bool:
+        raise ValueError('invalid_count_tools')
     if not isinstance(event, dict):
         raise ValueError('invalid_event')
     kind = event.get('type')
@@ -84,7 +105,12 @@ def inspect_event(event, *, max_response_bytes=MAX_RESPONSE_BYTES):
             # Do not expose raw provider errors, paths or arbitrary user content.
             raise ValueError(_provider_failure(event, 'provider_error_item'))
         if item_type not in {'agent_message', 'reasoning'}:
-            raise ValueError('unexpected_action_item')
+            if not count_tools:
+                raise ValueError('unexpected_action_item')
+            item_id = item.get('id')
+            result['tool_item'] = {'id': item_id if isinstance(item_id, str) and len(item_id) <= 160 else None,
+                                   'name': _tool_name(item, item_type)}
+            return result
         result['item_type'] = item_type
         if kind == 'item.completed' and item_type == 'agent_message':
             text = item.get('text')

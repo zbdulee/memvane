@@ -7,6 +7,7 @@ dispatches require human review rather than an automatic paid retry.
 from contextlib import contextmanager
 from memvane.runtime.api import provider_job,provider_call,provider_popen,provider_checkpoint
 from memvane.runtime.types import PreSendDeferred
+from memvane.kernel.resource_deferred import ResourceDeferred
 
 import fcntl
 import json
@@ -22,7 +23,7 @@ import tempfile
 import time
 
 from . import codex_adapter, general_gold_ledger as ledger
-from .contracts import digest
+from .contracts import EDIT_SCHEMA, digest, validate_request
 from .dataset import read_private_json
 from .egress_guard import inspect_payload
 from .shared import _case_active, _db, _policy, _project_key, resource_report
@@ -106,8 +107,8 @@ def require_consent(root,project,policy=None,sample=None,bodies=None):
         raise ValueError('teacher_consent_required') from exc
 
 
-def weekly_quota(result):
-    """Use only the core Codex weekly bucket, never an unrelated model bucket."""
+def weekly_remaining(result):
+    """Remaining percent of the core Codex weekly bucket, without the 30% floor."""
     if not isinstance(result,dict):raise ValueError('weekly_quota_unavailable')
     if result.get('ordinaryUsageAllowed') is False:raise ValueError('weekly_quota_checkpoint')
     by_id=result.get('rateLimitsByLimitId')
@@ -121,7 +122,12 @@ def weekly_quota(result):
     used=weekly[0].get('usedPercent')
     if type(used) not in (int,float) or not math.isfinite(used) or not 0<=used<=100:
         raise ValueError('weekly_quota_unavailable')
-    remaining=100-used
+    return 100-used
+
+
+def weekly_quota(result):
+    """Use only the core Codex weekly bucket, never an unrelated model bucket."""
+    remaining=weekly_remaining(result)
     if remaining<=30:raise ValueError('weekly_quota_checkpoint')
     return {'remainingPercent':remaining,'observedAt':time.time()}
 
@@ -129,7 +135,11 @@ def weekly_quota(result):
 @provider_call
 def read_weekly_quota():
     """Read-only app-server IPC: no thread, turn, credit reset or model call."""
-    environment=codex_adapter.child_environment(os.environ)
+    return weekly_quota(_read_rate_limits(os.environ))
+
+
+def _read_rate_limits(parent):
+    environment=codex_adapter.child_environment(parent)
     executable=shutil.which('codex',path=environment.get('PATH',os.defpath))
     if not executable:raise ValueError('weekly_quota_unavailable')
     args=[executable,'app-server','--stdio','-c','features.plugins=false',
@@ -176,13 +186,15 @@ def read_weekly_quota():
                                 process.stdin.flush()
                             elif event.get('id')==3:
                                 if not chatgpt or 'error' in event:raise ValueError('weekly_quota_unavailable')
-                                return weekly_quota(event.get('result'))
+                                return event.get('result')
             raise ValueError('weekly_quota_unavailable')
     except ValueError:raise
     except Exception as exc:raise ValueError('weekly_quota_unavailable') from exc
     finally:
         if process is not None:
             _stop_owned(process)
+            try:process.wait(timeout=1)  # reap: the group may already be gone
+            except subprocess.TimeoutExpired:pass
             for stream in (process.stdin,process.stdout):
                 if stream is not None:stream.close()
 
@@ -412,3 +424,11 @@ def process_pending(root,project,worker_policy,*,invoke=None,max_cases=1):
                     if isinstance(exc,PreSendDeferred):return {'status':'deferred_resource','reason':'pre_send_resource_deferred','outcomes':outcomes}
                     break
         return {'status':'processed','outcomes':outcomes}
+
+
+# Default teacher (v2) lives in default_teacher; the same objects stay reachable here.
+from .default_teacher import (INSTRUCTION_V2, PHASE, SCAN_LIMIT, SCOPE_ERRORS,  # noqa: E402,F401
+                              payload_v2, require_consent_v2, process_pending_default,
+                              read_weekly_remaining, _consent_file_v2, _scope_default, _emit,
+                              _update_hosts, _migration_ready, _choice_v2, _usage_fields,
+                              _monitor, _settle)
