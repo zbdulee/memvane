@@ -51,7 +51,7 @@ class Policy:
     min_available_percent=20
     max_tree_rss_fraction=.15
     max_tree_cpu_fraction=MAX_CPU_FRACTION
-    max_swap_growth_fraction=.01
+    max_swap_growth_fraction=.10
     max_load_per_cpu=.75
     max_processes=32
 
