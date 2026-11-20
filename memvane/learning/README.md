@@ -86,9 +86,18 @@ code/executable/manifest/adapter 지문과 기본 승인 체인, 현재 공식 r
 검증된 backup 내용으로 이미 복원된 namespace 파일도 허용한다.
 준비할 selector가 없으면 warm 없이 버전을 게시한다.
 후보 apply의 resident 시작 실패는 재시도를 예약하며, 실행 중인 resident의
-정체성·권한 거절은 후보 적용을 차단한다.
+정체성·권한 거절은 후보 적용을 차단한다. `selector_heal.check_scope`는 갱신 intent나
+전환 intent(`teacher_enable_pending`)가 있으면 거절한다.
 
-구현: `context_learning_auto.py`, `context_learning_cli.py`, `prepare_laya_inference.py`, `project_learning_setup.py`, `project_learning_recovery.py`, `selector_maintenance.py`, `default_teacher_enable.py`.
+구현: `context_learning_auto.py`, `context_learning_cli.py`, `prepare_laya_inference.py`, `project_learning_setup.py`, `project_learning_recovery.py`, `selector_maintenance.py`, `default_teacher_enable.py`, `candidate_close.py`.
+
+공유 학습 `cases` 테이블은 상태와 무관하게 `CASE_LIMIT`(2,000행)에서 새 사례 수집을
+멈추고(`queue_full`), 기존 사례를 삭제하지 않는다. `seam._store`가 `queued`·`duplicate`
+밖의 결과를 받으면 `learning.capture.shared` 이벤트를 남긴다. worker pass는 자원 수락
+미룸 시 `resource-defer.json`의 안쪽 사유와 관측 수치를 `learning.cycle`(`deferred_resource`)에
+남기고, 학습이 끝나면 `learning.cycle`(`trained`)을 남긴다. worker 격리 env에 provider가
+더하는 키 목록은 `runtime_admission.PROVIDER_ENV_KEYS`에 고정한다. CLI에는
+`--accept-security-policy` 플래그를 두지 않는다.
 
 저장된 recall capture의 후보 출처는 별도 `learning.capture.sources` 진단
 이벤트에 기록한다. `request_id`로 기존 표본과 연결하며 후보 id의 SHA-256과
@@ -126,28 +135,52 @@ v5 사례는 teacher가 저장된 snapshot만으로 판정하므로 후보 카�
 journal의 plan mode, grant의 `gold_default` operation, 동의 v2 파일
 (`project-teacher-consent.json`, `teacher_consent.py`의 고정 template) 셋이 담는다.
 공유 동의 파일은 `externalTeacher: true`다. 1.0.21보다 낮은 번들은 이 모양을 거절하므로
-그 호스트 사본은 수집·학습을 하지 않고 recall은 hybrid 순위로 답한다.
+그 호스트 사본은 수집·학습을 하지 않고 recall은 hybrid 순위로 답한다. 1.0.21 번들은
+`default-teacher` 경로에서 `queued` 사례만 읽으므로 `first_done`·`answer_parked`·`lineage`·닫힌
+평가 행을 건드리지 않는다. 정책 파일은 `goldModel`과 `maxGoldCalls`를 보존하나
+기본 teacher는 이를 읽지 않고 호출별 해결 모델을 상태와 `memvane:logs`에 남긴다.
 
 기존 default-local 설치는 selector maintenance가 `default_teacher_enable.py`로 한 번에
 바꾼다. intent(`project-teacher-enable.json`)에 대상별 old/new 바이트를 적고 CAS로 쓴다.
-intent가 있는 동안 grant·profile·선택 검사가 거절한다. 다음 실행이 전제가 유지되면 앞으로
-끝내고, 깨졌으면 되돌린다. old도 new도 아닌 대상이 있으면 쓰기를 멈추고 fence를 유지한다.
-setup skill의 `restore-teacher-enable`이 old 바이트로 되돌린다. 같은 사유의 실패가 5번
-이어지면 플러그인 버전이 바뀌거나 복구 명령이 돌 때까지 요청을 멈춘다.
+intent가 있는 동안 grant·profile·선택 검사가 거절하고 `selector_heal`도 거절한다. 다음 실행이
+전제가 유지되면 앞으로 끝내고, 깨졌으면 되돌린다. old도 new도 아닌 대상이 있으면 쓰기를
+멈추고 fence를 유지한다. setup skill의 `restore-teacher-enable`이 old 바이트로 되돌린다.
+같은 사유의 실패가 5번 이어지면 플러그인 버전이 바뀌거나 복구 명령이 돌 때까지 요청을 멈춘다;
+intent 없이 요청만 멈춘 상태에서는 `ENABLE_DEFERRED_NOTICE`를 안내한다. 각 결과는
+`learning.teacher` 행(`enabled`, `enable_deferred`, `enable_failed`, `enable_restored`)으로
+남는다.
 
 teacher는 학습 worker에서만 돈다(`general_teacher.process_pending_default`, pass당 호출
 8건). 사례를 수집한 세션의 호스트 CLI만 쓰고, 번들 tier 표(`teacher_model_tiers.py`)의
 모델만 요청하며, 호출마다 격리 사전 점검(`teacher_isolation.py`)을 지나야 보낸다. 호스트
 호출·대기·차단기는 `teacher_hosts.py`와 namespace의 `teacher-host-state.json`이 맡는다.
-입력은 편집 텍스트와 후보 카드 본문 스냅숏뿐이다. 루트에 `.git`이 없고 상위 work tree 안에
-있는 프로젝트는 teacher 동의의 `grantedAtUnixMs`보다 먼저 수집된 v5 편집 사례를 모두
-teacher·학습 대상에서 빼고 지우지 않은 채 `historical`(`pre_teacher_capture`)로 둔다. git이
-답하지 못하면 그 pass는 부르지 않는다. gold는 holdout 없이 모두 학습에 들어가고, 승격은 학습
-cutoff 뒤 사례로 판정한다. 승격 판정에는 grant의 cohort 한도에 더해 비지 않은 gold 평가 사례
-10건이 필요하다(`prequential.py`).
+실행 중 guard는 `prequential.admitted_one`으로 해당 사례 한 행만 읽는다. 본문 전송 뒤(`sent=True`)
+감시는 자식 RSS·timeout·출력 상한·scope를 유지하고 시스템 전체 준비 상태로 중단하지 않는다.
+전송 전 guard의 `ResourceDeferred`는 본문 없이 `deferred`로 끝내며 `deferred`·`host` 대기는
+시도 횟수를 올리지 않는다. 응답 뒤 guard의 `ResourceDeferred`는 사례를 `first_done`, ledger를
+`answer_parked`로 보관하고(`learning.teacher` `parked`), 다음 pass 맨 앞(빈 큐 조기 반환 전)에서
+현재 동의·활성·불변·payload 해시·`admitted_one`·보관 답 해시가 맞으면 호출 없이 gold로
+확정한다(`reason: parked_answer`). 차단기는 `NOT_HOST_FAILURES` 네 사유(`teacher_scope_changed`,
+`gold_capture_changed`, `teacher_cohort_changed`, `gold_case_changed_before_commit`)를 제외한
+`unknown`·`invalid`에서 오른다. 입력은 편집 텍스트와 후보 카드 본문 스냅숏뿐이다. 루트에 `.git`이
+없고 상위 work tree 안에 있는 프로젝트는 teacher 동의의 `grantedAtUnixMs`보다 먼저 수집된 v5
+편집 사례를 모두 teacher·학습 대상에서 빼고 지우지 않은 채 `historical`(`pre_teacher_capture`)로
+둔다. git이 답하지 못하면 그 pass는 부르지 않는다. gold는 holdout 없이 모두 학습에 들어가고,
+승격은 학습 cutoff 뒤 사례로 판정한다. 승격 판정에는 grant의 cohort 한도에 더해 비지 않은 gold
+평가 사례 10건이 필요하다(`prequential.py`).
+
+default-teacher는 gold가 `minQualityTrainCases`(100건) 전이면 job을 계획하지 않고
+(`waiting_fresh_train`), replay 자리는 최근 소비 사례부터 채운다(`recent_replay`). plugin 갱신으로
+승인 해시가 바뀌면 `candidate_close.supersede`가 유효한 grant 아래에서 계보(`binding`을 뺀 grant
+해시)·`job_family`·base artifact·입력 view·후보 artifact·활성 stage·구성원 행·apply journal·`rejected_cycles`
+제외 조건이 모두 맞는 미완 후보를 현재 승인으로 옮기고(`carriedFrom`), 나머지 구승인 staged cycle은
+두 프로필 공통으로 `authorization_superseded`로 닫는다. 또한 후보 적용이 판정 사유(`candidate_apply.JUDGED`)로
+거절되거나 apply journal이 `rejected`로 끝나면 `candidate_close.close_judged`가 `EvaluationQueue.reject`로
+두 프로필 모두에서 해당 후보(및 완료된 채 열려 있는 선행 후보 `superseded_by_judged`)를 닫아 재적용을
+막는다.
 
 hook은 teacher 전송·격리·tier·전환 모듈을 import하지 않는다. SessionStart 안내는
 `teacher_state.py`(stdlib와 kernel만 import)로 `teacher-host-state.json`과 전환 intent의
-존재만 본다. 끄기는 setup skill의 `teacher-off`·`teacher-on`(`teacher-switch.json`) 하나다.
-환경 변수는 끄기 수단이 아니다. 계약 전체는 `docs/continual-learning.md`의
-Default teacher 절에 있다.
+존재만 본다. `UNSAFE_PATH`(`teacher_cli_unsafe_path`) 안내는 7일 간격, `REST_REASONS`는
+`teacher_codex_home_redirected`를 포함한다. 끄기는 setup skill의 `teacher-off`·`teacher-on`(`teacher-switch.json`)
+하나다. 환경 변수는 끄기 수단이 아니다. 계약 전체는 `docs/continual-learning.md`의 Default teacher 절에 있다.

@@ -156,7 +156,7 @@ class LocalTrainer:
         if result_path.exists() or result_path.is_symlink(): raise ValueError('result_exists')
         pending = result_path.with_name(result_path.name+'.pending')
         pending.unlink(missing_ok=True)  # Only this cycle's interrupted output.
-        env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TMPDIR') if k in os.environ}
+        env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TMPDIR', 'MEMVANE_TEST_RUNTIME_ROOT') if k in os.environ}  # test root: TrainingGuard's root check
         if self.scratch_dir is not None:
             env['TMPDIR'] = str(self.scratch_dir)
         env.update(HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1',

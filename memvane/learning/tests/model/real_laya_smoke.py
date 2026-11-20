@@ -1,13 +1,26 @@
-"""Opt-in actual local Laya protocol smoke; synthetic cards only."""
+"""Opt-in actual local Laya protocol smoke; synthetic cards only.
+
+Training and prediction run on the product learning path: the shared-policy
+resource values and a ``learning_control`` lease from the runtime coordinator
+(``Coordinator.training``), with the product admission unchanged. A deferral
+prints its inner reason and numbers to stderr and is raised again.
+"""
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 
 from memvane.learning.context_learning.local_cycle import VerifiedLayaTrainer
 from memvane.learning.context_learning.runtime_setup import attest_runtime, choose_runtime
 from memvane.learning.context_learning.adapter import prepare_base_artifact
 from memvane.learning.tests.support import REPO
+from memvane.kernel.resource_deferred import ResourceDeferred
+from memvane.learning.context_learning.shared import resource_report
+from memvane.runtime.api import admission_policy, coordinator as Coordinator
+
+# The product shared-policy resource values (``project_learning_setup``).
+POLICY = {'maxRssMib': 4096, 'minAvailableMib': 1024, 'maxLoadPerCpu': .8}
 
 
 python = os.environ['QMD_LAYA_PYTHON']
@@ -19,44 +32,70 @@ selected = choose_runtime(mode='reuse', reuse_executable=python,
     base_model_sha256=proof['attestation']['base_model_sha256'])
 assert selected['status'] == 'selected'
 
-trainer = VerifiedLayaTrainer([python, adapter, model], max_seconds=120, max_rss_mib=8192)
-with tempfile.TemporaryDirectory(prefix='qmd-real-laya-protocol-') as temp:
-    root = Path(temp); root.chmod(0o700)
-    base = root/'base.artifact'
-    assert prepare_base_artifact(model,base)['base_model_sha256']==proof['attestation']['base_model_sha256']
-    cases = []
-    for i in range(2):
-        cases.append({'request_id':'synthetic-'+str(i),'input_sha256':str(i)*64,
-            'prompt':'Which synthetic town has the blue bridge?',
-            'candidates':[{'id':'blue-'+str(i),'input_kind':'full_compact_wiki_body',
-                'input_text':'Synthetic Arin has a blue bridge. '*25,
-                'revision_sha256':'a'*64},
-                {'id':'red-'+str(i),'input_kind':'full_compact_wiki_body',
-                'input_text':'Synthetic Bori has a red bridge. '*25,
-                'revision_sha256':'b'*64}],
-            'selected_ids':['blue-'+str(i)] if i == 0 else []})
-    artifact = root/'trained.artifact'
-    trained, train_resources = trainer.call('train',
-        {'schema_version':1,'train':cases,'artifact_path':str(artifact),
-         'manifest_sha256':'c'*64},root/'train-result.json',cwd=root)
-    assert trained == {'schema_version':1,'status':'trained'}
-    assert artifact.is_file() and artifact.stat().st_size > 0
-    heldout = [{key:value for key,value in case.items() if key != 'selected_ids'}
-               for case in cases]
-    for name, path in (('base',base),('trained',artifact)):
-        prediction, resources = trainer.call('predict',
-            {'schema_version':1,'artifact_path':str(path),'cases':heldout},
-            root/(name+'-prediction.json'),cwd=root)
-        assert len(prediction['predictions']) == 2
-        for case, row in zip(heldout,prediction['predictions']):
-            assert row['request_id'] == case['request_id']
-            assert row['input_sha256'] == case['input_sha256']
-            assert len(row['selected_ids']) <= 3
-            assert set(row['selected_ids']) <= {c['id'] for c in case['candidates']}
-        assert resources['elapsed_seconds'] > 0
-    print(json.dumps({'external_calls':0,'runtime_selected':selected['mode'],
-        'synthetic_proof':proof['smoke']['checks'],'device':proof['smoke']['device'],
-        'body_bytes':proof['smoke']['synthetic_body_bytes'],
-        'input_tokens':proof['smoke']['model_input_tokens'],
-        'head_bytes':artifact.stat().st_size,'smoke_resources':proof['resources'],
-        'train_resources':train_resources}))
+trainer = VerifiedLayaTrainer([python, adapter, model], max_seconds=120, max_rss_mib=POLICY['maxRssMib'])
+
+
+def deferred(exc, report):
+    admission = exc.report if isinstance(exc.report, dict) else {}
+    memory = admission.get('memory_admission') if isinstance(admission.get('memory_admission'), dict) else {}
+    print(json.dumps({'resource_deferred': str(exc), 'reason': admission.get('reason'),
+                      'available_mib': report.get('available_mib'), 'total_mib': report.get('total_mib'),
+                      'load_per_cpu': report.get('load_per_cpu'), 'load_limit': POLICY['maxLoadPerCpu'],
+                      'reserve_mib': memory.get('reserve_mib'),
+                      'required_additional_mib': memory.get('required_additional_mib'),
+                      'memory_pressure': report.get('memory_pressure')}), file=sys.stderr, flush=True)
+
+
+controller = Coordinator()
+report = resource_report(POLICY, detailed=True)
+try:
+    with tempfile.TemporaryDirectory(prefix='qmd-real-laya-protocol-') as temp, \
+            controller.training(POLICY, report) as (lease_fd, _admission):
+        root = Path(temp); root.chmod(0o700)
+        # The product learning path: the lease fd authorizes the trainer child.
+        trainer.learning_control = {'schema': 1, 'root': str(controller.root), 'policy': admission_policy(POLICY),
+                                    'namespace': 'real-laya-smoke', 'job_id': 'real-laya-smoke'}
+        trainer.inherited_fds = (lease_fd,)
+        trainer.coordination_fd = lease_fd
+        base = root/'base.artifact'
+        assert prepare_base_artifact(model,base)['base_model_sha256']==proof['attestation']['base_model_sha256']
+        cases = []
+        for i in range(2):
+            cases.append({'request_id':'synthetic-'+str(i),'input_sha256':str(i)*64,
+                'prompt':'Which synthetic town has the blue bridge?',
+                'candidates':[{'id':'blue-'+str(i),'input_kind':'full_compact_wiki_body',
+                    'input_text':'Synthetic Arin has a blue bridge. '*25,
+                    'revision_sha256':'a'*64},
+                    {'id':'red-'+str(i),'input_kind':'full_compact_wiki_body',
+                    'input_text':'Synthetic Bori has a red bridge. '*25,
+                    'revision_sha256':'b'*64}],
+                'selected_ids':['blue-'+str(i)] if i == 0 else []})
+        artifact = root/'trained.artifact'
+        trained, train_resources = trainer.call('train',
+            {'schema_version':1,'train':cases,'artifact_path':str(artifact),
+             'manifest_sha256':'c'*64},root/'train-result.json',cwd=root)
+        assert trained == {'schema_version':1,'status':'trained'}
+        assert artifact.is_file() and artifact.stat().st_size > 0
+        heldout = [{key:value for key,value in case.items() if key != 'selected_ids'}
+                   for case in cases]
+        for name, path in (('base',base),('trained',artifact)):
+            prediction, resources = trainer.call('predict',
+                {'schema_version':1,'artifact_path':str(path),'cases':heldout},
+                root/(name+'-prediction.json'),cwd=root)
+            assert len(prediction['predictions']) == 2
+            for case, row in zip(heldout,prediction['predictions']):
+                assert row['request_id'] == case['request_id']
+                assert row['input_sha256'] == case['input_sha256']
+                assert len(row['selected_ids']) <= 3
+                assert set(row['selected_ids']) <= {c['id'] for c in case['candidates']}
+            assert resources['elapsed_seconds'] > 0
+        print(json.dumps({'external_calls':0,'runtime_selected':selected['mode'],
+            'synthetic_proof':proof['smoke']['checks'],'device':proof['smoke']['device'],
+            'body_bytes':proof['smoke']['synthetic_body_bytes'],
+            'model_input_view':proof['smoke']['model_input_view'],
+            'input_tokens':proof['smoke']['model_input_tokens'],
+            'head_bytes':artifact.stat().st_size,'smoke_resources':proof['resources'],
+            'train_resources':train_resources}))
+except ResourceDeferred as exc:
+    deferred(exc, report)
+    raise

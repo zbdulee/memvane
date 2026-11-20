@@ -54,12 +54,13 @@ test('hook entry modules do not import teacher modules at module level', t => {
   assert.ok(report.reached.includes('memvane.journal.api'), 'module-level imports are followed');
 });
 
-// X-2: the 1.0.21 modules import under the macOS system Python 3.9.
+// X-2: the teacher modules import under the macOS system Python 3.9.
 const TEACHER_MODULES = [
   'memvane.learning.api', 'memvane.learning.context_learning.teacher_state',
   'memvane.learning.context_learning.teacher_consent', 'memvane.learning.context_learning.teacher_model_tiers',
   'memvane.learning.context_learning.teacher_isolation', 'memvane.learning.context_learning.teacher_hosts',
-  'memvane.learning.context_learning.prequential', 'memvane.learning.context_learning.general_teacher',
+  'memvane.learning.context_learning.prequential', 'memvane.learning.context_learning.candidate_close',
+  'memvane.learning.context_learning.general_teacher',
   'memvane.learning.context_learning.default_teacher',
   'memvane.learning.context_learning.general_gold_ledger', 'memvane.learning.context_learning.claude_adapter',
   'memvane.learning.context_learning.codex_adapter', 'memvane.learning.context_learning.project_scope',
@@ -71,7 +72,7 @@ const TEACHER_MODULES = [
   'memvane.learning.project_learning_recovery', 'memvane.learning.selector_maintenance',
   'memvane.learning.context_learning.project_worker', 'memvane.host.host_response', 'memvane.app.setup_entry'];
 
-test('1.0.21 teacher modules import under /usr/bin/python3', {skip: !existsSync('/usr/bin/python3')}, t => {
+test('teacher modules import under /usr/bin/python3', {skip: !existsSync('/usr/bin/python3')}, t => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'mv-py39-')));
   t.after(() => rmSync(home, {recursive: true, force: true}));
   const code = 'import importlib, json, sys\nfailed = {}\n' +

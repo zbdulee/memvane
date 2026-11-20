@@ -105,9 +105,28 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None, coordinator=N
                     trainer_factory=trainer_factory,claim_fd=claim,coordination=(coordinator,lease))
         except ResourceDeferred as exc:
             queue.defer(job['id'],'inference' if 'inference' in str(exc) else 'resource')
-            record_resource_defer(root,exc.report,reason=str(exc))
+            # The admission result names the inner reason; the observation it judged is kept
+            # beside it for the worker's ``learning.cycle`` row (diagnostic only).
+            observed={key:report.get(key) for key in ('available_mib','total_mib','load_per_cpu')}
+            record_resource_defer(root,{**(exc.report or {}),'observed':observed},reason=str(exc))
             return {'status':'deferred_resource','cycle_id':job['id'],'next_retry':queue.get(job['id'])['retry_at']}
 
+
+
+def _cycle_event(project, outcome, **fields):
+    try:
+        from memvane.journal.api import select_route
+        from memvane.diagnostics.api import emit
+        emit('learning.cycle', decision=select_route(str(project), action='update'), outcome=outcome, **fields)
+    except Exception:
+        pass  # Diagnostic only: the cycle row and the job telemetry are the record.
+
+
+def job_family(policy):
+    """A job's family: trainer interpreter, model identity, base artifact and input view."""
+    from .adapter import EDIT_INPUT_VIEW, model_identity
+    return digest(canonical([policy['trainerArgv'][0],model_identity(policy['trainerArgv'][2]),
+                            _hash(policy['baseArtifact']),EDIT_INPUT_VIEW]))
 
 
 def _prepare_staged(root,policy,grant):
@@ -124,12 +143,14 @@ def _prepare_staged(root,policy,grant):
         return {'status':'multilingual_policy_required'}
     if (root/'experimental-checkpoint.json').exists():
         return {'status':'existing_trial_requires_review'}
-    from . import prequential
+    from . import candidate_close, prequential
     sequential=prequential.default_teacher_grant(grant)
     with _db(root) as db:
         cohort_train, validation = training_and_validation(db, _project(root, grant), grant)
         frozen=prequential.candidate_job(db,grant) if sequential else None
     if frozen is not None and frozen['id'] in prequential.rejected_cycles(root):frozen=None
+    # The shared case table stops capture at 2,000 rows (``shared.enqueue`` ``queue_full``),
+    # so a default-teacher namespace never reaches this bound.
     if len(cohort_train)>2000 or len(validation)>2000:
         return {'status':'cohort_source_revoked'}
     from memvane.runtime.api import preparation_checkpoint
@@ -147,8 +168,11 @@ def _prepare_staged(root,policy,grant):
             return {'status':'synthetic_training_budget_exhausted'}
     if len(cohort_train)<grant['cohort']['minTrainCases']:
         return {'status':'waiting_fresh_train','train':len(cohort_train),'required':grant['cohort']['minTrainCases']}
-    family=digest(canonical([policy['trainerArgv'][0],model_identity(policy['trainerArgv'][2]),
-                            _hash(policy['baseArtifact']),EDIT_INPUT_VIEW]))
+    if sequential and frozen is None and len(cohort_train)<grant['cohort']['minQualityTrainCases']:
+        # Below the promotion size no candidate can be judged: train once at the size.
+        return {'status':'waiting_fresh_train','train':len(cohort_train),
+                'required':grant['cohort']['minQualityTrainCases']}
+    family=job_family(policy)
     from . import learning_profile
     minimum=policy['batchMin']
     if learning_profile.present(root):
@@ -173,10 +197,12 @@ def _prepare_staged(root,policy,grant):
     if frozen is None:job=(existing if synthetic and existing else queue.plan(
         cohort_train,approval=proposal_sha256(grant),cohort=grant['cohort']['id'],
         family=family,minimum=minimum,maximum=policy['batchMax'],
-        roles=['train']*len(cohort_train),cumulative=grant.get('scope')==SCOPE))
+        roles=['train']*len(cohort_train),cumulative=grant.get('scope')==SCOPE,
+        **(dict(minimum_members=grant['cohort']['minQualityTrainCases'],recent_replay=True,
+                lineage=candidate_close.lineage(grant)) if sequential else {})))
     if job is None:return {'status':'waiting_fresh_batch','threshold':minimum}
-    if sequential and frozen is None and job['status']=='staged' and _closed(root,job['id']):
-        # A finished (rejected) candidate is never evaluated again.
+    if frozen is None and job['status']=='staged' and _closed(root,job['id']):
+        # A finished (rejected) candidate is never evaluated again, in either profile.
         return {'status':'waiting_fresh_batch','threshold':minimum}
     if synthetic and (len(job['members'])>100 or job['approval']!=proposal_sha256(grant)):
         return {'status':'synthetic_training_budget_exhausted'}
@@ -304,6 +330,7 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
             telemetry_emit(root / 'job-telemetry.jsonl', 'finished',
                 status='success', run_ms=(time.monotonic() - start) * 1000,
                 resources=train_resources, **meta)
+            _cycle_event(project, 'trained', cycle=cycle_id, trainCases=len(train))
             if not stage['sourceActiveAtStage']:
                 return {'status': 'staged_source_revoked',
                         'cycle_id': cycle_id}

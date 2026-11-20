@@ -30,7 +30,13 @@ class RealLaya(unittest.TestCase):
         report = json.loads(raw)
         self.assertEqual(report['external_calls'], 0)
         self.assertEqual(report['runtime_selected'], 'explicit_reuse')
-        self.assertGreater(report['body_bytes'], 600)
+        # The smoke body follows the model's view: the long experiment view pairs a long
+        # synthetic body, a checkpoint-config model (the managed model) a 25-token one.
+        if report['model_input_view'] == 'full-candidate-1024-v1':
+            self.assertGreater(report['body_bytes'], 600)
+        else:
+            self.assertEqual(report['model_input_view'], 'checkpoint-config-v1')
+            self.assertGreater(report['body_bytes'], 0)
         self.assertGreater(report['head_bytes'], 0)
         self.assertTrue(all(v is True for v in report['synthetic_proof'].values()))
 

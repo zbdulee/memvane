@@ -26,9 +26,6 @@ def parser():
     label=subs.add_parser('label-request');label.add_argument('request_id')
     label.add_argument('--host',required=True,choices=('claude','codex'))
     label.add_argument('--enable-teacher',action='store_true')
-    # Accepted and ignored so older invocations still parse: plugins left loaded are
-    # reported by id and never end a call, so there is no policy left to accept.
-    label.add_argument('--accept-security-policy',action='store_true',help=argparse.SUPPRESS)
     label.add_argument('--optional-hooks-audited',action='store_true')
     label.add_argument('--disable-plugin-id',action='append',default=[])
     label.add_argument('--timeout',type=float,default=45)
@@ -36,7 +33,6 @@ def parser():
         sub=subs.add_parser(name);sub.add_argument('request_id');sub.add_argument('attempt_id')
         sub.add_argument('--policy-json',required=True)
         sub.add_argument('--optional-hooks-audited',action='store_true')
-        sub.add_argument('--accept-security-policy',action='store_true',help=argparse.SUPPRESS)
         sub.add_argument('--timeout',type=float,default=45)
     selection=subs.add_parser('review-selection');selection.add_argument('request_id')
     selection.add_argument('--selected-ids-json',required=True);selection.add_argument('--input-sha256',required=True)

@@ -736,6 +736,9 @@ def trial_eligible(root, *, deadline=None, max_seconds=.2):
         return False
 
 
+CASE_LIMIT = 2000  # Case rows of any status; capture stops here (``queue_full``).
+
+
 def enqueue(config, project, sample, compact_sources):
     """Copy an exact eligible capture once; no current source reread is needed."""
     root = _safe_root(config, project)
@@ -773,7 +776,7 @@ def enqueue(config, project, sample, compact_sources):
                          (key, sample["request_id"])).fetchone()
         if old:
             return "duplicate" if old[0] == digest(encoded) else "conflict"
-        if (db.execute("SELECT COUNT(*) FROM cases").fetchone()[0] >= 2000
+        if (db.execute("SELECT COUNT(*) FROM cases").fetchone()[0] >= CASE_LIMIT
                 or (root / DATABASE_NAME).stat().st_size > 512 * 1024 * 1024):
             return "queue_full"
         # A target can have several paraphrased questions. Their provisional
@@ -2176,6 +2179,10 @@ def run_training_pending(root,project):
                     return _profile_apply(root,policy,profile,{'status':'already_staged_evaluated','cycle_id':intent['cycle_id']})
                 if intent['phase']=='activated':
                     candidate_apply.readable(root);candidate_apply._finish_cycle(root,intent['cycle_id'])
+            if (root/DATABASE_NAME).exists():
+                # Before the staged selection: carry or close cycles of an earlier approval.
+                from .candidate_close import supersede
+                supersede(root,policy,project)
         # Existing fixtures without a shared ledger have no evaluation work.
         if (root/DATABASE_NAME).exists():
             from .evaluation_queue import EvaluationQueue
@@ -2210,9 +2217,11 @@ def _profile_apply(root,policy,profile,result):
         from .candidate_apply import apply_candidate
         answer=apply_candidate(root,policy,result['cycle_id'])
         if (root/DATABASE_NAME).exists():
+            from .candidate_close import close_judged
             from .evaluation_queue import EvaluationQueue
             queue=EvaluationQueue(root);job=queue.get('evaluate:'+result['cycle_id'])
-            if job is not None:
+            # Both profiles: a judged candidate is closed so no later pass applies it again.
+            if close_judged(root,result['cycle_id'],answer,queue) is None and job is not None:
                 if answer['status']=='apply_deferred':queue.defer(job['id'],'apply_resource')
                 elif answer['status'] in ('applied','already_applied'):queue.finish(job['id'],'completed')
                 elif answer['status']=='apply_blocked':queue.finish(job['id'],'blocked')

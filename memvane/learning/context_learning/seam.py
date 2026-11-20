@@ -290,7 +290,7 @@ def _edit_capture(payload, root, rows, pool_ids, selected_ids, compact_sources):
             'edit_event': event}, None
 
 
-def _store(sample, config, root, state, compact_sources, current_corpus):
+def _store(sample, config, root, state, compact_sources, current_corpus, decision=None):
     """Private capture plus the enrolled shared queue; shared by QMD and Laya."""
     from .corpus import reconcile as reconcile_corpus
     status = capture(sample,enabled=True,state_dir=state,compact_sources=compact_sources)
@@ -325,6 +325,14 @@ def _store(sample, config, root, state, compact_sources, current_corpus):
                          {'status': shared_status, 'request_id_hash': digest(sample['request_id']), **failure})
         except Exception:
             pass
+        if shared_status not in ('queued', 'duplicate') and decision is not None:
+            try:
+                from memvane.diagnostics.api import emit
+                # Diagnostic only, never checked: the private capture is already stored.
+                emit('learning.capture.shared', outcome=shared_status, decision=decision,
+                     reason=failure.get('reason'), stage=failure.get('stage'))
+            except Exception:
+                pass
     return status
 
 
@@ -424,7 +432,8 @@ def observe_published(payload, config, project_root, pool, selected, *, host, de
         if not isinstance(request_id, str) or not 1 <= len(request_id) <= 128:
             request_id = str(uuid.uuid4())
         sample = request(edit, rows, host=host, request_id=request_id, sampling=sampling)
-        status = _store(sample, config, root, state, compact_sources, current_corpus)
+        status = _store(sample, config, root, state, compact_sources, current_corpus,
+                        decision=decision)
         if status == 'stored':
             _capture_sources(sample, payload, host, decision)
         return status

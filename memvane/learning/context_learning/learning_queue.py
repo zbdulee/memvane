@@ -45,8 +45,18 @@ class LearningQueue:
         row=db.execute('SELECT manifest,status,retry_at,attempts,failures,reason FROM learning_jobs WHERE job_id=? AND namespace=?',(job_id,self.scope)).fetchone()
         return {**json.loads(row[0]),'status':row[1],'retry_at':row[2],'attempts':row[3],'failures':row[4],'reason':row[5]} if row else None
 
-    def plan(self, rows, *, approval, cohort, family, minimum, maximum, roles=None, cumulative=False):
-        if type(cumulative)is not bool:raise ValueError('invalid_learning_replay_mode')
+    def plan(self, rows, *, approval, cohort, family, minimum, maximum, roles=None, cumulative=False,
+             minimum_members=None, recent_replay=False, lineage=None):
+        """Pin the next batch, or return the job already pinned.
+
+        ``minimum_members``: no new job with fewer unique members.
+        ``recent_replay``: replay slots take the newest consumed cases, not the oldest.
+        ``lineage``: recorded in the manifest (the grant without its binding).
+        The defaults are the explicit profile's behavior.
+        """
+        if type(cumulative)is not bool or type(recent_replay) is not bool:raise ValueError('invalid_learning_replay_mode')
+        if minimum_members is not None and (type(minimum_members) is not int or minimum_members<1):
+            raise ValueError('invalid_learning_batch_bound')
         if not 2<=minimum<=maximum<=500:raise ValueError('invalid_learning_batch_bound')
         admitted_roles = [r[6] for r in rows] if roles is None else roles
         if len(admitted_roles)!=len(rows) or any(role!='train' for role in admitted_roles):
@@ -65,13 +75,16 @@ class LearningQueue:
                 return self.get(old[0],db=db) if old else None
             fresh=fresh[:maximum]
             replay_limit=maximum-len(fresh) if cumulative else min(32,maximum-len(fresh),len(fresh))
-            replay=[k for k,r in unique.items() if k in consumed or r[10] is not None][:replay_limit]
+            replayable=[k for k,r in unique.items() if k in consumed or r[10] is not None]
+            replay=replayable[max(0,len(replayable)-replay_limit):] if recent_replay else replayable[:replay_limit]
             keys=fresh+replay
+            if minimum_members is not None and len(keys)<minimum_members:return None
             job_id='cohort-'+digest(canonical([self.scope,approval,cohort,family,keys]))[:20]
             members=[{'key':key,'request_id':unique[key][1],'input_sha256':unique[key][2],
                       'row_sha256':digest(canonical(list(unique[key][:6]))),'fresh':key in fresh} for key in keys]
             manifest={'id':job_id,'namespace':self.scope,'approval':approval,'cohort':cohort,'family':family,'members':members}
             if cumulative:manifest['queryNormalization']='casefold-whitespace-v1'
+            if lineage is not None:manifest['lineage']=lineage
             db.execute("INSERT INTO learning_jobs VALUES (?,?,?,?,?,?,'queued',NULL,0,0,0,NULL)",(job_id,self.scope,approval,cohort,family,canonical(manifest)))
             return self.get(job_id,db=db)
 

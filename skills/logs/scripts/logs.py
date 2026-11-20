@@ -421,7 +421,9 @@ def summary(rows, args):
     _teacher_summary(window)
 
 
-_CALL_OUTCOMES = ('gold', 'pending_review', 'pre_send_rejected', 'provider_refused')
+_CALL_OUTCOMES = ('gold', 'pending_review', 'pre_send_rejected', 'provider_refused', 'parked')
+# A kept (parked) answer committed by a later pass: its call and usage are on the ``parked`` row.
+_FROM_PARKED = 'parked_answer'
 _USAGE = ('usageIn', 'usageOut', 'usageCached', 'usageReasoning')
 _SCORE_KEYS = ('cases', 'exactRate', 'microF1', 'emptyAgree', 'nonEmptyAgree', 'defaultRank',
                'unknownSelection', 'goldOutsideK')
@@ -439,13 +441,14 @@ def _number(value):
 def _teacher_summary(window):
     """Default-teacher lines: calls, usage, waits, isolation, scores and promotions."""
     teacher = [row for row in window if row.get('event') == 'learning.teacher']
-    calls = [row for row in teacher if row.get('outcome') in _CALL_OUTCOMES and row.get('request_id')]
+    calls = [row for row in teacher if row.get('outcome') in _CALL_OUTCOMES and row.get('request_id')
+             and not (row.get('outcome') == 'gold' and row.get('reason') == _FROM_PARKED)]
     days = {}
     for row in calls:
         day = (_ts(row) or _EPOCH).date().isoformat()
         entry = days.setdefault(day, {'calls': 0, 'failed': Counter(), 'usage': Counter()})
         entry['calls'] += 1
-        if row.get('outcome') != 'gold':
+        if row.get('outcome') not in ('gold', 'parked'):
             entry['failed'][str(row.get('reason') or row.get('outcome'))] += 1
         for key in _USAGE:
             if type(row.get(key)) is int and row[key] >= 0:
@@ -455,7 +458,11 @@ def _teacher_summary(window):
         usage = ' '.join(f'{key}={entry["usage"][key]}' for key in _USAGE if key in entry['usage'])
         print(f"teacher {day}: calls={entry['calls']} failed={failed}"
               + (f' ({_tally(entry["failed"])})' if failed else '') + (f' {usage}' if usage else ''))
-    gold = [row for row in calls if row.get('outcome') == 'gold']
+    gold = [row for row in teacher if row.get('outcome') == 'gold' and row.get('request_id')]
+    parked = sum(1 for row in calls if row.get('outcome') == 'parked')
+    if parked:
+        later = sum(1 for row in gold if row.get('reason') == _FROM_PARKED)
+        print(f'teacher parked answers: kept={parked} committed_later={later}')
     if gold:
         selected = Counter(row.get('selectedCount') for row in gold
                            if row.get('selectedCount') in (0, 1, 2, 3))
@@ -503,6 +510,49 @@ def _teacher_summary(window):
         if row.get('reason'):
             parts.append(f"reason={_esc(row['reason'])}")
         print('promotion ' + ' '.join(parts))
+    _learning_inflow(window, promotions)
+
+
+# The default-teacher cohort: train, evaluation, non-empty and empty evaluation gold.
+_PROMOTION_NEEDS = (('candidateTrain', 100), ('candidateEval', 50),
+                    ('candidateEvalNonEmpty', 10), ('candidateEvalEmpty', 10))
+
+
+def _learning_inflow(window, promotions):
+    """Edit-recall funnel, distance to promotion, case-table room and learning deferrals."""
+    posttool = [row for row in window if row.get('event') == 'posttool']
+    edits = [row for row in window if row.get('event') == 'recall.edit']
+    stored = [row for row in window if row.get('event') == 'learning.capture' and row.get('outcome') == 'stored']
+    if posttool or edits or stored:
+        skips = Counter(str(row['editRecall']) for row in posttool if isinstance(row.get('editRecall'), str))
+        print(f'edit recall funnel: posttool={len(posttool)}'
+              + (f' ({_tally(skips)})' if skips else '')
+              + f' recall.edit={len(edits)} stored={len(stored)}')
+    scores = [row for row in window if row.get('event') == 'learning.score' and _count(row.get('gold'))]
+    if scores:
+        last = scores[-1]
+        parts = [f"gold={last['gold']}"]
+        if _count(last.get('candidateTrain')):
+            parts.extend(f'{key}={last[key]}/{need}' for key, need in _PROMOTION_NEEDS if _count(last.get(key)))
+        else:
+            parts.append('candidate=none')
+        if promotions:
+            parts.append(f"last={_esc(promotions[-1].get('outcome') or '-')} "
+                         f"{str(promotions[-1].get('ts', ''))[:19].replace('T', ' ')}")
+        print('promotion progress: ' + ' '.join(parts))
+        rows, limit = last.get('caseRows'), last.get('caseLimit')
+        if _count(rows) and _count(limit) and limit and rows >= limit * .9:
+            print(f'WARNING learning case table: rows={rows}/{limit}; capture stops at the limit')
+    full = sum(1 for row in window if row.get('event') == 'learning.capture.shared'
+               and row.get('outcome') == 'queue_full')
+    if full:
+        print(f'WARNING learning capture queue_full: {full}')
+    cycles = [row for row in window if row.get('event') == 'learning.cycle']
+    deferred = Counter(str(row.get('reason')) for row in cycles if row.get('outcome') == 'deferred_resource')
+    trained = [row for row in cycles if row.get('outcome') == 'trained']
+    if deferred or trained:
+        last = (str(trained[-1].get('ts', ''))[:19].replace('T', ' ') if trained else 'none')
+        print('learning deferred: ' + (_tally(deferred) if deferred else 'none') + f'; last trained {_esc(last)}')
 
 
 def _teacher_waits(passes):

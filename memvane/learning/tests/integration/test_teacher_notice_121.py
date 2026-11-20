@@ -105,7 +105,8 @@ class TeacherNotice(FixtureCase):
 
     def teacher_lines(self, lines):
         return [line for line in lines if line in (CLI_CLAUDE, CLI_CODEX, REST_CODEX,
-                                                    REST_CLAUDE_MODEL, ENABLE)]
+                                                    REST_CLAUDE_MODEL, ENABLE,
+                                                    teacher_state.ENABLE_DEFERRED_NOTICE)]
 
     def test_e2_missing_cli_notice_once_per_host_and_reason_for_seven_days(self):
         for host, line in (('claude', CLI_CLAUDE), ('codex', CLI_CODEX)):
@@ -180,8 +181,10 @@ class TeacherNotice(FixtureCase):
         state['enable'].update(failures=teacher_state.ENABLE_FAILURE_LIMIT,
                                reason='teacher_enable_mixed_state', pluginVersion=plugin_version())
         self.assertTrue(teacher_state.write_state(self.root, state))
-        self.assertEqual(self.teacher_lines(self.hook('codex')), [ENABLE])
-        self.assertEqual(self.teacher_lines(self.hook('codex')), [ENABLE])
+        # 1.0.22 A-9 a: with no intent left nothing is fenced; the line says the enable is deferred.
+        deferred = teacher_state.ENABLE_DEFERRED_NOTICE
+        self.assertEqual(self.teacher_lines(self.hook('codex')), [deferred])
+        self.assertEqual(self.teacher_lines(self.hook('codex')), [deferred])
         self.assertTrue(teacher_state.write_switch(self.root, False))
         self.assertEqual(self.teacher_lines(self.hook('codex')), [])
         state['enable']['pluginVersion'] = '0.0.1'

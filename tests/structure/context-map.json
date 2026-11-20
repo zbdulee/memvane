@@ -556,6 +556,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/learning/context_learning/candidate_close.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/learning/context_learning/teacher_consent.py": {
       "context": "learning",
       "layer": "adapter",

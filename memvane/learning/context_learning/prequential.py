@@ -38,8 +38,6 @@ UNKNOWN = 'unknown'
 OPEN = ('staged', 'staged_evaluated')
 SETTLED = OPEN + ('applied',)
 KEEP_CYCLES = 16
-# Application refusals that judge the candidate itself (``candidate_apply.validate_candidate``).
-REJECTIONS = ('apply_quality_regression', 'apply_quality_below_target', 'apply_quality_invalid')
 # K, the selector's input size: the same value as recall ``verified_rows.SELECTOR_CANDIDATES``
 # (learning cannot import recall; a tests/structure test pins the equality).
 SELECTOR_INPUT_K = 10
@@ -65,6 +63,37 @@ def min_nonempty_validation(grant) -> int:
     return MIN_NONEMPTY_VALIDATION if default_teacher_grant(grant) else 0
 
 
+def _admitted_row(row, statuses, cutoff):
+    """The admitted row of one ``COLUMNS`` row, or None; no other row matters."""
+    if row[12] not in statuses or row[13] != 'active' or row[11] < cutoff:
+        return None
+    try:
+        if digest(row[3]) != row[2]:
+            return None
+        sample = json.loads(row[3])
+        bodies = json.loads(row[4])
+        if sample['request_id'] != row[1] or not _edit(sample):
+            return None
+        if row[5] is not None:
+            gold = json.loads(row[5])
+            if (gold['input_sha256'] != row[2] or not isinstance(gold['selected_ids'], list)
+                    or len(gold['selected_ids']) > 3
+                    or not set(gold['selected_ids']) <= set(bodies)):
+                return None
+        elif row[12] == 'gold':
+            return None
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    return (ROLE, tuple(row[:12]) + (ROLE + '/' + digest(row[1]),))
+
+
+def _scope(project, grant):
+    project = Path(project).resolve(strict=True)
+    if grant.get('projectRoot') != str(project):
+        raise ValueError('project_cohort_scope_changed')
+    return project, grant['cohort']['notBeforeUnixMs'] / 1000
+
+
 @prepared
 def admitted(db, project, grant, statuses=('queued',)):
     """Active v5 edit cases in capture order, shaped like ``general_cohort.admitted``.
@@ -72,36 +101,25 @@ def admitted(db, project, grant, statuses=('queued',)):
     Each row is ``('train', row[:12] + (family,))`` where the family marker is
     unique per case, so family-count limits equal case-count limits.
     """
-    project = Path(project).resolve(strict=True)
-    if grant.get('projectRoot') != str(project):
-        raise ValueError('project_cohort_scope_changed')
-    cutoff = grant['cohort']['notBeforeUnixMs'] / 1000
+    project, cutoff = _scope(project, grant)
     rows = db.execute('SELECT ' + COLUMNS + ' FROM cases WHERE project_root=? '
                       'ORDER BY captured_at,request_id', (str(project),))
     result = []
     for row in rows:
         preparation_checkpoint()
-        if row[12] not in statuses or row[13] != 'active' or row[11] < cutoff:
-            continue
-        try:
-            if digest(row[3]) != row[2]:
-                continue
-            sample = json.loads(row[3])
-            bodies = json.loads(row[4])
-            if sample['request_id'] != row[1] or not _edit(sample):
-                continue
-            if row[5] is not None:
-                gold = json.loads(row[5])
-                if (gold['input_sha256'] != row[2] or not isinstance(gold['selected_ids'], list)
-                        or len(gold['selected_ids']) > 3
-                        or not set(gold['selected_ids']) <= set(bodies)):
-                    continue
-            elif row[12] == 'gold':
-                continue
-        except (KeyError, TypeError, ValueError, AttributeError):
-            continue
-        result.append((ROLE, tuple(row[:12]) + (ROLE + '/' + digest(row[1]),)))
+        item = _admitted_row(row, statuses, cutoff)
+        if item is not None:
+            result.append(item)
     return result
+
+
+@prepared
+def admitted_one(db, project, grant, request_id, statuses=('queued',)):
+    """``admitted`` for one case: its admitted row, or None. Reads only that row."""
+    project, cutoff = _scope(project, grant)
+    row = db.execute('SELECT ' + COLUMNS + ' FROM cases WHERE project_root=? AND request_id=?',
+                     (str(project), request_id)).fetchone()
+    return None if row is None else _admitted_row(row, statuses, cutoff)
 
 
 def training_rows(db, project, grant):
@@ -234,24 +252,18 @@ def close(root, cycle_id, reason):
                        "WHERE job_id=? AND namespace=?", (reason, job_id, queue.scope))
 
 
-def close_rejected(root, grant, result=None):
-    """Close every open candidate the application judged and refused.
+def close_rejected(root, grant):
+    """Recovery: close every open candidate whose application journal is ``rejected``.
 
-    A refusal at the intent leaves no journal, and ``EvaluationQueue.finish``
-    cannot move a ``completed`` evaluation to ``blocked``: without this the
-    same candidate is re-applied on every pass and no next job is planned.
-    ``result`` is a cycle result; its comparison refusal names the cycle.
-    Returns the closed cycle ids.
+    ``shared._profile_apply`` closes a judged candidate in the pass that judged
+    it; this only catches one a pass stopped before closing. Returns the
+    closed cycle ids.
     """
     from .shared import _db, DATABASE_NAME
     root = Path(root)
     if not (root / DATABASE_NAME).is_file():
         return []
     judged = {cycle: 'candidate_rejected' for cycle in rejected_cycles(root)}
-    result = result or {}
-    if (result.get('status') == 'apply_blocked' and result.get('reason') in REJECTIONS
-            and isinstance(result.get('cycle_id'), str)):
-        judged[result['cycle_id']] = result['reason']
     if not judged:
         return []
     with _db(root) as db:
@@ -545,18 +557,41 @@ def record_pass(root, project, grant, result=None):
         pass
 
 
+def progress(db, project, grant):
+    """Case-table and promotion counts for ``learning.score`` (A-6, A-10); counts only."""
+    from .shared import CASE_LIMIT
+    gold = training_rows(db, project, grant)
+    job = candidate_job(db, grant)
+    # ``cases`` is already the score's scored-case count: the table size is ``caseRows``.
+    fields = {'caseRows': db.execute('SELECT COUNT(*) FROM cases').fetchone()[0], 'caseLimit': CASE_LIMIT,
+              'gold': len(gold), 'candidateTrain': None, 'candidateEval': None,
+              'candidateEvalNonEmpty': None, 'candidateEvalEmpty': None}
+    if job is not None:
+        evaluation = split(gold, job)
+        empty = sum(not json.loads(row[5])['selected_ids'] for row in evaluation)
+        fields.update(candidateTrain=len(job['members']), candidateEval=len(evaluation),
+                      candidateEvalNonEmpty=len(evaluation) - empty, candidateEvalEmpty=empty)
+    return fields
+
+
 def _record_score(root, project, grant):
     from .shared import _db
     with _db(root) as db:
         rows = score_rows(db, project, grant)
+        counts = progress(db, project, grant)
     spans = intervals(read_history(root))
     scores = score(rows, spans)
     current = spans[-1][0]
     previous = spans[-2][0] if len(spans) > 1 else None
+    emitted = False
     for label, checkpoint in (('previous', previous), ('current', current)):
         if checkpoint is not None and checkpoint in scores:
             _emit(project, 'learning.score', outcome=label, checkpoint=checkpoint,
-                  **scores[checkpoint])
+                  **scores[checkpoint], **counts)
+            emitted = True
+    if not emitted:
+        # No scored case yet: the table and promotion counts still show the inflow.
+        _emit(project, 'learning.score', outcome='counts', **counts)
 
 
 def _read_promotions(root):

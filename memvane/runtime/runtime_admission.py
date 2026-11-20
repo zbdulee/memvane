@@ -85,6 +85,16 @@ def provider_checkpoint():
     if not result['ready']:raise ResourceDeferred('learning_deferred_resource',result)
 
 
+def _provider_keys():
+    from memvane.runtime.resource_controls import CpuThreads
+    return CpuThreads.KEYS|{'QMD_PROVIDER_COORD_FD'}
+
+
+# The keys ``provider_options`` may add to a child's checked environment (the
+# teacher isolation check runs on the env before they are added).
+PROVIDER_ENV_KEYS=_provider_keys()
+
+
 def provider_options(environment=None):
     fd=_PROVIDER.get()
     from memvane.runtime.runtime_cpu import environment as cpu_environment

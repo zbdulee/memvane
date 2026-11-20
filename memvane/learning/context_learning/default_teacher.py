@@ -52,6 +52,12 @@ INSTRUCTION_V2=(
 PHASE='first'
 SCAN_LIMIT=64
 SCOPE_ERRORS=('project_scope','setup_default_scope_changed')
+# Failures that say the case or its scope changed, not the host: the breaker stays.
+NOT_HOST_FAILURES=frozenset({'teacher_scope_changed','gold_capture_changed','teacher_cohort_changed',
+                             'gold_case_changed_before_commit'})
+# A received answer whose scope check met resource pressure waits here (case
+# ``first_done``) for the next pass to check and commit it without a call.
+PARKED='answer_parked'
 
 
 def payload_v2(sample,bodies):
@@ -174,12 +180,14 @@ def _usage_fields(host,usage,raw_bytes):
 
 
 def _monitor(consent,worker_policy,peak):
-    def check(pid):
+    def check(pid,sent=False):
         resources=_gt()._process_usage(pid)
         if resources is None:raise ValueError('gold_resource_monitor_unavailable')
         peak[0]=max(peak[0],resources[0])
         if peak[0]>min(consent['maxRssMib'],worker_policy['maxRssMib']):raise ValueError('gold_memory_pressure')
-        if not _gt().resource_report(worker_policy)['ready']:raise ValueError('gold_system_pressure')
+        # After the body the call is already billed and the CLI child frees little:
+        # system pressure no longer stops it (the child's RSS bound still does).
+        if not sent and not _gt().resource_report(worker_policy)['ready']:raise ValueError('gold_system_pressure')
     return check
 
 
@@ -211,6 +219,9 @@ def process_pending_default(root,project,worker_policy,*,max_cases=8,environ=Non
     except ValueError as exc:
         # The scope check also reads the v2 consent; only its refusal is a status.
         if not str(exc).startswith('teacher_consent'):raise
+        # A kept answer never outlives the consent it was asked under.
+        with _gt()._worker_lock(root) as locked:
+            if locked:_review_parked(root,_project_key(project),'teacher_consent_required')
         return dict(result,status='consent_required',reason=str(exc))
     key=_project_key(project)
     with _gt()._worker_lock(root) as locked:
@@ -225,8 +236,10 @@ def process_pending_default(root,project,worker_policy,*,max_cases=8,environ=Non
 
 def _default_pass(root,project,worker_policy,policy,grant,consent,key,environ,max_cases,
                   result,teacher_hosts,teacher_state):
-    from .prequential import admitted,gold_annotation
+    from .prequential import admitted,admitted_one,gold_annotation
     from .teacher_isolation import IsolationRefused,REASON as ISOLATION
+    # Before the empty-queue return: a kept answer needs no queued case to commit.
+    confirmed=_confirm_parked(root,project,grant,key,result)
     with _db(root) as db:targets=admitted(db,project,grant)
     hosts={}
     for _,row in targets:
@@ -254,7 +267,7 @@ def _default_pass(root,project,worker_policy,policy,grant,consent,key,environ,ma
                   teacherHost=host,isolation='refused',isolationDetail=ready[host].get('detail'))
     if 'codex' in ready and 'quotaRemaining' in ready['codex']:
         result['quotaRemaining']=ready['codex']['quotaRemaining']
-    counts={'calls':0,'gold':0,'pendingReview':0,'requeued':0,'skippedLocal':0}
+    counts={'calls':0,'gold':confirmed,'pendingReview':0,'requeued':0,'skippedLocal':0,'parked':0}
 
     def queued_by_host():
         with _db(root) as db:rows=admitted(db,project,grant)
@@ -291,7 +304,7 @@ def _default_pass(root,project,worker_policy,policy,grant,consent,key,environ,ma
         scanned+=1
         status=_default_case(root,project,worker_policy,grant,consent,key,environ,row,host,
                              ready,counts,result,teacher_hosts,teacher_state,
-                             IsolationRefused,ISOLATION,admitted,gold_annotation)
+                             IsolationRefused,ISOLATION,admitted_one,gold_annotation)
         if status is not None:return finish(status)
     return finish('processed')
 
@@ -304,6 +317,7 @@ def _finish(root,project,result,status,counts,ready,queue,mark,queued_by_host,te
                   hosts={h:('ready' if info['ready'] else info['reason']) for h,info in ready.items()})
     _gt()._emit(project,'learning.teacher',outcome='pass',reason=status,calls=counts['calls'],
           gold=counts['gold'],pendingReview=counts['pendingReview'],requeued=counts['requeued'],
+          parked=counts['parked'],
           skippedLocal=counts['skippedLocal'],
           waitClaude=None if ready.get('claude',{'ready':True})['ready'] else ready['claude']['reason'],
           waitCodex=None if ready.get('codex',{'ready':True})['ready'] else ready['codex']['reason'],
@@ -313,7 +327,7 @@ def _finish(root,project,result,status,counts,ready,queue,mark,queued_by_host,te
 
 
 def _default_case(root,project,worker_policy,grant,consent,key,environ,row,host,ready,counts,
-                  result,teacher_hosts,teacher_state,IsolationRefused,ISOLATION,admitted,
+                  result,teacher_hosts,teacher_state,IsolationRefused,ISOLATION,admitted_one,
                   gold_annotation):
     """One case. Returns a pass status to stop the pass, or None to continue."""
     rid,input_sha,sample_json,bodies_json=row[1],row[2],row[3],row[4]
@@ -350,9 +364,10 @@ def _default_case(root,project,worker_policy,grant,consent,key,environ,row,host,
         if not _gt()._case_active(root,(str(project),rid,sample_json)):raise ValueError('teacher_scope_changed')
         with _db(root) as db:
             current=db.execute("SELECT input_sha256,sample,bodies,use_state FROM cases WHERE project_key=? AND request_id=?",(key,rid)).fetchone()
-            eligible=admitted(db,project,grant,statuses=('queued','first_running'))
+            # One row: called every half second while the CLI runs.
+            eligible=admitted_one(db,project,grant,rid,statuses=('queued','first_running'))
         if current!=(input_sha,sample_json,bodies_json,'active'):raise ValueError('gold_capture_changed')
-        if rid not in {item[1][1] for item in eligible}:raise ValueError('teacher_cohort_changed')
+        if eligible is None:raise ValueError('teacher_cohort_changed')
 
     try:plan=teacher_hosts.call_plan(ready[host],system_prompt=INSTRUCTION_V2,environ=environ,project=project)
     except IsolationRefused as exc:
@@ -411,32 +426,41 @@ def _call(root,project,worker_policy,consent,key,rid,host,plan,raw,sample,input_
         try:choice=_choice_v2(answer['answer'],sample,answer['usage'])
         except ValueError:raise teacher_hosts.CallFailure('invalid','gold_invalid_choice',tools=answer['toolWarnings'])
         change(('dispatched',),'answer_received',answer_sha256=digest(canonical(choice)))
+        parked=False
         try:guard()
+        except ResourceDeferred:parked=True
         except ValueError as exc:raise teacher_hosts.CallFailure('unknown',str(exc)[:80],tools=answer['toolWarnings'])
-        gold={'selected_ids':choice['selected_ids'],'input_sha256':input_sha,'review':'single_pass',
-              'usage':choice['usage'],'teacher':{'host':host,'model':answer['model'],'tier':info['tier']}}
-        if answer.get('pluginWarnings'):gold['teacher']['pluginWarnings']=answer['pluginWarnings']
-        try:
-            with _db(root) as db:
-                changed=db.execute("UPDATE cases SET status='gold',first=?,gold=?,error=NULL WHERE project_key=? AND request_id=? AND status='first_running' AND use_state='active' AND sample=? AND bodies=?",
-                    (canonical(choice),canonical(gold),key,rid,sample_json,bodies_json)).rowcount
-                if changed!=1:raise ValueError('gold_case_changed_before_commit')
-                ledger.transition(db,key,rid,PHASE,('answer_received',),'committed')
-        except ValueError as exc:raise teacher_hosts.CallFailure('unknown',str(exc)[:80],tools=answer['toolWarnings'])
+        if parked:
+            try:_park(root,key,rid,host,info,answer,choice,len(raw),sample_json,bodies_json)
+            except ValueError as exc:raise teacher_hosts.CallFailure('unknown',str(exc)[:80],tools=answer['toolWarnings'])
+        else:
+            gold=_gold_value(choice,input_sha,host,answer['model'],info['tier'],answer.get('pluginWarnings'))
+            try:
+                with _db(root) as db:
+                    changed=db.execute("UPDATE cases SET status='gold',first=?,gold=?,error=NULL WHERE project_key=? AND request_id=? AND status='first_running' AND use_state='active' AND sample=? AND bodies=?",
+                        (canonical(choice),canonical(gold),key,rid,sample_json,bodies_json)).rowcount
+                    if changed!=1:raise ValueError('gold_case_changed_before_commit')
+                    ledger.transition(db,key,rid,PHASE,('answer_received',),'committed')
+            except ValueError as exc:raise teacher_hosts.CallFailure('unknown',str(exc)[:80],tools=answer['toolWarnings'])
     except teacher_hosts.CallFailure as exc:failure=exc
     except PreSendDeferred:failure=teacher_hosts.CallFailure('deferred','resource_deferred')
     except Exception:
         with _db(root) as db:current=ledger.stage(db,key,rid,PHASE)
         failure=teacher_hosts.CallFailure('pre_send' if current=='reserved' else 'unknown','gold_attempt_failed')
     elapsed=(time.monotonic()-began)*1000
+    if failure is None and parked:
+        counts['parked']+=1;outcomes.append('parked')
+        _gt()._emit(project,'learning.teacher',outcome='parked',reason='resource_deferred',ms=elapsed,
+                    **_answer_fields(base,answer['model'],answer['modelReported'],choice,sample,
+                                     answer['toolWarnings'],answer.get('pluginWarnings'),host,len(raw)))
+        def reset_parked(state):state['hosts'][host]['consecutiveFailures']=0
+        # Breaker state: the host answered; a lost write only keeps an older count.
+        _update_hosts(root,reset_parked)
+        return 'deferred_resource'
     if failure is None:
         counts['gold']+=1;outcomes.append('gold')
-        fields=dict(base,model=answer['model'],modelReported=answer['modelReported'],
-                    selectedCount=len(choice['selected_ids']),isolation='ok',
-                    gold=[{'path':cid,'sha':next(c['revision_sha256'] for c in sample['candidates'] if c['candidate_id']==cid)} for cid in choice['selected_ids']],
-                    toolWarnings=answer['toolWarnings'] or None,
-                    pluginWarnings=answer.get('pluginWarnings') or None,
-                    **_usage_fields(host,answer['usage'],len(raw)),
+        fields=dict(_answer_fields(base,answer['model'],answer['modelReported'],choice,sample,
+                                   answer['toolWarnings'],answer.get('pluginWarnings'),host,len(raw)),
                     **gold_annotation(sample,choice['selected_ids'],root=root,project=project))
         _gt()._emit(project,'learning.teacher',outcome='gold',reason='single_pass',ms=elapsed,**fields)
         def reset(state):state['hosts'][host]['consecutiveFailures']=0
@@ -444,6 +468,108 @@ def _call(root,project,worker_policy,consent,key,rid,host,plan,raw,sample,input_
         return None if _update_hosts(root,reset) else 'state_unavailable'
     return _failed(root,project,key,rid,host,failure,ready,counts,outcomes,base,elapsed,
                    answer,teacher_state)
+
+
+def _gold_value(choice,input_sha,host,model,tier,plugin_warnings):
+    gold={'selected_ids':choice['selected_ids'],'input_sha256':input_sha,'review':'single_pass',
+          'usage':choice['usage'],'teacher':{'host':host,'model':model,'tier':tier}}
+    if plugin_warnings:gold['teacher']['pluginWarnings']=plugin_warnings
+    return gold
+
+
+def _answer_fields(base,model,reported,choice,sample,tools,plugins,host,raw_bytes):
+    return dict(base,model=model,modelReported=reported,
+                selectedCount=len(choice['selected_ids']),isolation='ok',
+                gold=[{'path':cid,'sha':next(c['revision_sha256'] for c in sample['candidates'] if c['candidate_id']==cid)} for cid in choice['selected_ids']],
+                toolWarnings=tools or None,pluginWarnings=plugins or None,
+                **_usage_fields(host,choice['usage'],raw_bytes))
+
+
+def _park(root,key,rid,host,info,answer,choice,raw_bytes,sample_json,bodies_json):
+    """Keep a received answer in its case row (``first_done``) and the ledger at ``answer_parked``.
+
+    Checked write: a lost write would drop an answer already paid for.
+    """
+    base={'teacherHost':host,'tier':info['tier']}
+    if host=='codex':
+        base.update(catalogAgeDays=info.get('catalogAgeDays'),userInstructionsBytes=info.get('userInstructionsBytes'))
+    kept={'choice':choice,'teacher':{'host':host,'model':answer['model'],'tier':info['tier']},
+          'modelReported':answer['modelReported'],'toolWarnings':answer['toolWarnings'],
+          'pluginWarnings':answer.get('pluginWarnings') or [],'event':base,'rawBytes':raw_bytes}
+    with _db(root) as db:
+        if db.execute("UPDATE cases SET status='first_done',first=?,error=NULL WHERE project_key=? AND request_id=? AND status='first_running' AND use_state='active' AND sample=? AND bodies=?",
+                      (canonical(kept),key,rid,sample_json,bodies_json)).rowcount!=1:
+            raise ValueError('gold_case_changed_before_commit')
+        ledger.transition(db,key,rid,PHASE,('answer_received',),PARKED)
+
+
+def _review_parked(root,key,code):
+    """Every kept answer of the project to ``pending_review`` (never called again)."""
+    with _db(root) as db:
+        ledger.ensure(db)
+        rids=[row[0] for row in db.execute("SELECT request_id FROM project_gold_attempts WHERE project_key=? AND phase=? AND stage=?",(key,PHASE,PARKED))]
+        for rid in rids:
+            if db.execute("UPDATE cases SET status='pending_review',error=? WHERE project_key=? AND request_id=? AND status='first_done'",(code,key,rid)).rowcount==1:
+                ledger.transition(db,key,rid,PHASE,(PARKED,),'dispatched_uncertain',error_code=code)
+
+
+def _confirm_parked(root,project,grant,key,result):
+    """Commit the answers kept by ``_park`` without any call; returns the gold count.
+
+    The pass already read the current grant and consent. A kept answer becomes
+    gold only while its case is active, unchanged and admitted, and the kept
+    choice still hashes to the ledger's answer. It is not compared with the
+    grant of the pass that kept it: a plugin update changes only the binding.
+    Resource pressure leaves the rest kept; any other failure ends the case in
+    ``pending_review`` (the answer is never asked for again).
+    """
+    from .prequential import admitted_one,gold_annotation
+    with _db(root) as db:
+        ledger.ensure(db)
+        rows=db.execute("SELECT c.request_id,c.input_sha256,c.sample,c.bodies,c.first,c.use_state,a.answer_sha256,a.input_sha256 FROM cases c JOIN project_gold_attempts a ON a.project_key=c.project_key AND a.request_id=c.request_id AND a.phase=? WHERE c.project_key=? AND c.status='first_done' AND a.stage=? ORDER BY c.captured_at,c.request_id",
+                        (PHASE,key,PARKED)).fetchall()
+    confirmed=0
+    for rid,input_sha,sample_json,bodies_json,first_json,use_state,answer_sha,payload_sha in rows:
+        try:
+            if digest(sample_json)!=input_sha or use_state!='active':raise ValueError('gold_capture_changed')
+            # The ledger pinned the exact payload asked: the edit text and every card body.
+            if digest(canonical(payload_v2(json.loads(sample_json),json.loads(bodies_json))))!=payload_sha:
+                raise ValueError('gold_capture_changed')
+            if not _gt()._case_active(root,(str(project),rid,sample_json)):raise ValueError('teacher_scope_changed')
+            with _db(root) as db:
+                if admitted_one(db,project,grant,rid,statuses=('first_done',)) is None:raise ValueError('teacher_cohort_changed')
+            kept=json.loads(first_json);sample=json.loads(sample_json);choice=kept['choice']
+            if digest(canonical(choice))!=answer_sha:raise ValueError('gold_parked_answer_changed')
+            if _choice_v2({'selected_ids':choice['selected_ids']},sample,choice['usage'])!=choice:
+                raise ValueError('gold_invalid_choice')
+            teacher=kept['teacher']
+            gold=_gold_value(choice,input_sha,teacher['host'],teacher['model'],teacher['tier'],kept['pluginWarnings'])
+            with _db(root) as db:
+                if db.execute("UPDATE cases SET status='gold',gold=?,error=NULL WHERE project_key=? AND request_id=? AND status='first_done' AND use_state='active' AND sample=? AND bodies=? AND first=?",
+                              (canonical(gold),key,rid,sample_json,bodies_json,first_json)).rowcount!=1:
+                    raise ValueError('gold_case_changed_before_commit')
+                ledger.transition(db,key,rid,PHASE,(PARKED,),'committed')
+        except ResourceDeferred:
+            break
+        except (ValueError,KeyError,TypeError,AttributeError) as exc:
+            code=str(exc)[:80] if isinstance(exc,ValueError) and re.fullmatch('[a-z0-9_]{1,80}',str(exc)[:80]) else 'gold_parked_answer_invalid'
+            try:
+                with _db(root) as db:
+                    if db.execute("UPDATE cases SET status='pending_review',error=? WHERE project_key=? AND request_id=? AND status='first_done'",(code,key,rid)).rowcount==1:
+                        ledger.transition(db,key,rid,PHASE,(PARKED,),'dispatched_uncertain',error_code=code)
+            except ValueError:
+                continue  # Rolled back together: the next pass meets the same kept answer.
+            result['outcomes'].append('pending_review')
+            _gt()._emit(project,'learning.teacher',outcome='pending_review',reason=code,request_id=rid,
+                        teacherHost=None)
+            continue
+        confirmed+=1;result['outcomes'].append('gold')
+        fields=dict(_answer_fields(dict(kept.get('event') or {},request_id=rid),teacher['model'],
+                                   kept['modelReported'],choice,sample,kept['toolWarnings'],
+                                   kept['pluginWarnings'],teacher['host'],kept['rawBytes']),
+                    **gold_annotation(sample,choice['selected_ids'],root=root,project=project))
+        _gt()._emit(project,'learning.teacher',outcome='gold',reason='parked_answer',**fields)
+    return confirmed
 
 
 def _failed(root,project,key,rid,host,failure,ready,counts,outcomes,base,elapsed,answer,
@@ -456,7 +582,8 @@ def _failed(root,project,key,rid,host,failure,ready,counts,outcomes,base,elapsed
         if kind in ('pre_send','deferred','host'):
             _settle(db,key,rid,'pre_send_rejected',code)
             requeue=True
-            if kind!='host':
+            # A host rest or a resource deferral is not the case's fault: no attempt is spent.
+            if kind=='pre_send':
                 if ledger.add_retry(db,key,rid)>=ledger.RETRY_LIMIT:requeue=False
             if requeue:
                 db.execute("UPDATE cases SET status='queued',error=NULL WHERE project_key=? AND request_id=? AND status='first_running'",(key,rid))
@@ -488,7 +615,7 @@ def _failed(root,project,key,rid,host,failure,ready,counts,outcomes,base,elapsed
             row=state['hosts'][host]
             row.update(waitUntilUnixMs=teacher_state.wait_until_ms(now,teacher_state.PROVIDER_WAIT_SECONDS),
                        reason='teacher_provider_waiting',waitingSinceUnixMs=now)
-    elif kind in ('unknown','invalid'):
+    elif kind in ('unknown','invalid') and code not in NOT_HOST_FAILURES:
         def state_change(state):
             row=state['hosts'][host]
             row['consecutiveFailures']+=1

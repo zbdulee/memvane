@@ -21,6 +21,7 @@ import time
 from memvane.runtime.api import provider_popen
 from memvane.runtime.types import PreSendDeferred
 from memvane.kernel.process import stop_owned as _stop_owned
+from memvane.kernel.resource_deferred import ResourceDeferred
 
 from . import claude_adapter, codex_adapter
 from . import teacher_isolation as isolation
@@ -28,6 +29,7 @@ from . import teacher_model_tiers as tiers
 
 HOSTS = ('claude', 'codex')
 UNAVAILABLE = 'teacher_host_unavailable'
+UNSAFE_PATH = 'teacher_cli_unsafe_path'
 CODEX_HOME_REDIRECTED = 'teacher_codex_home_redirected'
 QUOTA = 'deferred_quota'
 QUOTA_FLOOR = 30
@@ -72,7 +74,13 @@ def child_environment(host, environ):
 
 def resolve_executable(host, env, project=None):
     """The host CLI from safe PATH entries of the child env, or None."""
+    return _scan_path(host, env, project)[0]
+
+
+def _scan_path(host, env, project=None):
+    """``(cli, refused)``: the first safe CLI, and whether one was refused for its folder or file."""
     root = Path(project).resolve() if project is not None else None
+    refused = False
     for raw in str(env.get('PATH', '')).split(os.pathsep):
         if not raw or not os.path.isabs(raw):
             continue
@@ -84,6 +92,7 @@ def resolve_executable(host, env, project=None):
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.getuid())
                 or info.st_mode & 0o022
                 or (root is not None and (directory == root or root in directory.parents))):
+            refused = refused or (stat.S_ISDIR(info.st_mode) and os.path.lexists(Path(raw) / host))
             continue
         candidate = Path(raw) / host
         try:
@@ -94,9 +103,10 @@ def resolve_executable(host, env, project=None):
         if (not stat.S_ISREG(found.st_mode) or not os.access(target, os.X_OK)
                 or found.st_uid not in (0, os.getuid()) or found.st_mode & 0o022
                 or (root is not None and (target == root or root in target.parents))):
+            refused = refused or stat.S_ISREG(found.st_mode)
             continue
-        return str(candidate)
-    return None
+        return str(candidate), refused
+    return None, refused
 
 
 def build_argv(host, executable, model, system_prompt):
@@ -153,9 +163,10 @@ def prepare(host, *, project, environ, system_prompt, read_quota=None):
         # ~/.codex could reach another account, so only the Codex host rests.
         return {'ready': False, 'reason': CODEX_HOME_REDIRECTED}
     env = child_environment(host, environ)
-    executable = resolve_executable(host, env, project)
+    executable, refused = _scan_path(host, env, project)
     if executable is None:
-        return {'ready': False, 'reason': UNAVAILABLE}
+        # Acceptance is unchanged; only the notice tells a refused CLI from a missing one.
+        return {'ready': False, 'reason': UNSAFE_PATH if refused else UNAVAILABLE}
     result = {'ready': True, 'host': host, 'executable': executable, 'tier': tiers.TIER,
               'env': env}
     if host == 'codex':
@@ -255,6 +266,9 @@ class _Run:
     def launch(self, before_launch, after_launch):
         try:
             self.guard(fresh_inventory=True)
+        except ResourceDeferred as exc:
+            # Resource pressure is not a scope change: the case goes back to the queue.
+            raise CallFailure('deferred', 'resource_deferred') from exc
         except Exception as exc:
             raise CallFailure('pre_send', 'teacher_scope_changed') from exc
         try:
@@ -269,14 +283,24 @@ class _Run:
         after_launch(self.process.pid)
 
     def tick(self, sent):
+        """``sent``: some payload byte reached the child.
+
+        Before the body a resource deferral of the scope check ends the call
+        unsent (``deferred``). After it the check is skipped for this tick: the
+        answer is checked again before it can become gold.
+        """
         now = time.monotonic()
         if now >= self.deadline:
             raise CallFailure('unknown' if sent else 'pre_send', 'gold_timeout')
         if now - self.last_check >= .5:
             self.last_check = now
             try:
-                self.guard()
-                self.monitor(self.process.pid)
+                try:
+                    self.guard()
+                except ResourceDeferred:
+                    if not sent:
+                        raise CallFailure('deferred', 'resource_deferred') from None
+                self.monitor(self.process.pid, sent)
             except ValueError as exc:
                 code = str(exc) if str(exc).startswith('gold_') else 'teacher_scope_changed'
                 raise CallFailure('unknown' if sent else 'pre_send', code)
@@ -351,7 +375,8 @@ def invoke_codex(plan, raw, *, seconds, max_output, monitor, guard, before_launc
                 os.set_blocking(stream.fileno(), False)
                 selector.register(stream, event, tag)
             while selector.get_map():
-                run.tick(True)
+                # Codex reads the body from stdin: nothing is sent before the first write.
+                run.tick(offset > 0)
                 for key, _ in selector.select(.05):
                     if key.data == 'input':
                         try:
