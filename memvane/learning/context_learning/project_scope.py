@@ -14,6 +14,8 @@ SCOPE='single-project-local-learning'
 COHORT_SCHEMA='qmd-project-capture-cohort-v1'
 OPERATIONS=['gold','local_train','quality_evaluate']
 LOCAL_OPERATIONS=['local_train','quality_evaluate']
+DEFAULT_TEACHER_OPERATIONS=['gold_default','local_train','quality_evaluate']
+TEACHER_ENABLE='project-teacher-enable.json'
 MAX_LIFETIME_MS=14*86400000
 DEFAULT_LIFETIME_MS=10*365*86400000
 _MODEL_CACHE={}
@@ -21,6 +23,11 @@ _MODEL_CACHE={}
 
 def proposal_sha256(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
+def single_host(operations):
+    """The two default (selected-install, single-host) grant shapes."""
+    return operations in (LOCAL_OPERATIONS,DEFAULT_TEACHER_OPERATIONS)
 
 
 def present(root):
@@ -45,6 +52,8 @@ def _envelope(root):
     root=_path(root,private=True,directory=True)
     if os.path.lexists(root/'project-learning-renewal.json'):
         raise ValueError('project_scope_renewal_pending')
+    if os.path.lexists(root/TEACHER_ENABLE):
+        raise ValueError('project_scope_teacher_enable_pending')
     value=read_private_json(_path(root/NAME,private=True))
     if (not isinstance(value,dict) or set(value)!={'acceptedSha256','proposal'}
             or not isinstance(value['proposal'],dict)
@@ -53,7 +62,7 @@ def _envelope(root):
             or value['proposal'].get('namespaceRoot')!=str(root)):
         raise ValueError('project_scope_acceptance_invalid')
     row=value['proposal']
-    local_only = row.get('operations') == LOCAL_OPERATIONS
+    local_only = single_host(row.get('operations'))
     if local_only and isinstance(row.get('projectRoot'), str):
         from memvane.learning.default_enrollment import authorized
         if not authorized(row.get('projectRoot'), root):
@@ -65,7 +74,7 @@ def _envelope(root):
     limits={'minTrainCases':5,'minQualityTrainCases':100,'minTrainFamilies':5,
             'minValidationCases':50,'minValidationFamilies':5,'minEmptyValidation':10}
     if (set(row)!={'schema','scope','projectRoot','namespaceRoot','operations','cohort','expiresAtUnixMs','binding'}
-            or row['scope']!=SCOPE or row['operations'] not in (OPERATIONS, LOCAL_OPERATIONS)
+            or row['scope']!=SCOPE or row['operations'] not in (OPERATIONS, LOCAL_OPERATIONS, DEFAULT_TEACHER_OPERATIONS)
             or not isinstance(cohort,dict) or set(cohort)!=set(limits)|{'schema','id','notBeforeUnixMs'}
             or cohort.get('schema')!=COHORT_SCHEMA
             or any(type(cohort.get(k))is not int or cohort[k]!=v for k,v in limits.items())
@@ -299,9 +308,13 @@ def _binding(project,root,policy,installs,*,local_only=False,policy_disk=None):
 
 
 @prepared
-def proposal(project,root,policy,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='general-v1',local_only=False):
+def proposal(project,root,policy,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='general-v1',local_only=False,
+             default_teacher=False):
     project=_path(project,directory=True);root=_path(root,private=True,directory=True)
-    if type(local_only) is not bool:raise ValueError('project_scope_authorization_invalid')
+    if type(local_only) is not bool or type(default_teacher) is not bool:
+        raise ValueError('project_scope_authorization_invalid')
+    operations=DEFAULT_TEACHER_OPERATIONS if default_teacher else LOCAL_OPERATIONS if local_only else OPERATIONS
+    local_only=single_host(operations)
     if local_only:
         from memvane.learning.default_enrollment import authorized
         if not authorized(project,root):raise ValueError('project_scope_authorization_invalid')
@@ -318,13 +331,15 @@ def proposal(project,root,policy,*,expires_at_unix_ms,not_before_unix_ms,cohort_
     binding=(_binding(project,root,policy,_local_installations(project),local_only=True)
              if local_only else _binding(project,root,policy,_installations(project)))
     return {'schema':SCHEMA,'scope':SCOPE,'projectRoot':str(project),'namespaceRoot':str(root),
-            'operations':LOCAL_OPERATIONS if local_only else OPERATIONS,'cohort':cohort,'expiresAtUnixMs':expires_at_unix_ms,
+            'operations':operations,'cohort':cohort,'expiresAtUnixMs':expires_at_unix_ms,
             'binding':binding}
 
 
-def activate(project,root,policy,*,accepted_sha256,expires_at_unix_ms,not_before_unix_ms,cohort_id='general-v1',local_only=False):
+def activate(project,root,policy,*,accepted_sha256,expires_at_unix_ms,not_before_unix_ms,cohort_id='general-v1',local_only=False,
+             default_teacher=False):
     value=proposal(project,root,policy,expires_at_unix_ms=expires_at_unix_ms,
-                   not_before_unix_ms=not_before_unix_ms,cohort_id=cohort_id,local_only=local_only)
+                   not_before_unix_ms=not_before_unix_ms,cohort_id=cohort_id,local_only=local_only,
+                   default_teacher=default_teacher)
     if accepted_sha256!=proposal_sha256(value):raise ValueError('project_scope_acceptance_required')
     path=Path(root)/NAME
     if path.exists() or path.is_symlink():
@@ -343,7 +358,7 @@ def activate(project,root,policy,*,accepted_sha256,expires_at_unix_ms,not_before
 
 @prepared
 def require(root,policy,operation,*,fresh_inventory=False):
-    if operation not in OPERATIONS:raise ValueError('project_scope_operation_invalid')
+    if operation not in OPERATIONS and operation!='gold_default':raise ValueError('project_scope_operation_invalid')
     value=_envelope(root)
     if operation not in value['operations']:raise ValueError('project_scope_operation_invalid')
     if time.time()*1000>=value['expiresAtUnixMs']:raise ValueError('project_scope_expired')
@@ -353,7 +368,7 @@ def require(root,policy,operation,*,fresh_inventory=False):
     # A directory-source Claude marketplace can change its source pointer
     # without changing the account registry or the previously hashed root.
     # Re-resolve the project-effective host inventory on every grant use.
-    local_only=value['operations']==LOCAL_OPERATIONS
+    local_only=single_host(value['operations'])
     if not local_only and _installations(project)!=installs:
         raise ValueError('project_scope_installation_changed')
     binding=(_binding(project,Path(root),policy,installs,local_only=True)
@@ -365,4 +380,8 @@ def require(root,policy,operation,*,fresh_inventory=False):
             raise ValueError('project_scope_consent_required')
         from .general_teacher import require_consent
         require_consent(Path(root),project)
+    elif operation=='gold_default':
+        # Only the default teacher's v2 consent grants this operation.
+        from .teacher_consent import require_consent_v2
+        require_consent_v2(Path(root),project)
     return value

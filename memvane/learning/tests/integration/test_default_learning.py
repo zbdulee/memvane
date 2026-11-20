@@ -187,7 +187,19 @@ class DefaultLearning(unittest.TestCase):
             binding.write_text(json.dumps(intent), encoding='utf8')
             self.assertFalse(default_enrollment.authorized(self.project, root))
 
-    def test_default_profile_transaction_creates_only_local_grant(self):
+    def test_default_profile_transaction_creates_default_teacher_grant(self):
+        self.profile_transaction(teacher_off=False)
+
+    def test_default_profile_transaction_with_teacher_off_creates_only_local_grant(self):
+        self.profile_transaction(teacher_off=True)
+
+    def teacher_off_switch(self, root):
+        from memvane.learning.context_learning import teacher_state
+        for directory in (root.parent.parent, root.parent, root):
+            directory.mkdir(mode=0o700, exist_ok=True)
+        self.assertTrue(teacher_state.write_switch(root, False))
+
+    def profile_transaction(self, *, teacher_off):
         from memvane.learning import default_enrollment, project_learning_setup
         from memvane.learning.context_learning import adapter, project_scope, shared
         model = self.root / 'model'
@@ -212,19 +224,35 @@ class DefaultLearning(unittest.TestCase):
              mock.patch.object(project_scope, '_installed_binding', return_value=installs), \
              mock.patch.object(project_scope, '_binding', return_value={'installations': installs}):
             default_enrollment._prepare_namespace(root, str(runtime), str(model))
+            if teacher_off:
+                self.teacher_off_switch(root)
             default_enrollment._activate_profile(self.project, root)
             grant = json.loads((root / project_scope.NAME).read_text())['proposal']
             profile = json.loads((root / 'learning-profile.json').read_text())['proposal']
-            self.assertTrue(default_enrollment.default_local_only(root, self.project, shared._policy(root)))
+            policy = shared._policy(root)
+            self.assertEqual(default_enrollment.default_local_only(root, self.project, policy), teacher_off)
+            self.assertEqual(default_enrollment.default_teacher(root, self.project, policy), not teacher_off)
             with self.assertRaisesRegex(ValueError, 'operation_invalid'):
-                project_scope.require(root, shared._policy(root), 'gold')
-        self.assertEqual(grant['operations'], ['local_train', 'quality_evaluate'])
+                project_scope.require(root, policy, 'gold')
+            if teacher_off:
+                with self.assertRaisesRegex(ValueError, 'operation_invalid'):
+                    project_scope.require(root, policy, 'gold_default')
+            else:
+                self.assertEqual(project_scope.require(root, policy, 'gold_default'), grant)
+        self.assertEqual(grant['operations'], project_scope.LOCAL_OPERATIONS if teacher_off
+                         else project_scope.DEFAULT_TEACHER_OPERATIONS)
         self.assertEqual(profile['choice'], 'local-auto-apply')
         self.assertEqual(profile['mode'], 'new')
         self.assertTrue(profile['autoApply'])
-        self.assertFalse((root / 'project-teacher-consent.json').exists())
+        self.assertEqual((root / 'project-teacher-consent.json').exists(), not teacher_off)
 
     def test_pending_choice_creates_one_profile_and_grant_after_warm(self):
+        self.pending_choice(teacher_off=False)
+
+    def test_pending_choice_with_teacher_off_creates_local_grant_after_warm(self):
+        self.pending_choice(teacher_off=True)
+
+    def pending_choice(self, *, teacher_off):
         from memvane.learning import default_enrollment
         from memvane.learning.context_learning import adapter, project_scope
         model = self.root / 'model'
@@ -251,8 +279,10 @@ class DefaultLearning(unittest.TestCase):
              mock.patch('memvane.learning.context_learning.selector_heal.pressure', return_value=None), \
              mock.patch('memvane.learning.context_learning.selector_heal.heal', side_effect=lambda *a, **k: events.append('heal') or {'status': 'selector_prepared'}), \
              mock.patch('memvane.learning.context_learning.selector_heal.warm', side_effect=lambda *a, **k: events.append('warm') or {'status': 'selector_warm'}):
-            result = default_enrollment.prepare(self.project, self.state, 'abc123', lease_fd=123)
             root = default_enrollment.default_namespace(self.project, 'abc123')
+            if teacher_off:
+                self.teacher_off_switch(root)
+            result = default_enrollment.prepare(self.project, self.state, 'abc123', lease_fd=123)
             profile = json.loads((root / 'learning-profile.json').read_text())['proposal']
             grant = json.loads((root / project_scope.NAME).read_text())['proposal']
             self.assertEqual(default_enrollment.prepare(self.project, self.state, 'abc123', lease_fd=123)['status'], 'preserved')
@@ -260,5 +290,6 @@ class DefaultLearning(unittest.TestCase):
         self.assertEqual(events, ['heal', 'warm'])
         self.assertEqual(profile['choice'], 'local-auto-apply')
         self.assertEqual(profile['mode'], 'new')
-        self.assertEqual(grant['operations'], ['local_train', 'quality_evaluate'])
-        self.assertFalse((root / 'project-teacher-consent.json').exists())
+        self.assertEqual(grant['operations'], project_scope.LOCAL_OPERATIONS if teacher_off
+                         else project_scope.DEFAULT_TEACHER_OPERATIONS)
+        self.assertEqual((root / 'project-teacher-consent.json').exists(), not teacher_off)

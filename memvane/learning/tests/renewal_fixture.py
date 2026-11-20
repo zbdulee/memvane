@@ -20,6 +20,11 @@ from memvane.learning.context_learning.store import canonical
 
 
 class RenewalFixture(FixtureCase):
+    # True pins the install to default-local with the persistent teacher-off
+    # switch written before enrollment; False keeps the product default
+    # (default-teacher).
+    teacher_off_switch = False
+
     def write(self, path, value):
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         path.write_text(canonical(value)+'\n', encoding='utf8')
@@ -121,6 +126,10 @@ class RenewalFixture(FixtureCase):
             ('memvane.diagnostics.api.emit',{}),
         ):stack.enter_context(mock.patch(target,**kwargs))
         self.root.parent.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+        if self.teacher_off_switch:
+            from memvane.learning.context_learning import teacher_state
+            for directory in (self.root.parent,self.root):directory.mkdir(mode=0o700,exist_ok=True)
+            self.assertTrue(teacher_state.write_switch(self.root,False))
         self.assertEqual(default_enrollment.prepare(self.project,self.install,'fixture',lease_fd=-1)['status'],'selected')
         self.write(self.root/'laya-inference-manifest.json',{str(self.runtime):[[],file_sha(self.runtime)]})
         self.original=self.snapshot_targets()

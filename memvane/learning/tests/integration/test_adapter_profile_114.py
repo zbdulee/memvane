@@ -58,8 +58,10 @@ class AdapterProfile(FixtureCase):
                 mock.patch.object(selector_heal, 'admitted', side_effect=[False, True]), \
                 mock.patch.object(selector_heal, 'attest') as attest, \
                 mock.patch.object(selector_heal, 'prepare') as prepare:
+            # Adapter rebind of a default-local namespace: the teacher-off switch pins the profile.
             root = SettingsProfile.run_profile_entry(self, seed_namespace=seed, heal_impl=real_heal,
-                expected_error='default_learning_namespace_changed' if changed is not None else None)
+                expected_error='default_learning_namespace_changed' if changed is not None else None,
+                teacher_off=True)
         path = root / selector_heal.POLICY
         if changed is not None:
             self.assertEqual(path.read_bytes(), before['raw'])
