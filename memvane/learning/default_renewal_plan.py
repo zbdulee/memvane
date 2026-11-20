@@ -16,6 +16,8 @@ from memvane.kernel.memvane_version import version_key
 TARGETS = ('shared-policy.json', 'live-selector.json', scope.NAME, profile.INSTALL, profile.NAME)
 PROFILE_DERIVED = frozenset(('runtimeApprovalSha256', 'policySha256', 'livePolicySha256', 'trainerArgv', 'codeSha256'))
 BINDING_DERIVED = frozenset(('installations', 'codeSha256', 'policySha256', 'hostRegistry'))
+KIND_OPERATIONS = {'default-local': scope.LOCAL_OPERATIONS,
+                   'default-teacher': scope.DEFAULT_TEACHER_OPERATIONS}
 # Exact tracked bytes of v1.0.15 (b9c27c09), not a path-based source claim.
 LEGACY_RELEASE = {
     'version': '1.0.15',
@@ -53,7 +55,9 @@ def _authority(project, root, values):
     grant, accepted = _envelope(values[scope.NAME]), _envelope(values[profile.NAME])
     install = values[profile.INSTALL]
     journal = read_private_json(setup._path(root/setup.NAME, private=True))
-    if not enrollment.default_local_only(root, project, policy):
+    # Both default kinds renew; the kind fixes the only operations the grant may carry.
+    kind = enrollment.profile_kind(root, project, policy)
+    if kind not in KIND_OPERATIONS:
         raise ValueError('renewal_default_required')
     enrollment.validate_preferences(profile._settings(project))
     original = journal.get('profileProposal')
@@ -78,7 +82,7 @@ def _authority(project, root, values):
             or accepted.get('codeSha256') != grant.get('binding', {}).get('codeSha256')
             or accepted.get('modelIdentitySha256') != grant['binding'].get('modelIdentitySha256')
             or not profile._binding_matches(accepted, profile._settings(project))
-            or grant.get('operations') != scope.LOCAL_OPERATIONS
+            or grant.get('operations') != KIND_OPERATIONS[kind]
             or grant.get('projectRoot') != str(project) or grant.get('namespaceRoot') != str(root)
             or grant.get('scope') != scope.SCOPE or grant.get('schema') != scope.SCHEMA
             or set(grant) != {'schema', 'scope', 'projectRoot', 'namespaceRoot', 'operations', 'cohort', 'expiresAtUnixMs', 'binding'}

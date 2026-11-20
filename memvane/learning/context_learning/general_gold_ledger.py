@@ -3,7 +3,11 @@ import re
 import time
 
 STAGES=frozenset({'reserved','dispatch_unknown','dispatched','answer_received',
-                  'committed','pre_send_rejected','dispatched_uncertain'})
+                  'committed','pre_send_rejected','dispatched_uncertain','provider_refused'})
+# Stages that prove the provider produced no answer for this attempt; only the
+# default teacher re-arms them (a queued case is reserved again later).
+REARMABLE=('pre_send_rejected','provider_refused')
+RETRY_LIMIT=5
 
 
 def ensure(db):
@@ -14,21 +18,29 @@ def ensure(db):
        'PRIMARY KEY(project_key,request_id,phase))')
 
 
-def reserve(db,project_key,request_id,phase,input_sha256,max_calls):
+def reserve(db,project_key,request_id,phase,input_sha256,max_calls,*,rearm=False):
+    """``rearm`` (default teacher): no lifetime cap; a refused/pre-send row is reused."""
     ensure(db)
     if (phase not in ('first','second') or not isinstance(project_key,str) or not project_key
         or not isinstance(request_id,str) or not request_id
-        or not re.fullmatch('[0-9a-f]{64}',input_sha256)
-        or type(max_calls) is not int or not 1<=max_calls<=1000):
+        or not re.fullmatch('[0-9a-f]{64}',input_sha256) or type(rearm) is not bool
+        or (not rearm and (type(max_calls) is not int or not 1<=max_calls<=1000))
+        or (rearm and max_calls is not None)):
         raise ValueError('invalid_gold_reservation')
-    if stage(db,project_key,request_id,phase) is not None:
+    current=stage(db,project_key,request_id,phase)
+    if current is not None and not (rearm and current in REARMABLE):
         raise ValueError('gold_attempt_already_reserved')
     if prior_input(db,project_key,request_id,input_sha256):
         raise ValueError('duplicate_input')
-    if db.execute('SELECT COUNT(*) FROM project_gold_attempts WHERE project_key=?',
+    now=time.time()
+    if current is not None:
+        changed=db.execute('UPDATE project_gold_attempts SET stage=\'reserved\',answer_sha256=NULL,child_pid=NULL,error_code=NULL,updated_at=? WHERE project_key=? AND request_id=? AND phase=? AND input_sha256=? AND stage=?',
+                           (now,project_key,request_id,phase,input_sha256,current)).rowcount
+        if changed!=1:raise ValueError('gold_attempt_already_reserved')
+        return
+    if not rearm and db.execute('SELECT COUNT(*) FROM project_gold_attempts WHERE project_key=?',
                   (project_key,)).fetchone()[0]>=max_calls:
         raise ValueError('gold_budget_exhausted')
-    now=time.time()
     db.execute('INSERT INTO project_gold_attempts VALUES (?,?,?,?,?,NULL,NULL,NULL,?,?)',
                (project_key,request_id,phase,input_sha256,'reserved',now,now))
 
@@ -77,3 +89,25 @@ def fail(db,project_key,request_id,phase):
         transition(db,project_key,request_id,phase,(current,),
                    'pre_send_rejected' if current=='reserved' else 'dispatched_uncertain',
                    error_code='gold_attempt_failed')
+
+
+def ensure_retries(db):
+    """Default-teacher only: pre-send failures per case, outside the ledger table."""
+    db.execute('CREATE TABLE IF NOT EXISTS project_gold_retries ('
+       'project_key TEXT NOT NULL,request_id TEXT NOT NULL,count INTEGER NOT NULL,'
+       'PRIMARY KEY(project_key,request_id))')
+
+
+def retries(db,project_key,request_id):
+    ensure_retries(db)
+    row=db.execute('SELECT count FROM project_gold_retries WHERE project_key=? AND request_id=?',
+                   (project_key,request_id)).fetchone()
+    return row[0] if row else 0
+
+
+def add_retry(db,project_key,request_id):
+    ensure_retries(db)
+    db.execute('INSERT OR IGNORE INTO project_gold_retries VALUES (?,?,0)',(project_key,request_id))
+    db.execute('UPDATE project_gold_retries SET count=count+1 WHERE project_key=? AND request_id=?',
+               (project_key,request_id))
+    return retries(db,project_key,request_id)

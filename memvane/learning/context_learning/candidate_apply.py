@@ -57,6 +57,7 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
     from .learning_queue import LearningQueue
     from .automatic_cohort import training_and_validation
     from .automatic_staging import _case_evidence,_quality_ready
+    from .prequential import min_nonempty_validation
     from .shared import _db,_case_active,read_only_validation
     root=Path(root)
     if any(p.is_symlink() for p in (root,*root.parents)):raise ValueError('apply_unsafe_path')
@@ -78,7 +79,8 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
             or stage['model_input_view']!=profile['view']
             or stage['baseArtifactSha256']!=_hash(policy['baseArtifact'])
             or stage['trainEvidenceSha256']!=_case_evidence(train)
-            or not _quality_ready(train,validation,grant['cohort'])[0]
+            or not _quality_ready(train,validation,grant['cohort'],
+                                  min_nonempty=min_nonempty_validation(grant))[0]
             or any(not _case_active(root,(r[7],r[1],r[3])) for r in train+validation)):
         raise ValueError('apply_source_or_artifact_changed')
     metrics=stage['metrics'];before,after=metrics['incumbent'],metrics['candidate']

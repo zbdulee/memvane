@@ -6,7 +6,9 @@ Prompt cases are no longer captured (design r3 D, decision 10). The first
 private ``samples`` rows of the same request ids. Nothing else changes: edit
 (v5) cases, cohort exposure, families and every other table stay. A marker
 in the namespace makes later passes do nothing; the count goes to the marker
-and to one ``learning.migration`` event.
+and to one ``learning.migration`` event. The marker records the profile kind
+it ran under: a marker of an older schema or of another kind (the default
+teacher after a default-local namespace) runs the deletion once more.
 """
 from __future__ import annotations
 
@@ -16,7 +18,7 @@ import sqlite3
 import time
 
 MARKER = 'prompt-cases-retired.json'
-SCHEMA = 'memvane-prompt-cases-retired-v1'
+SCHEMA = 'memvane-prompt-cases-retired-v2'
 
 
 def _retired(sample_json: str) -> bool:
@@ -29,16 +31,20 @@ def _retired(sample_json: str) -> bool:
         return False
 
 
-def retire(root, project, config) -> dict:
-    """Delete retired prompt cases once; ``{'status', 'count'}``. Raises on I/O errors."""
+def retire(root, project, config, *, profile=None) -> dict:
+    """Delete retired prompt cases once per marker schema and ``profile``.
+
+    Returns ``{'status', 'count'}``. Raises on I/O errors.
+    """
     from .dataset import read_private_json
     from .local_cycle import _atomic_json
     from . import shared
     root, project = Path(root), Path(project).resolve(strict=True)
     marker = root / MARKER
     if marker.exists() or marker.is_symlink():
-        read_private_json(marker)  # an unsafe marker refuses, it is never replaced
-        return {'status': 'already_retired', 'count': 0}
+        done = read_private_json(marker)  # an unsafe marker refuses, it is never replaced
+        if isinstance(done, dict) and done.get('schema') == SCHEMA and done.get('profile') == profile:
+            return {'status': 'already_retired', 'count': 0}
     database = root / shared.DATABASE_NAME
     ids = []
     if database.exists() or database.is_symlink():
@@ -65,8 +71,8 @@ def retire(root, project, config) -> dict:
                                     (shared._project_key(project), rid)).rowcount
     else:
         count = 0
-    _atomic_json(marker, {'schema': SCHEMA, 'count': count, 'privateSamples': private,
-                          'retiredAtUnixMs': int(time.time() * 1000)})
+    _atomic_json(marker, {'schema': SCHEMA, 'profile': profile, 'count': count,
+                          'privateSamples': private, 'retiredAtUnixMs': int(time.time() * 1000)})
     _record(project, count, private)
     return {'status': 'retired', 'count': count}
 
@@ -82,9 +88,9 @@ def _record(project, count, private) -> None:
         pass  # The marker keeps the count; the event is diagnostic only.
 
 
-def retire_quietly(root, project, config) -> dict:
+def retire_quietly(root, project, config, *, profile=None) -> dict:
     """``retire`` for the worker pass: a failure is reported, never raised."""
     try:
-        return retire(root, project, config)
+        return retire(root, project, config, profile=profile)
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
         return {'status': 'retirement_deferred', 'count': 0}

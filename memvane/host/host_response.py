@@ -995,9 +995,11 @@ def _learning_settings_notice(decision, notice, host, payload):
     return notice + '\n' + line if notice else line
 
 
-def _learning_runtime_notice(notice):
+def _learning_runtime_notice(notice, decision=None, host=None):
+    """Runtime line, plus the default-teacher lines for a Claude or Codex session."""
     from memvane.learning.api import learning_runtime_message
-    line = learning_runtime_message()
+    line = (learning_runtime_message(decision, host) if host in ('claude', 'codex')
+            else learning_runtime_message())
     if line:
         return notice + '\n' + line if notice else line
     return notice
@@ -1006,7 +1008,7 @@ def _learning_runtime_notice(notice):
 def _session_health_notice(decision, notice, host, payload):
     from memvane.host.session_notice import append_notice
     notice = _learning_settings_notice(decision, _wiki_recovery_notice(decision, notice), host, payload)
-    notice = append_notice(decision, _learning_runtime_notice(notice), host, payload)
+    notice = append_notice(decision, _learning_runtime_notice(notice, decision, host), host, payload)
     try:
         if event_log.vector_damage_seen(decision):
             line = ('[memvane] 임베딩 데이터가 손상돼 어휘 검색만 씁니다. '

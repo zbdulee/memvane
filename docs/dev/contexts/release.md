@@ -29,6 +29,8 @@
 
 릴리스마다 직전 버전의 worker·provider SHA 쌍과 해당 코드에서 확인한 정체성을 알려진 이전 쌍 표에 넣고, 모르는 쌍은 거절한다.
 
+릴리스마다 `memvane/learning/context_learning/teacher_model_tiers.py`의 tier 표(Claude 모델 id, Codex slug 순서와 effort)를 각 호스트의 현재 모델·가격 문서와 다시 대조하고, `RELEASE`를 그 릴리스 버전으로 맞춘다.
+
 - `package.json` — project/npm version
 - `plugin.json` — root AGY/Gemini plugin metadata
 - `plugin.yaml` — Hermes Agent plugin metadata

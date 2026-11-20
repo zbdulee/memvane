@@ -36,6 +36,8 @@ NAME='project-learning-setup.json'
 SCHEMA='qmd-project-learning-setup-v1'
 SYNTHETIC_STAGED='synthetic-staged'
 DEFAULT_LOCAL='default-local'
+DEFAULT_TEACHER='default-teacher'
+DEFAULT_MODES=(DEFAULT_LOCAL,DEFAULT_TEACHER)
 SYNTHETIC_RESERVE='reviewed-synthetic-qa-floor'
 # Reviewed synthetic-QA process RSS ceiling (user-approved 3.5 GiB). The 35 % free
 # headroom, CPU 1, 768 MiB floor and every other synthetic bound are unchanged.
@@ -101,7 +103,7 @@ def _namespace(project,root,*,mode='default'):
                 or root!=fixture/'learning-private'):
             raise ValueError('setup_synthetic_fixture_invalid')
         return project,root
-    if mode==DEFAULT_LOCAL:
+    if mode in DEFAULT_MODES:
         from memvane.learning.default_enrollment import authorized
         if not authorized(project,root):raise ValueError('setup_namespace_invalid')
         return project,root
@@ -431,7 +433,7 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
     # Synthetic setup consumes only the exact reviewed binding; ordinary
     # default enrollment never requires one.
     bound=_require_bound(project,root,fresh=True)[0] if mode==SYNTHETIC_STAGED else None
-    lifetime=project_scope.DEFAULT_LIFETIME_MS if mode==DEFAULT_LOCAL else project_scope.MAX_LIFETIME_MS
+    lifetime=project_scope.DEFAULT_LIFETIME_MS if mode in DEFAULT_MODES else project_scope.MAX_LIFETIME_MS
     if (type(expires_at_unix_ms)is not int or type(not_before_unix_ms)is not int
         or not 0<not_before_unix_ms<expires_at_unix_ms<=not_before_unix_ms+lifetime
         or not time.time()*1000<expires_at_unix_ms<=time.time()*1000+lifetime):
@@ -467,7 +469,7 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
     adapter=_path(argv[1]);model=_path(argv[2],directory=True)
     from memvane.learning.context_learning.adapter import MODEL_FILES
     for name in MODEL_FILES:_path(model/name)
-    local=mode==DEFAULT_LOCAL
+    local=mode in DEFAULT_MODES
     installs=(project_scope._installed_binding(project_scope._local_installations(project),local_only=True)
               if local else project_scope._installed_binding(project_scope._installations(project)))
     if str(adapter) not in {str(Path(row['root'])/'memvane/learning/context_learning/adapter.py') for row in installs}:
@@ -484,8 +486,13 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
              'model':'gpt-6-luna','maxGoldCalls':20,'maxInputBytes':65536,'maxOutputBytes':65536,
              'timeoutSeconds':60,'maxRssMib':4096,'enabled':True}
     if mode==DEFAULT_LOCAL:teacher=None
+    if mode==DEFAULT_TEACHER:
+        # Deterministic from the reviewed inputs so activation's re-prepare matches.
+        from memvane.learning.context_learning import teacher_consent
+        teacher=teacher_consent.proposal(project,granted_by='default-enrollment',
+                                         granted_at_unix_ms=not_before_unix_ms)
     consent={'schema':'qmd-shared-consent-v1','projectRoot':str(project),'sharedRoot':str(root),
-             'capture':True,'localTraining':True,'externalTeacher':False}
+             'capture':True,'localTraining':True,'externalTeacher':mode==DEFAULT_TEACHER}
     if mode==SYNTHETIC_STAGED:
         from memvane.runtime.api import memory_validate as validate_memory
         identity=model_identity(model)
@@ -508,7 +515,7 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
         raise ValueError('setup_mode_invalid')
     settings,dropped=_desired_settings(raw,root,mode=mode)
     return {**({'mode':mode,'bindingSha256':bound} if mode==SYNTHETIC_STAGED else
-               {'mode':mode} if mode==DEFAULT_LOCAL else {}),
+               {'mode':mode} if mode in DEFAULT_MODES else {}),
             'schema':SCHEMA,'projectRoot':str(project),'namespaceRoot':str(root),
             'expiresAtUnixMs':expires_at_unix_ms,'notBeforeUnixMs':not_before_unix_ms,'cohortId':cohort_id,
             'sourceSettingsSha256':file_sha(settings_path),'namespaceFiles':inventory,
@@ -575,6 +582,13 @@ def _backup(project,root,plan):
     return backup
 
 
+def configuration_paths(project,mode):
+    """The journal's ``configurationPaths``; recovery checks the same set."""
+    return ([name for name in CONFIG_NAMES
+             if name!='project-teacher-consent.json' or mode not in (SYNTHETIC_STAGED,DEFAULT_LOCAL)]
+            +['consents/'+_project_key(project)+'.json'])
+
+
 def activate(plan,*,accepted_sha256,fault=lambda _:None):
     if accepted_sha256!=proposal_sha256(plan):raise ValueError('setup_acceptance_required')
     mode=plan.get('mode','default')
@@ -586,7 +600,7 @@ def activate(plan,*,accepted_sha256,fault=lambda _:None):
                         memory_evidence=plan.get('memoryEvidence'))
         if current!=plan:raise ValueError('setup_reviewed_inputs_changed')
         backup=_backup(project,root,plan)
-        paths=[name for name in CONFIG_NAMES if name!='project-teacher-consent.json' or mode not in (SYNTHETIC_STAGED,DEFAULT_LOCAL)]+['consents/'+_project_key(project)+'.json']
+        paths=configuration_paths(project,mode)
         journal={'schema':SCHEMA,'phase':'prepared','acceptedSha256':accepted_sha256,
                  'plan':plan,'backupRoot':str(backup),'written':{},'configurationPaths':paths,
                  'sourceSettingsSha256':plan['sourceSettingsSha256']}
@@ -604,15 +618,17 @@ def activate(plan,*,accepted_sha256,fault=lambda _:None):
             publish('project-teacher-consent.json',{'acceptedSha256':proposal_sha256(plan['teacherConsent']),'proposal':plan['teacherConsent']})
         publish('consents/'+_project_key(project)+'.json',plan['localConsent'])
         scope=project_scope.proposal(project,root,plan['policy'],expires_at_unix_ms=plan['expiresAtUnixMs'],
-                                     not_before_unix_ms=plan['notBeforeUnixMs'],cohort_id=plan['cohortId'],local_only=mode==DEFAULT_LOCAL)
+                                     not_before_unix_ms=plan['notBeforeUnixMs'],cohort_id=plan['cohortId'],local_only=mode==DEFAULT_LOCAL,
+                                     default_teacher=mode==DEFAULT_TEACHER)
         scope_envelope={'acceptedSha256':project_scope.proposal_sha256(scope),'proposal':scope}
         journal['written'][project_scope.NAME]=hashlib.sha256((canonical(scope_envelope)+'\n').encode()).hexdigest()
         _write(root/NAME,journal)
         project_scope.activate(project,root,plan['policy'],accepted_sha256=scope_envelope['acceptedSha256'],
-                               expires_at_unix_ms=plan['expiresAtUnixMs'],not_before_unix_ms=plan['notBeforeUnixMs'],cohort_id=plan['cohortId'],local_only=mode==DEFAULT_LOCAL)
+                               expires_at_unix_ms=plan['expiresAtUnixMs'],not_before_unix_ms=plan['notBeforeUnixMs'],cohort_id=plan['cohortId'],local_only=mode==DEFAULT_LOCAL,
+                               default_teacher=mode==DEFAULT_TEACHER)
         fault('scope_written')
         kwargs={'choice':'local-staged' if mode==SYNTHETIC_STAGED else 'local-auto-apply',
-                'mode':('new' if mode==DEFAULT_LOCAL and not any(k in learning_profile._settings(project) for k in ('contextLearning','sharedLearning')) else 'preserve'),
+                'mode':('new' if mode in DEFAULT_MODES and not any(k in learning_profile._settings(project) for k in ('contextLearning','sharedLearning')) else 'preserve'),
                 'expires_at_unix_ms':plan['expiresAtUnixMs'],'enable_learning':True}
         if mode==SYNTHETIC_STAGED:kwargs['staged_no_selection']=True
         if file_sha(_project_settings(project))!=plan['sourceSettingsSha256']:raise ValueError('setup_settings_changed')
@@ -628,8 +644,10 @@ def activate(plan,*,accepted_sha256,fault=lambda _:None):
         journal['phase']='activated';_write(root/NAME,journal)
         return {'status':'activated','acceptedSha256':accepted_sha256,'backupRoot':str(backup),
                 'projectRoot':str(project),'namespaceRoot':str(root),'capture':True,'autoCycle':True,
-                'teacherModel':None if mode in (SYNTHETIC_STAGED,DEFAULT_LOCAL) else 'gpt-6-luna',
-                'maxGoldCalls':0 if mode in (SYNTHETIC_STAGED,DEFAULT_LOCAL) else 20,
+                'teacherModel':(None if mode in (SYNTHETIC_STAGED,DEFAULT_LOCAL)
+                                else 'lowest-tier' if mode==DEFAULT_TEACHER else 'gpt-6-luna'),
+                'maxGoldCalls':(0 if mode in (SYNTHETIC_STAGED,DEFAULT_LOCAL)
+                                else None if mode==DEFAULT_TEACHER else 20),
                 'promotion':'disabled' if mode==SYNTHETIC_STAGED else 'quality_gated'}
 
 

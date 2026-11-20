@@ -91,15 +91,28 @@ def learning_runtime_proof_failed():
     from memvane.learning.runtime_activation import failure_notice as implementation
     return implementation()
 
-def learning_runtime_message():
+def learning_runtime_message(decision=None, host=None):
+    """The learning runtime line; with ``decision`` and ``host`` also the default-teacher lines.
+
+    Without them the value is the runtime line alone (None when there is none).
+    """
+    line = None
     if learning_runtime_proof_failed():
         from memvane.learning.runtime_activation import has_active_runtime
         if has_active_runtime():
-            return '[memvane] 학습 런타임 호환성 검사에 실패해 이전 선택을 유지했습니다. setup skill로 확인하세요.'
-        return '[memvane] 학습 런타임의 첫 활성화에 실패했습니다. setup skill로 확인하세요.'
-    if learning_runtime_needs_activation():
-        return '[memvane] 학습 런타임이 활성화되지 않았습니다. setup skill로 준비하고 활성화하세요.'
-    return None
+            line = '[memvane] 학습 런타임 호환성 검사에 실패해 이전 선택을 유지했습니다. setup skill로 확인하세요.'
+        else:
+            line = '[memvane] 학습 런타임의 첫 활성화에 실패했습니다. setup skill로 확인하세요.'
+    elif learning_runtime_needs_activation():
+        line = '[memvane] 학습 런타임이 활성화되지 않았습니다. setup skill로 준비하고 활성화하세요.'
+    if decision is None or host is None:
+        return line
+    try:
+        from memvane.learning.context_learning.teacher_state import session_notices_for
+        teacher = session_notices_for(decision, host)
+    except Exception:
+        teacher = []  # A hint only: SessionStart never fails on teacher state.
+    return '\n'.join(([line] if line else []) + teacher) or None
 
 def propose_learning_profile(project, root, *, choice, mode, expires_at_unix_ms, enable_learning=False,
                              staged_no_selection=False):

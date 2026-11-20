@@ -13,21 +13,41 @@ def setup_ready(root):
 
 
 def _retire_prompt_cases(root, project, policy, config):
-    """Default namespaces delete retired prompt cases once (decision 10)."""
-    from memvane.learning.default_enrollment import default_local_only
+    """Default namespaces delete retired prompt cases once per profile kind (decision 10)."""
+    from memvane.learning.default_enrollment import default_local_only, default_teacher
     try:
-        if not default_local_only(root, project, policy):
+        if default_teacher(root, project, policy):
+            kind = 'default-teacher'
+        elif default_local_only(root, project, policy):
+            kind = 'default-local'
+        else:
             return None
     except (OSError, ValueError, KeyError, TypeError):
         return None
     from .prompt_retirement import retire_quietly
-    return retire_quietly(root, project, config)
+    return retire_quietly(root, project, config, profile=kind)
 
 
 def _delete_unchecked_edit_cases(root, project, config):
     """Pre-fix edit cases of a project inside a parent work tree go once (decision 8)."""
     from .edit_git_migration import migrate_quietly
     return migrate_quietly(root, project, config)
+
+
+def _default_teacher_pass(root, project, policy):
+    """The default teacher's pass as a status; only scope/setup refusals raise (§11-1)."""
+    from . import general_teacher
+    from .local_cycle import ResourceDeferred
+    try:
+        return general_teacher.process_pending_default(root, project, policy, max_cases=8)
+    except ResourceDeferred as exc:
+        return {'status': 'deferred_resource', 'reason': str(exc)[:80]}
+    except ValueError as exc:
+        if str(exc).startswith(general_teacher.SCOPE_ERRORS):
+            raise
+        return {'status': 'teacher_failed', 'reason': str(exc)[:80]}
+    except Exception as exc:
+        return {'status': 'teacher_failed', 'reason': type(exc).__name__}
 
 
 def run(root, project, config=None):
@@ -42,7 +62,7 @@ def run(root, project, config=None):
     if not setup_ready(root):return {'status':'setup_in_progress'}
     from . import project_scope,general_teacher
     from memvane.learning import project_learning_setup
-    from memvane.learning.default_enrollment import default_local_only
+    from memvane.learning.default_enrollment import profile_kind
     from memvane.runtime.api import coordination_lock as _lock
     policy=shared._policy(root)
     fd=_lock(root/'project-worker.lock')
@@ -55,12 +75,25 @@ def run(root, project, config=None):
         if not report['ready']:
             return {'status':'deferred_resource','resources':report}
         from .local_cycle import ResourceDeferred
-        try:project_scope.require(root,policy,'local_train',fresh_inventory=True)
+        try:grant=project_scope.require(root,policy,'local_train',fresh_inventory=True)
         except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
-        if default_local_only(root,project,policy):
+        kind=profile_kind(root,project,policy)
+        if kind=='default-local':
             teacher={'status':'disabled_local_only'}
             quota={'status':'not_applicable_local_only'}
-        elif project_learning_setup.synthetic_local_only(root,project,policy):
+        elif kind=='default-teacher':
+            from . import prequential
+            # Before the teacher, whatever its state: a late gold keeps the capture-time kind.
+            try:prequential.prerecord_selections(root,project,grant)
+            except Exception:pass  # Diagnostic only; the next pass looks again.
+            teacher=_default_teacher_pass(root,project,policy)
+            if teacher['status'] in ('busy','deferred_resource'):
+                return {'status':teacher['status'],'teacher':teacher}
+            quota={'status':'not_applicable_default_teacher'}
+            # A rejected candidate's evaluation is closed before the cycle picks it again.
+            try:prequential.close_rejected(root,grant)
+            except Exception:pass  # Retried after the cycle and next pass; a retry re-rejects it.
+        elif kind=='synthetic':
             teacher={'status':'disabled_synthetic_local_only'}
             quota={'status':'not_applicable_local_only'}
             budget=project_learning_setup.synthetic_budget_status(root,project,policy)
@@ -80,6 +113,11 @@ def run(root, project, config=None):
                     'weekly_quota_checkpoint','weekly_quota_unavailable') else 'weekly_quota_unavailable',
                     'teacher':teacher}
         cycle=shared.run_training_pending(root,project)
+        if kind=='default-teacher':
+            from . import prequential
+            try:prequential.close_rejected(root,grant,cycle)
+            except Exception:pass  # The next pass's cycle re-rejects it and closes it then.
+            prequential.record_pass(root,project,grant,cycle)
         result={'status':cycle['status'],'teacher':teacher,'cycle':cycle,
                 'quota':quota,
                 'activeCheckpointChanged':cycle['status'] in ('applied','already_applied')}

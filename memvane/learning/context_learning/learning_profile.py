@@ -13,6 +13,7 @@ from memvane.learning.types import LEARNING_PROFILE_INSTALL as INSTALL
 
 NAME='learning-profile.json'
 RENEWAL='project-learning-renewal.json'
+TEACHER_ENABLE='project-teacher-enable.json'
 SCHEMA='qmd-local-learning-profile-v1'
 CHOICES=('local-auto-apply','local-staged','off')
 
@@ -133,14 +134,19 @@ def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False
             'sourceSettingsSha256':digest(raw),'settings':cfg,'droppedLearningFields':dropped,
             'settingsBindingSha256':digest(binding(cfg))}
 
-def _check_scope(row,root,policy,operation,*,settings=True):
+def _pending(root):
     if os.path.lexists(Path(root)/RENEWAL):raise ValueError('profile_renewal_pending')
+    if os.path.lexists(Path(root)/TEACHER_ENABLE):raise ValueError('project_scope_teacher_enable_pending')
+
+def _check_scope(row,root,policy,operation,*,settings=True):
+    _pending(root)
     from .runtime_authorization import require_operation,proposal_sha256
     from .adapter import model_identity
     from .inference_identity import code_identity
     grant=require_operation(root,policy,'local_train' if operation=='local_train' else 'quality_evaluate')
     trainer=row['trainerArgv']
-    if grant.get('operations')==['local_train','quality_evaluate'] and len(trainer)==len(policy['trainerArgv'])==3:
+    from .project_scope import single_host
+    if single_host(grant.get('operations')) and len(trainer)==len(policy['trainerArgv'])==3:
         trainer=[trainer[0],policy['trainerArgv'][1],trainer[2]]
     if (row['schema']!=SCHEMA or row['namespaceRoot']!=str(Path(root).resolve())
             or row['projectRoot']!=grant.get('projectRoot') or row['runtimeApprovalSha256']!=proposal_sha256(grant)
@@ -155,14 +161,14 @@ def _check_scope(row,root,policy,operation,*,settings=True):
     return row
 
 def require(root,policy,operation):
-    if os.path.lexists(Path(root)/RENEWAL):raise ValueError('profile_renewal_pending')
+    _pending(root)
     envelope=read_private_json(Path(root)/NAME);row=envelope['proposal']
     if envelope!={'acceptedSha256':digest(row),'proposal':row}:raise ValueError('profile_acceptance_invalid')
     return _check_scope(row,root,policy,operation)
 
 def selection_enabled(root,project):
     """Cheap preference binding; inference has its own full identity checks."""
-    if os.path.lexists(Path(root)/RENEWAL):raise ValueError('profile_renewal_pending')
+    _pending(root)
     envelope=read_private_json(Path(root)/NAME);row=envelope['proposal']
     if (envelope!={'acceptedSha256':digest(row),'proposal':row} or row['schema']!=SCHEMA
             or row['namespaceRoot']!=str(root) or row['projectRoot']!=str(project)

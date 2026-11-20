@@ -45,6 +45,22 @@ def select_learning(args):
         mode=args.learning_migration,expires_at_unix_ms=args.learning_expires_at_unix_ms)
 
 
+def _learning_command(argv):
+    """The result a ``learning_main`` setup subcommand prints; its failure raises with the reason."""
+    import contextlib
+    import io
+    from memvane.learning.api import learning_main
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        learning_main(argv)
+    result = json.loads(out.getvalue())
+    if not isinstance(result, dict):
+        raise ValueError('learning_command_failed')
+    if result.get('status') == 'failed':
+        raise ValueError(result.get('reason') or 'learning_command_failed')
+    return result
+
+
 def _exception_detail(exc):
     """Structured evidence (e.g. unexpected installed files) from the cause chain."""
     seen = set()
@@ -89,7 +105,8 @@ def main(argv=None):
                                           'activate-index-origin','recover-index-origin',
                                           'restore-index-origin',
                                           'onboarding-skip', 'onboarding-never',
-                                          'onboarding-resume', 'onboarding-status'))
+                                          'onboarding-resume', 'onboarding-status',
+                                          'restore-teacher-enable', 'teacher-off', 'teacher-on'))
     parser.add_argument('--project')
     parser.add_argument('--learning-choice',choices=('preserve','local-auto-apply','local-staged','off'),default='preserve')
     parser.add_argument('--learning-namespace')
@@ -110,6 +127,7 @@ def main(argv=None):
     parser.add_argument('--approve-index-runtime-download', action='store_true')
     parser.add_argument('--approve-index-runtime-gc', action='store_true')
     parser.add_argument('--session')
+    parser.add_argument('--plan', action='store_true')
     args = parser.parse_args(argv)
     if args.project is None and args.action not in (
             'index-runtime-status',
@@ -119,7 +137,8 @@ def main(argv=None):
         read_only = (args.action in ('plan-learning-profile', 'plan-fresh-wiki-origin',
                                     'review-index-provider', 'index-runtime-status',
                                     'index-origin-status', 'index-build-status', 'onboarding-status')
-                     or (args.action == 'gc-index-runtime' and not args.approve_index_runtime_gc))
+                     or (args.action == 'gc-index-runtime' and not args.approve_index_runtime_gc)
+                     or (args.action == 'restore-teacher-enable' and args.plan))
         if not read_only:
             from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
             require_cached_plugin_for_live_write()
@@ -209,6 +228,12 @@ def main(argv=None):
                 raise ValueError('learning_runtime_inputs_required')
             from memvane.learning.api import activate_managed_runtime
             result = activate_managed_runtime(args.learning_runtime_executable, args.learning_model_dir)
+        elif args.action in ('restore-teacher-enable', 'teacher-off', 'teacher-on'):
+            # Explicit request only. restore-teacher-enable puts back the bytes an
+            # unfinished default-teacher enable replaced (--plan shows each target
+            # and writes nothing); teacher-off/on write the namespace teacher switch.
+            result = _learning_command([args.action, '--project', args.project,
+                                        *(['--plan'] if args.plan else [])])
         elif args.action=='plan-learning-profile':result=learning_plan(args)
         else:result=select_learning(args)
     except Exception as exc:

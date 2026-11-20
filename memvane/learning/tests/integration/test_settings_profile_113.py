@@ -58,10 +58,14 @@ class SettingsProfile(FixtureCase):
         with self.assertRaises(ValueError):
             project_scope._settings_scope(self.project)
 
-    def test_entry_warms_then_creates_profile_and_local_grant_from_0644_settings(self):
+    def test_entry_warms_then_creates_profile_and_default_teacher_grant_from_0644_settings(self):
         self.run_profile_entry()
 
-    def run_profile_entry(self, *, seed_namespace=None, heal_impl=None, expected_error=None):
+    def test_entry_with_teacher_off_switch_creates_profile_and_local_grant(self):
+        self.run_profile_entry(teacher_off=True)
+
+    def run_profile_entry(self, *, seed_namespace=None, heal_impl=None, expected_error=None,
+                          teacher_off=False):
         model = self.home / 'model'
         model.mkdir(mode=0o700)
         for name in adapter.MODEL_FILES:
@@ -85,6 +89,12 @@ class SettingsProfile(FixtureCase):
         source = Path(adapter.__file__).resolve().parents[3]
         if seed_namespace is not None:
             seed_namespace(root, str(runtime), str(model), source)
+        if teacher_off:
+            # The persistent switch pins enrollment to default-local.
+            from memvane.learning.context_learning import teacher_state
+            for directory in (root.parent, root):
+                directory.mkdir(mode=0o700, exist_ok=True)
+            self.assertTrue(teacher_state.write_switch(root, False))
         installs = [{'host': 'codex', 'root': str(source)}]
         events = []
         original_activate = default_enrollment._activate_profile
@@ -140,7 +150,9 @@ class SettingsProfile(FixtureCase):
             grant = dataset.read_private_json(grant_path)['proposal']
             self.assertTrue((root / learning_profile.NAME).is_file(), stderr.getvalue()[-4000:])
             profile = dataset.read_private_json(root / learning_profile.NAME)['proposal']
-            self.assertEqual(grant['operations'], ['local_train', 'quality_evaluate'])
+            self.assertEqual(grant['operations'], project_scope.LOCAL_OPERATIONS if teacher_off
+                             else project_scope.DEFAULT_TEACHER_OPERATIONS)
+            self.assertEqual((root / 'project-teacher-consent.json').is_file(), not teacher_off)
             self.assertEqual(profile['choice'], 'local-auto-apply')
             self.assertTrue(project_scope.require(root, shared._policy(root), 'local_train'))
             grant_path.chmod(0o644)

@@ -32,6 +32,24 @@ The built-in adapters run in an isolated temporary working directory with their
 tools disabled. This limits filesystem access by the nested host CLI, but it
 does not change the host provider's data policy.
 
+## Learning labels
+
+An onboarded project's default learning profile labels captured edit cases with
+the host CLI of the session that captured them: Claude Code cases go to the
+`claude` CLI and Codex cases to the `codex` CLI, signed in with the user's own
+account. A case is never sent through the other host. Each call passes only the
+edit text and the bodies of up to 15 candidate wiki cards stored when the case
+was captured; it does not attach source files, card source paths or the injected
+context. Edits under git-ignored paths or `skipPaths` are not captured. Depending
+on the host CLI and its account settings, that CLI sends this content to its
+provider, and the CLI may add its own default instructions and the user's global
+Codex instructions file to the model input.
+
+The call runs in an empty temporary working directory with the host CLI's
+isolation options enforced before launch; the plugin never reads or moves the
+CLI's credentials. Asking the setup skill to turn the teacher off for a project
+stops these calls while capture, recall and local training continue.
+
 ## Event log
 
 Each install keeps one local event log for debugging: `events.jsonl` in the

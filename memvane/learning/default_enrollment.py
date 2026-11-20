@@ -32,8 +32,8 @@ def validate_preferences(raw):
 
 
 def desired_settings(raw, root, *, mode='default'):
-    from memvane.learning.project_learning_setup import DEFAULT_LOCAL, SYNTHETIC_STAGED
-    if mode == DEFAULT_LOCAL:
+    from memvane.learning.project_learning_setup import DEFAULT_MODES, SYNTHETIC_STAGED
+    if mode in DEFAULT_MODES:
         validate_preferences(raw)
     settings, dropped = learning_profile.closed_learning(raw)
     learning = settings.setdefault('contextLearning', {})
@@ -47,27 +47,79 @@ def desired_settings(raw, root, *, mode='default'):
     return settings,dropped
 
 
-def default_local_only(root, project, policy):
-    """Accept only the selected install's intact teacher-free default setup."""
+def _default_plan(root, mode):
+    """The activated setup row and plan when the journal names ``mode``, else None."""
     from memvane.learning import project_learning_setup as setup
     root=Path(root);path=root/setup.NAME
-    if not path.exists() and not path.is_symlink():return False
+    if not path.exists() and not path.is_symlink():return None
     row=read_private_json(setup._path(path,private=True))
     plan=row.get('plan') if isinstance(row,dict) else None
-    if not isinstance(plan,dict) or plan.get('mode')!=setup.DEFAULT_LOCAL:return False
+    if not isinstance(plan,dict) or plan.get('mode')!=mode:return None
+    return row,plan
+
+
+def _same_default(root, project, policy, row, plan):
+    """Checks shared by both default kinds; policy compares with argv[1] normalized."""
+    from memvane.learning import project_learning_setup as setup
+    root=Path(root)
     expected={k:v for k,v in policy.items() if not k.startswith('_')}
     if (isinstance(expected.get('trainerArgv'),list) and len(expected['trainerArgv'])==3
             and isinstance(plan.get('policy',{}).get('trainerArgv'),list)):
         expected['trainerArgv']=list(expected['trainerArgv'])
         expected['trainerArgv'][1]=plan['policy']['trainerArgv'][1]
-    if (row.get('phase')!='activated' or row.get('acceptedSha256')!=setup.proposal_sha256(plan)
-            or plan.get('projectRoot')!=str(Path(project).resolve())
-            or plan.get('namespaceRoot')!=str(root) or plan.get('policy')!=expected
+    return (row.get('phase')=='activated' and row.get('acceptedSha256')==setup.proposal_sha256(plan)
+            and plan.get('projectRoot')==str(Path(project).resolve())
+            and plan.get('namespaceRoot')==str(root) and plan.get('policy')==expected)
+
+
+def _shared_consent_matches(root, project, plan):
+    from memvane.learning.context_learning.shared import _project_key
+    path=Path(root)/'consents'/(_project_key(project)+'.json')
+    if not path.exists() and not path.is_symlink():return False
+    return read_private_json(path)==plan.get('localConsent')
+
+
+def default_local_only(root, project, policy):
+    """Accept only the selected install's intact teacher-free default setup."""
+    from memvane.learning import project_learning_setup as setup
+    found=_default_plan(root,setup.DEFAULT_LOCAL)
+    if found is None:return False
+    row,plan=found;root=Path(root)
+    if (not _same_default(root,project,policy,row,plan)
             or plan.get('teacherConsent') is not None
             or os.path.lexists(root/'project-teacher-consent.json')
+            or not _shared_consent_matches(root,project,plan)
             or not authorized(project,root)):
         raise ValueError('setup_default_scope_changed')
     return True
+
+
+def default_teacher(root, project, policy):
+    """Accept only the selected install's intact default-teacher setup (v2 consent)."""
+    from memvane.learning import project_learning_setup as setup
+    from memvane.learning.context_learning import teacher_consent
+    found=_default_plan(root,setup.DEFAULT_TEACHER)
+    if found is None:return False
+    row,plan=found;root=Path(root)
+    consent=plan.get('teacherConsent')
+    path=root/teacher_consent.NAME
+    if (not _same_default(root,project,policy,row,plan)
+            or not isinstance(consent,dict) or consent.get('schema')!=teacher_consent.SCHEMA
+            or not (path.exists() or path.is_symlink())
+            or read_private_json(setup._path(path,private=True))!=teacher_consent.envelope(consent)
+            or not _shared_consent_matches(root,project,plan)
+            or not authorized(project,root)):
+        raise ValueError('setup_default_scope_changed')
+    return True
+
+
+def profile_kind(root, project, policy):
+    """``default-teacher``, ``default-local``, ``synthetic`` or ``explicit``."""
+    from memvane.learning import project_learning_setup as setup
+    if default_teacher(root,project,policy):return 'default-teacher'
+    if default_local_only(root,project,policy):return 'default-local'
+    if setup.synthetic_local_only(root,project,policy):return 'synthetic'
+    return 'explicit'
 
 
 def authorized(project, root):
@@ -190,8 +242,11 @@ def _activate_profile(project, root):
         raise ValueError('default_learning_existing_profile')
     now = int(time.time() * 1000)
     lifetime = 10 * 365 * 86400000 - 60000
+    from memvane.learning.context_learning import teacher_state
+    # New enrollments carry the default teacher unless it is switched off.
+    mode = setup.DEFAULT_LOCAL if teacher_state.teacher_off(root) else setup.DEFAULT_TEACHER
     plan = setup.prepare(project, root, expires_at_unix_ms=now + lifetime,
-                         not_before_unix_ms=now, mode=setup.DEFAULT_LOCAL)
+                         not_before_unix_ms=now, mode=mode)
     setup.activate(plan, accepted_sha256=setup.proposal_sha256(plan))
 
 
@@ -221,7 +276,7 @@ def prepare(project, state, install_id, *, lease_fd):
         if previous.get('phase') not in ('activated', 'recovered'):
             # Recovery uses the existing ownership proof; never manufacture a
             # missing binding before restoring an interrupted default setup.
-            if (previous.get('plan', {}).get('mode') != setup.DEFAULT_LOCAL
+            if (previous.get('plan', {}).get('mode') not in setup.DEFAULT_MODES
                     or not os.path.lexists(root / BINDING)
                     or not authorized(project, root)):
                 raise ValueError('default_learning_scope_changed')

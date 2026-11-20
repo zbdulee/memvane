@@ -105,7 +105,7 @@ if mode=='nonzero':sys.exit(2)
     def teacher(self, host='codex', **kwargs):
         sample=dict(self.sample,host=host)
         return run_teacher(sample,enabled=True,host=host,optional_hooks_audited=True,
-                           accept_security_policy=True,timeout=kwargs.pop('timeout',2),**kwargs)
+                           timeout=kwargs.pop('timeout',2),**kwargs)
 
     def test_default_off_and_host_gates(self):
         self.assertEqual(run_teacher(None)['status'],'disabled')
@@ -123,7 +123,7 @@ if mode=='nonzero':sys.exit(2)
         for host in ('claude','codex'):
             sample=dict(self.sample,host=host,request_id=host)
             self.assertEqual(capture(sample,enabled=True,state_dir=self.state),'stored')
-            result=label_request(self.state,host,enabled=True,host=host,accept_security_policy=True,optional_hooks_audited=True,timeout=2)
+            result=label_request(self.state,host,enabled=True,host=host,optional_hooks_audited=True,timeout=2)
             self.assertEqual(result['status'],'completed',result)
             self.assertEqual(result['stored_labels'],1)
             self.assertNotIn('labels',result)
@@ -132,12 +132,12 @@ if mode=='nonzero':sys.exit(2)
             self.assertEqual(view['status'],'provisional')
             self.assertIsNone(view['attestation'])
             self.assertEqual(approve_review(self.state,view['label'],input_sha256=view['input_sha256'],reviewer_id='fixture-reviewer',reference='fixture-review'),'reviewed')
-            r=label_request(self.state,host,enabled=True,host=host,accept_security_policy=True,optional_hooks_audited=True,timeout=2)
+            r=label_request(self.state,host,enabled=True,host=host,optional_hooks_audited=True,timeout=2)
             self.assertEqual(r['reason'],'provisional_storage_rejected')
             self.assertEqual(review_view(self.state,host,'synthetic')['status'],'reviewer-approved')
 
     def test_invalid_streams_labels_and_privacy(self):
-        cases=[('codex',m) for m in ('bad-json','duplicate-key','tool','error','bad-label','no-init','two-turns','incomplete','nonzero','unsupported','after-completion')]+[('claude',m) for m in ('plugin','catalog','wrong-model','tool','stream-tool','hook','bad-label','no-init')]
+        cases=[('codex',m) for m in ('bad-json','duplicate-key','tool','error','bad-label','no-init','two-turns','incomplete','nonzero','unsupported','after-completion')]+[('claude',m) for m in ('catalog','wrong-model','tool','stream-tool','hook','bad-label','no-init')]
         for host,mode in cases:
             with self.subTest(host=host,mode=mode):
                 self.cli(host,mode)
@@ -147,9 +147,16 @@ if mode=='nonzero':sys.exit(2)
                 self.assertNotIn('labels',r)
                 self.assertNotIn(SECRET,json.dumps(r))
                 self.assertNotIn(str(self.root),json.dumps(r))
-        self.cli('claude')
-        r=run_teacher(dict(self.sample,host='claude'),enabled=True,host='claude',timeout=2)
-        self.assertEqual(r['reason'],'startup_rejected')
+        # A plugin still loaded is a warning, not a failure (user decision 2026-11-20).
+        for mode in ('plugin', None):
+            with self.subTest(host='claude', warned=mode):
+                self.cli('claude', mode or 'success')
+                r=run_teacher(dict(self.sample,host='claude'),enabled=True,host='claude',timeout=2)
+                self.assertEqual(r['status'],'completed',r)
+                self.assertNotIn(SECRET,json.dumps(r))
+                # The evidence names the plugins left loaded instead of calling them accepted.
+                self.assertEqual(r['catalog_evidence'],'runtime-empty-except-plugins')
+                self.assertTrue(r['plugin_warnings'])
 
     def test_bounds_cancellation_busy_and_owned_descendant(self):
         self.cli('codex','flood')

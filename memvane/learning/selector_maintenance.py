@@ -111,7 +111,8 @@ def _request_owned(decision, owner, *, force, origin='session', reoffer=True):
             _request_event(decision, 'skipped', 'learning_runtime_pending', origin=origin)
             return dict(_SKIPPED)
     retry = running == highest and (enrollment.get('status') == 'pending_runtime'
-                                    or _missing_warm_receipt(decision['projectRoot']))
+                                    or _missing_warm_receipt(decision['projectRoot'])
+                                    or _teacher_enable_needed(decision))
     if not force and running == highest and not retry:
         if origin not in ('sync', 'wake'):
             _request_event(decision, 'skipped', 'version_current', origin=origin)
@@ -212,6 +213,43 @@ def _missing_default_warm(decision):
     return _missing_warm_at(root)
 
 
+def _teacher_enable_needed(decision):
+    """A default-local namespace still owed the default-teacher enable, or a left intent.
+
+    Read-only and hook-safe (no teacher or transaction import): the setup
+    journal, the teacher switch, the intent's presence and the enable failure
+    counter. Five same-reason failures stop requests until the version changes.
+    """
+    from memvane.learning.default_enrollment import default_namespace
+    from memvane.learning.context_learning import teacher_state
+    from memvane.learning.context_learning.dataset import read_private_json
+    from memvane.kernel.memvane_version import plugin_version
+    try:
+        root = default_namespace(Path(decision['projectRoot']).resolve(strict=True),
+                                 decision['installId'])
+        if teacher_state.enable_requests_stopped(teacher_state.read_state(root), plugin_version()):
+            return False
+        if teacher_state.enable_intent_present(root):
+            return True
+        row = read_private_json(root / 'project-learning-setup.json')
+        plan = row.get('plan') if isinstance(row, dict) else None
+        return (isinstance(plan, dict) and plan.get('mode') == 'default-local'
+                and row.get('phase') == 'activated' and not teacher_state.teacher_off(root))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return False
+
+
+def _teacher_enable(project, decision, lease, *, recover_only=False):
+    """Run the enable step; its failures are recorded there and never end maintenance."""
+    from memvane.learning import default_teacher_enable
+    try:
+        return default_teacher_enable.maintain(project, Path(decision['journalPath']).parent,
+                                               decision['installId'], lease_fd=lease,
+                                               recover_only=recover_only)
+    except Exception:
+        return {'status': 'failed'}
+
+
 def _pending_request(row, decision):
     """A valid row still owed an attempt; None when the row is malformed."""
     if not isinstance(row, dict):
@@ -221,7 +259,8 @@ def _pending_request(row, decision):
     if not all(type(value) is int and value >= 0 for value in (requested, failures, retry_after)):
         return None
     return (retry_after > 0 or failures > 0 or _missing_warm_receipt(decision['projectRoot'])
-            or _unpublished_version(decision) or _missing_default_warm(decision))
+            or _unpublished_version(decision) or _missing_default_warm(decision)
+            or _teacher_enable_needed(decision))
 
 
 def _selected_route(project):
@@ -455,7 +494,10 @@ def _run(project, *, force=False):
         running, highest = version_key(plugin_version()), version_key(row['maxPluginVersion'])
         if running is None or highest is None:
             return False
-        if running < highest or (not force and running == highest):
+        if running < highest:
+            return True
+        enable = _teacher_enable_needed(decision)
+        if not force and running == highest and not enable:
             return True
         # Host plugin listings first, outside the bounded preparation steps:
         # a slow host CLI runs here once and later steps read its record.
@@ -477,12 +519,17 @@ def _run(project, *, force=False):
             return False
         if result.get('status') == 'preserved':
             from memvane.learning.default_renewal import renew
+            if enable:
+                # An interrupted enable settles first; renewal and the selector stay fenced until then.
+                _teacher_enable(project, decision, lease, recover_only=True)
             try:
-                renew(project, Path(decision['journalPath']).parent, decision['installId'], lease_fd=lease)
+                renewed = renew(project, Path(decision['journalPath']).parent, decision['installId'], lease_fd=lease)
             except (ValueError, selector_heal.HealRefused) as exc:
                 code = str(exc)
                 diagnostics.emit('learning.selector.maintenance', outcome='failed',
                                  reason=code if code.startswith('renewal_') else 'renewal_refused', decision=decision)
+                return False
+            if renewed.get('status') == 'teacher_enable_pending':
                 return False
             state = _selector_state(project)
             if state is None:
@@ -498,6 +545,8 @@ def _run(project, *, force=False):
                 from memvane.learning.context_learning.inference_timing import clean
                 diagnostics.emit('learning.selector.warm', outcome=warmed.get('status'), decision=decision,
                                  **clean(warmed.get('timing')))
+            if enable and _teacher_enable_needed(decision):
+                _teacher_enable(project, decision, lease)
         with sync_owner(Path(decision['storePath']), wait=False) as owner:
             if owner is None:
                 return False

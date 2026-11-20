@@ -34,6 +34,8 @@ from .safe_source import snapshot_beneath
 
 POLICY_NAME = "shared-policy.json"
 DATABASE_NAME = "shared-learning.sqlite3"
+# Set by the owned-worker spawn when the session redirected CODEX_HOME.
+CODEX_HOME_REDIRECTED = "MEMVANE_CODEX_HOME_REDIRECTED"
 SCHEMA = "qmd-shared-learning-v1"
 STATUSES = ("awaiting_local", "queued", "first_running", "first_done", "second_running",
             "gold", "pending_review", "failed")
@@ -114,7 +116,14 @@ def _validated_root(raw):
     return root.resolve(strict=True)
 
 
-def _policy(root):
+def _policy(root, *, capture=False):
+    """The validated shared policy, bound to its execution grant when one exists.
+
+    ``capture`` (``enqueue`` only) passes the default-teacher enable fence
+    (``project_scope_teacher_enable_pending``): new captures keep queueing
+    while the transaction is pending (plan §5-6). That policy carries no
+    grant and runs nothing; every other caller is still refused.
+    """
     root = _validated_root(root)
     path = root / POLICY_NAME
     if path.is_symlink() or not path.is_file():
@@ -167,14 +176,20 @@ def _policy(root):
     argv = value["trainerArgv"]
     adapter = Path(__file__).with_name("adapter.py").resolve()
     general_grant=None
+    fenced=False
     from . import project_scope
     if project_scope.present(root):
         from .runtime_authorization import active
-        general_grant=active(root,value,adapter,reviewed_adapter_sha256=REVIEWED_ADAPTER_SHA256)
+        try:
+            general_grant=active(root,value,adapter,reviewed_adapter_sha256=REVIEWED_ADAPTER_SHA256)
+        except ValueError as exc:
+            if not capture or str(exc)!='project_scope_teacher_enable_pending':raise
+            # Capture runs no trainer: only the argv shape is checked under the fence.
+            fenced=True
     if (not isinstance(argv, list) or len(argv) != 3
             or any(not isinstance(x, str) or not Path(x).is_absolute() for x in argv)
             or (Path(argv[1]).resolve() != adapter
-                and not general_grant)):
+                and not general_grant and not fenced)):
         raise ValueError("invalid_shared_trainer")
     if 'adaptiveMemory' in value:
         from memvane.runtime.api import memory_validate as validate
@@ -195,7 +210,7 @@ def _policy(root):
     # Historical isolated/derived preflights run inside read_only_validation
     # and bind the immutable on-disk argv. They must not inherit a separate
     # execution approval used by the normal automatic worker.
-    if _READ_ONLY_VALIDATION.get():
+    if _READ_ONLY_VALIDATION.get() or fenced:
         return value
     from .runtime_authorization import active
     grant = general_grant or active(root, value, adapter,
@@ -288,10 +303,15 @@ def _consent(root, project):
         return False
     try:
         value = read_private_json(path)
-        return value == {"schema": "qmd-shared-consent-v1",
-                         "projectRoot": str(project), "sharedRoot": str(root),
-                         "capture": True, "localTraining": True,
-                         "externalTeacher": False}
+        # Exactly the default-local (False) or default-teacher (True) shape;
+        # bool type checks keep 0/1 from comparing equal to False/True.
+        return (isinstance(value, dict)
+                and all(type(value.get(key)) is bool
+                        for key in ("capture", "localTraining", "externalTeacher"))
+                and value == {"schema": "qmd-shared-consent-v1",
+                              "projectRoot": str(project), "sharedRoot": str(root),
+                              "capture": True, "localTraining": True,
+                              "externalTeacher": value["externalTeacher"]})
     except (ValueError, OSError):
         return False
 
@@ -721,7 +741,7 @@ def enqueue(config, project, sample, compact_sources):
     root = _safe_root(config, project)
     if root is None:
         return "disabled"
-    _policy(root)  # A malformed shared policy refuses the write.
+    _policy(root, capture=True)  # A malformed shared policy refuses the write.
     if not _consent(root, project):
         return "missing_shared_consent"
     validate_request(sample)
@@ -850,7 +870,16 @@ def status(root):
         learning_queue=_queue_summary(db,'learning_jobs',namespace)
         quality_queue=_queue_summary(db,'learning_evaluations',namespace)
         learning_jobs=learning_queue.get('counts',{})
+        reasons = {}
+        for error, count in db.execute("SELECT error,COUNT(*) FROM cases WHERE status='pending_review' GROUP BY error"):
+            code = error
+            if isinstance(error, str) and error.startswith('{'):
+                try:code = json.loads(error).get('code', error)
+                except (ValueError, AttributeError):pass
+            code = code if isinstance(code, str) and code else 'unspecified'
+            reasons[code] = reasons.get(code, 0) + count
         return {"status": "ok", "cases": counts, "use_states": use_states,"learning_jobs":learning_jobs,
+                "pending_review_reasons": reasons,
                 "learning_queue":learning_queue,"quality_queue":quality_queue,
                 "gold_calls_used": _meta(db, "gold_calls_used", 0),
                 "next_batch": _meta(db, "next_batch", None),
@@ -1704,7 +1733,12 @@ def launch(config, project, *, parent_id=None, episode=None,
         flags=config.get('contextLearning',{})
         if flags.get('capture') is not True or flags.get('autoCycle') is not True:
             return {'status':'disabled'}
-        project_scope.require(root,_policy(root),'local_train')
+        try:granted=_policy(root)
+        except ValueError as exc:
+            # The enable fence: a capture queued under it waits; no worker starts.
+            if str(exc)=='project_scope_teacher_enable_pending':return {'status':'teacher_enable_pending'}
+            raise
+        project_scope.require(root,granted,'local_train')
         from memvane.learning import project_learning_setup
         if project_learning_setup.synthetic_local_only(root,project,_policy(root)):
             # Editing/capture must not start the expressly manual QA job.
@@ -1840,6 +1874,16 @@ def _spawn_owned(root, project, command, lease_fd, spawn, *, job, job_id):
         # A whitelist, so a gold-only or test override never reaches the child.
         env = {k: os.environ[k] for k in ("PATH", "LANG", "TMPDIR", "HOME", "USER",
                                           "MEMVANE_TEST_RUNTIME_ROOT") if k in os.environ}
+        # The host inventory reads only ~/.codex and refuses a redirected Codex
+        # home for every host, so a redirected CODEX_HOME would stop Claude work
+        # too. The default home passes through; a redirected one stays out and
+        # only marks the Codex teacher to rest (hook capture also refuses it).
+        codex_home = os.environ.get("CODEX_HOME")
+        if codex_home and "HOME" in env:
+            if Path(codex_home) == Path(env["HOME"]) / ".codex":
+                env["CODEX_HOME"] = codex_home
+            else:
+                env[CODEX_HOME_REDIRECTED] = "1"
         env.update(PYTHONDONTWRITEBYTECODE="1", HF_HUB_OFFLINE="1",
                    TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1", **job)
         from memvane.kernel.bundle_paths import entry_argv
@@ -2092,7 +2136,7 @@ def run_training_pending(root,project):
     policy=_policy(root)
     if policy.get('_runtime_authorization_v2') is not True:return {'status':'disabled'}
     from memvane.learning import project_learning_setup
-    from memvane.learning.default_enrollment import default_local_only
+    from memvane.learning.default_enrollment import profile_kind
     if project_learning_setup.synthetic_local_only(root,project,policy):
         budget=project_learning_setup.synthetic_budget_status(root,project,policy)
         if budget['status']!='ready':return budget
@@ -2103,8 +2147,8 @@ def run_training_pending(root,project):
         if flags.get('capture') is not True or flags.get('autoCycle') is not True:
             return {'status':'disabled'}
         if not setup_ready(root):return {'status':'setup_in_progress'}
-        if (not project_learning_setup.synthetic_local_only(root,project,policy)
-                and not default_local_only(root,project,policy)):
+        # Only an explicit profile's teacher spends the Codex weekly quota.
+        if profile_kind(root,project,policy)=='explicit':
             from .general_teacher import read_weekly_quota
             try:read_weekly_quota()
             except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
@@ -2176,7 +2220,30 @@ def _profile_apply(root,policy,profile,result):
     return result
 
 
+TEACHER_COMMANDS = ("teacher-off", "teacher-on", "restore-teacher-enable")
+
+
+def _teacher_command(argv):
+    """Setup skill commands: ``teacher-off|teacher-on --project P``, ``restore-teacher-enable --project P [--plan]``."""
+    plan = "--plan" in argv[1:]
+    rest = [item for item in argv[1:] if item != "--plan"]
+    if len(rest) != 2 or rest[0] != "--project" or (plan and argv[0] != "restore-teacher-enable"):
+        raise ValueError("teacher_setup_action_invalid")
+    if argv[0] == "restore-teacher-enable":
+        from memvane.learning.default_teacher_enable import restore_project
+        return restore_project(rest[1], plan_only=plan)
+    from .teacher_state import switch_project
+    return switch_project(rest[1], argv[0] == "teacher-on")
+
+
 def main(argv):
+    if argv[:1] and argv[0] in TEACHER_COMMANDS:
+        try:
+            result = _teacher_command(argv)
+        except Exception as exc:
+            result = {"status": "failed", "reason": str(exc)[:80]}
+        print(canonical(result), flush=True)
+        return 1 if result["status"] == "failed" else 0
     owned = {"run-owned-worker": _run_owned_worker, "run-owned-training": _run_owned_training}
     if argv[:1] and argv[0] in owned and len(argv) == 3:
         try:

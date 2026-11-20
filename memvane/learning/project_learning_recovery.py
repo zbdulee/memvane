@@ -7,13 +7,12 @@ from pathlib import Path
 import stat
 
 from memvane.learning.project_learning_setup import (
-    BACKUPS, CONFIG_NAMES, DEFAULT_LOCAL, NAME, SCHEMA, SYNTHETIC_STAGED,
+    BACKUPS, NAME, SCHEMA, configuration_paths,
     _locked, _namespace, _path, _project_settings, _write,
 )
 from memvane.learning.context_learning import learning_profile
 from memvane.learning.context_learning.dataset import read_private_json
 from memvane.learning.context_learning.inference_identity import file_sha
-from memvane.learning.context_learning.shared import _project_key
 from memvane.learning.context_learning.training_cursor import _sync
 
 
@@ -75,6 +74,10 @@ def recover(project,root):
         if journal.get('schema')!=SCHEMA or journal.get('plan',{}).get('projectRoot')!=str(project) or journal['plan'].get('namespaceRoot')!=str(root):
             raise ValueError('setup_recovery_invalid')
         if journal['phase']=='recovered':return {'status':'already_recovered'}
+        # A default-teacher enable intent owns these files until it completes
+        # or restore-teacher-enable puts the old bytes back.
+        if os.path.lexists(root/'project-teacher-enable.json'):
+            raise ValueError('setup_teacher_enable_pending')
         backup=_path(journal['backupRoot'],directory=True,private=True)
         if backup.parent!=root/BACKUPS:raise ValueError('setup_recovery_invalid')
         manifest=read_private_json(_path(backup/'manifest.json',private=True))
@@ -93,7 +96,8 @@ def recover(project,root):
         if settings_sha not in {journal['sourceSettingsSha256'],journal.get('targetSettingsSha256')}:
             raise ValueError('setup_recovery_settings_changed')
         # Verify all configuration before changing any of it.
-        allowed=(set(CONFIG_NAMES)-({'project-teacher-consent.json'} if journal['plan'].get('mode') in (SYNTHETIC_STAGED,DEFAULT_LOCAL) else set()))|{'consents/'+_project_key(project)+'.json'}
+        # default-teacher (like an explicit setup) includes the teacher consent file.
+        allowed=set(configuration_paths(project,journal['plan'].get('mode','default')))
         if set(journal['configurationPaths'])!=allowed or not set(journal['written'])<=allowed:
             raise ValueError('setup_recovery_invalid')
         affected=set(journal['written'])

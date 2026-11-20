@@ -38,6 +38,20 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
 The summary reports each hook action's p50 and p95 from its latest 100 recorded durations. For recall it also reports the recorded semantic completion fraction, the latency targets, and the median of each recorded stage. A missing stage means it was not measured; it is not a zero-duration result. Event durations cover the recorded host action, not shell startup or the earlier hook classification.
 
 
+When the default teacher has run, the summary adds its lines:
+
+- `teacher <date>`: per-case `learning.teacher` rows of that UTC day (`calls`), how many did not end in gold (`failed`, by reason) and the usage sums (`usageIn`, `usageOut`, `usageCached`, `usageReasoning`).
+- `teacher selected`: how many cards each gold label selected (0 to 3). An empty selection is a valid label.
+- `teacher models`: the host and resolved model of each gold label. This is the model in use; the `goldModel` value in the policy file is not.
+- `teacher pending_review`: cases set aside for review, by reason. The teacher does not call them again.
+- `teacher isolation`: calls refused by the isolation pre-check (`refused`, nothing sent) and calls that broke isolation during the run (`violated`).
+- `teacher wait <host>`: the latest pass's wait reason for that host, when the wait started, and the cases queued for it. `teacher_host_unavailable` (no CLI), `teacher_isolation_incomplete` and `teacher_model_unresolved` need the user; `deferred_quota`, `teacher_provider_waiting` and `teacher_host_failing` clear on their own. Waiting cases stay queued and are never sent to the other host.
+- `WARNING teacher tool calls`: calls during which the host CLI ran one of its built-in tools that cannot be turned off, with counts per tool name. The labels of those calls are kept; report the warning.
+- `score <checkpoint>`: the operating score of a checkpoint over the cases captured while it was active, from the latest `learning.score` row: `exactRate` (Laya's selection equals the gold), `microF1`, `emptyAgree`, `nonEmptyAgree`, cases answered by the default rank instead of the selector (`defaultRank`, not scored), `unknownSelection` and gold cards outside the selector's window (`goldOutsideK`), with the `exactRate` trend across the window.
+- `promotion`: the latest promotion decisions (`waiting`, `evaluated`, `applied`, `rejected`) with the training and evaluation case counts, empty-gold evaluation cases and both exact rates.
+
+Event rows never hold the edit text, card bodies, source paths or the user's global instructions.
+
 For `wiki.backfill`, `pending` and `dispatched` are unfinished source revisions;
 `settled` means the compile worker finished a terminal attempt (including no-card
 outcomes), and `skipped` means the frozen revision changed, vanished or became
