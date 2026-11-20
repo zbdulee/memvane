@@ -2210,9 +2210,25 @@ def _profile_apply(root,policy,profile,result):
         from .candidate_apply import apply_candidate
         answer=apply_candidate(root,policy,result['cycle_id'])
         if (root/DATABASE_NAME).exists():
+            from .candidate_apply import JUDGED
             from .evaluation_queue import EvaluationQueue
-            queue=EvaluationQueue(root);job=queue.get('evaluate:'+result['cycle_id'])
-            if job is not None:
+            from .prequential import rejected_cycles
+            cycle=result['cycle_id']
+            queue=EvaluationQueue(root);job=queue.get('evaluate:'+cycle)
+            # A judged candidate, or one whose application journal ended rejected
+            # whatever this pass returned, is closed for both profiles: no later
+            # pass applies it again and the next job can be planned.
+            judged=(answer.get('reason') if answer['status']=='apply_blocked' and answer.get('reason') in JUDGED
+                    else 'candidate_rejected' if cycle in rejected_cycles(root) else None)
+            if judged is not None:
+                queue.reject(cycle,judged)
+                # An older candidate whose evaluation completed without being applied was
+                # judged before (a refusal that, before closing existed, left it open):
+                # with the newer one closed the selection would pick it again.
+                with _db(root) as db:
+                    older=[row[0] for row in db.execute("SELECT c.cycle_id FROM cycles c JOIN learning_jobs j ON j.job_id=c.cycle_id JOIN learning_evaluations e ON e.cycle_id=c.cycle_id AND e.namespace=j.namespace WHERE j.namespace=? AND c.status='staged_evaluated' AND e.status='completed' AND c.cycle_id!=? AND c.started_at<=(SELECT started_at FROM cycles WHERE cycle_id=?)",(queue.scope,cycle,cycle))]
+                for other in older:queue.reject(other,'superseded_by_judged')
+            elif job is not None:
                 if answer['status']=='apply_deferred':queue.defer(job['id'],'apply_resource')
                 elif answer['status'] in ('applied','already_applied'):queue.finish(job['id'],'completed')
                 elif answer['status']=='apply_blocked':queue.finish(job['id'],'blocked')

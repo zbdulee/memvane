@@ -38,8 +38,6 @@ UNKNOWN = 'unknown'
 OPEN = ('staged', 'staged_evaluated')
 SETTLED = OPEN + ('applied',)
 KEEP_CYCLES = 16
-# Application refusals that judge the candidate itself (``candidate_apply.validate_candidate``).
-REJECTIONS = ('apply_quality_regression', 'apply_quality_below_target', 'apply_quality_invalid')
 # K, the selector's input size: the same value as recall ``verified_rows.SELECTOR_CANDIDATES``
 # (learning cannot import recall; a tests/structure test pins the equality).
 SELECTOR_INPUT_K = 10
@@ -254,24 +252,18 @@ def close(root, cycle_id, reason):
                        "WHERE job_id=? AND namespace=?", (reason, job_id, queue.scope))
 
 
-def close_rejected(root, grant, result=None):
-    """Close every open candidate the application judged and refused.
+def close_rejected(root, grant):
+    """Recovery: close every open candidate whose application journal is ``rejected``.
 
-    A refusal at the intent leaves no journal, and ``EvaluationQueue.finish``
-    cannot move a ``completed`` evaluation to ``blocked``: without this the
-    same candidate is re-applied on every pass and no next job is planned.
-    ``result`` is a cycle result; its comparison refusal names the cycle.
-    Returns the closed cycle ids.
+    ``shared._profile_apply`` closes a judged candidate in the pass that judged
+    it; this only catches one a pass stopped before closing. Returns the
+    closed cycle ids.
     """
     from .shared import _db, DATABASE_NAME
     root = Path(root)
     if not (root / DATABASE_NAME).is_file():
         return []
     judged = {cycle: 'candidate_rejected' for cycle in rejected_cycles(root)}
-    result = result or {}
-    if (result.get('status') == 'apply_blocked' and result.get('reason') in REJECTIONS
-            and isinstance(result.get('cycle_id'), str)):
-        judged[result['cycle_id']] = result['reason']
     if not judged:
         return []
     with _db(root) as db:

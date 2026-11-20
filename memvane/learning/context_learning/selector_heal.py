@@ -138,9 +138,12 @@ def check_scope(state, policy, *, home=None):
     Without a profile the interpreter must be the activated official learning
     runtime (and the model its model directory, when the pointer names one).
     """
-    from .learning_profile import RENEWAL
+    from .learning_profile import RENEWAL, TEACHER_ENABLE
     if os.path.lexists(Path(state)/RENEWAL):
         raise HealRefused('learning_profile_renewal_pending')
+    # The enable transaction fences the same files: a rebind now would mix states.
+    if os.path.lexists(Path(state)/TEACHER_ENABLE):
+        raise HealRefused('teacher_enable_pending')
     from .inference_identity import file_sha
     argv = policy['trainerArgv']
     interpreter, model = official_runtime(home)

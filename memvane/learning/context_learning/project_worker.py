@@ -90,9 +90,9 @@ def run(root, project, config=None):
             if teacher['status'] in ('busy','deferred_resource'):
                 return {'status':teacher['status'],'teacher':teacher}
             quota={'status':'not_applicable_default_teacher'}
-            # A rejected candidate's evaluation is closed before the cycle picks it again.
+            # Recovery: a rejected journal a stopped pass left open is closed before the cycle.
             try:prequential.close_rejected(root,grant)
-            except Exception:pass  # Retried after the cycle and next pass; a retry re-rejects it.
+            except Exception:pass  # Retried next pass; the cycle re-rejects it meanwhile.
         elif kind=='synthetic':
             teacher={'status':'disabled_synthetic_local_only'}
             quota={'status':'not_applicable_local_only'}
@@ -115,8 +115,6 @@ def run(root, project, config=None):
         cycle=shared.run_training_pending(root,project)
         if kind=='default-teacher':
             from . import prequential
-            try:prequential.close_rejected(root,grant,cycle)
-            except Exception:pass  # The next pass's cycle re-rejects it and closes it then.
             prequential.record_pass(root,project,grant,cycle)
         result={'status':cycle['status'],'teacher':teacher,'cycle':cycle,
                 'quota':quota,

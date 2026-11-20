@@ -10,6 +10,9 @@ from .training_cursor import _sync
 from . import inference_identity as identity,resident
 
 JOURNAL='candidate-apply.json'
+# Application refusals that judge the candidate itself (``validate_candidate`` and a
+# journal already ``rejected``). The candidate's evaluation is closed on them.
+JUDGED=('apply_quality_regression','apply_quality_below_target','apply_quality_invalid','candidate_rejected')
 ARCHIVE='candidate-applications'
 SCHEMA='qmd-candidate-application-v1'
 

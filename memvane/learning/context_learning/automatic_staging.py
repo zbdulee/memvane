@@ -175,8 +175,8 @@ def _prepare_staged(root,policy,grant):
         family=family,minimum=minimum,maximum=policy['batchMax'],
         roles=['train']*len(cohort_train),cumulative=grant.get('scope')==SCOPE))
     if job is None:return {'status':'waiting_fresh_batch','threshold':minimum}
-    if sequential and frozen is None and job['status']=='staged' and _closed(root,job['id']):
-        # A finished (rejected) candidate is never evaluated again.
+    if frozen is None and job['status']=='staged' and _closed(root,job['id']):
+        # A finished (rejected) candidate is never evaluated again, in either profile.
         return {'status':'waiting_fresh_batch','threshold':minimum}
     if synthetic and (len(job['members'])>100 or job['approval']!=proposal_sha256(grant)):
         return {'status':'synthetic_training_budget_exhausted'}
