@@ -546,6 +546,46 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/learning/context_learning/default_teacher.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/prequential.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/teacher_consent.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/teacher_hosts.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/teacher_isolation.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/teacher_model_tiers.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/teacher_state.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/default_teacher_enable.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/learning/context_learning/inference_identity.py": {
       "context": "learning",
       "layer": "adapter",

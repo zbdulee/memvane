@@ -55,8 +55,10 @@ wake와 합쳐지면 due probe와 기존 큐 backoff로 유지하며 일반 학�
 선택 설치의 기본 자동 학습 profile은 별도 renewal 경계에서 공식 번들
 업데이트의 코드·설치·adapter 경로와 파생 digest만 갱신한다. 정책의 다른
 필드, interpreter·model, project·namespace, operations·cohort 전체, 기존
-만료와 profile 선택은 유지한다. 수동·custom·teacher·opt-out·만료된 승인은
-자동 갱신하지 않는다. settings와 최초 setup 승인 기록은 쓰지 않는다.
+만료와 profile 선택은 유지한다. default-local과 default-teacher 모두 권한 필드를
+바이트 그대로 두며, default-teacher는 동의 파일과 공유 동의 파일을 시작할 때와
+intent를 지우기 직전에 plan과 대조하고 쓰지 않는다. 수동·custom·명시 teacher·
+opt-out·만료된 승인은 자동 갱신하지 않는다. settings와 최초 setup 승인 기록은 쓰지 않는다.
 기본 grant는 해당 host가 프로젝트에서 선택한 MemVane marketplace와
 출처·설치 바이트에 결속하며 다른 marketplace 항목은 결속하지 않는다.
 다른 host의 사본이 갱신하면 marketplace id·scope·projectPath가 같고 두
@@ -86,7 +88,7 @@ code/executable/manifest/adapter 지문과 기본 승인 체인, 현재 공식 r
 후보 apply의 resident 시작 실패는 재시도를 예약하며, 실행 중인 resident의
 정체성·권한 거절은 후보 적용을 차단한다.
 
-구현: `context_learning_auto.py`, `context_learning_cli.py`, `prepare_laya_inference.py`, `project_learning_setup.py`, `project_learning_recovery.py`, `selector_maintenance.py`.
+구현: `context_learning_auto.py`, `context_learning_cli.py`, `prepare_laya_inference.py`, `project_learning_setup.py`, `project_learning_recovery.py`, `selector_maintenance.py`, `default_teacher_enable.py`.
 
 저장된 recall capture의 후보 출처는 별도 `learning.capture.sources` 진단
 이벤트에 기록한다. `request_id`로 기존 표본과 연결하며 후보 id의 SHA-256과
@@ -94,8 +96,9 @@ code/executable/manifest/adapter 지문과 기본 승인 체인, 현재 공식 r
 capture가 꺼져 있으면 출처 이벤트도 쓰지 않는다.
 
 학습 사례는 편집 recall에서만 수집한다(sample schema v5, `context_origin: tool_edit`).
-질의는 편집이 추가한 텍스트이고 편집 경로는 해시로만 남는다. v5 사례는
-teacher 릴리스 전까지 `queued`로 남고 cohort 배정에서 빠진다. 기본 namespace의
+질의는 편집이 추가한 텍스트이고 편집 경로는 해시로만 남는다. default-teacher
+namespace에서 v5 사례는 기본 teacher의 입력이다. 명시 프로필의 cohort 배정은
+v5 사례를 건너뛴다. 기본 namespace의
 첫 worker pass는 schema 4 이하 prompt 사례(shared `cases`와 같은 request id의
 private `samples`)를 한 번 지우고 개수를 `prompt-cases-retired.json`과
 `learning.migration` 이벤트에 남긴다(`context_learning/prompt_retirement.py`).
@@ -114,3 +117,37 @@ private `samples`)를 한 번 지우고 개수를 `prompt-cases-retired.json`과
 v5 사례는 teacher가 저장된 snapshot만으로 판정하므로 후보 카드의 원문이 바뀌어도
 `historical`로 바뀌지 않는다. 동의·설정·tombstone·private 표본 대조는 그대로
 적용한다.
+
+## 기본 teacher
+
+기본 namespace의 프로필 종류는 `default-local`, `default-teacher`, `synthetic`,
+`explicit` 넷이다(`default_enrollment.profile_kind`). 새 온보딩은 `default-teacher`로
+등록하고, teacher 끄기 표시가 있으면 `default-local`로 등록한다. teacher 권한은 setup
+journal의 plan mode, grant의 `gold_default` operation, 동의 v2 파일
+(`project-teacher-consent.json`, `teacher_consent.py`의 고정 template) 셋이 담는다.
+공유 동의 파일은 `externalTeacher: true`다. 1.0.21보다 낮은 번들은 이 모양을 거절하므로
+그 호스트 사본은 수집·학습을 하지 않고 recall은 hybrid 순위로 답한다.
+
+기존 default-local 설치는 selector maintenance가 `default_teacher_enable.py`로 한 번에
+바꾼다. intent(`project-teacher-enable.json`)에 대상별 old/new 바이트를 적고 CAS로 쓴다.
+intent가 있는 동안 grant·profile·선택 검사가 거절한다. 다음 실행이 전제가 유지되면 앞으로
+끝내고, 깨졌으면 되돌린다. old도 new도 아닌 대상이 있으면 쓰기를 멈추고 fence를 유지한다.
+setup skill의 `restore-teacher-enable`이 old 바이트로 되돌린다. 같은 사유의 실패가 5번
+이어지면 플러그인 버전이 바뀌거나 복구 명령이 돌 때까지 요청을 멈춘다.
+
+teacher는 학습 worker에서만 돈다(`general_teacher.process_pending_default`, pass당 호출
+8건). 사례를 수집한 세션의 호스트 CLI만 쓰고, 번들 tier 표(`teacher_model_tiers.py`)의
+모델만 요청하며, 호출마다 격리 사전 점검(`teacher_isolation.py`)을 지나야 보낸다. 호스트
+호출·대기·차단기는 `teacher_hosts.py`와 namespace의 `teacher-host-state.json`이 맡는다.
+입력은 편집 텍스트와 후보 카드 본문 스냅숏뿐이다. 루트에 `.git`이 없고 상위 work tree 안에
+있는 프로젝트는 teacher 동의의 `grantedAtUnixMs`보다 먼저 수집된 v5 편집 사례를 모두
+teacher·학습 대상에서 빼고 지우지 않은 채 `historical`(`pre_teacher_capture`)로 둔다. git이
+답하지 못하면 그 pass는 부르지 않는다. gold는 holdout 없이 모두 학습에 들어가고, 승격은 학습
+cutoff 뒤 사례로 판정한다. 승격 판정에는 grant의 cohort 한도에 더해 비지 않은 gold 평가 사례
+10건이 필요하다(`prequential.py`).
+
+hook은 teacher 전송·격리·tier·전환 모듈을 import하지 않는다. SessionStart 안내는
+`teacher_state.py`(stdlib와 kernel만 import)로 `teacher-host-state.json`과 전환 intent의
+존재만 본다. 끄기는 환경 변수 `MEMVANE_TEACHER=off`와 setup skill의 `teacher-off`·
+`teacher-on`(`teacher-switch.json`)이다. 계약 전체는 `docs/continual-learning.md`의
+Default teacher 절에 있다.

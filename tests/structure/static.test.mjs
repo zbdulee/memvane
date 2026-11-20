@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {extname, join, resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
@@ -36,6 +36,98 @@ test('hook imports avoid CLI parsers while the CLIs still provide help', t => {
   assert.deepEqual(report.loaded_argparse, []);
   assert.deepEqual(report.loaded_tempfile, []);
   assert.equal(report.help_ok, 3);
+});
+
+// X-1: the teacher transport, isolation, tiers, enable transaction and the
+// teacher worker (general_teacher, default_teacher) are never imported when a
+// hook entry module loads.
+test('hook entry modules do not import teacher modules at module level', t => {
+  const {result} = run(t, 'hook_import_graph.py');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.deepEqual(report.forbidden, []);
+  for (const entry of ['memvane.host.host_response', 'memvane.host.route_input',
+    'memvane.host.onboarding_notice']) {
+    assert.ok(report.reached.includes(entry), entry);
+  }
+  assert.ok(report.reached.includes('memvane.host'), 'packages along the path are followed');
+  assert.ok(report.reached.includes('memvane.journal.api'), 'module-level imports are followed');
+});
+
+// X-2: the 1.0.21 modules import under the macOS system Python 3.9.
+const TEACHER_MODULES = [
+  'memvane.learning.api', 'memvane.learning.context_learning.teacher_state',
+  'memvane.learning.context_learning.teacher_consent', 'memvane.learning.context_learning.teacher_model_tiers',
+  'memvane.learning.context_learning.teacher_isolation', 'memvane.learning.context_learning.teacher_hosts',
+  'memvane.learning.context_learning.prequential', 'memvane.learning.context_learning.general_teacher',
+  'memvane.learning.context_learning.default_teacher',
+  'memvane.learning.context_learning.general_gold_ledger', 'memvane.learning.context_learning.claude_adapter',
+  'memvane.learning.context_learning.codex_adapter', 'memvane.learning.context_learning.project_scope',
+  'memvane.learning.context_learning.runtime_authorization', 'memvane.learning.context_learning.learning_profile',
+  'memvane.learning.context_learning.shared', 'memvane.learning.context_learning.automatic_cohort',
+  'memvane.learning.context_learning.automatic_staging', 'memvane.learning.default_teacher_enable',
+  'memvane.learning.default_enrollment', 'memvane.learning.default_renewal_plan',
+  'memvane.learning.default_renewal', 'memvane.learning.project_learning_setup',
+  'memvane.learning.project_learning_recovery', 'memvane.learning.selector_maintenance',
+  'memvane.learning.context_learning.project_worker', 'memvane.host.host_response', 'memvane.app.setup_entry'];
+
+test('1.0.21 teacher modules import under /usr/bin/python3', {skip: !existsSync('/usr/bin/python3')}, t => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'mv-py39-')));
+  t.after(() => rmSync(home, {recursive: true, force: true}));
+  const code = 'import importlib, json, sys\nfailed = {}\n' +
+    `for name in ${JSON.stringify(TEACHER_MODULES)}:\n` +
+    '    try:\n        importlib.import_module(name)\n' +
+    '    except BaseException as exc:\n        failed[name] = type(exc).__name__ + ": " + str(exc)\n' +
+    'print(json.dumps({"version": list(sys.version_info[:2]), "failed": failed}))\n';
+  const result = spawnSync('/usr/bin/python3', ['-B', '-c', code], {encoding: 'utf8', timeout: 120000,
+    cwd: resolve('.'), env: {PATH: process.env.PATH, HOME: home, TMPDIR: home, PYTHONPATH: resolve('.'),
+      PYTHONDONTWRITEBYTECODE: '1', QMD_SETUP_GUARD_FIXTURE: '1'}});
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const report = JSON.parse(result.stdout);
+  t.diagnostic(`python ${report.version.join('.')}`);
+  assert.deepEqual(report.failed, {});
+  assert.deepEqual(readdirSync(home), [], 'importing must not write under HOME');
+});
+
+// The operating score's K (learning cannot import recall) equals the selector's input size.
+test('prequential K equals recall verified_rows.SELECTOR_CANDIDATES', t => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'mv-k-')));
+  t.after(() => rmSync(home, {recursive: true, force: true}));
+  const code = 'import json\n' +
+    'from memvane.learning.context_learning.prequential import SELECTOR_INPUT_K\n' +
+    'from memvane.recall.verified_rows import SELECTOR_CANDIDATES\n' +
+    'print(json.dumps([SELECTOR_INPUT_K, SELECTOR_CANDIDATES]))\n';
+  const result = spawnSync(python, ['-B', '-c', code], {encoding: 'utf8', timeout: 60000, cwd: resolve('.'),
+    env: {PATH: process.env.PATH, HOME: home, TMPDIR: home, PYTHONPATH: resolve('.'),
+      PYTHONDONTWRITEBYTECODE: '1', QMD_SETUP_GUARD_FIXTURE: '1'}});
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const [k, candidates] = JSON.parse(result.stdout);
+  assert.equal(typeof k, 'number');
+  assert.equal(k, candidates);
+});
+
+test('the hook import graph follows module-level imports and skips function bodies', t => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'mv-graph-')));
+  t.after(() => rmSync(dir, {recursive: true, force: true}));
+  const write = (path, text) => {
+    mkdirSync(join(dir, path, '..'), {recursive: true});
+    writeFileSync(join(dir, path), text);
+  };
+  write('pkg/__init__.py', '');
+  write('pkg/entry.py', 'import os\ntry:\n    from . import middle\nexcept ImportError:\n    pass\n' +
+    'def lazy():\n    from pkg import lazy_only\n');
+  write('pkg/middle.py', 'class Holder:\n    from pkg.deep import leaf\n');
+  write('pkg/deep/__init__.py', 'from pkg import via_init\n');
+  write('pkg/deep/leaf.py', '');
+  write('pkg/via_init.py', '');
+  write('pkg/lazy_only.py', '');
+  const {result} = run(t, 'hook_import_graph.py', ['--root', dir, '--entry', 'pkg.entry',
+    '--forbid', 'pkg.via_init', '--forbid', 'pkg.lazy_only', '--forbid', 'pkg.deep.leaf']);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.deepEqual(report.forbidden, ['pkg.deep.leaf', 'pkg.via_init']);
+  assert.ok(!report.reached.includes('pkg.lazy_only'));
 });
 
 test('product SQLite readers use the common query-only URI', t => {

@@ -29,8 +29,9 @@ ranked card as `baseline_selected_ids`, and an `edit_event` of hashes and ids
 `request_id` is the `recall.edit` event's. Only the main checkout of an
 enrolled project captures, with a pool of at least two cards; a git-ignored
 edited file, a teacher input over 65,536 bytes or credential-shaped text stores
-nothing. v5 cases wait in `queued`: cohort admission skips them and no teacher
-reads them until the teacher release. The first worker pass of a default
+nothing. In a default-teacher namespace v5 cases are the default teacher's
+input (see Default teacher); explicit profiles' cohort admission skips them.
+The first worker pass of a default
 namespace deletes, once, the prompt cases of schema 4 or lower (shared `cases`
 rows and the private `samples` of the same request ids), writes
 `prompt-cases-retired.json` and one `learning.migration` event with the count.
@@ -280,7 +281,190 @@ do not commit a personal absolute home path to shared settings. Before removing
 an existing explicit root, verify the default resolves to the same prepared
 namespace; custom roots require retaining their explicit setting.
 
-## Optional external teacher
+## Default teacher
+
+A default namespace has one of four profile kinds
+(`default_enrollment.profile_kind`): `default-local`, `default-teacher`,
+`synthetic` or `explicit`. Onboarding enrolls `default-teacher`; with the
+teacher switched off it enrolls `default-local`. The worker and renewal pick
+their branch from this kind.
+
+### Authority and consent
+
+Three records carry the teacher authority; the enrollment `choice` stays
+`local-auto-apply`.
+
+- The setup journal plan mode is `default-teacher`.
+- The grant (`project-learning-authorization.json`) has operations
+  `gold_default`, `local_train` and `quality_evaluate`
+  (`project_scope.DEFAULT_TEACHER_OPERATIONS`). `gold_default` admits only
+  the default teacher; the explicit `gold` operation stays separate.
+- The consent file `project-teacher-consent.json` (namespace root, 0600) is
+  `{acceptedSha256, proposal}` with the fixed template of
+  `teacher_consent.proposal`: schema `memvane-teacher-consent-v2`, purpose
+  `selection-gold`, recipients `claude`/`claude-cli` and `codex`/`codex-cli`,
+  `modelPolicy: lowest-tier`, one pass, fields `edit_text`, `candidate_body`,
+  `candidate_id` and `revision_sha256`, input and output at most 65,536
+  bytes, 60 seconds and 4,096 MiB per call, `grantedBy`
+  (`default-enrollment` or `default-enrollment-upgrade`), `grantedAtUnixMs`
+  and `enabled: true`. It has no call limit and no model id.
+
+The shared consent `consents/<project_key>.json` has `externalTeacher: true`.
+The learning code accepts exactly this shape or the default-local one.
+Bundles older than 1.0.21 refuse both the shared consent and the grant, so an
+older host copy neither captures into nor trains this namespace, and its
+recall answers in hybrid rank until that host updates. The policy file keeps
+`goldModel` and `maxGoldCalls`; the default teacher reads neither, and status
+and `memvane:logs` report the model each call resolved instead.
+
+### Enabling an existing default-local install
+
+`memvane/learning/default_teacher_enable.py` is the only code that widens a
+default namespace. Selector maintenance runs it after renewal, heal and warm,
+inside the same prepare lease, and requests maintenance while a default-local
+namespace still owes the change or an enable intent remains. It needs an
+intact default-local setup, no renewal intent, no teacher switch, the running
+bundle equal to the grant binding's and a free `project-worker.lock`;
+otherwise it records `enable_deferred` with the reason and writes nothing.
+
+The change takes renewal's locks, writes the intent
+`project-teacher-enable.json` with the old and new bytes of every target, and
+replaces each target by compare-and-swap. While the intent exists the grant,
+profile and selection checks refuse (`project_scope.require`,
+`learning_profile.require`, `selection_enabled`): selected recall serves its
+verified candidates in hybrid rank and capture continues. A later run finishes
+the change forward when its preconditions still hold and rolls it back
+otherwise. Afterwards the grant without `operations`, the profile without
+`runtimeApprovalSha256`, the journal's `profileProposal` and
+`written[profile.*]`, and both policy files must equal their old bytes, and
+the consent file must equal the template; any difference rolls the change
+back.
+
+A target that is neither its old nor its new bytes is
+`teacher_enable_mixed_state`. The fence stays, nothing more is written, and
+SessionStart names the recovery request. The setup skill's
+`restore-teacher-enable` (with `--plan` read-only) writes every target back to
+its old bytes and removes the intent. Five failures in a row with the same
+reason stop the requests until the plugin version changes or the restore
+command runs; the count lives in `teacher-host-state.json`. Each outcome is a
+`learning.teacher` row: `enabled` (`grantedBy: default-enrollment-upgrade`),
+`enable_deferred`, `enable_failed` or `enable_restored`.
+
+### Renewal
+
+Renewal keeps every authority field of both kinds byte for byte: the grant
+changes only its binding and the profile only its five derived fields, so
+renewal cannot turn a local grant into a teacher grant. It never writes the
+consent file or the shared consent. It checks the profile kind, which compares
+both files with the plan, when it starts and again before it removes its
+intent. A renewal does not start while an enable intent exists, and the enable
+change does not start while a renewal intent exists.
+
+### Labeling
+
+Labeling runs only in the learning worker
+(`general_teacher.process_pending_default`); hooks never import the teacher,
+transport, isolation or tier modules (structure test X-1). One pass makes at
+most eight calls and examines at most 64 cases. Cases that fail the local
+checks do not count.
+
+- **Host.** A case goes to the CLI of the host that captured it
+  (`sample.host`), never to the other host. The executable comes from the
+  worker's `PATH` and passes the host inventory checks.
+- **Model.** `teacher_model_tiers.py` is the bundled tier table, reviewed each
+  release: Claude requests `haiku` and accepts only `claude-haiku-5-5`
+  (optionally with a date suffix); Codex uses the first of `gpt-6-luna` and
+  `gpt-5.6-luna` listed in the user's `models_cache.json`, with `low`
+  effort. A model outside the table is never requested.
+- **Isolation.** Before each call `teacher_isolation.py` checks the argv
+  (each host adapter's isolation options), the child environment allow list
+  and an empty temporary working folder with no `.git`, `CLAUDE.md` or
+  `AGENTS.md` above it; any miss sends nothing. The CLIs run with the user's
+  own `~/.codex` and Claude settings. Claude gets the body only after its
+  initialize answer reports the allowed model and no commands; a tool, MCP
+  server, plugin or skill in its init catalog, or a tool event, ends the call
+  as an isolation violation (`violated`). A built-in tool the host cannot
+  disable that runs during a Codex
+  call is a warning (`toolWarnings`); the label is kept. Codex adds the
+  user's global `AGENTS.md` to the model input; its size is recorded as
+  `userInstructionsBytes`.
+- **Input.** The payload holds the instruction, the case's edit text and the
+  candidates as `{id, revision_sha256, body}` from the capture snapshot. No
+  source file, card file or path is read or attached.
+- **One pass.** A valid answer is gold at once (`review: single_pass`); an
+  empty selection is a valid label. A local check that fails sets the case
+  aside without a call (`pending_review` with `teacher_sensitive_input`,
+  `teacher_input_budget` or `duplicate_input`). A failure before sending
+  requeues the case and counts a retry (five make it `pending_review`,
+  `gold_attempts_exhausted`); a provider refusal for quota, sign-in or model
+  requeues it without a count and rests the host for an hour; a refusal of
+  the content, an uncertain failure or an invalid answer is `pending_review`
+  and is not called again. Three uncertain or invalid results in a row rest
+  that host for a day.
+- **Waits.** `teacher-host-state.json` (namespace root, 0600) keeps each
+  host's wait, reason, failure count, queued cases and notice times. Codex
+  also rests a pass when its weekly remaining quota is 30 % or less or cannot
+  be read (`deferred_quota`). A resting host's cases stay `queued`; the other
+  host's cases and the local training cycle continue.
+
+### Evaluation and promotion
+
+Gold cases train without a holdout split (`prequential.py`). A case carries
+the selection Laya made when it was captured, which the then active
+checkpoint had not trained on, so its gold scores that checkpoint: exact
+match, micro F1 and empty-selection agreement over the cases the selector
+answered (cases served in default rank are counted apart). A candidate trained
+on at least 100 cases stays fixed until at least 50 gold cases captured after
+its training cutoff, at least ten of them with an empty gold and ten with a
+non-empty gold, compare it with the
+active checkpoint under the existing promotion rule. An applied or rejected
+candidate is closed and not evaluated again; the next job then trains on all
+gold, up to the policy's `batchMax`. `checkpoint-history.json` keeps the
+application times that map cases to checkpoints. Whether the selector answered
+a case comes from the `recall.edit` event with the same `request_id`; the
+worker stores it in the learning database on its first pass after capture.
+In a project without its own `.git` inside a parent work tree, every edit
+case captured before the teacher consent's `grantedAtUnixMs` stays out of
+labeling and training as `historical` (`pre_teacher_capture`); none is
+deleted.
+
+### Turning the teacher off
+
+`MEMVANE_TEACHER=off` in the worker's environment, or the setup skill's
+`teacher-off` (namespace file `teacher-switch.json`, 0600), keeps the teacher
+from calling and stops the default-local change; `teacher-on` removes the
+switch's effect. An already enabled profile keeps its files. Capture, recall
+and local training continue. Project `settings.json` has no teacher key.
+
+### SessionStart notices and logs
+
+Claude and Codex SessionStart reads only `teacher-host-state.json` and the
+enable intent's presence; it starts no process and opens no database. It adds
+at most these lines:
+
+- The session host's CLI is missing and cases wait for it: once per host and
+  reason every seven days.
+- The session host has rested for more than a day on
+  `teacher_isolation_incomplete` or `teacher_model_unresolved` with cases
+  waiting: once per host and reason every seven days.
+- An enable intent older than ten minutes, or enable requests stopped by
+  repeated failures: every session, until resolved.
+
+A seven-day line appears only after its notice time is written. Quota,
+provider waits and the failure breaker are not announced. Hermes has no
+SessionStart output and is not a teacher host.
+
+Each call writes one `learning.teacher` row (`gold`, `pending_review`,
+`pre_send_rejected` or `provider_refused`) with the case's `request_id`
+(the `recall.edit` row's), host, model and tier, usage (`usageIn`,
+`usageOut`, `usageCached`, `usageReasoning`, `usageOverhead`), the selected
+cards as `[{path, sha}]`, the isolation result and the prequential values.
+Each pass writes an `outcome: pass` row with the host waits and queued counts,
+a `learning.score` row per scored checkpoint, and a `learning.promotion` row
+per promotion decision. Rows never hold the edit text, card bodies, source
+paths or global instructions. The `memvane:logs` summary aggregates them.
+
+## Explicit external teacher requests
 
 No teacher call occurs during capture, local cycles or the schedule gate.
 `budgeted-label-request` and `budgeted-second-opinion` require an explicit
@@ -418,7 +602,7 @@ Ordinary setup offers `local-auto-apply`, `local-staged` and `off` without accep
 
 The selected worker processes admitted local training and quality evaluation only. It does not run the legacy timed cycle, historical sync or teacher pipeline. Automatic application waits for at least the quality minimum of fresh train cases (currently 100), within the already approved batch cap. An insufficient cap blocks profile planning for budget review; it is never silently raised and quality thresholds are never lowered. Actual trained cases must cover five train families; disjoint validation still needs fifty cases, five families and ten empty-choice cases. No fresh admitted data means waiting.
 
-Project enrollment is explicit per project. `memvane/learning/project_learning_setup.py` runs `prepare` (read-only plan, `--mode default|synthetic-staged`), `activate` (an exact plan bound by `--accepted-sha256`) and `recover` (configuration-only compare-and-swap restore). Activation writes `project-learning-authorization.json` with scope `single-project-local-learning` (`memvane/learning/context_learning/project_scope.py`): operations `gold`, `local_train` and `quality_evaluate`, the default cohort `general-v1` bound to the project's collection settings, and a lifetime of at most fourteen days. Teacher consent is separate. Consented project gold uses the signed-in Codex CLI (`general_teacher.py`), and `egress_guard.py` excludes credential-shaped cases before transmission. A profile cannot widen the authorized scope.
+Project enrollment is explicit per project. `memvane/learning/project_learning_setup.py` runs `prepare` (read-only plan, `--mode default|synthetic-staged`), `activate` (an exact plan bound by `--accepted-sha256`) and `recover` (configuration-only compare-and-swap restore). Activation writes `project-learning-authorization.json` with scope `single-project-local-learning` (`memvane/learning/context_learning/project_scope.py`): operations `gold`, `local_train` and `quality_evaluate`, the default cohort `general-v1` bound to the project's collection settings, and a lifetime of at most fourteen days. Teacher consent is separate. Explicitly consented project gold uses the signed-in Codex CLI (`general_teacher.py`), and `egress_guard.py` excludes credential-shaped cases before transmission. The default namespaces' `default-local` and `default-teacher` modes and their authority are described under Default teacher. A profile cannot widen the authorized scope.
 
 Evaluation jobs are durable in the selected history DB and hold an inherited kernel lease. All evaluation reads, changes, claims and pending/staged dispatch retain the namespace boundary when projects share that DB. An unscoped evaluation table is preserved and reports `evaluation_namespace_migration_required` for explicit review; it is never silently adopted by the current project. Jobs bind the staged artifact, approval and train/validation evidence; quality-only recovery needs no new training permission or optimizer update. Stale quality (over one hour), changed validation or a changed incumbent triggers new predictions under a distinct cache epoch. Metrics include exact selection, necessary recall, empty-choice accuracy and irrelevant injections; regressions or missing thresholds block publication. Resource/IPC saturation and startup/timeout deferrals use 30–300 second backoff. Three actual evaluation failures block a candidate, allowing a later fresh batch to proceed. Resource deferrals do not spend the failure budget. The existing bounded waiter handles evaluation and training; it never invokes the teacher.
 

@@ -21,7 +21,7 @@ class SessionNotice(unittest.TestCase):
                                  installed_version=lambda **kwargs: version_key('1.0.11'))
         with mock.patch.object(host_response, '_learning_settings_notice', return_value='existing'), \
                 mock.patch.object(host_response, '_wiki_recovery_notice', return_value=''), \
-                mock.patch.object(host_response, '_learning_runtime_notice', side_effect=lambda x: x), \
+                mock.patch.object(host_response, '_learning_runtime_notice', side_effect=lambda x, *_: x), \
                 mock.patch.object(diagnostics, 'vector_damage_seen', return_value=False), \
                 mock.patch.object(diagnostics, 'build_progress_events', return_value=rows), \
                 mock.patch.object(runtime, 'background_bundle', return_value=bundle), \

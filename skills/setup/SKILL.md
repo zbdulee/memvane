@@ -48,7 +48,7 @@ The user asks in natural language; the actions below are internal maintenance st
 3. `prepare-fresh-wiki-origin --install-id <id> --accepted-origin-sha256 <plan proposalSha256> --accepted-provider-sha256 <review proposalSha256> --provider-dimension <n>` runs only on the user's approval of both proposals and returns `initial_build_registered`. The initial build then runs in the background.
 4. `index-build-status` reports the build `phase` and the latest bounded progress snapshot: stage, ingested cards and processed vector content sets. Counts can be `null` when no recent snapshot is available; do not infer zero. Wait for `ready`, then finalize and activate. Ready means lexical search is available after activation; vector filling continues in the background. `index-origin-status` shows the install record.
 5. `finalize-index-origin` returns `initial_build_finalized`, or `initial_build_pending` while a build pass is still needed.
-6. `activate-index-origin --approve-index-origin-activation` selects the index for the project and returns `selected`. Run it only on the user's explicit activation request. Activation also authorizes this project's local automatic learning and its local train/evaluate grant. Learning data stays local and is not sent to an external teacher. `recover-index-origin` resumes an interrupted activation.
+6. `activate-index-origin --approve-index-origin-activation` selects the index for the project and returns `selected`. Run it only on the user's explicit activation request. Activation also authorizes this project's automatic learning: local training and evaluation, and gold labeling by the default teacher (see Local learning). Training and evaluation stay on this machine. For labeling, the edit text and the candidate cards' bodies of each captured case go to the host CLI of the session that produced the case (Claude Code or Codex, the same account and provider). Files that git ignores and `skipPaths` stay out of capture. Tell the user the teacher can be turned off. `recover-index-origin` resumes an interrupted activation.
 7. `restore-index-origin --approve-index-origin-restore` returns `restored` (abandoned or withdrawn) or `released`; run it only on the user's explicit request. `index-build-rescan` requests another build pass for an install that was never selected.
 
 An interrupted onboarding step converges when the same step runs again. A raw tree over the sync scan bounds (4,096 files or 64 MB) refuses at prepare as `raw_scan_limit_exceeded`; report it before any build starts. When activation refuses as `initial_build_out_of_date` or `initial_build_head_changed`, run finalize again: it requests one more build pass (`initial_build_pending`) and, once the build is ready again, reseals the install so activation can proceed. Restore before activation abandons the prepared install so a new prepare with a new install id can start; after activation it withdraws the selection even after a selected write (`released`), so setup can onboard the project again. When SessionStart reports that this plugin cannot read the project's install record (a project pointer of a lower or unknown major), restore releases those project pointers without reading a state root, and a new plan then starts onboarding; a pointer of a newer major is never released. Restore never deletes the old install directory or its database. A build rescan is for an install that was never selected; a selected project refreshes through `update`.
@@ -57,8 +57,29 @@ Each linked git worktree reads its own published view of its wiki cards. The mai
 
 ## Local learning
 
-An activated project defaults to the local automatic-apply profile. Existing
-profiles and explicit disabled settings are preserved. If the managed learning
+An activated project defaults to the local automatic-apply profile with the
+default teacher. Existing profiles and explicit disabled settings are preserved.
+
+The default teacher labels each captured edit case once, through the host CLI
+of the session that produced it: Claude cases through `claude`, Codex cases
+through `codex`, never the other host. It sends only the edit text and the
+bodies of the case's candidate cards; it never reads or attaches source files.
+It runs in the background learning worker, with the lowest-priced model the
+bundled tier table allows, and with the host CLI's isolation options checked
+before every call. When a host CLI is missing, has no allowed model or fails
+its isolation check, that host's cases wait; recall, capture and local training
+continue. SessionStart names a missing CLI, or a host labeling has paused for a
+day, at most once a week per host and reason.
+
+When the user asks to stop sending cases to the teacher, run `teacher-off
+--project "$PROJECT_ROOT"`; `teacher-on` turns it back on. The command writes
+only the namespace switch `teacher-switch.json` and reports `teacher_off` or
+`teacher_on` with `teacherOff` (the effective state; an environment value
+`MEMVANE_TEACHER=off` in the worker's environment also keeps it off). While it
+is off, a default local profile is not moved to the teacher, and an already
+moved profile keeps its files while the teacher makes no calls. Capture,
+recall and local training continue. The switch can be written before
+onboarding finishes, and onboarding then uses the default local profile. If the managed learning
 runtime is inactive, the selection is recorded and preparation resumes after it
 is activated; a selected profile does not prove that training or model
 replacement has occurred. Resource admission still applies.
@@ -83,6 +104,8 @@ failure. Runtime activation does not prepare a project's profile or selector.
 For an explicitly requested profile, run `plan-learning-profile --project "$PROJECT_ROOT" --learning-namespace "$APPROVED_NAMESPACE" --learning-choice local-auto-apply --learning-migration new --learning-expires-at-unix-ms "$REVIEWED_EXPIRY"`. Explain the choices in natural language: local learning plus validated candidate application, staged local learning only (`local-staged`), or disabled (`off`). A profile requires an already prepared private namespace, local runtime/model and inference identity, and a separate current train/evaluate execution grant. Missing preparation or corpus authorization remains review-required; do not create a grant, import data, download weights or call a teacher to satisfy it. Use `preserve` migration for an existing learning configuration; never switch to `new` to escape existing false choices. Show the proposal's actual settings changes, project/source/cohort and runtime/model scope, resource/batch/disk limits, expiry and application authority.
 
 For a manually proposed profile, use `activate-learning-profile` only on acceptance of that exact proposal, with identical options plus `--accepted-learning-profile` equal to its `proposalSha256`. An interrupted profile activation resumes with the identical accepted options; changed scope/expiry/settings require review. Report selected, waiting, deferred, blocked, staged and applied states separately. A selected profile is not evidence that real training, model replacement or host-hook operation passed.
+
+Background maintenance moves a default local profile to the default teacher profile in one recorded change. If that change stops partway, learning and the selection model stay paused and SessionStart says to ask this skill to recover the learning setup. On that request, first run `restore-teacher-enable --project "$PROJECT_ROOT" --plan` (read-only) and show each target's state (`old`, `new` or `other`). Run `restore-teacher-enable --project "$PROJECT_ROOT"` only on the user's explicit approval: it writes the saved previous bytes back to every target, removes the change record and reports `restored` with `changesApplied`. It leaves no off switch, so a later maintenance pass tries the change again unless the teacher is turned off.
 
 `update` refreshes an already selected index; it does not replace this setup flow. Never activate a teacher, private checkpoint, or operating plugin hook as a side effect of preparing a runtime.
 

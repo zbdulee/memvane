@@ -21,6 +21,12 @@
 
 학습 블록의 형식이 틀리면 `capture`·`autoCycle`·공유 학습을 끄고 `learning_settings_invalid`를 기록합니다. SessionStart는 잘못된 블록과 고치는 방법을 안내합니다. 나머지 프로젝트 설정은 유지합니다.
 
+### 학습 teacher
+
+온보딩한 프로젝트의 자동 학습은 기본 teacher로 학습 사례에 정답 라벨을 붙입니다. 사례를 만든 세션의 호스트 CLI(Claude Code의 `claude` 또는 Codex의 `codex`, 같은 계정·같은 제공자)로 편집 텍스트와 후보 카드 본문만 보냅니다. git이 무시하는 파일과 `skipPaths`는 수집하지 않습니다. 학습과 평가는 이 머신에서 합니다.
+
+`settings.json`에는 teacher 키가 없습니다. teacher를 끄려면 에이전트에게 "MemVane teacher 꺼줘"처럼 요청하세요. setup skill이 그 프로젝트의 학습 namespace에 끄기 표시를 남기고, "다시 켜줘"로 되돌립니다. 환경 변수 `MEMVANE_TEACHER=off`도 그 환경에서 도는 학습 작업의 teacher를 끕니다. 꺼져 있어도 수집·recall·로컬 학습은 계속되고, 이미 teacher로 바뀐 학습 설정은 그대로 둡니다. 학습 전체를 끄는 것은 위의 `contextLearning`·`sharedLearning` 값입니다.
+
 ### diagnostics — 상세 진단 동의 (opt-in)
 
 `diagnostics.enabled`가 `true`일 때 상세 진단을 허용합니다. 기본값은 꺼짐입니다. 상세 진단에는 예외 메시지와 자식 프로세스 stderr가 포함될 수 있으며 설치별 비공개 이벤트 로그에 저장합니다.

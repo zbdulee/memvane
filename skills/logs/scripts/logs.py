@@ -418,6 +418,111 @@ def summary(rows, args):
     dropped = sum(row.get('dropped', 0) for row in window if type(row.get('dropped')) is int)
     if dropped:
         print(f'lines a process could not write before a later one: {dropped}')
+    _teacher_summary(window)
+
+
+_CALL_OUTCOMES = ('gold', 'pending_review', 'pre_send_rejected', 'provider_refused')
+_USAGE = ('usageIn', 'usageOut', 'usageCached', 'usageReasoning')
+_SCORE_KEYS = ('cases', 'exactRate', 'microF1', 'emptyAgree', 'nonEmptyAgree', 'defaultRank',
+               'unknownSelection', 'goldOutsideK')
+_PROMOTION_KEYS = ('cycle', 'trainCases', 'evalCases', 'evalEmpty', 'candidateExact', 'activeExact')
+
+
+def _tally(counter):
+    return ', '.join(f'{_esc(key)} {count}' for key, count in sorted(counter.items(), key=lambda x: str(x[0])))
+
+
+def _number(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _teacher_summary(window):
+    """Default-teacher lines: calls, usage, waits, isolation, scores and promotions."""
+    teacher = [row for row in window if row.get('event') == 'learning.teacher']
+    calls = [row for row in teacher if row.get('outcome') in _CALL_OUTCOMES and row.get('request_id')]
+    days = {}
+    for row in calls:
+        day = (_ts(row) or _EPOCH).date().isoformat()
+        entry = days.setdefault(day, {'calls': 0, 'failed': Counter(), 'usage': Counter()})
+        entry['calls'] += 1
+        if row.get('outcome') != 'gold':
+            entry['failed'][str(row.get('reason') or row.get('outcome'))] += 1
+        for key in _USAGE:
+            if type(row.get(key)) is int and row[key] >= 0:
+                entry['usage'][key] += row[key]
+    for day, entry in sorted(days.items()):
+        failed = sum(entry['failed'].values())
+        usage = ' '.join(f'{key}={entry["usage"][key]}' for key in _USAGE if key in entry['usage'])
+        print(f"teacher {day}: calls={entry['calls']} failed={failed}"
+              + (f' ({_tally(entry["failed"])})' if failed else '') + (f' {usage}' if usage else ''))
+    gold = [row for row in calls if row.get('outcome') == 'gold']
+    if gold:
+        selected = Counter(row.get('selectedCount') for row in gold
+                           if row.get('selectedCount') in (0, 1, 2, 3))
+        print('teacher selected: ' + ' '.join(f'{n}={selected.get(n, 0)}' for n in range(4)))
+        models = Counter((str(row.get('teacherHost')), str(row.get('model'))) for row in gold)
+        print('teacher models: ' + ', '.join(f'{_esc(host)} {_esc(model)} {count}'
+                                             for (host, model), count in sorted(models.items())))
+    pending = Counter(str(row.get('reason')) for row in calls if row.get('outcome') == 'pending_review')
+    if pending:
+        print(f'teacher pending_review: {_tally(pending)}')
+    isolation = Counter(row.get('isolation') for row in teacher
+                        if row.get('isolation') in ('refused', 'violated'))
+    if isolation:
+        print(f"teacher isolation: refused={isolation.get('refused', 0)} "
+              f"violated={isolation.get('violated', 0)}")
+    _teacher_waits([row for row in teacher if row.get('outcome') == 'pass'])
+    warned = [row for row in calls if isinstance(row.get('toolWarnings'), list) and row['toolWarnings']]
+    if warned:
+        tools = Counter()
+        for row in warned:
+            for item in row['toolWarnings']:
+                if isinstance(item, dict) and type(item.get('count')) is int and item['count'] > 0:
+                    tools[str(item.get('name'))] += item['count']
+        print(f'WARNING teacher tool calls: {len(warned)} call(s); {_tally(tools)}')
+    scores = {}
+    for row in window:
+        if row.get('event') == 'learning.score' and row.get('checkpoint') is not None:
+            scores.setdefault(str(row['checkpoint']), []).append(row)
+    for checkpoint, rows in sorted(scores.items(), key=lambda item: str(_ts(item[1][-1]) or _EPOCH)):
+        last = rows[-1]
+        parts = [f'{key}={last[key]:g}' if isinstance(last[key], float) else f'{key}={last[key]}'
+                 for key in _SCORE_KEYS if _number(last.get(key))]
+        trend = [row['exactRate'] for row in rows if _number(row.get('exactRate'))]
+        if len(trend) > 1:
+            parts.append(f'trend exactRate {trend[0]:g}->{trend[-1]:g} (n={len(trend)})')
+        print(f'score {_esc(checkpoint)}: ' + ' '.join(parts))
+    promotions = [row for row in window if row.get('event') == 'learning.promotion']
+    for row in promotions[-10:]:
+        parts = [str(row.get('ts', ''))[:19].replace('T', ' '), _esc(row.get('outcome') or '-')]
+        parts.extend(f'{key}={_esc(row[key])}' for key in _PROMOTION_KEYS if row.get(key) is not None)
+        if row.get('reason'):
+            parts.append(f"reason={_esc(row['reason'])}")
+        print('promotion ' + ' '.join(parts))
+
+
+def _teacher_waits(passes):
+    """Per host: the current wait reason, since when it holds, and the queued cases."""
+    if not passes:
+        return
+    last = passes[-1]
+    now = datetime.now(timezone.utc)
+    for host, wait_key, queued_key in (('claude', 'waitClaude', 'queuedClaude'),
+                                       ('codex', 'waitCodex', 'queuedCodex')):
+        reason = last.get(wait_key)
+        if not reason:
+            continue
+        since = last
+        for row in reversed(passes):
+            if row.get(wait_key) != reason:
+                break
+            since = row
+        start = _ts(since)
+        hours = f' {max(0.0, (now - start).total_seconds() / 3600):.1f}h' if start else ''
+        queued = last.get(queued_key) if _count(last.get(queued_key)) else 0
+        stamp = str(since.get('ts', ''))[:19].replace('T', ' ')
+        print(f'teacher wait {host}: {_esc(reason)} since {_esc(stamp)}'
+              f'{hours} queued={queued}')
 
 
 def _show(rows, args, view):
