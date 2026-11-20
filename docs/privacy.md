@@ -47,7 +47,10 @@ Codex instructions file to the model input.
 
 The call runs in an empty temporary working directory with the host CLI's
 isolation options enforced before launch; the plugin never reads or moves the
-CLI's credentials. Asking the setup skill to turn the teacher off for a project
+CLI's credentials. Sessions with `CLAUDE_CONFIG_DIR` redirected are excluded
+from shared learning capture, and the worker runs `claude` without
+`CLAUDE_CONFIG_DIR` so every call stays on the default `~/.claude` account that
+captured the case. Asking the setup skill to turn the teacher off for a project
 stops these calls while capture, recall and local training continue.
 
 ## Event log

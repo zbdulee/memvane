@@ -71,10 +71,10 @@ class OldBundles(EnabledInstall):
         return seen
 
     def test_g9_old_bundles_leave_rows_files_and_clis_untouched(self):
-        rows = self.seed_rows()
+        rows = self.seed_122_rows(include_queued=True)
         files = self.namespace_files()
         refused = 'ValueError:project_scope_authorization_invalid'
-        for tag in TAGS:
+        for tag in [tag for tag in TAGS if tag != 'v1.0.21']:
             with self.subTest(tag=tag):
                 seen = self.observe(tag)
                 # (a) rows and namespace files: only the old worker's own records move.
@@ -121,6 +121,43 @@ class OldBundles(EnabledInstall):
         self.assertIn('zqheronx', json.loads(out)['hookSpecificOutput']['additionalContext'])
         self.assertEqual(self.rows(), rows)
         self.assertEqual(self.launches(), [])
+
+    def test_t1_7_v1_0_21_bundle_leaves_122_rows_and_parked_answers_untouched(self):
+        self.assertIn('v1.0.21', TAGS)
+        rows = self.seed_122_rows(include_queued=False)
+        files = self.namespace_files()
+        bundle = old_bundle('v1.0.21')
+
+        # (a) Unpatched 1.0.21 bundle: hooks exit 0, no DB row or authority file moves, 0 CLI calls.
+        seen = self.observe('v1.0.21')
+        self.assertEqual(self.rows(), rows)
+        for name in self.watched_names():
+            self.assertEqual(self.namespace_files().get(name), files[name], name)
+        self.assertEqual(self.launches(), [])
+        self.assertEqual(seen['gates']['selection'], 'returned:True')
+        code, out, err = seen['worker']
+        self.assertEqual((code, json.loads(out)['status']), (1, 'failed'), err)
+        code, out, err = seen['recall']
+        self.assertEqual(code, 0, err)
+        self.assertIn('zqheronx', json.loads(out)['hookSpecificOutput']['additionalContext'])
+        code, out, err = seen['posttool']
+        self.assertEqual(code, 0, err)
+        self.assertIn('zqheronx', json.loads(out)['hookSpecificOutput']['additionalContext'])
+        self.assertEqual(seen['maintenance'], (0, '', ''))
+
+        # (b) Patched 1.0.21 worker passes scope into default_teacher.process_pending_default
+        # and shared.run_training_pending: 0 CLI calls and every 1.0.22 row stays byte-equal.
+        code, out, err = self.entry(bundle, 'learning-shared', 'run-project', str(self.project),
+                                    patched=True, resource_ready=True)
+        self.assertEqual(code, 0, (out, err))
+        result = json.loads(out)
+        self.assertEqual(result['teacher']['status'], 'drained', result)
+        self.assertEqual(result['teacher']['calls'], 0, result)
+        self.assertEqual((result['status'], result['cycle']['required']), ('waiting_fresh_train', 5), result)
+        self.assertEqual(self.launches(), [])
+        self.assertEqual(self.rows(), rows)
+        for name in self.watched_names():
+            self.assertEqual(self.namespace_files().get(name), files[name], name)
 
 if __name__ == '__main__':
     unittest.main()

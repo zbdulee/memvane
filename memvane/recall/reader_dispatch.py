@@ -214,6 +214,64 @@ def _reader_remaining(deadline):
     return remaining
 
 
+NEED_SWITCH = 'MEMVANE_NEED_SIGNALS'
+NEED_ATOMS = 8
+NEED_BUDGET_SECONDS = .15
+NEED_READER_RESERVE_SECONDS = 2.0
+
+
+def _need_signals_on():
+    """Prompt recall only, unless ``MEMVANE_NEED_SIGNALS=off`` (read by this hook process)."""
+    import os
+    from memvane.recall import recall_scope
+    return (recall_scope.edit_recall() is None
+            and os.environ.get(NEED_SWITCH, '').strip().lower() != 'off')
+
+
+def _need_signals(store, pin, queries, timings, deadline, limit):
+    """Search-need judge signals (design §N stage 1 input); recorded, never decided on.
+
+    Each distinct atom of the conjunctive queries (at most ``NEED_ATOMS``) is
+    searched alone on the same pin. ``needAtomsRare`` counts atoms with a hit
+    list shorter than ``limit`` (rare terms). The probes share
+    ``NEED_BUDGET_SECONDS`` and stop when it is spent or the reader has less
+    than ``NEED_READER_RESERVE_SECONDS`` left (``needProbeTruncated``). A probe
+    failure is swallowed: recall rows, order and injection never depend on it.
+    No term text is recorded.
+    """
+    started = time.monotonic()
+    probed = hit = rare = 0
+    top = None
+    truncated = False
+    try:
+        atoms = list(dict.fromkeys(atom for query in queries for atom in query.split(' AND ') if atom))
+        for atom in atoms[:NEED_ATOMS]:
+            left = NEED_BUDGET_SECONDS - (time.monotonic() - started)
+            if left <= 0 or deadline - time.monotonic() < NEED_READER_RESERVE_SECONDS:
+                truncated = True
+                break
+            try:
+                rows = store.search(pin, atom, limit, deadline_seconds=left)
+            except Exception:
+                truncated = True
+                break
+            probed += 1
+            hit += bool(rows)
+            if 0 < len(rows) < limit:
+                rare += 1
+                scores = [row['score'] for row in rows
+                          if type(row.get('score')) in (int, float) and math.isfinite(row['score'])]
+                if scores and (top is None or max(scores) > top):
+                    top = max(scores)
+    except Exception:
+        truncated = True
+    # Diagnostic only, never checked: probe failure never affects recall.
+    timings.update(needAtoms=probed, needAtomsHit=hit, needAtomsRare=rare,
+                   needRareTopScore=None if top is None else round(float(top), 6),
+                   needProbeMs=round((time.monotonic() - started) * 1000, 3),
+                   needProbeTruncated=truncated)
+
+
 def _lexical_signals(timings, queries, lexical):
     """Shadow signals of the search-need judge (design §N stage 0); counts only.
 
@@ -332,6 +390,8 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
             finally:
                 if timings is not None:
                     timings['lexicalMs'] = round((time.monotonic() - started) * 1000, 3)
+            if timings is not None and _need_signals_on():
+                _need_signals(store, pin, queries, timings, deadline, HYBRID_LIST_LIMIT)  # Diagnostic only, never checked.
             status='provider_absent' if query_vector is None else 'lexical_only' if vector is None else 'complete'
             nearest=None
             if semantic:

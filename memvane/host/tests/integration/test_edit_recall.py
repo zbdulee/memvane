@@ -361,14 +361,23 @@ class EditRecallEntry(HostInstallCase):
         return child.returncode, out.decode(), err.decode()
 
     def test_run_hook_posttool_injects_for_claude_and_codex(self):
+        need_keys = ('needAtoms', 'needAtomsHit', 'needAtomsRare',
+                     'needRareTopScore', 'needProbeMs', 'needProbeTruncated')
         for host in ('claude', 'codex'):
             with self.subTest(host=host):
+                before = len(self.install.events())
                 payload = edit_payload('entry-' + host, 'Write' if host == 'claude' else 'apply_patch')
                 code, out, err = self.finish(self.run_hook(payload, host), payload)
                 self.assertEqual(code, 0, err)
                 answer = json.loads(out)
                 self.assertEqual(answer['hookSpecificOutput']['hookEventName'], 'PostToolUse')
                 self.assertIn('zqheronx', answer['hookSpecificOutput']['additionalContext'])
+                emitted = self.install.events()[before:]
+                edits = [row for row in emitted if row.get('event') == 'recall.edit']
+                self.assertEqual(len(edits), 1, edits)
+                for row in emitted:
+                    for key in need_keys:
+                        self.assertNotIn(key, row, (host, row.get('event'), key))
 
     def test_parallel_posttool_runs_one_recall(self):
         payload = edit_payload('parallel')

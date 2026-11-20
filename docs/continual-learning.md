@@ -360,6 +360,21 @@ both files with the plan, when it starts and again before it removes its
 intent. A renewal does not start while an enable intent exists, and the enable
 change does not start while a renewal intent exists.
 
+When a plugin update changes the grant approval hash, `candidate_close.supersede`
+runs before staged selection under a currently valid grant. For a default
+teacher whose current approval has no open candidate, `carry_candidate` moves
+the newest open promotion-sized candidate (`>= minQualityTrainCases`, evaluation
+not `blocked`) from an earlier approval to the current approval in one
+transaction (updating `learning_jobs.approval`/`manifest`, rewriting
+`authorizationSha256` and appending to `carriedFrom`, clearing staged
+metrics/evaluation rows) when `lineage` (the grant without `binding`),
+`job_family`, base artifact, input view, candidate artifact, active stage,
+pinned cases, non-pending/non-rejected apply journal, `rejected_cycles`
+exclusion and `local_train` permission all match, emitting
+`learning.promotion` `carried`. Any remaining staged cycles from earlier
+approvals are closed in both profiles as `authorization_superseded`
+(`learning.promotion` `superseded`).
+
 ### Labeling
 
 Labeling runs only in the learning worker
@@ -405,13 +420,27 @@ checks do not count.
 - **One pass.** A valid answer is gold at once (`review: single_pass`); an
   empty selection is a valid label. A local check that fails sets the case
   aside without a call (`pending_review` with `teacher_sensitive_input`,
-  `teacher_input_budget` or `duplicate_input`). A failure before sending
-  requeues the case and counts a retry (five make it `pending_review`,
-  `gold_attempts_exhausted`); a provider refusal for quota, sign-in or model
-  requeues it without a count and rests the host for an hour; a refusal of
-  the content, an uncertain failure or an invalid answer is `pending_review`
-  and is not called again. Three uncertain or invalid results in a row rest
-  that host for a day.
+  `teacher_input_budget` or `duplicate_input`). Running scope guards check
+  only the active case row via `prequential.admitted_one`. After the prompt
+  body is sent (`sent=True`), `monitor` keeps the child RSS, timeout, output
+  cap and scope checks and does not stop on system readiness; a `ResourceDeferred`
+  inside the pre-send guard ends as `deferred` (`pre_send_rejected`, case back
+  to `queued`) without consuming a retry attempt, and a post-send `ResourceDeferred`
+  during the commit scope check keeps the case as `first_done` with the ledger
+  at `answer_parked` (`learning.teacher` `parked` with usage). The next pass
+  commits kept answers at the start (before the empty-queue exit) without a
+  host call (`reason: parked_answer`) while consent, active case, payload hash,
+  admission and answer hash hold (not compared against the prior pass's grant
+  approval); non-resource failures there move the case to `pending_review` and
+  `dispatched_uncertain`. Pre-send failures (`pre_send`) count retries (five
+  make it `pending_review`, `gold_attempts_exhausted`), whereas `deferred` and
+  `host` rests do not; a provider refusal for quota, sign-in or model requeues
+  the case without a count and rests the host for an hour; content refusal,
+  uncertain failure or invalid answer is `pending_review` and is not called
+  again. Three `unknown` or `invalid` failures in a row (outside the four
+  scope/case-change reasons `NOT_HOST_FAILURES`: `teacher_scope_changed`,
+  `gold_capture_changed`, `teacher_cohort_changed`,
+  `gold_case_changed_before_commit`) rest that host for a day.
 - **Waits.** `teacher-host-state.json` (namespace root, 0600) keeps each
   host's wait, reason, failure count, queued cases and notice times. Codex
   also rests a pass when its weekly remaining quota is 30 % or less or cannot
@@ -424,20 +453,28 @@ Gold cases train without a holdout split (`prequential.py`). A case carries
 the selection Laya made when it was captured, which the then active
 checkpoint had not trained on, so its gold scores that checkpoint: exact
 match, micro F1 and empty-selection agreement over the cases the selector
-answered (cases served in default rank are counted apart). A candidate trained
+answered (cases served in default rank are counted apart). The default teacher
+does not plan a job until at least 100 admitted gold cases exist
+(`minimum_members`, returning `waiting_fresh_train`), and fills replay slots
+from the most recently consumed cases (`recent_replay`). A candidate trained
 on at least 100 cases stays fixed until at least 50 gold cases captured after
 its training cutoff, at least ten of them with an empty gold and ten with a
-non-empty gold, compare it with the
-active checkpoint under the existing promotion rule. An applied or rejected
-candidate is closed and not evaluated again; the next job then trains on all
-gold, up to the policy's `batchMax`. `checkpoint-history.json` keeps the
-application times that map cases to checkpoints. Whether the selector answered
-a case comes from the `recall.edit` event with the same `request_id`; the
-worker stores it in the learning database on its first pass after capture.
-In a project without its own `.git` inside a parent work tree, every edit
-case captured before the teacher consent's `grantedAtUnixMs` stays out of
-labeling and training as `historical` (`pre_teacher_capture`); none is
-deleted.
+non-empty gold, compare it with the active checkpoint under the existing
+promotion rule. When candidate application returns a judging refusal
+(`candidate_apply.JUDGED`) or ends with a `rejected` application journal,
+`candidate_close.close_judged` calls `EvaluationQueue.reject` to close that
+cycle (`blocked`) in both profiles (along with any earlier `staged_evaluated`
+cycle whose evaluation is `completed`, closed as `superseded_by_judged`), so
+no pass attempts to apply it again; the next job then trains on all gold, up
+to the policy's `batchMax`. `checkpoint-history.json` keeps the application
+times that map cases to checkpoints. Whether the selector answered a case comes
+from the `recall.edit` event with the same `request_id`; the worker stores it
+in the learning database on its first pass after capture. Shared `cases` stops
+accepting new rows at `CASE_LIMIT` (2,000 rows of any status) with
+`queue_full` (`learning.capture.shared`) without deleting existing rows. In a
+project without its own `.git` inside a parent work tree, every edit case
+captured before the teacher consent's `grantedAtUnixMs` stays out of labeling
+and training as `historical` (`pre_teacher_capture`); none is deleted.
 
 ### Turning the teacher off
 
@@ -453,27 +490,37 @@ Claude and Codex SessionStart reads only `teacher-host-state.json` and the
 enable intent's presence; it starts no process and opens no database. It adds
 at most these lines:
 
-- The session host's CLI is missing and cases wait for it: once per host and
-  reason every seven days.
+- The session host's CLI is missing, or resides in an unsafe directory/file
+  (`teacher_cli_unsafe_path`), and cases wait for it: once per host and reason
+  every seven days.
 - The session host has rested for more than a day on
-  `teacher_isolation_incomplete` or `teacher_model_unresolved` with cases
-  waiting: once per host and reason every seven days.
-- An enable intent older than ten minutes, or enable requests stopped by
-  repeated failures: every session, until resolved.
+  `teacher_isolation_incomplete`, `teacher_model_unresolved` or
+  `teacher_codex_home_redirected` with cases waiting: once per host and reason
+  every seven days.
+- An enable intent older than ten minutes, or enable requests stopped with an
+  intent present: `ENABLE_NOTICE` every session until resolved; enable requests
+  stopped with no enable intent remaining: `ENABLE_DEFERRED_NOTICE` every
+  session.
 
 A seven-day line appears only after its notice time is written. Quota,
 provider waits and the failure breaker are not announced. Hermes has no
 SessionStart output and is not a teacher host.
 
-Each call writes one `learning.teacher` row (`gold`, `pending_review`,
+Each call writes one `learning.teacher` row (`gold`, `parked`, `pending_review`,
 `pre_send_rejected` or `provider_refused`) with the case's `request_id`
 (the `recall.edit` row's), host, model and tier, usage (`usageIn`,
 `usageOut`, `usageCached`, `usageReasoning`, `usageOverhead`), the selected
 cards as `[{path, sha}]`, the isolation result and the prequential values.
 Each pass writes an `outcome: pass` row with the host waits and queued counts,
-a `learning.score` row per scored checkpoint, and a `learning.promotion` row
-per promotion decision. Rows never hold the edit text, card bodies, source
-paths or global instructions. The `memvane:logs` summary aggregates them.
+`learning.score` rows (`caseRows`, `caseLimit`, `gold`, `candidateTrain`,
+`candidateEval`, `candidateEvalNonEmpty`, `candidateEvalEmpty`), `learning.promotion`
+rows, and `learning.cycle` rows (`trained` on training completion, or
+`deferred_resource` with inner `reason`, `deferredBy`, `availableMib`,
+`requiredMib`, `loadPerCpu`, `loadLimit` and `latchPaused`). Rows never hold
+the edit text, card bodies, source paths or global instructions. The
+`memvane:logs` summary aggregates them together with the edit-recall funnel,
+promotion progress, case-table warnings (`>= 90%` / `queue_full`), parked
+answers and resource deferrals.
 
 ## Explicit external teacher requests
 
@@ -582,7 +629,7 @@ The policy's `trainerArgv[1]` anchors the approved adapter. Hosts remove superse
 
 A release changes the code SHA-256 that prepared inference evidence binds, the anchor's cache disappears and the synthetic attestation counts for 24 hours, so a prepared selector stops admitting predictions after an update. `memvane/learning/context_learning/selector_heal.py` heals it in the background, with the same verified steps an owner runs by hand, in dependency order:
 
-0. Before anything executes, the approved scope is checked (`selector_heal.check_scope`). The interpreter must be the activated official learning runtime, re-verified the way the installer verifies a generation: the activation pointer passes `runtime_setup._activated`, its executable is a prepared generation's own venv interpreter (`runtime_installer._generation_executable`, `prepared.json` naming exactly it), and the runtime identity recorded at staging (`prepared.json`), at activation (`active.json`) and in the activation attestation (which must be present; an older pointer without it is not enough) agree (`learning_runtime_not_installed`, `learning_runtime_changed`). The model directory must be the pointer's model directory when it names one; when the last prepared evidence recorded the interpreter's content hash, the interpreter must still have it (`learning_runtime_not_official`, `learning_runtime_changed`). With an accepted learning profile the acceptance must be intact and name exactly this policy: every `trainerArgv` element, `livePolicySha256`, the model identity and a recorded interpreter hash; otherwise `learning_profile_rebind_required` and nothing runs.
+0. Before anything executes, the approved scope is checked (`selector_heal.check_scope`). Both an active renewal intent (`learning_profile_renewal_pending`) and an active teacher-enable intent (`teacher_enable_pending`) are refused immediately. The interpreter must be the activated official learning runtime, re-verified the way the installer verifies a generation: the activation pointer passes `runtime_setup._activated`, its executable is a prepared generation's own venv interpreter (`runtime_installer._generation_executable`, `prepared.json` naming exactly it), and the runtime identity recorded at staging (`prepared.json`), at activation (`active.json`) and in the activation attestation (which must be present; an older pointer without it is not enough) agree (`learning_runtime_not_installed`, `learning_runtime_changed`). The model directory must be the pointer's model directory when it names one; when the last prepared evidence recorded the interpreter's content hash, the interpreter must still have it (`learning_runtime_not_official`, `learning_runtime_changed`). With an accepted learning profile the acceptance must be intact and name exactly this policy: every `trainerArgv` element, `livePolicySha256`, the model identity and a recorded interpreter hash; otherwise `learning_profile_rebind_required` and nothing runs.
 1. `live-selector.json` `trainerArgv[1]` is rebound to the running bundle's adapter, only when that adapter is an installed official copy (or the registered local source the host executes) and the rebound policy passes the scope check. An anchor that exists and is another host's identical official copy (the Claude and Codex caches of one release) is kept as written: rewriting it would invalidate the prepared evidence that the other host's heal then rewrites back. A binding check without time left defers (`adapter_binding_timeout`). With a kept anchor, attestation and preparation run with this host's verified adapter; the policy keeps the anchor. The interpreter and the model directory stay as written. A namespace with an accepted learning profile is never rebound: the profile's acceptance digest covers the policy, so that change needs the owner (`learning_profile_rebind_required`).
 2. The synthetic attestation is refreshed through `VerifiedLayaTrainer` (its real synthetic checks, at most 120 seconds) when it is missing, older than 24 hours or names another adapter. An adaptive memory policy defers this step (`trainer_adaptive_attestation_required`).
 3. Inference evidence is prepared with `memvane/learning/prepare_laya_inference.py` in the policy interpreter (at most 120 seconds) when `admit` no longer accepts the existing evidence.

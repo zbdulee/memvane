@@ -45,14 +45,14 @@ from tests.support.case import FixtureCase, require_fixture_env, wait_until
 from tests.support.install_builder import ROOT, build_install
 from tests.support.project import make_project
 
-TAGS = ('v1.0.18', 'v1.0.19', 'v1.0.20')
+TAGS = ('v1.0.18', 'v1.0.19', 'v1.0.20', 'v1.0.21')
 NOTE = 'The emerald heron nests beside the north pond.\n'
 CARD_BODY = 'The emerald heron keeps marker token zqheronx beside the north pond.\n'
 PROMPT = 'what marker does the emerald heron keep?'
 # This bundle's hook children (hook-serve and the capture children) get the
 # same installed-host stand-ins as this process: synthetic bundle code
 # identity, host listings, the running adapter path and the running bundle
-# (``shared.__file__``). Old bundles never.
+# (``shared.__file__``). Old bundles only when explicitly requested (``patched=True``).
 SITECUSTOMIZE = '''import json, os
 _raw = os.environ.get('MV121_CHILD')
 if _raw:
@@ -66,7 +66,7 @@ if _raw:
 
         def snapshot(root, _home=None):
             root = Path(root)
-            if home not in root.parents:
+            if home not in root.parents or not (root / 'memvane/marker.py').is_file():
                 root = running
             files = {'learning/context_learning/adapter.py': inference_identity.file_sha(
                          root / 'memvane/learning/context_learning/adapter.py'),
@@ -86,12 +86,18 @@ if _raw:
                                     (selector_heal, 'running_adapter',
                                      lambda: running / 'memvane/learning/context_learning/adapter.py')):
             mock.patch.object(target, name, value).start()
+        if config.get('resource_ready'):
+            from memvane.learning.context_learning import general_teacher
+            ready = {'ready': True, 'available_mib': 10000, 'load_per_cpu': 0.1, 'total_mib': 16384}
+            for mod in (shared, general_teacher):
+                mock.patch.object(mod, 'resource_report', return_value=dict(ready)).start()
         shared.__file__ = str(running / 'memvane/learning/context_learning/shared.py')
     _apply(json.loads(_raw))
 '''
 BUNDLE_PATHS = ('memvane', 'entry', 'hooks', 'package.json', '.claude-plugin', '.codex-plugin',
                 'plugin.json', 'plugin.yaml')
-TABLES = ('cases', 'project_cohort_exposure', 'project_cohort_assignments', 'project_gold_attempts')
+TABLES = ('cases', 'project_cohort_exposure', 'project_cohort_assignments', 'project_gold_attempts',
+          'learning_jobs', 'learning_evaluations', 'cycles')
 EDIT_FILE = 'notes/pond.md'
 EDIT_TEXT = ('Field notes for the pond survey. The emerald heron keeps the marker zqheronx '
              'beside the north pond, and the survey records each visit of the emerald heron '
@@ -296,11 +302,74 @@ class EnabledInstall(RenewalFixture):
                     ledger.reserve(db, key, rid, 'first', input_sha, None, rearm=True)
                     db.execute("UPDATE project_gold_attempts SET stage='committed' WHERE request_id=?", (rid,))
         before = self.rows()
-        self.assertEqual([len(before[table]) for table in TABLES], [4, 4, 4, 2])
+        self.assertEqual([len(before[table]) for table in TABLES[:4]], [4, 4, 4, 2])
         return before
 
+    def seed_122_rows(self, *, include_queued=True):
+        """Seed 1.0.22 rows (``first_done``, ``answer_parked``, ``lineage`` job, ``blocked`` evaluation)."""
+        from memvane.learning.context_learning import candidate_close
+        from memvane.learning.context_learning.evaluation_queue import EvaluationQueue
+        from memvane.learning.context_learning.learning_queue import LearningQueue
+        key = self.key()
+        statuses = (('queued', 'queued', 'first_done', 'gold', 'trained') if include_queued
+                    else ('first_done', 'gold', 'trained'))
+        with shared._db(self.root) as db:
+            general_cohort._tables(db)
+            ledger.ensure(db)
+            LearningQueue(self.root).schema(db)
+            EvaluationQueue(self.root).schema(db)
+            for index, status in enumerate(statuses):
+                rid = 'seed122-%d' % index
+                sample, bodies = edit_sample(rid, host=('claude', 'codex')[index % 2])
+                input_sha = digest(canonical(sample))
+                gold = (canonical({'selected_ids': [sample['candidates'][0]['candidate_id']],
+                                   'input_sha256': input_sha, 'review': 'single_pass'})
+                        if status in ('gold', 'trained') else None)
+                first = None
+                if status == 'first_done':
+                    choice = {'selected_ids': [sample['candidates'][0]['candidate_id']], 'usage': {}}
+                    first = canonical({'choice': choice,
+                                       'teacher': {'host': 'claude', 'model': 'claude-haiku-5-5', 'tier': 1},
+                                       'modelReported': 'claude-haiku-5-5', 'toolWarnings': [],
+                                       'pluginWarnings': [], 'event': {'teacherHost': 'claude', 'tier': 1},
+                                       'rawBytes': 128})
+                db.execute('INSERT INTO cases (project_key,project_root,request_id,input_sha256,sample,'
+                           'bodies,corpus_fingerprint,captured_at,split,family_keys,use_state,status,first,gold,'
+                           'trained_cycle) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                           (key, str(self.project), rid, input_sha, canonical(sample), canonical(bodies),
+                            'corpus', 1000.0 + index, 'train', '[]', 'active', status, first, gold,
+                            'cycle-0' if status == 'trained' else None))
+                db.execute('INSERT INTO project_cohort_assignments VALUES (?,?,?,?,?)',
+                           ('scope-0', rid, input_sha, 'train', 'family-%d' % index))
+                db.execute('INSERT INTO project_cohort_exposure VALUES (?,?,?,?)',
+                           ('scope-0', 'question:' + digest(rid), 'train', 'family-%d' % index))
+                if status == 'first_done':
+                    payload_sha = digest(canonical({'instruction': 'i', 'text': sample['prompt']['text'],
+                                                    'candidates': []}))
+                    ledger.reserve(db, key, rid, 'first', payload_sha, None, rearm=True)
+                    ledger.transition(db, key, rid, 'first', ('reserved',), 'answer_parked',
+                                      answer_sha256=digest(canonical(choice)))
+                elif status != 'queued':
+                    ledger.reserve(db, key, rid, 'first', input_sha, None, rearm=True)
+                    db.execute("UPDATE project_gold_attempts SET stage='committed' WHERE request_id=?", (rid,))
+            cycle_id = 'cohort-' + 'a' * 20
+            grant = {'projectRoot': str(self.project), 'namespaceRoot': str(self.root),
+                     'operations': ['gold_default', 'local_train', 'quality_evaluate'],
+                     'cohort': {'id': 'default-v1'}}
+            manifest = {'id': cycle_id, 'namespace': LearningQueue(self.root).scope,
+                        'approval': 'b' * 64, 'cohort': 'default-v1', 'family': 'c' * 64,
+                        'members': [], 'lineage': candidate_close.lineage(grant)}
+            db.execute("INSERT INTO learning_jobs VALUES (?,?,?,?,?,?,'staged',NULL,0,0,0,NULL)",
+                       (cycle_id, manifest['namespace'], manifest['approval'], manifest['cohort'],
+                        manifest['family'], canonical(manifest)))
+            db.execute("INSERT INTO cycles VALUES (?,'staged',?,?,NULL)",
+                       (cycle_id, canonical({'schema_version': 1, 'authorizationSha256': manifest['approval']}),
+                        1000.0))
+        EvaluationQueue(self.root).reject(cycle_id, 'apply_quality_regression')
+        return self.rows()
+
     # -- children --------------------------------------------------------------------
-    def child_env(self, patched=False):
+    def child_env(self, patched=False, *, bundle=ROOT, resource_ready=False):
         env = {key: value for key, value in os.environ.items()
                if key not in ('PYTHONPATH', 'CLAUDE_PLUGIN_ROOT', 'PLUGIN_ROOT', 'QMD_SANDBOX',
                               'CLAUDE_SANDBOX', 'CLAUDE_HEADLESS', 'CODEX_SANDBOX', 'GEMINI_SANDBOX',
@@ -311,9 +380,9 @@ class EnabledInstall(RenewalFixture):
             if not stub.is_dir():
                 stub.mkdir(mode=0o700)
                 (stub / 'sitecustomize.py').write_text(SITECUSTOMIZE, encoding='utf8')
-            env.update(PYTHONPATH='%s:%s' % (stub, ROOT), MV121_CHILD=json.dumps({
+            env.update(PYTHONPATH='%s:%s' % (stub, bundle), MV121_CHILD=json.dumps({
                 'home': str(self.home), 'running': str(self.running), 'codex': self.codex,
-                'claude': self.claude}))
+                'claude': self.claude, 'resource_ready': resource_ready}))
         return env
 
     def launches(self):
@@ -323,13 +392,15 @@ class EnabledInstall(RenewalFixture):
             return []
         return [json.loads(line) for line in path.read_text(encoding='utf8').splitlines() if line.strip()]
 
-    def run_child(self, argv, *, stdin=None, patched=False):
+    def run_child(self, argv, *, stdin=None, patched=False, bundle=ROOT, resource_ready=False):
         result = subprocess.run(argv, input=stdin, capture_output=True, text=True, cwd=str(self.project),
-                                env=self.child_env(patched), timeout=CHILD_TIMEOUT)
+                                env=self.child_env(patched, bundle=bundle, resource_ready=resource_ready),
+                                timeout=CHILD_TIMEOUT)
         return result.returncode, result.stdout, result.stderr
 
-    def entry(self, bundle, *args):
-        return self.run_child([str(self.bin / 'python3'), '-B', str(Path(bundle) / 'entry/run.py'), *args])
+    def entry(self, bundle, *args, patched=False, resource_ready=False):
+        return self.run_child([str(self.bin / 'python3'), '-B', str(Path(bundle) / 'entry/run.py'), *args],
+                              patched=patched, bundle=bundle, resource_ready=resource_ready)
 
     def hook(self, bundle, action, payload, host='claude'):
         """``hooks/run-hook`` of ``bundle``; this bundle's children carry the stand-ins."""

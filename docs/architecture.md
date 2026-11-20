@@ -770,8 +770,13 @@ Reading (`skills/logs/scripts/logs.py`):
 | `recall`, `gate`, `posttool`, `update`, `update-queued`, `index`, `compile`, `file-change-event` | selected-route hook actions (`memvane/host/host_response.py`) | `ok` / `refused` (`recall`: `served` / `empty` / `refused`); `reason` is a fixed refusal code or a final code such as `sync_requested` |
 | `hook.error` | `memvane/host/hook_main.py` | exception class and `file:line`, never the message |
 | `recall.edit` | posttool edit recall tail (`memvane/host/edit_recall.py`) | `served` / `empty` / `budget_exceeded` / `refused`; `request_id`, injected `cards` and `selected` (`{path, sha}` card ids), `selection` (`selector` / `default_rank` / `none`), `pool`, `repeated`, `selfCited`, selector measurement (`selectorPairs`, `selectorBatches`, `selectorBatchMs`, `selectorDevice`, ...), lexical shadow signals (`lexicalQueries`, `lexicalHits`, `lexicalTopScore`); never the edited path or text |
-| `learning.capture` | context learning capture | capture status |
-| `learning.migration` | first default-namespace worker pass of 1.0.18 | `prompt_cases_deleted`; `count`, `privateSamples` |
+| `learning.capture` | context learning capture | capture status (`stored` / `duplicate` / ...) |
+| `learning.capture.shared` | shared queue enqueue seam (`memvane/learning/context_learning/seam.py`) | emitted when shared `enqueue` returns other than `queued` or `duplicate` (e.g. `queue_full`); `outcome`, `reason`, `stage` |
+| `learning.cycle` | learning worker and staged training (`memvane/learning/context_learning/project_worker.py`, `automatic_staging.py`) | `trained` (`cycle`, `trainCases`); `deferred_resource` (inner `reason`, `deferredBy`, `availableMib`, `requiredMib`, `loadPerCpu`, `loadLimit`, `latchPaused`) |
+| `learning.teacher` | default teacher worker (`memvane/learning/context_learning/default_teacher.py`) | `gold` (`single_pass` or `parked_answer`), `parked` (`resource_deferred` with usage), `pending_review`, `pre_send_rejected`, `provider_refused`, `pass` (waits and queued counts) |
+| `learning.score` | prequential scorer (`memvane/learning/context_learning/prequential.py`) | `previous` / `current` / `counts`; operating score metrics plus `caseRows`, `caseLimit`, `gold`, `candidateTrain`, `candidateEval`, `candidateEvalNonEmpty`, `candidateEvalEmpty` |
+| `learning.promotion` | candidate promotion and carry (`memvane/learning/context_learning/prequential.py`, `candidate_close.py`) | `waiting`, `evaluated`, `applied`, `rejected`, `carried` (`cycle`, `carriedFrom`), `superseded` (`closed`) |
+| `learning.migration` | first default-namespace worker pass (`prompt_retirement.py`, `edit_git_migration.py`) | `prompt_cases_deleted` / migration outcome; `count`, `privateSamples` |
 | `wiki` | compile, verify, dedup, pending publish, lifecycle, source retirement | `created` / `updated` / `deleted` / `retired`; `reason` (`compile`, `pending_publish`, `verify_retire`, `dedup`, `lifecycle:<code>`, `source_deleted`), `path`, `title` |
 | `wake.sync`, `wake.compile` | off-hook dispatcher (`memvane/app/runtime_dispatch.py`) | dispatcher outcome, `generation`, `previousGeneration` |
 | `index.publish` | off-hook dispatcher | `generation`, `previousGeneration`, `epoch` |
@@ -788,7 +793,12 @@ carries `cards` (`[{path, sha}]`, exactly the injected cards), `count`,
 `candidates`, `selection`, `selection_fallback`, `vector_fallback`, `degraded`
 (`worktree`, `reader_endpoint` or `preview`), `store_format` and
 `reader_endpoint` (a recall the schema3 reader served), `retry`, `generation`,
-`filtered_count`/`filtered_reasons` and `prompt` (`{sha256, chars}`).
+`filtered_count`/`filtered_reasons`, prompt-recall search-need probe signals
+(`needAtoms`, `needAtomsHit`, `needAtomsRare`, `needRareTopScore`, `needProbeMs`,
+`needProbeTruncated`; skipped when `MEMVANE_NEED_SIGNALS=off`), exact vector
+search phase timings (`vectorObserveMs`, `vectorOpenMs`, `vectorCardsMs`,
+`vectorSnapshotMs`, `vectorBodyMs`, `vectorTotalMs`) and `prompt`
+(`{sha256, chars}`).
 
 The only code path that reads the log back is the compile worker's
 `wiki.logTail`, which renders `wiki` events alone.

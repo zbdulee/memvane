@@ -75,6 +75,24 @@ class SelectedRoute(HermesCase, HostInstallCase):
         self.assertIn('zqheronx', answer['context'])
         self.assertNotIn('request refused', answer['context'])
 
+    def test_tb0_7_need_signals_leave_hermes_recall_unchanged(self):
+        need_keys = ('needAtoms', 'needAtomsHit', 'needAtomsRare',
+                     'needRareTopScore', 'needProbeMs', 'needProbeTruncated')
+        before = len(self.install.events())
+        with mock.patch.dict(os.environ, {'MEMVANE_NEED_SIGNALS': 'off'}):
+            off_answer, _ = self.recall()
+        off_events = [row for row in self.install.events()[before:] if row.get('event') == 'recall']
+        before_on = len(self.install.events())
+        with mock.patch.dict(os.environ, {'MEMVANE_NEED_SIGNALS': ''}):
+            on_answer, _ = self.recall()
+        on_events = [row for row in self.install.events()[before_on:] if row.get('event') == 'recall']
+        self.assertEqual(on_answer, off_answer)
+        self.assertEqual(len(off_events), 1)
+        self.assertEqual(len(on_events), 1)
+        for key in need_keys:
+            self.assertNotIn(key, off_events[0], key)
+            self.assertIn(key, on_events[0], key)
+
     def test_session_start_queues_sync_without_a_context_channel(self):
         answer, calls = self.invoke('on_session_start', working_directory=str(self.project))
         self.assertIsNone(answer)
