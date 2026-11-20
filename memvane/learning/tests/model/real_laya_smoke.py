@@ -92,6 +92,7 @@ try:
         print(json.dumps({'external_calls':0,'runtime_selected':selected['mode'],
             'synthetic_proof':proof['smoke']['checks'],'device':proof['smoke']['device'],
             'body_bytes':proof['smoke']['synthetic_body_bytes'],
+            'model_input_view':proof['smoke']['model_input_view'],
             'input_tokens':proof['smoke']['model_input_tokens'],
             'head_bytes':artifact.stat().st_size,'smoke_resources':proof['resources'],
             'train_resources':train_resources}))
