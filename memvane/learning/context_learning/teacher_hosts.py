@@ -21,6 +21,7 @@ import time
 from memvane.runtime.api import provider_popen
 from memvane.runtime.types import PreSendDeferred
 from memvane.kernel.process import stop_owned as _stop_owned
+from memvane.kernel.resource_deferred import ResourceDeferred
 
 from . import claude_adapter, codex_adapter
 from . import teacher_isolation as isolation
@@ -255,6 +256,9 @@ class _Run:
     def launch(self, before_launch, after_launch):
         try:
             self.guard(fresh_inventory=True)
+        except ResourceDeferred as exc:
+            # Resource pressure is not a scope change: the case goes back to the queue.
+            raise CallFailure('deferred', 'resource_deferred') from exc
         except Exception as exc:
             raise CallFailure('pre_send', 'teacher_scope_changed') from exc
         try:
@@ -269,14 +273,24 @@ class _Run:
         after_launch(self.process.pid)
 
     def tick(self, sent):
+        """``sent``: some payload byte reached the child.
+
+        Before the body a resource deferral of the scope check ends the call
+        unsent (``deferred``). After it the check is skipped for this tick: the
+        answer is checked again before it can become gold.
+        """
         now = time.monotonic()
         if now >= self.deadline:
             raise CallFailure('unknown' if sent else 'pre_send', 'gold_timeout')
         if now - self.last_check >= .5:
             self.last_check = now
             try:
-                self.guard()
-                self.monitor(self.process.pid)
+                try:
+                    self.guard()
+                except ResourceDeferred:
+                    if not sent:
+                        raise CallFailure('deferred', 'resource_deferred') from None
+                self.monitor(self.process.pid, sent)
             except ValueError as exc:
                 code = str(exc) if str(exc).startswith('gold_') else 'teacher_scope_changed'
                 raise CallFailure('unknown' if sent else 'pre_send', code)
@@ -351,7 +365,8 @@ def invoke_codex(plan, raw, *, seconds, max_output, monitor, guard, before_launc
                 os.set_blocking(stream.fileno(), False)
                 selector.register(stream, event, tag)
             while selector.get_map():
-                run.tick(True)
+                # Codex reads the body from stdin: nothing is sent before the first write.
+                run.tick(offset > 0)
                 for key, _ in selector.select(.05):
                     if key.data == 'input':
                         try:

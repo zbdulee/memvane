@@ -2,8 +2,11 @@
 import re
 import time
 
+# ``answer_parked`` (default teacher): the answer is kept in the case row while its
+# scope check waits; ``recover`` never moves it and no stage re-arms it.
 STAGES=frozenset({'reserved','dispatch_unknown','dispatched','answer_received',
-                  'committed','pre_send_rejected','dispatched_uncertain','provider_refused'})
+                  'committed','pre_send_rejected','dispatched_uncertain','provider_refused',
+                  'answer_parked'})
 # Stages that prove the provider produced no answer for this attempt; only the
 # default teacher re-arms them (a queued case is reserved again later).
 REARMABLE=('pre_send_rejected','provider_refused')
@@ -62,6 +65,13 @@ def stage(db,project_key,request_id,phase):
     row=db.execute('SELECT stage FROM project_gold_attempts WHERE project_key=? AND request_id=? AND phase=?',
                    (project_key,request_id,phase)).fetchone()
     return row[0] if row else None
+
+
+def answer(db,project_key,request_id,phase):
+    """``(stage, answer_sha256)`` of one attempt, or None."""
+    ensure(db)
+    return db.execute('SELECT stage,answer_sha256 FROM project_gold_attempts WHERE project_key=? AND request_id=? AND phase=?',
+                      (project_key,request_id,phase)).fetchone()
 
 
 def transition(db,project_key,request_id,phase,expected,new,*,answer_sha256=None,

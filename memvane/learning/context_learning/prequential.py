@@ -65,6 +65,37 @@ def min_nonempty_validation(grant) -> int:
     return MIN_NONEMPTY_VALIDATION if default_teacher_grant(grant) else 0
 
 
+def _admitted_row(row, statuses, cutoff):
+    """The admitted row of one ``COLUMNS`` row, or None; no other row matters."""
+    if row[12] not in statuses or row[13] != 'active' or row[11] < cutoff:
+        return None
+    try:
+        if digest(row[3]) != row[2]:
+            return None
+        sample = json.loads(row[3])
+        bodies = json.loads(row[4])
+        if sample['request_id'] != row[1] or not _edit(sample):
+            return None
+        if row[5] is not None:
+            gold = json.loads(row[5])
+            if (gold['input_sha256'] != row[2] or not isinstance(gold['selected_ids'], list)
+                    or len(gold['selected_ids']) > 3
+                    or not set(gold['selected_ids']) <= set(bodies)):
+                return None
+        elif row[12] == 'gold':
+            return None
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    return (ROLE, tuple(row[:12]) + (ROLE + '/' + digest(row[1]),))
+
+
+def _scope(project, grant):
+    project = Path(project).resolve(strict=True)
+    if grant.get('projectRoot') != str(project):
+        raise ValueError('project_cohort_scope_changed')
+    return project, grant['cohort']['notBeforeUnixMs'] / 1000
+
+
 @prepared
 def admitted(db, project, grant, statuses=('queued',)):
     """Active v5 edit cases in capture order, shaped like ``general_cohort.admitted``.
@@ -72,36 +103,25 @@ def admitted(db, project, grant, statuses=('queued',)):
     Each row is ``('train', row[:12] + (family,))`` where the family marker is
     unique per case, so family-count limits equal case-count limits.
     """
-    project = Path(project).resolve(strict=True)
-    if grant.get('projectRoot') != str(project):
-        raise ValueError('project_cohort_scope_changed')
-    cutoff = grant['cohort']['notBeforeUnixMs'] / 1000
+    project, cutoff = _scope(project, grant)
     rows = db.execute('SELECT ' + COLUMNS + ' FROM cases WHERE project_root=? '
                       'ORDER BY captured_at,request_id', (str(project),))
     result = []
     for row in rows:
         preparation_checkpoint()
-        if row[12] not in statuses or row[13] != 'active' or row[11] < cutoff:
-            continue
-        try:
-            if digest(row[3]) != row[2]:
-                continue
-            sample = json.loads(row[3])
-            bodies = json.loads(row[4])
-            if sample['request_id'] != row[1] or not _edit(sample):
-                continue
-            if row[5] is not None:
-                gold = json.loads(row[5])
-                if (gold['input_sha256'] != row[2] or not isinstance(gold['selected_ids'], list)
-                        or len(gold['selected_ids']) > 3
-                        or not set(gold['selected_ids']) <= set(bodies)):
-                    continue
-            elif row[12] == 'gold':
-                continue
-        except (KeyError, TypeError, ValueError, AttributeError):
-            continue
-        result.append((ROLE, tuple(row[:12]) + (ROLE + '/' + digest(row[1]),)))
+        item = _admitted_row(row, statuses, cutoff)
+        if item is not None:
+            result.append(item)
     return result
+
+
+@prepared
+def admitted_one(db, project, grant, request_id, statuses=('queued',)):
+    """``admitted`` for one case: its admitted row, or None. Reads only that row."""
+    project, cutoff = _scope(project, grant)
+    row = db.execute('SELECT ' + COLUMNS + ' FROM cases WHERE project_root=? AND request_id=?',
+                     (str(project), request_id)).fetchone()
+    return None if row is None else _admitted_row(row, statuses, cutoff)
 
 
 def training_rows(db, project, grant):

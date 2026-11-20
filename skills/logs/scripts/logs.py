@@ -421,7 +421,9 @@ def summary(rows, args):
     _teacher_summary(window)
 
 
-_CALL_OUTCOMES = ('gold', 'pending_review', 'pre_send_rejected', 'provider_refused')
+_CALL_OUTCOMES = ('gold', 'pending_review', 'pre_send_rejected', 'provider_refused', 'parked')
+# A kept (parked) answer committed by a later pass: its call and usage are on the ``parked`` row.
+_FROM_PARKED = 'parked_answer'
 _USAGE = ('usageIn', 'usageOut', 'usageCached', 'usageReasoning')
 _SCORE_KEYS = ('cases', 'exactRate', 'microF1', 'emptyAgree', 'nonEmptyAgree', 'defaultRank',
                'unknownSelection', 'goldOutsideK')
@@ -439,13 +441,14 @@ def _number(value):
 def _teacher_summary(window):
     """Default-teacher lines: calls, usage, waits, isolation, scores and promotions."""
     teacher = [row for row in window if row.get('event') == 'learning.teacher']
-    calls = [row for row in teacher if row.get('outcome') in _CALL_OUTCOMES and row.get('request_id')]
+    calls = [row for row in teacher if row.get('outcome') in _CALL_OUTCOMES and row.get('request_id')
+             and not (row.get('outcome') == 'gold' and row.get('reason') == _FROM_PARKED)]
     days = {}
     for row in calls:
         day = (_ts(row) or _EPOCH).date().isoformat()
         entry = days.setdefault(day, {'calls': 0, 'failed': Counter(), 'usage': Counter()})
         entry['calls'] += 1
-        if row.get('outcome') != 'gold':
+        if row.get('outcome') not in ('gold', 'parked'):
             entry['failed'][str(row.get('reason') or row.get('outcome'))] += 1
         for key in _USAGE:
             if type(row.get(key)) is int and row[key] >= 0:
@@ -455,7 +458,11 @@ def _teacher_summary(window):
         usage = ' '.join(f'{key}={entry["usage"][key]}' for key in _USAGE if key in entry['usage'])
         print(f"teacher {day}: calls={entry['calls']} failed={failed}"
               + (f' ({_tally(entry["failed"])})' if failed else '') + (f' {usage}' if usage else ''))
-    gold = [row for row in calls if row.get('outcome') == 'gold']
+    gold = [row for row in teacher if row.get('outcome') == 'gold' and row.get('request_id')]
+    parked = sum(1 for row in calls if row.get('outcome') == 'parked')
+    if parked:
+        later = sum(1 for row in gold if row.get('reason') == _FROM_PARKED)
+        print(f'teacher parked answers: kept={parked} committed_later={later}')
     if gold:
         selected = Counter(row.get('selectedCount') for row in gold
                            if row.get('selectedCount') in (0, 1, 2, 3))
