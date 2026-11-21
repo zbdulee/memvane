@@ -228,16 +228,19 @@ def _need_signals_on():
             and os.environ.get(NEED_SWITCH, '').strip().lower() != 'off')
 
 
-def _need_signals(store, pin, queries, timings, deadline, limit):
+def _need_signals(store, pin, queries, timings, deadline, limit, excluded=None):
     """Search-need judge signals (design §N stage 1 input); recorded, never decided on.
 
     Each distinct atom of the conjunctive queries (at most ``NEED_ATOMS``) is
-    searched alone on the same pin. ``needAtomsRare`` counts atoms with a hit
-    list shorter than ``limit`` (rare terms). The probes share
-    ``NEED_BUDGET_SECONDS`` and stop when it is spent or the reader has less
-    than ``NEED_READER_RESERVE_SECONDS`` left (``needProbeTruncated``). A probe
-    failure is swallowed: recall rows, order and injection never depend on it.
-    No term text is recorded.
+    counted alone on the same pin in one count-only read (``probe_terms``: no
+    card body), without the wiki-root meta pages the lexical lane drops
+    (``excluded``). ``needAtomsRare`` counts atoms with fewer hits than
+    ``limit`` (rare terms) and ``needRareTopScore`` is the best (lowest) bm25
+    among them. The read gets ``NEED_BUDGET_SECONDS``, less when the reader
+    would be left with under ``NEED_READER_RESERVE_SECONDS``; atoms it did not
+    reach, or a failure, set ``needProbeTruncated``. A probe failure is
+    swallowed: recall rows, order and injection never depend on it. No term
+    text is recorded.
     """
     started = time.monotonic()
     probed = hit = rare = 0
@@ -245,24 +248,22 @@ def _need_signals(store, pin, queries, timings, deadline, limit):
     truncated = False
     try:
         atoms = list(dict.fromkeys(atom for query in queries for atom in query.split(' AND ') if atom))
-        for atom in atoms[:NEED_ATOMS]:
-            left = NEED_BUDGET_SECONDS - (time.monotonic() - started)
-            if left <= 0 or deadline - time.monotonic() < NEED_READER_RESERVE_SECONDS:
-                truncated = True
-                break
-            try:
-                rows = store.search(pin, atom, limit, deadline_seconds=left)
-            except Exception:
-                truncated = True
-                break
-            probed += 1
-            hit += bool(rows)
-            if 0 < len(rows) < limit:
-                rare += 1
-                scores = [row['score'] for row in rows
-                          if type(row.get('score')) in (int, float) and math.isfinite(row['score'])]
-                if scores and (top is None or max(scores) > top):
-                    top = max(scores)
+        atoms = atoms[:NEED_ATOMS]
+        left = min(NEED_BUDGET_SECONDS, deadline - time.monotonic() - NEED_READER_RESERVE_SECONDS)
+        if atoms and left <= 0:
+            truncated = True
+        elif atoms:
+            answers = store.probe_terms(pin, atoms, limit, excluded_paths=excluded,
+                                        deadline_seconds=left)
+            truncated = len(answers) < len(atoms)
+            for count, score in answers:
+                probed += 1
+                hit += bool(count)
+                if 0 < count < limit:
+                    rare += 1
+                    if (type(score) in (int, float) and math.isfinite(score)
+                            and (top is None or score < top)):
+                        top = score
     except Exception:
         truncated = True
     # Diagnostic only, never checked: probe failure never affects recall.
@@ -276,8 +277,8 @@ def _lexical_signals(timings, queries, lexical):
     """Shadow signals of the search-need judge (design §N stage 0); counts only.
 
     The conjunctive lexical lists before any single-term retry: how many
-    queries ran, how many distinct cards they hit and the best list score.
-    Nothing decides on them in this release.
+    queries ran, how many distinct cards they hit and the best list score
+    (the lowest bm25). Nothing decides on them in this release.
     """
     try:
         paths = {row['path'] for lane in lexical for row in lane}
@@ -285,7 +286,7 @@ def _lexical_signals(timings, queries, lexical):
                   if type(row['score']) in (int, float) and math.isfinite(row['score'])]
         timings['lexicalQueries'] = len(queries)
         timings['lexicalHits'] = len(paths)
-        timings['lexicalTopScore'] = round(float(max(scores)), 6) if scores else None
+        timings['lexicalTopScore'] = round(float(min(scores)), 6) if scores else None
     except Exception:
         pass
 
@@ -391,7 +392,10 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                 if timings is not None:
                     timings['lexicalMs'] = round((time.monotonic() - started) * 1000, 3)
             if timings is not None and _need_signals_on():
-                _need_signals(store, pin, queries, timings, deadline, HYBRID_LIST_LIMIT)  # Diagnostic only, never checked.
+                # Diagnostic only, never checked. The same wiki-root meta pages ``shaped`` drops.
+                from memvane.settings.api import wiki_meta_pages
+                _need_signals(store, pin, queries, timings, deadline, HYBRID_LIST_LIMIT,
+                              excluded=wiki_meta_pages() if len(roots) == 1 else None)
             status='provider_absent' if query_vector is None else 'lexical_only' if vector is None else 'complete'
             nearest=None
             if semantic:

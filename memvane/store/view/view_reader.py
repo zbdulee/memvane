@@ -205,6 +205,17 @@ class ReaderMixin:
         return self._rows_search(pin, fts_query, limit, path_prefixes=path_prefixes,
                                  excluded_paths=excluded_paths, deadline_seconds=deadline_seconds)
 
+    def probe_terms(self, pin, fts_queries, limit, *, excluded_paths=None, deadline_seconds=2):
+        """``[(hit count up to limit, best bm25 score or None), ...]`` of each query, in order.
+
+        A count-only diagnostic read in one read session on the pinned head:
+        no card body, checkout observation or snapshot state is read, so it
+        proves nothing about any card. A deadline ends it early with the
+        queries finished so far (a shorter list). The lowest bm25 is the best.
+        """
+        return self._rows_probe_terms(pin, fts_queries, limit, excluded_paths=excluded_paths,
+                                      deadline_seconds=deadline_seconds)
+
     def card_locations(self, pin, paths, *, deadline_seconds=2):
         """Source line locators of pinned members, from stored card provenance only.
 
