@@ -127,6 +127,10 @@ def run(root, project, config=None):
             quota={'status':'not_applicable_local_only'}
         elif kind=='default-teacher':
             from . import prequential
+            from .case_rotation import rotate_quietly
+            # Ignored on failure: nothing was deleted and the next pass plans again
+            # (the delete itself is checked inside its transaction).
+            rotate_quietly(root,project,grant)
             # Before the teacher, whatever its state: a late gold keeps the capture-time kind.
             try:prequential.prerecord_selections(root,project,grant)
             except Exception:pass  # Diagnostic only; the next pass looks again.
