@@ -40,6 +40,12 @@ def _capture_input():
     return capture, started
 
 
+def _edit_target(capture):
+    """``main`` or ``linked`` of the capture input's edit, for the event row."""
+    value = capture[2].get('_memvane_edit_target') if isinstance(capture[2], dict) else None
+    return value if value in ('main', 'linked') else None
+
+
 def learning_capture_worker():
     try:
         capture, _started = _capture_input()
@@ -92,7 +98,7 @@ def learning_capture():
             try:
                 from memvane.diagnostics.api import emit
                 emit('learning.capture', outcome='deferred', reason='capture_budget_unavailable',
-                     decision=capture[1], host=capture[0])
+                     decision=capture[1], host=capture[0], editTarget=_edit_target(capture))
             except Exception:
                 pass
             return 0
@@ -100,7 +106,7 @@ def learning_capture():
     try:
         from memvane.diagnostics.api import emit
         emit('learning.capture', outcome='lost', reason=reason,
-             decision=capture[1], host=capture[0])
+             decision=capture[1], host=capture[0], editTarget=_edit_target(capture))
     except Exception:
         pass
     return 2

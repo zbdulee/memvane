@@ -357,9 +357,12 @@ def admission_policy(policy):
 class TrainingGuard:
     """Used only by an explicitly coordinated local trainer request."""
     def __init__(self,control):
+        # One code per check, so a refused control request names what was wrong.
         if (not isinstance(control,dict) or set(control)!={'schema','root','policy','namespace','job_id'}
-                or control['schema']!=1 or control['root']!=str(default_root())):
-            raise ValueError('learning_control_invalid')
+                or control['schema']!=1):
+            raise ValueError('learning_control_invalid:keys')
+        if control['root']!=str(default_root()):
+            raise ValueError('learning_control_invalid:root')
         self.controller=Coordinator(Path(control['root']))
         self.policy=control['policy'];self.report=None;self.next_probe=0;self.resident_credit=0
         # Only the inherited OS lease can authorize a child as this trainer.
@@ -369,7 +372,7 @@ class TrainingGuard:
         if (info.st_dev,info.st_ino)!=(expected.st_dev,expected.st_ino):raise ValueError('learning_lease_changed')
         self.fd=fd
         try:self.stop_fd=int(os.environ['QMD_TRAINER_STOP_FD']) if os.environ.get('QMD_TRAINER_STOP_FD') else None
-        except ValueError:raise ValueError('learning_control_invalid') from None
+        except ValueError:raise ValueError('learning_control_invalid:stop_fd') from None
 
     def poll(self):
         poll_stop(self.stop_fd)
@@ -400,7 +403,7 @@ def poll_stop(fd):
         return
     try:
         if not stat.S_ISFIFO(os.fstat(fd).st_mode):
-            raise ValueError('learning_control_invalid')
+            raise ValueError('learning_control_invalid:stop_fd')
         if select.select([fd], [], [], 0)[0]:
             os.read(fd, 1)
             raise ValueError('learning_yield')

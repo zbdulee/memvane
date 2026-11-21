@@ -14,6 +14,7 @@ import stat
 import sys
 import tempfile
 import time
+import traceback
 
 # LocalTrainer executes this file directly, before any request guard runs.
 sys.path.insert(0,str(Path(__file__).resolve().parents[3]))
@@ -826,37 +827,35 @@ def main(argv):
 
 
 _SAFE_ERRORS = {
-    'cpu_thread_configuration_invalid','cpu_thread_configuration_unavailable',
-    'learning_yield','learning_control_invalid','learning_cursor_changed',
-    'learning_update_budget_exceeded','learning_lease_missing','learning_lease_changed',
-    'model_token_budget_exceeded', 'tokenizer_model_limit_exceeded',
-    'model_input_view_unsupported', 'invalid_complete_input',
-    'invalid_request_file', 'invalid_predict_request',
-    'head_artifact_provenance_mismatch', 'missing_artifact',
-    'invalid_model_max_len', 'unexpected_laya_logit_shape',
-    'checkpoint_reload_logits_changed', 'invalid_candidate_pool',
-    'invalid_case_count', 'invalid_case', 'invalid_model_input_view',
-    'invalid_edit_segmentation', 'edit_tokenizer_unsupported',
-    'invalid_edit_offsets', 'invalid_edit_window', 'invalid_edit_overlap',
-    'edit_segment_limit', 'edit_segment_coverage_failed',
-    'invalid_training_limits', 'training_memory_profile_changed',
-    'training_memory_unavailable', 'training_memory_budget',
+    'cpu_thread_configuration_invalid', 'cpu_thread_configuration_unavailable', 'learning_yield',
+    'learning_control_invalid', 'learning_control_invalid:root', 'learning_control_invalid:keys',
+    'learning_control_invalid:stop_fd', 'learning_cursor_changed', 'learning_update_budget_exceeded',
+    'learning_lease_missing', 'learning_lease_changed', 'model_token_budget_exceeded',
+    'tokenizer_model_limit_exceeded', 'model_input_view_unsupported', 'invalid_complete_input',
+    'invalid_request_file', 'invalid_predict_request', 'head_artifact_provenance_mismatch', 'missing_artifact',
+    'invalid_model_max_len', 'unexpected_laya_logit_shape', 'checkpoint_reload_logits_changed',
+    'invalid_candidate_pool', 'invalid_case_count', 'invalid_case', 'invalid_model_input_view',
+    'invalid_edit_segmentation', 'edit_tokenizer_unsupported', 'invalid_edit_offsets', 'invalid_edit_window',
+    'invalid_edit_overlap', 'edit_segment_limit', 'edit_segment_coverage_failed', 'invalid_training_limits',
+    'training_memory_profile_changed', 'training_memory_unavailable', 'training_memory_budget',
 }
 
 
 def _safe_error(exc):
     """Never copy source text, a traceback, or a local path into diagnostics."""
-    if isinstance(exc, MemoryError):
-        return 'adapter_memory_error'
-    if isinstance(exc, PermissionError):
-        return 'adapter_permission_error'
-    if isinstance(exc, FileNotFoundError):
-        return 'adapter_file_missing'
-    if isinstance(exc, RuntimeError):
-        return 'adapter_runtime_error'
+    for kind, code in ((MemoryError, 'adapter_memory_error'), (PermissionError, 'adapter_permission_error'),
+                       (FileNotFoundError, 'adapter_file_missing'), (RuntimeError, 'adapter_runtime_error')):
+        if isinstance(exc, kind):
+            return code
     if isinstance(exc, ValueError) and str(exc) in _SAFE_ERRORS:
         return str(exc)
     return 'adapter_unclassified_error'
+
+
+def _error_site(exc):
+    """``file.py:line function`` of the last eight frames: no message, value or directory."""
+    frames = [(frame.f_code, line) for frame, line in traceback.walk_tb(exc.__traceback__)][-8:]
+    return ['%s:%d %s' % (os.path.basename(code.co_filename)[:80], line, code.co_name[:80]) for code, line in frames]
 
 
 if __name__ == '__main__':
@@ -866,7 +865,7 @@ if __name__ == '__main__':
         if len(sys.argv) == 5:
             try:
                 _write_json(sys.argv[4], {'schema_version': 1,
-                          'error_code': _safe_error(exc)})
+                          'error_code': _safe_error(exc), 'error_site': _error_site(exc)})
             except (OSError, ValueError):
                 pass
         raise SystemExit(1)

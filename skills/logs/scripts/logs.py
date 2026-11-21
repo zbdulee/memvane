@@ -531,6 +531,13 @@ def _learning_inflow(window, promotions):
         print(f'edit recall funnel: posttool={len(posttool)}'
               + (f' ({_tally(skips)})' if skips else '')
               + f' recall.edit={len(edits)} stored={len(stored)}')
+        # Where the edited files lie: the main checkout, a linked worktree of the
+        # same repository, or outside the repository (never a case).
+        targets = [(name, _edit_targets(rows)) for name, rows in
+                   (('posttool', posttool), ('recall.edit', edits), ('stored', stored))]
+        if any(tally for _, tally in targets):
+            print('edit recall targets: ' + '; '.join(
+                f'{name} {_tally(tally)}' for name, tally in targets if tally))
     scores = [row for row in window if row.get('event') == 'learning.score' and _count(row.get('gold'))]
     if scores:
         last = scores[-1]
@@ -556,11 +563,22 @@ def _learning_inflow(window, promotions):
     if deferred or trained:
         last = (str(trained[-1].get('ts', ''))[:19].replace('T', ' ') if trained else 'none')
         print('learning deferred: ' + (_tally(deferred) if deferred else 'none') + f'; last trained {_esc(last)}')
-    rotated = [row.get('count') for row in window if row.get('event') == 'learning.rotation'
-               and _count(row.get('count'))]
-    if rotated:
-        print(f'learning rotation: deleted={sum(rotated)} passes={len(rotated)}')
+    rotations = [row for row in window if row.get('event') == 'learning.rotation']
+    rotated = [row['count'] for row in rotations if row.get('outcome') == 'deleted' and _count(row.get('count'))]
+    idle = Counter(str(row.get('outcome')) for row in rotations
+                   if row.get('outcome') in ('nothing_closed', 'deferred'))
+    if rotated or idle:
+        # nothing_closed: the table is over its limit and every row is still protected.
+        print(f'learning rotation: deleted={sum(rotated)} passes={len(rotated)}'
+              + (f' ({_tally(idle)})' if idle else ''))
     _selector_maintenance(window)
+
+
+_EDIT_TARGETS = ('main', 'linked', 'linked_unproved', 'mixed', 'outside')
+
+
+def _edit_targets(rows):
+    return Counter(row['editTarget'] for row in rows if row.get('editTarget') in _EDIT_TARGETS)
 
 
 def _selector_maintenance(window):
@@ -573,6 +591,10 @@ def _selector_maintenance(window):
     for outcome in ('deferred', 'failed'):
         reasons = Counter(str(row.get('reason')) for row in runs if row['outcome'] == outcome)
         parts.append(f'{outcome}={sum(reasons.values())}' + (f' ({_tally(reasons)})' if reasons else ''))
+    stopped = Counter(str(row['incomplete']) for row in runs if isinstance(row.get('incomplete'), str))
+    if stopped:
+        # The step an unfinished run (``maintenance_incomplete``) stopped at.
+        parts.append(f'incomplete({_tally(stopped)})')
     busy = [row['busyRetries'] for row in runs if _count(row.get('busyRetries'))]
     if busy:
         # Consecutive retries behind another install's prepare lease (not failures).

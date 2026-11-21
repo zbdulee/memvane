@@ -70,7 +70,7 @@ class Watch:
 def poll_stop(fd):
     if fd is None:return
     try:
-        if not stat.S_ISFIFO(os.fstat(fd).st_mode):raise ValueError('learning_control_invalid')
+        if not stat.S_ISFIFO(os.fstat(fd).st_mode):raise ValueError('learning_control_invalid:stop_fd')
         if select.select([fd],[],[],0)[0]:
             os.read(fd,1)  # A stop byte OR parent EOF is a one-way yield request.
             raise ValueError('learning_yield')

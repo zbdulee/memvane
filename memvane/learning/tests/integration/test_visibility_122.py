@@ -130,10 +130,25 @@ class Funnel(StateRoot):
                               r'candidateEvalNonEmpty=25/10 candidateEvalEmpty=6/10 last=waiting ')
         self.assertNotIn('WARNING learning case table', out)
 
+    def test_t15_funnel_counts_edit_targets(self):
+        for target, reason in (('linked', None), ('linked', 'skip_throttled'), ('main', None),
+                               ('outside', 'skip_outside_project'),
+                               ('linked_unproved', 'skip_checkout_proof_timeout'),
+                               ('mixed', 'skip_mixed_checkout'), ('elsewhere', None)):
+            self.emit('posttool', outcome='empty', editRecall=reason, editTarget=target)
+        self.emit('posttool', outcome='empty', editRecall='skip_outside_project')
+        self.emit('recall.edit', outcome='served', reason='injected', editTarget='linked')
+        self.emit('recall.edit', outcome='empty', reason='no_new_cards', editTarget='main')
+        self.emit('learning.capture', outcome='stored', editTarget='linked')
+        self.emit('learning.capture', outcome='edit_git_ignored', editTarget='linked')
+        out = self.summary()
+        self.assertIn('edit recall targets: posttool linked 2, linked_unproved 1, main 1, mixed 1, '
+                      'outside 1; recall.edit linked 1, main 1; stored linked 1', out)
+
     def test_t10_2_no_events_no_lines(self):
         self.emit('recall', outcome='empty')
         out = self.summary()
-        for line in ('edit recall funnel', 'promotion progress', 'learning deferred'):
+        for line in ('edit recall funnel', 'edit recall targets', 'promotion progress', 'learning deferred'):
             self.assertNotIn(line, out)
 
     def test_t10_score_rows_carry_progress_counts(self):
@@ -215,6 +230,18 @@ class Deferral(StateRoot):
         # Two calls (one gold, one set aside) and the gold a kept answer became without a call.
         self.assertRegex(out, r'teacher \d{4}-\d\d-\d\d: calls=2 gold=2 failed=1 '
                               r'\(gold_attempt_failed 1\) usageIn=10')
+
+    def test_summary_names_the_unfinished_maintenance_step_and_idle_rotation(self):
+        for step in ('warm_status', 'warm_status', 'publish_owner_busy'):
+            self.emit('learning.selector.maintenance', outcome='deferred',
+                      reason='maintenance_incomplete', incomplete=step, stage='warm')
+        self.emit('learning.rotation', outcome='nothing_closed', count=0, caseRows=1900,
+                  protected=1900, limit=1800)
+        self.emit('learning.rotation', outcome='deferred', reason='case_rotation_changed')
+        out = self.summary()
+        self.assertIn('selector maintenance: completed=0 deferred=3 (maintenance_incomplete 3) failed=0 '
+                      'incomplete(publish_owner_busy 1, warm_status 2)', out)
+        self.assertIn('learning rotation: deleted=0 passes=0 (deferred 1, nothing_closed 1)', out)
 
     def test_summary_has_no_maintenance_or_rotation_line_without_rows(self):
         self.emit('learning.selector.maintenance', outcome='started')

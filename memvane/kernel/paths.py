@@ -106,13 +106,42 @@ def repo_facts(path, *, deadline: float | None = None, env: dict | None = None,
             'linked': git_dir != common_dir}
 
 
-def linked_worktree(cwd) -> dict | None:
+def dotgit_shape(dotgit: Path) -> tuple | None:
+    """``('dir',)``, ``('worktree', main top level)`` or ``('other',)`` of a ``.git`` entry.
+
+    Reads only the ``gitdir:`` pointer of a ``.git`` file. It sorts an edited
+    path before any git process runs and proves nothing: ``linked_worktree``
+    is the proof. None when the entry cannot be read.
+    """
+    try:
+        if dotgit.is_symlink():
+            return ('other',)
+        if dotgit.is_dir():
+            return ('dir',)
+        with open(dotgit, 'rb') as handle:
+            raw = handle.read(4097)
+        if len(raw) > 4096 or not raw.startswith(b'gitdir:'):
+            return ('other',)
+        pointer = Path(os.fsdecode(raw[len(b'gitdir:'):].split(b'\n', 1)[0].strip()))
+        if not pointer.is_absolute():
+            pointer = dotgit.parent / pointer
+        pointer = pointer.resolve(strict=False)
+        common = pointer.parent.parent
+        if pointer.parent.name != 'worktrees' or common.name != '.git':
+            return ('other',)
+        return ('worktree', common.parent)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def linked_worktree(cwd, *, deadline: float | None = None) -> dict | None:
     """Prove ``cwd`` is inside a linked worktree of a non-bare main checkout.
 
     Returns ``{worktreeRoot, mainRoot, gitDir, commonDir}`` only when git
     reports a git dir under ``<common>/worktrees/`` and the main checkout's own
     git dir is that common dir. Submodules, bare repos, symlinked ``.git``
     entries and any git failure return None (the caller keeps its old path).
+    ``deadline`` (monotonic) bounds both git calls; past it the answer is None.
     """
     try:
         start = Path(cwd).resolve()
@@ -121,7 +150,7 @@ def linked_worktree(cwd) -> dict | None:
         # checkout never pays for a git process here.
         if dotgit is None or dotgit.is_symlink() or not dotgit.is_file():
             return None
-        facts = repo_facts(start)
+        facts = repo_facts(start, deadline=deadline)
         if facts is None or not facts['linked']:
             return None
         worktree, common = facts['toplevel'], facts['commonDir']
@@ -130,7 +159,7 @@ def linked_worktree(cwd) -> dict | None:
                 or common.is_symlink() or not common.is_dir()):
             return None
         main = common.parent
-        main_facts = repo_facts(main)
+        main_facts = repo_facts(main, deadline=deadline)
         if (main_facts is None or main_facts['linked']
                 or main_facts['toplevel'] != main or main_facts['gitDir'] != common
                 or main == worktree):

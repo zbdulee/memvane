@@ -26,10 +26,19 @@ most 15 cards with their frontmatter-free bodies, the selector's choice or the
 ranked card as `baseline_selected_ids`, and an `edit_event` of hashes and ids
 (`path_sha256`, `after_sha256`, `operation`, `session_id`, `tool_use_id`,
 `truncated`, `injected_ids`). The edited path itself is not stored. The case's
-`request_id` is the `recall.edit` event's. Only the main checkout of an
-enrolled project captures, with a pool of at least two cards; a git-ignored
-edited file, a teacher input over 65,536 bytes or credential-shaped text stores
-nothing. In a default-teacher namespace v5 cases are the default teacher's
+`request_id` is the `recall.edit` event's. Only an enrolled project captures,
+with a pool of at least two cards; a
+git-ignored edited file, a teacher input over 65,536 bytes or credential-shaped
+text stores nothing. An edit a main-checkout session makes in a linked git
+worktree of the same repository is a case of the main project (`editTarget: linked`): the
+pool is the main view's, the capture child proves the worktree's project root
+by its route again (`edit_checkout_unproved` otherwise) and reads the file hash
+there, a path that either checkout's git ignores is not stored, and the
+worktree's own settings may turn capture off (`disabled_in_checkout`). A
+session opened in a linked worktree searches that worktree's own view; its pool
+is a case of the main project only while every card equals the main head, and
+otherwise nothing is stored (`edit_view_diverged`). A folder outside the
+repository is never a case. In a default-teacher namespace v5 cases are the default teacher's
 input (see Default teacher); explicit profiles' cohort admission skips them.
 The first worker pass of a default
 namespace deletes, once, the prompt cases of schema 4 or lower (shared `cases`
@@ -484,8 +493,13 @@ captured before the teacher consent's `grantedAtUnixMs` stays out of labeling
 and training as `historical` (`pre_teacher_capture`); that rule deletes none.
 
 Above 1,800 rows a default-teacher worker pass deletes this project's oldest
-closed cases until the table is back at 1,800 (`case_rotation.py`, one
-transaction, `learning.rotation` with the deleted `count`). Closed means
+closed cases until the table is back at 1,800 (`case_rotation.py`,
+`learning.rotation` with the deleted `count`). The plan is read without a
+transaction, so a hook's capture never waits behind it, and the deletes run in
+one short write transaction. A plan that finds nothing closed
+(`nothing_closed`) is remembered by the counts and states it depends on
+(`case-rotation-status.json` in the namespace) and is not repeated while they
+stay the same. Closed means
 consumed gold, `pending_review` and `historical`. It never deletes a case
 that is not closed (`queued`, `first_running`, `first_done`), the newest 128
 gold and the newest 128 consumed gold, gold no trained job has consumed, the

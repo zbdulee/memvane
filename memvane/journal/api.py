@@ -1,9 +1,10 @@
 """Public journal selection and worker proof operations."""
 
 
-def select_route(cwd, *, action='recall', linked=True):
+def select_route(cwd, *, action='recall', linked=True, deadline=None):
     from memvane.journal.route_selection import select_route as implementation
-    return implementation(cwd, action=action, linked=linked)
+    given = {'deadline': deadline} if deadline is not None else {}
+    return implementation(cwd, action=action, linked=linked, **given)
 
 def inspect_journal(journal_path):
     from memvane.journal.install_journal import inspect_journal as implementation

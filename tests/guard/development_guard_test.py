@@ -381,5 +381,150 @@ class GuardChecks(unittest.TestCase):
                 self.assertEqual(state['reason'],reason)
                 self.assertFalse(state['completed']);self.assertTrue(state['settled'])
 
+    def _run(self,folder,rows,samples,child,**patches):
+        """One guarded ``hash`` job over scripted process listings and system samples."""
+        from types import SimpleNamespace
+        args=SimpleNamespace(kind='hash',command=['git','status'],max_seconds=60,sample_seconds=2)
+        with patch.object(guard,'execution_hold',return_value=False), \
+             patch.object(guard,'system_sample',side_effect=samples), \
+             patch.object(guard,'processes',side_effect=rows), \
+             patch.object(guard.subprocess,'Popen',return_value=child), \
+             patch.object(guard.time,'sleep'):
+            code=guard.run_job(args,Path(folder))
+        return code,guard.json.loads((Path(folder)/'active.json').read_text())
+
+    SAMPLE={'total_bytes':10000,'available_percent':70,'pressure':'normal',
+            'swap_bytes':0,'load_per_cpu':0,'cpu_count':4}
+
+    def test_two_failed_observations_in_a_row_do_not_stop_the_run(self):
+        from types import SimpleNamespace
+        lost=guard.GuardError('monitor_unavailable')
+        alive=[proc(500,1,500)]
+        # preflight, sample, two failures (process list, then system sample), recovery, exit.
+        rows=iter([[],alive,lost,alive,alive,[]])
+        samples=iter([self.SAMPLE,self.SAMPLE,lost,self.SAMPLE,self.SAMPLE])
+        def step(source):
+            value=next(source)
+            if isinstance(value,Exception):raise value
+            return value
+        polls=iter([None,None,0])
+        child=SimpleNamespace(pid=500,poll=lambda:next(polls))
+        with tempfile.TemporaryDirectory() as folder, patch.object(guard,'cleanup') as cleanup:
+            code,state=self._run(folder,lambda:step(rows),lambda:step(samples),child)
+            cleanup.assert_not_called()
+        self.assertEqual(code,0)
+        self.assertEqual((state['status'],state['settled'],state['monitorFailures']),('passed',True,2))
+
+    def test_three_failed_observations_in_a_row_stop_and_settle_the_tree(self):
+        from types import SimpleNamespace
+        lost=guard.GuardError('monitor_unavailable')
+        alive=[proc(500,1,500),proc(501,500,501)]
+        killed=[]
+        state={'listing':iter([[],alive,lost,lost,lost])}
+        def rows():
+            # Loop listings first; cleanup then sees the tree until both are signalled.
+            try:value=next(state['listing'])
+            except StopIteration:return [] if len(killed)>=2 else alive
+            if isinstance(value,Exception):raise value
+            return value
+        child=SimpleNamespace(pid=500,poll=lambda:None)
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(guard.os,'kill',side_effect=lambda pid,sig:killed.append((pid,sig))):
+            code,saved=self._run(folder,rows,lambda:self.SAMPLE,child)
+        self.assertEqual(code,75)
+        self.assertEqual((saved['status'],saved['reason'],saved['settled'],saved['monitorFailures']),
+                         ('stopped','monitor_unavailable',True,3))
+        self.assertEqual(sorted(killed),[(500,guard.signal.SIGTERM),(501,guard.signal.SIGTERM)])
+
+    def test_a_malformed_sample_counts_as_a_failed_observation(self):
+        from types import SimpleNamespace
+        bad=dict(self.SAMPLE,pressure='unknown')
+        alive=[proc(500,1,500)]
+        rows=iter([[],alive,alive,[]])
+        polls=iter([None,0])
+        child=SimpleNamespace(pid=500,poll=lambda:next(polls))
+        args=SimpleNamespace(kind='backup',command=['python3','copy.py'],max_seconds=60,sample_seconds=2)
+        with tempfile.TemporaryDirectory() as folder, patch.object(guard,'execution_hold',return_value=False), \
+             patch.object(guard,'system_sample',side_effect=[self.SAMPLE,bad,self.SAMPLE,self.SAMPLE]), \
+             patch.object(guard,'processes',side_effect=lambda:next(rows)), \
+             patch.object(guard.subprocess,'Popen',return_value=child), \
+             patch.object(guard.time,'sleep'), patch.object(guard,'cleanup') as cleanup:
+            self.assertEqual(guard.run_job(args,Path(folder)),0)
+            cleanup.assert_not_called()
+            state=guard.json.loads((Path(folder)/'active.json').read_text())
+        self.assertEqual((state['status'],state['monitorFailures']),('passed',1))
+
+    def test_cleanup_reads_a_failed_listing_again_and_waits_for_a_slow_exit(self):
+        tree=guard.OwnedTree(500);tree.observe([proc(500,1,500),proc(501,500,501)])
+        alive=[proc(500,1,500),proc(501,500,501)]
+        lost=guard.GuardError('monitor_unavailable')
+        # A failed listing, TERM, still there, KILL, three more listings before it is gone.
+        script=iter([lost,alive,alive,alive,alive,alive,alive,alive,alive,[proc(501,1,501)],[proc(501,1,501)],[]])
+        calls=[]
+        def rows():
+            calls.append(1);value=next(script)
+            if isinstance(value,Exception):raise value
+            return value
+        signals=[]
+        class Child:
+            pid=500
+            def poll(self):return None
+        with patch.object(guard,'processes',side_effect=rows),patch.object(guard.time,'sleep'), \
+             patch.object(guard.os,'kill',side_effect=lambda pid,sig:signals.append((pid,sig))):
+            self.assertTrue(guard.cleanup(tree,Child()))
+        self.assertEqual(len(calls),12)
+        self.assertEqual(sorted(signals),[(500,guard.signal.SIGKILL),(500,guard.signal.SIGTERM),
+                                          (501,guard.signal.SIGKILL),(501,guard.signal.SIGTERM)])
+
+    def test_cleanup_without_a_process_list_signals_only_the_unreaped_root(self):
+        tree=guard.OwnedTree(500);tree.observe([proc(500,1,500),proc(501,500,501)])
+        signals=[];waits=[]
+        class Child:
+            pid=500;code=None
+            def poll(self):return self.code
+            def wait(self,timeout=None):
+                waits.append(timeout);self.code=-15;return self.code
+        with patch.object(guard,'processes',side_effect=guard.GuardError('monitor_unavailable')), \
+             patch.object(guard.time,'sleep'), \
+             patch.object(guard.os,'kill',side_effect=lambda pid,sig:signals.append((pid,sig))):
+            self.assertFalse(guard.cleanup(tree,Child()))
+        self.assertEqual(signals,[(500,guard.signal.SIGTERM)])
+        self.assertEqual(waits,[2])
+
+    def test_a_reaped_root_gets_no_signal_when_the_process_list_is_unreadable(self):
+        tree=guard.OwnedTree(500);tree.observe([proc(500,1,500)])
+        class Child:
+            pid=500
+            def poll(self):return 0
+        with patch.object(guard,'processes',side_effect=guard.GuardError('monitor_unavailable')), \
+             patch.object(guard.time,'sleep'),patch.object(guard.os,'kill') as kill:
+            self.assertFalse(guard.cleanup(tree,Child()))
+            kill.assert_not_called()
+
+    def test_the_budget_counts_awake_time_and_the_state_records_the_sleep(self):
+        from types import SimpleNamespace
+        alive=[proc(500,1,500)]
+        rows=iter([[],alive,[]])
+        child=SimpleNamespace(pid=500,poll=lambda:0)
+        # 2,135 s asleep between the first and the last reading of the two clocks.
+        clocks=iter([(100.0,1000.0)])
+        def reading():return next(clocks,(120.0,3155.0))
+        with tempfile.TemporaryDirectory() as folder, patch.object(guard,'sleep_clocks',side_effect=reading), \
+             patch.object(guard.time,'monotonic',return_value=5.0):
+            code,state=self._run(folder,lambda:next(rows),lambda:self.SAMPLE,child)
+            first,*_,last=[guard.json.loads(line) for line in
+                           (Path(state['run'])/'samples.jsonl').read_text().splitlines()]
+        self.assertEqual((code,state['status'],state['sleptSeconds']),(0,'passed',2135.0))
+        self.assertEqual(last['slept_seconds'],2135.0)
+        self.assertNotIn('slept_seconds',first)
+
+    def test_slept_seconds_is_absent_without_the_two_clocks(self):
+        self.assertIsNone(guard.slept_seconds(None))
+        with patch.object(guard,'sleep_clocks',return_value=None):
+            self.assertIsNone(guard.slept_seconds((1.0,2.0)))
+        with patch.object(guard,'sleep_clocks',return_value=(3.0,2.5)):
+            self.assertEqual(guard.slept_seconds((1.0,2.0)),0.0)
+        self.assertEqual(len(guard.sleep_clocks()),2)
+
 
 if __name__=='__main__':unittest.main()

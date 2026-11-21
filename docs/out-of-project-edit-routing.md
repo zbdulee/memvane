@@ -45,6 +45,7 @@ owner는 현재 blob이 같은 원문만 B의 편집 이벤트 compile 정책으
 원문 소실 판정과 카드 퇴역에는 기존 Git 계보·대량 삭제 가드가 적용된다.
 
 미온보딩·preview·연결 worktree·blocked 대상은 알림을 받지 않는다.
+같은 저장소의 연결 worktree 편집은 이 라우팅이 아니라 편집 recall이 main 프로젝트의 편집으로 받는다(`memvane/host/README.md`).
 숨김 경로·도구 메타데이터·wiki·`skipPaths` 경로·symlink 탈출도 제외한다.
 onboarding never/skip은 안내만 숨기므로 이미 선택된 프로젝트를 비활성화하지 않는다.
 

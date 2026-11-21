@@ -83,7 +83,7 @@ class OldBundles(EnabledInstall):
         rows = self.seed_122_rows(include_queued=True)
         files = self.namespace_files()
         refused = 'ValueError:project_scope_authorization_invalid'
-        for tag in [tag for tag in TAGS if tag not in ('v1.0.21', 'v1.0.22')]:
+        for tag in [tag for tag in TAGS if tag not in ('v1.0.21', 'v1.0.22', 'v1.0.23')]:
             with self.subTest(tag=tag):
                 seen = self.observe(tag)
                 # (a) rows and namespace files: only the old worker's own records move.
@@ -188,6 +188,21 @@ class OldBundles(EnabledInstall):
         self.assertEqual(self.driver(old_bundle('v1.0.22'), BUSY_ROW),
                          {'failures': 0, 'retry': {'requestedNs': 1000 * 10**9, 'failures': 1,
                                                    'retryAfterNs': 1600 * 10**9}})
+
+    def test_v1_0_23_bundle_leaves_rows_untouched_and_its_hooks_answer(self):
+        self.assertIn('v1.0.23', TAGS)
+        rows = self.seed_122_rows(include_queued=False)
+        files = self.namespace_files()
+        seen = self.observe('v1.0.23')
+        self.assertEqual(self.rows(), rows)
+        for name in self.watched_names():
+            self.assertEqual(self.namespace_files().get(name), files[name], name)
+        self.assertEqual(self.launches(), [])
+        for name in ('recall', 'posttool'):
+            code, out, err = seen[name]
+            self.assertEqual(code, 0, err)
+            self.assertIn('zqheronx', json.loads(out)['hookSpecificOutput']['additionalContext'])
+        self.assertEqual(seen['maintenance'], (0, '', ''))
 
 
 if __name__ == '__main__':

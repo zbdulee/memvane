@@ -1210,19 +1210,32 @@ def _edit_recall_tail(host, decision, proof, payload, *, linked=None) -> dict:
     try:
         from memvane.host import edit_recall
         if linked is None:
-            current, inside, _outside = _edit_targets(decision, payload, 'posttool',
-                                                      allow_outside=True)
+            current, inside, outside = _edit_targets(decision, payload, 'posttool',
+                                                     allow_outside=True)
+            # An edit outside the main checkout may lie in a linked worktree
+            # of the same repository: then it is this project's edit.
+            checkout = edit_recall.edit_checkout(decision, current, inside, outside)
         else:
             current, inside, _outside = _edit_targets(
                 {'projectRoot': linked['worktreeProjectRoot']}, payload, 'posttool',
                 allow_outside=True)
+            own = linked.get('worktreeSettings') or {}
+            checkout = {'target': 'linked' if inside else 'outside', 'root': None,
+                        'paths': inside, 'skipPaths': list(own.get('skipPaths') or ()),
+                        'proofMs': None,
+                        'skip': None if inside else 'skip_outside_project'}
     except (Exception, HookDeadlineExceeded):
         return {}
-    if not inside:
-        _trace_fields(editRecall='skip_outside_project')
+    _trace_fields(editTarget=checkout['target'])
+    if checkout['proofMs'] is not None:
+        _trace_fields(checkoutProofMs=checkout['proofMs'])
+    if checkout['skip'] is not None:
+        _trace_fields(editRecall=checkout['skip'])
         return {}
-    response, capture = edit_recall.serve(host, decision, proof, payload, current, inside,
-                                          linked=linked, successful=_successful_edit(payload))
+    response, capture = edit_recall.serve(
+        host, decision, proof, payload, current, checkout['paths'], linked=linked,
+        successful=_successful_edit(payload), edit_root=checkout['root'],
+        skip_paths=checkout['skipPaths'])
     if capture is not None:
         _set_learning_capture(capture)
     return response
@@ -1273,7 +1286,8 @@ def _trace_final(reason: str) -> None:
 
 WORKTREE_VIEW_NOTICE = ('[memvane] linked git worktree: search serves this worktree\'s own '
                         'published wiki view; the main checkout\'s sync owner updates it. Wiki '
-                        'compile, wiki lifecycle and learning run only from the main checkout.')
+                        'compile, wiki lifecycle and learning runs happen only from the main '
+                        'checkout; edits here still count as its learning cases.')
 
 
 def _worktree_label(decision: dict) -> str:
@@ -1432,7 +1446,8 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
         from memvane.host.host_rules import gate_response
         return gate_response(host)
     if action == 'posttool':
-        # Recall from this worktree's own view; no learning capture.
+        # Recall from this worktree's own view; its pool is a main-project case
+        # only while it equals the main head (the capture child decides).
         return _edit_recall_tail(host, main, proof, payload, linked=decision)
     # compile/index/file-change-event: the main
     # checkout's own scan owns its sources; nothing is queued from here.

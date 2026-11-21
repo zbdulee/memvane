@@ -277,6 +277,81 @@ class MaintenanceRetry(FixtureCase):
         self.assertEqual(emit.call_args.kwargs['reason'], 'start_refused')
         self.assertEqual(emit.call_args.kwargs['outcome'], 'failed')
 
+    # 1.0.24, review F-1: the short floor belongs to a recorded busy deferral only.
+    def test_an_attempt_row_with_busy_history_keeps_the_ten_minute_floor(self):
+        self.assertEqual(self.request(1000), 1)
+        self.settle(1002, busy=True)                       # recorded busy deferral, due at 1062
+        self.assertEqual(self.request(1061), 0)
+        self.assertEqual(self.request(1062), 1)            # the short floor: one spawn
+        attempt = ledger_read_json(self.path)
+        self.assertEqual(attempt, {'requestedNs': 1062 * SECOND, 'failures': 0, 'retryAfterNs': 0,
+                                   'busyRetries': 1})
+        # That run still holds the lease (or died without a result): no second child
+        # after 60 s, one after the ten-minute floor.
+        spawned = [self.request(seconds) for seconds in (1122, 1123, 1300, 1661)]
+        self.assertEqual(spawned, [0, 0, 0, 0])
+        self.assertEqual(ledger_read_json(self.path), attempt)
+        self.assertEqual(self.request(1662), 1)
+        self.assertEqual(ledger_read_json(self.path)['busyRetries'], 1)
+
+    def test_a_left_over_attempt_row_of_a_killed_child_waits_ten_minutes(self):
+        ledger_write(self.path, {'requestedNs': 1000 * SECOND, 'failures': 0, 'retryAfterNs': 0,
+                                 'busyRetries': 7}, replace=False)
+        self.assertEqual([self.request(seconds) for seconds in (1060, 1599)], [0, 0])
+        self.assertEqual(self.request(1600), 1)
+
+    # 1.0.24: an unfinished run names the step it stopped at.
+    def run_once(self, prepared, healed, warmed, available, install='fixture'):
+        from memvane.learning.context_learning import selector_heal
+        fd = os.open(os.devnull, os.O_RDONLY)
+        steps = []
+        with mock.patch('memvane.journal.api.select_route', return_value=self.decision), \
+                mock.patch('memvane.journal.api.verify_selected_route_for_write',
+                           side_effect=[{'installId': 'fixture'}, {'installId': install}]), \
+                mock.patch('memvane.learning.runtime_activation.ensure_pending'), \
+                mock.patch.object(selector_heal, '_prepare_lease', return_value=fd), \
+                mock.patch('memvane.learning.default_enrollment.prepare', return_value={'status': prepared}), \
+                mock.patch.object(maintenance, '_selector_state', return_value=self.state), \
+                mock.patch.object(selector_heal, 'heal', return_value={'status': healed}), \
+                mock.patch.object(selector_heal, 'warm', return_value={'status': warmed}), \
+                mock.patch('memvane.runtime.api.sync_owner',
+                           return_value=nullcontext(object() if available else None)), \
+                mock.patch('memvane.journal.api.publish_plugin_version'):
+            result = maintenance._run(self.home, force=True, incomplete=steps)
+        return result, steps
+
+    def test_each_unsettled_step_has_its_own_fixed_reason(self):
+        cases = [(('failed', 'selector_ready', 'selector_warm', True), False, ['prepare_status']),
+                 (('preserved', 'selector_busy', 'selector_warm', True), False, ['heal_status']),
+                 (('preserved', 'selector_ready', 'selector_warm_busy', True), False, ['warm_status']),
+                 (('preserved', 'selector_ready', 'selector_warm', False), False, ['publish_owner_busy']),
+                 (('preserved', 'selector_ready', 'selector_warm', True, 'other'), False, ['install_changed']),
+                 (('preserved', 'selector_ready', 'selector_warm', True), True, []),
+                 (('pending_runtime', 'selector_ready', 'selector_warm', True), None, [])]
+        with mock.patch('memvane.learning.default_renewal.renew', return_value={'status': 'current'}):
+            for args, expected, steps in cases:
+                with self.subTest(args=args):
+                    self.assertEqual(self.run_once(*args), (expected, steps))
+        for reason in sum((steps for _args, _expected, steps in cases), []):
+            self.assertIn(reason, maintenance._INCOMPLETE)
+
+    def test_the_maintenance_event_carries_the_step(self):
+        def stopped(project, *, force=False, incomplete=None):
+            incomplete.append('warm_status')
+            return False
+        for run, expected in ((mock.Mock(side_effect=stopped),
+                               ('deferred', 'maintenance_incomplete', 'warm_status', 'warm')),
+                              (mock.Mock(return_value=True), ('completed', None, None, None))):
+            with self.subTest(expected=expected), mock.patch.object(maintenance, '_run', run), \
+                    mock.patch('memvane.journal.api.select_route', return_value=self.decision), \
+                    mock.patch.object(maintenance, '_record_request_result'), \
+                    mock.patch('memvane.diagnostics.api.emit') as emit:
+                maintenance._run_recorded(self.home, force=True)
+            [call] = [call for call in emit.call_args_list
+                      if call.args and call.args[0] == 'learning.selector.maintenance']
+            self.assertEqual((call.kwargs['outcome'], call.kwargs['reason'], call.kwargs['incomplete'],
+                              call.kwargs['stage']), expected)
+
 
 class StartupFailures(FixtureCase):
     def test_service_start_failures_have_specific_local_codes(self):

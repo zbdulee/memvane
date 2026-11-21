@@ -3,7 +3,8 @@
 Training and prediction run on the product learning path: the shared-policy
 resource values and a ``learning_control`` lease from the runtime coordinator
 (``Coordinator.training``), with the product admission unchanged. A deferral
-prints its inner reason and numbers to stderr and is raised again.
+prints its inner reason and numbers to stderr and is raised again; a trainer
+failure prints its error code and the child's ``error_site`` on one line.
 """
 import json
 import os
@@ -44,6 +45,13 @@ def deferred(exc, report):
                       'reserve_mib': memory.get('reserve_mib'),
                       'required_additional_mib': memory.get('required_additional_mib'),
                       'memory_pressure': report.get('memory_pressure')}), file=sys.stderr, flush=True)
+
+
+def failed(exc):
+    """One stderr line of a trainer failure: its code and the child's frames."""
+    if str(exc).startswith('trainer_failed'):
+        print(json.dumps({'trainer_failed': str(exc), 'error_code': trainer.last_error_code,
+                          'error_site': trainer.last_error_site}), file=sys.stderr, flush=True)
 
 
 controller = Coordinator()
@@ -98,4 +106,8 @@ try:
             'train_resources':train_resources}))
 except ResourceDeferred as exc:
     deferred(exc, report)
+    failed(exc)
+    raise
+except ValueError as exc:
+    failed(exc)
     raise
