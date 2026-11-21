@@ -107,6 +107,21 @@ Before every signal, identity is read again. Only those verified owned PIDs
 receive TERM, followed by KILL if still alive. No user application, process name,
 unverified process group or existing session is terminated.
 
+A run stops with `monitor_unavailable` only after three observations in a row
+fail (`MONITOR_FAILURE_LIMIT`); one slow `ps` or `memory_pressure` under load
+skips that sample, and the state records the total as `monitorFailures`. The
+wall-time budget and a stop request still count on a failed sample. Whatever
+stops a run, cleanup signals the owned tree, reads a failed process listing
+again, and after KILL keeps reading until the tree is gone or 30 seconds pass;
+the run is settled once the tree is seen empty. When the listing stays
+unreadable, only the root the guard launched and has not reaped is signalled
+and the run stays unsettled.
+
+`--max-seconds` counts `time.monotonic()`, which does not advance while the
+machine sleeps: time asleep is not test time. The state and each sample record
+`sleptSeconds` / `slept_seconds` (sleep-inclusive clock minus awake clock), so a
+run whose wall-clock duration exceeds its budget shows how much of it was sleep.
+
 Private `runs/ID/samples.jsonl` under the persistent development log directory records system pressure/headroom/swap/load and
 each observed child's CPU/RSS/start identity, without command arguments or
 environment secrets. `checkpoint.json` and `active.json` (or the slot record) distinguish passed,

@@ -41,6 +41,13 @@ def usable_test_runtime_root(raw):
 
 
 PROBE_DEADLINE=None
+# One slow ps or memory_pressure under load is not a lost monitor: a run stops
+# only after this many observations in a row fail.
+MONITOR_FAILURE_LIMIT=3
+MONITOR_REASONS=('monitor_unavailable','process_monitor_unavailable')
+# Stopping an owned tree: signals, then waiting until it is gone.
+CLEANUP_SECONDS=30
+CLEANUP_POLLS=100
 
 class GuardError(Exception):pass
 
@@ -169,6 +176,35 @@ def processes():
     return parse_processes(read_command(['/bin/ps','-axo','pid=,ppid=,pgid=,rss=,%cpu=,lstart=,comm=']))
 
 
+def listed():
+    """``processes()`` for cleanup: a failed listing is read again before giving up."""
+    for attempt in range(MONITOR_FAILURE_LIMIT):
+        try:return processes()
+        except GuardError as exc:
+            if str(exc) not in MONITOR_REASONS or attempt==MONITOR_FAILURE_LIMIT-1:raise
+            time.sleep(.2)
+
+
+def sleep_clocks():
+    """``(awake seconds, seconds that also count system sleep)``, or None.
+
+    ``--max-seconds`` counts ``time.monotonic()``, which stands still while the
+    machine sleeps. The difference of these two clocks is the time asleep, so a
+    run whose wall time exceeds its budget is not read as an unenforced budget.
+    """
+    for awake,total in (('CLOCK_UPTIME_RAW','CLOCK_MONOTONIC'),('CLOCK_MONOTONIC','CLOCK_BOOTTIME')):
+        if hasattr(time,awake) and hasattr(time,total):
+            try:return time.clock_gettime(getattr(time,awake)),time.clock_gettime(getattr(time,total))
+            except OSError:pass
+    return None
+
+
+def slept_seconds(start):
+    now=sleep_clocks()
+    if start is None or now is None:return None
+    return round(max(0.0,(now[1]-start[1])-(now[0]-start[0])),1)
+
+
 def system_sample():
     if sys.platform=='darwin':
         total=int(read_command(['/usr/sbin/sysctl','-n','hw.memsize']).strip())
@@ -269,28 +305,47 @@ def command_for(kind,argv):
     return result
 
 
-def observe_log(run,system,owned,elapsed):
+def observe_log(run,system,owned,elapsed,slept=None):
     row={'elapsed_seconds':round(elapsed,2),'system':system,'owned':list(owned.values()),
          'tree_rss_bytes':sum(p['rss_bytes'] for p in owned.values()),
          'tree_lifetime_cpu_percent':sum(p['cpu_percent'] for p in owned.values())}
+    if slept is not None:row['slept_seconds']=slept
     with (run/'samples.jsonl').open('a') as stream:stream.write(json.dumps(row,sort_keys=True)+'\n')
     (run/'samples.jsonl').chmod(0o600)
 
 
 def cleanup(tree,child):
+    """Stop the owned tree whatever stopped the run; True once it is seen gone.
+
+    After SIGKILL the tree is read again until it is empty or the cleanup
+    budget ends, so a process that takes a moment to leave ps is not left as
+    unsettled. When the process list stays unreadable, only the root this
+    guard launched and has not reaped (its pid cannot be reused yet) is
+    signalled, and the run stays unsettled: no unverified pid is touched.
+    """
     global PROBE_DEADLINE
     previous_deadline=PROBE_DEADLINE
-    PROBE_DEADLINE=time.monotonic()+10
+    PROBE_DEADLINE=time.monotonic()+CLEANUP_SECONDS
     def send(pid,sig):
         # Refresh immediately before each signal, never act on an old sample.
-        current={r['pid']:r for r in processes()}
+        current={r['pid']:r for r in listed()}
         if pid in current and current[pid]['start']==tree.identities[pid]:os.kill(pid,sig)
     try:
         for sig in (signal.SIGTERM,signal.SIGKILL):
-            rows=processes();tree.observe(rows);signal_owned(tree,rows,sig,send)
-            time.sleep(sleep_budget(.3,PROBE_DEADLINE-time.monotonic()))
-            child.poll()
-            if not tree.observe(processes()):return tree.established
+            rows=listed();tree.observe(rows);signal_owned(tree,rows,sig,send)
+            for _ in range(CLEANUP_POLLS if sig==signal.SIGKILL else 1):
+                time.sleep(sleep_budget(.3,PROBE_DEADLINE-time.monotonic()))
+                child.poll()
+                if not tree.observe(listed()):return tree.established
+                if time.monotonic()>=PROBE_DEADLINE:break
+        return False
+    except GuardError:
+        for sig in (signal.SIGTERM,signal.SIGKILL):
+            if child.poll() is not None:break
+            try:os.kill(child.pid,sig)
+            except ProcessLookupError:pass
+            try:child.wait(timeout=2)
+            except subprocess.TimeoutExpired:pass
         return False
     finally:PROBE_DEADLINE=previous_deadline
 
@@ -344,6 +399,12 @@ def run_job(args,root):
         if args.kind=='model-test':state['proofNonce']=secrets.token_hex(24)
         if calibration is not None:state['calibrationRunId']=calibration['runId']
         def save():checkpoint(run,state);put(active,state)
+        asleep_from=sleep_clocks()
+        def finish(**fields):
+            state.update(fields)
+            slept=slept_seconds(asleep_from)
+            if slept is not None:state['sleptSeconds']=slept
+            save()
         save();child=None;tree=None;interrupted=[];calibration_fd=None;test_runtime_root=None
         original_calibration=os.environ.get('QMD_CALIBRATION_ENVELOPE')
         began=time.monotonic();PROBE_DEADLINE=began+args.max_seconds
@@ -396,31 +457,45 @@ def run_job(args,root):
             if time.monotonic()>=PROBE_DEADLINE:raise GuardError('wall_time_budget')
             child=subprocess.Popen(command,start_new_session=True,env=environment,pass_fds=tuple(lease.fds))
             tree=OwnedTree(child.pid);state.update(status='running',pid=child.pid);save()
+            failures=0
             while True:
-                owned=tree.observe(processes());sample=system_sample();elapsed=time.monotonic()-began
-                report=scoped_report()
-                if report is not None:sample['calibration_available_mib']=report['available_mib']
-                observe_log(run,sample,owned,elapsed)
-                reason=violation(policy,sample,list(owned.values()),baseline['swap_bytes'],calibration_policy=calibration_policy,report=report)
+                try:
+                    owned=tree.observe(processes());sample=system_sample();elapsed=time.monotonic()-began
+                    report=scoped_report()
+                    if report is not None:sample['calibration_available_mib']=report['available_mib']
+                    reason=violation(policy,sample,list(owned.values()),baseline['swap_bytes'],calibration_policy=calibration_policy,report=report)
+                    if reason in MONITOR_REASONS:raise GuardError(reason)
+                    failures=0
+                except GuardError as exc:
+                    if str(exc) not in MONITOR_REASONS:raise
+                    # An unreadable sample: the budget and a stop request still count.
+                    failures+=1;state['monitorFailures']=state.get('monitorFailures',0)+1
+                    reason=('interrupted' if interrupted else
+                            'wall_time_budget' if time.monotonic()-began>=args.max_seconds else
+                            str(exc) if failures>=MONITOR_FAILURE_LIMIT else None)
+                    if reason:
+                        finish(status='stopped',reason=reason,settled=cleanup(tree,child));return 75
+                    time.sleep(sleep_budget(args.sample_seconds,PROBE_DEADLINE-time.monotonic()))
+                    continue
+                observe_log(run,sample,owned,elapsed,slept_seconds(asleep_from))
                 if interrupted:reason='interrupted'
                 elif elapsed>=args.max_seconds:reason='wall_time_budget'
                 if reason:
-                    settled=cleanup(tree,child)
-                    state.update(status='stopped',reason=reason,settled=settled);save();return 75
+                    finish(status='stopped',reason=reason,settled=cleanup(tree,child));return 75
                 code=child.poll()
                 if code is not None and not owned:
                     if not tree.established:
-                        state.update(status='stopped',reason='root_identity_unconfirmed',settled=False);save();return 75
-                    state.update(status='passed' if code==0 else 'failed',exitCode=code,
-                                 completed=code==0,settled=True);save();return code
+                        finish(status='stopped',reason='root_identity_unconfirmed',settled=False);return 75
+                    finish(status='passed' if code==0 else 'failed',exitCode=code,
+                           completed=code==0,settled=True);return code
                 time.sleep(sleep_budget(args.sample_seconds,PROBE_DEADLINE-time.monotonic()))
         except BaseException as exc:
             settled=child is None
             if tree is not None:
                 try:settled=cleanup(tree,child)
                 except Exception:settled=False
-            state.update(status='stopped',reason=str(exc) if isinstance(exc,GuardError) else type(exc).__name__,settled=settled)
-            save();return 75
+            finish(status='stopped',reason=str(exc) if isinstance(exc,GuardError) else type(exc).__name__,settled=settled)
+            return 75
         finally:
             PROBE_DEADLINE=None
             if test_runtime_root is not None:
