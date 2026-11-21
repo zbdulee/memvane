@@ -76,8 +76,21 @@ class Lines(unittest.TestCase):
         lines = by_name(rows)
         self.assertEqual([lines[name]['status'] for name in ('hook', 'hook+selector', 'selector')], ['ok'] * 3)
 
+    def test_stage_counts_only_recalls_of_one_query_vector(self):
+        slow = dict(pinMs=900, lexicalMs=900, stillCurrentMs=900, checkoutMs=900)
+        fast = dict(pinMs=5, lexicalMs=5, stillCurrentMs=5, checkoutMs=5)
+        rows = [recall(i, queryChunks=4, **slow) for i in range(30)]
+        stage = by_name(rows)['stage']
+        self.assertEqual((stage['status'], stage['n']), ('no-data', 0))
+        rows += [recall(30 + i, queryChunks=1, **fast) for i in range(10)]
+        rows += [recall(40 + i, **fast) for i in range(10)]  # a row from before the field has one vector
+        stage = by_name(rows)['stage']
+        self.assertEqual((stage['status'], stage['n'], stage['pin']), ('ok', 20, 5))
+        # The hook line still counts every recall.
+        self.assertEqual(by_name(rows)['hook']['n'], 50)
+
     def test_stage_targets_are_per_stage(self):
-        ok = dict(pinMs=50, lexicalMs=150, stillCurrentMs=50, checkoutMs=300)
+        ok = dict(pinMs=50, lexicalMs=50, stillCurrentMs=50, checkoutMs=300)
         self.assertEqual(by_name([recall(i, **ok) for i in range(20)])['stage']['status'], 'ok')
         for key in ok:
             with self.subTest(stage=key):
@@ -112,6 +125,24 @@ class Lines(unittest.TestCase):
         rows.append(recall(20, semantic='deferred_cache_building'))
         line = by_name(rows)['semantic']
         self.assertEqual((line['status'], line['deferred_cache_building']), ('over', 1))
+
+    def test_semantic_reads_the_vector_cache_state_when_rows_carry_it(self):
+        rows = [recall(i, semantic='complete', vectorSource='store') for i in range(20)]
+        line = by_name(rows)['semantic']
+        self.assertEqual((line['vectorCache'], line['vectorCacheInconsistent']), ('unmeasured', 0))
+        # A recall whose arena was switched off is left out of the arena share.
+        rows = [recall(i, semantic='complete', vectorSource='arena', vectorCache='ok') for i in range(99)]
+        rows += [recall(100 + i, semantic='complete', vectorSource='store', vectorCache='disabled')
+                 for i in range(5)]
+        line = by_name(rows)['semantic']
+        self.assertEqual((line['status'], line['arena'], line['vectorCache']),
+                         ('ok', 1.0, {'disabled': 5, 'ok': 99}))
+        rows += [recall(110, semantic='complete', vectorSource='store', vectorCache='inconsistent'),
+                 recall(111, semantic='complete', vectorSource='store', vectorCache='building'),
+                 recall(112, semantic='complete', vectorSource='store', vectorCache='not-a-state')]
+        line = by_name(rows)['semantic']
+        self.assertEqual((line['status'], line['vectorCacheInconsistent'], line['vectorCache']),
+                         ('over', 1, {'building': 1, 'disabled': 5, 'inconsistent': 1, 'ok': 99}))
 
     def test_selector_counts_answers_that_ran_out_of_budget(self):
         rows = [recall(i, selectorLane='prompt', selectorMs=900) for i in range(49)]
@@ -292,18 +323,54 @@ class Skill(FixtureCase):
         lines = [line.strip() for line in out.splitlines() if line.strip().startswith('slo ')]
         self.assertEqual(lines[0], 'slo (last 24h)')
         self.assertEqual([line.split(':')[0] for line in lines[1:]],
-                         ['slo hook', 'slo hook+selector', 'slo stage', 'slo semantic', 'slo selector',
+                         ['slo install', 'slo hook', 'slo hook+selector', 'slo stage', 'slo semantic', 'slo selector',
                           'slo host claude', 'slo dedup', 'slo sync', 'slo failed', 'slo learning', 'slo identity'])
         self.assertIn('slo hook: ok n=20 p50=100 p95=100 targetP50=700 targetP95=1200', out)
-        self.assertIn('slo stage: ok n=20 pin=1 pinTarget=50 lexical=1 lexicalTarget=150', out)
+        self.assertIn('slo install: shown size=unknown', out)
+        self.assertIn('slo stage: ok n=20 pin=1 pinTarget=50 lexical=1 lexicalTarget=50 '
+                      'lexicalLargeTarget=150 lexicalLarge=ok', out)
         self.assertIn('slo semantic: ok n=20', out)
         self.assertIn('slo identity: no-data', out)
         self.assertEqual(sorted((p.name, p.lstat().st_mtime_ns) for p in self.state.iterdir()), before)
         code, out, err = self.run_logs('--state-root', str(self.state), '--slo', '--json')
         self.assertEqual(code, 0, err)
         rows = [json.loads(line)['slo'] for line in out.splitlines()]
-        self.assertEqual(rows[0], {'line': 'hook', 'status': 'ok', 'n': 20, 'p50': 100, 'p95': 100,
+        self.assertEqual(rows[0], {'line': 'install', 'status': 'shown', 'size': 'unknown'})
+        self.assertEqual(rows[1], {'line': 'hook', 'status': 'ok', 'n': 20, 'p50': 100, 'p95': 100,
                                    'targetP50': 700, 'targetP95': 1200})
+
+    def test_large_targets_apply_to_an_install_of_more_than_a_thousand_cards(self):
+        wiki = self.tmp / 'wiki'
+        (wiki / 'concepts').mkdir(parents=True)
+        (wiki / '.hidden').mkdir()
+        (self.state / 'route.json').write_text(json.dumps({'collections': [
+            {'name': 'raw', 'role': 'raw', 'sourceRoot': str(self.tmp)},
+            {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(wiki)}]}), encoding='utf-8')
+        for index in range(logs_slo.LARGE_CARDS):
+            (wiki / 'concepts' / ('c%04d.md' % index)).touch()
+        (wiki / 'concepts' / 'note.txt').touch()
+        (wiki / '.hidden' / 'x.md').touch()
+        self.assertEqual(logs_slo.install_size(self.state), 'standard')
+        self.write([self.now_row(event='recall', outcome='served', host='claude', ms=1900, selectorMs=1300,
+                                 selectorLane='prompt', pinMs=1, lexicalMs=120, stillCurrentMs=1, checkoutMs=1)
+                    for _ in range(20)])
+        out = self.run_logs('--state-root', str(self.state), '--slo')[1]
+        self.assertIn('slo install: shown size=standard', out)
+        self.assertIn('slo hook+selector: over n=20 p50=1900 p95=1900 targetP50=1500 targetP95=2500', out)
+        self.assertIn('slo stage: over n=20 pin=1 pinTarget=50 lexical=120 lexicalTarget=50 stillCurrent', out)
+        self.assertNotIn('lexicalLarge', out)
+        (wiki / 'one-more.md').touch()
+        self.assertEqual(logs_slo.install_size(self.state), 'large')
+        out = self.run_logs('--state-root', str(self.state), '--slo')[1]
+        self.assertIn('slo install: shown size=large', out)
+        self.assertIn('slo hook+selector: ok n=20 p50=1900 p95=1900 targetP50=2000 targetP95=3000', out)
+        self.assertIn('slo stage: ok n=20 pin=1 pinTarget=50 lexical=120 lexicalTarget=150 stillCurrent', out)
+        # No readable route: the standard target judges and the large verdict stands beside it.
+        (self.state / 'route.json').unlink()
+        self.assertIsNone(logs_slo.install_size(self.state))
+        out = self.run_logs('--state-root', str(self.state), '--slo')[1]
+        self.assertIn('lexical=120 lexicalTarget=50 lexicalLargeTarget=150 lexicalLarge=ok', out)
+        self.assertIn('targetP50=1500 targetP95=2500 largeTargetP50=2000 largeTargetP95=3000 large=ok', out)
 
     def test_identity_shows_whether_the_sealed_device_number_is_the_live_one(self):
         self.write([self.now_row(event='gate', outcome='served')])

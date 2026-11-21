@@ -40,9 +40,10 @@ The summary reports each hook action's p50 and p95 from its latest 100 recorded 
 
 With `--slo` the script prints service-level lines for the window (24 hours unless `--hours` is given), one block per install under `--all`. Each line ends its name with `ok`, `over` or `no-data`; `no-data` means fewer rows than the line needs (20, or 5 for `sync`), and `shown` marks a line that is reported without a target.
 
-- `hook`: prompt recall duration without the selector's time; `hook+selector`: the duration of recalls that asked the selector, judged by the standard target with the verdict for an install of more than 1,000 cards beside it (`large`).
-- `stage`: the median of each checkout observation stage against its own target.
-- `semantic`: the share of recalls with a query vector whose semantic search completed, the share answered from the vector arena once one answers, and the counts of each unfinished state.
+- `install`: whether the install is `large` (more than 1,000 wiki Markdown files under the route's wiki folder), `standard`, or `unknown` when the route cannot be read. A large install has its own `hook+selector` and `lexical` targets; for an unknown one the standard target judges and the large verdict is shown beside it.
+- `hook`: prompt recall duration without the selector's time; `hook+selector`: the duration of recalls that asked the selector.
+- `stage`: the median of each checkout observation stage against its own target, over recalls of one query vector (a recall with more vectors costs more by design).
+- `semantic`: the share of recalls with a query vector whose semantic search completed, the share answered from the vector arena once one answers (a recall whose arena was switched off is left out), the counts of each unfinished state, and the recorded vector cache states. `vectorCache=unmeasured` means no row in the window recorded the state; it is not a zero.
 - `selector`: the selector's duration and the share of answers that ran out of their time.
 - `host <name>`: duration and semantic share per host.
 - `dedup`: the share of injected cards the same session had already been given (after its last compaction or clear; for a host that sends no such signal, within its last 20 served recalls), and the recalls the exclusion left empty.

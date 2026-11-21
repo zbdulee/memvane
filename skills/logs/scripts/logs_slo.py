@@ -19,12 +19,17 @@ from pathlib import Path
 
 FLOOR = 20
 SYNC_FLOOR = 5
-# Prompt recall ``ms`` targets (p50, p95). The large pair is for an install
-# with more than 1,000 cards; no event field says which one an install is, so
-# the line is judged by the standard pair and shows the large verdict beside it.
+# Prompt recall ``ms`` targets (p50, p95). The large pair, and the large
+# ``lexicalMs`` target, are for an install with more than ``LARGE_CARDS`` cards.
+# No event field holds the card count: ``install_size`` counts the wiki files of
+# the install's route. When that cannot be read the line is judged by the
+# standard target and shows the large verdict beside it.
 HOOK = {'withoutSelector': (700, 1200), 'withSelector': (1500, 2500), 'withSelectorLarge': (2000, 3000)}
-STAGES = (('pinMs', 'pin', 50), ('lexicalMs', 'lexical', 150),
+STAGES = (('pinMs', 'pin', 50), ('lexicalMs', 'lexical', 50),
           ('stillCurrentMs', 'stillCurrent', 50), ('checkoutMs', 'checkout', 300))
+LEXICAL_LARGE = 150
+LARGE_CARDS = 1000
+VECTOR_CACHE = ('ok', 'building', 'absent', 'disabled', 'inconsistent')
 SEMANTIC_COMPLETE, ARENA_SHARE = 0.95, 0.99
 SEMANTIC_COUNTS = ('deferred_deadline', 'provider_absent', 'deferred_work_budget', 'deferred_cache_building')
 SELECTOR = (1000, 1500)
@@ -96,7 +101,38 @@ def sync_runs(rows):
     return result
 
 
-def _hook(prompt):
+def install_size(state_root):
+    """``large``, ``standard`` or None (unknown) from the number of wiki Markdown files of the install's route.
+
+    Names only, and the walk stops at the first file past the limit.
+    """
+    try:
+        with open(Path(state_root) / 'route.json', 'rb') as handle:
+            collections = json.loads(handle.read(1 << 20)).get('collections')
+        roots = [item['sourceRoot'] for item in collections
+                 if isinstance(item, dict) and item.get('role') == 'wiki' and _text(item.get('sourceRoot'))]
+        if not roots:
+            return None
+        count = 0
+        for root in roots:
+            if not os.path.isdir(root):
+                return None
+            for _folder, folders, files in os.walk(root):
+                folders[:] = [name for name in folders if not name.startswith('.')]
+                count += sum(1 for name in files if name.endswith('.md') and not name.startswith('.'))
+                if count > LARGE_CARDS:
+                    return 'large'
+        return 'standard'
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _one_query(row):
+    """A recall of one query vector. A row from before the field existed has one."""
+    return row.get('queryChunks') in (None, 1)
+
+
+def _hook(prompt, size):
     timed = [row for row in prompt if _number(row.get('ms')) is not None]
     without = [max(0, row['ms'] - (_number(row.get('selectorMs')) or 0)) for row in timed]
     selected = [row['ms'] for row in timed if _text(row.get('selectorLane'))]
@@ -110,22 +146,33 @@ def _hook(prompt):
         extra = {}
         if key == 'withSelector':
             large = HOOK['withSelectorLarge']
-            extra = {'largeTargetP50': large[0], 'largeTargetP95': large[1],
-                     'large': _judge(len(data), FLOOR, p50 > large[0], p95 > large[1])}
+            if size == 'large':
+                goal = large
+            elif size is None:
+                extra = {'largeTargetP50': large[0], 'largeTargetP95': large[1],
+                         'large': _judge(len(data), FLOOR, p50 > large[0], p95 > large[1])}
         result.append(_line(name, _judge(len(data), FLOOR, p50 > goal[0], p95 > goal[1]), len(data),
                             p50=round(p50, 3), p95=round(p95, 3), targetP50=goal[0], targetP95=goal[1], **extra))
     return result
 
 
-def _stage(prompt):
+def _stage(prompt, size):
+    """Stage medians of recalls with one query vector (more vectors cost more by design)."""
+    single = [row for row in prompt if _one_query(row)]
     values, over, n = {}, False, None
     for key, label, goal in STAGES:
-        data = _values(prompt, key)
+        data = _values(single, key)
         n = len(data) if n is None else min(n, len(data))
-        if data:
-            values[label] = round(_percentile(data, .5), 3)
-            values[label + 'Target'] = goal
-            over = over or (len(data) >= FLOOR and values[label] > goal)
+        if not data:
+            continue
+        if key == 'lexicalMs' and size == 'large':
+            goal = LEXICAL_LARGE
+        values[label] = round(_percentile(data, .5), 3)
+        values[label + 'Target'] = goal
+        over = over or (len(data) >= FLOOR and values[label] > goal)
+        if key == 'lexicalMs' and size is None:
+            values['lexicalLargeTarget'] = LEXICAL_LARGE
+            values['lexicalLarge'] = _judge(len(data), FLOOR, values[label] > LEXICAL_LARGE)
     return _line('stage', _judge(n or 0, FLOOR, over), n or 0, **values)
 
 
@@ -134,8 +181,13 @@ def _semantic(prompt):
     asked = [row for row in stated if row['semantic'] != 'provider_absent']
     counts = Counter(row['semantic'] for row in stated)
     values = {name: counts.get(name, 0) for name in SEMANTIC_COUNTS}
-    sourced = [row for row in asked if _text(row.get('vectorSource'))]
+    # A recall whose arena was switched off on purpose is not an arena miss.
+    sourced = [row for row in asked if _text(row.get('vectorSource')) and row.get('vectorCache') != 'disabled']
     arena = sum(row['vectorSource'] == 'arena' for row in sourced)
+    cache = Counter(row['vectorCache'] for row in stated if row.get('vectorCache') in VECTOR_CACHE)
+    # Rows from before the field existed do not say: unmeasured, not zero.
+    values['vectorCache'] = dict(sorted(cache.items())) if cache else 'unmeasured'
+    values['vectorCacheInconsistent'] = cache.get('inconsistent', 0)
     if asked:
         values['complete'] = round(counts.get('complete', 0) / len(asked), 4)
         values['completeTarget'] = SEMANTIC_COMPLETE
@@ -316,7 +368,9 @@ def lines(rows, hours, *, state_root=None, now=None):
     floor_time = now - timedelta(hours=hours)
     window = [row for row in rows if (_ts(row) or floor_time) >= floor_time]
     prompt = [row for row in window if row.get('event') == 'recall']
-    return [*_hook(prompt), _stage(prompt), _semantic(prompt), _selector(prompt), *_hosts(prompt),
+    size = install_size(state_root) if state_root is not None else None
+    return [_line('install', 'shown', size=size or 'unknown'),
+            *_hook(prompt, size), _stage(prompt, size), _semantic(prompt), _selector(prompt), *_hosts(prompt),
             _dedup(rows, floor_time), _sync(rows, window, now), _failed(window),
             _learning(rows, window), _identity(state_root) if state_root is not None else _line('identity', 'no-data')]
 
