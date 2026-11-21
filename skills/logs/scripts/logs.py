@@ -531,6 +531,13 @@ def _learning_inflow(window, promotions):
         print(f'edit recall funnel: posttool={len(posttool)}'
               + (f' ({_tally(skips)})' if skips else '')
               + f' recall.edit={len(edits)} stored={len(stored)}')
+        # Where the edited files lie: the main checkout, a linked worktree of the
+        # same repository, or outside the repository (never a case).
+        targets = [(name, _edit_targets(rows)) for name, rows in
+                   (('posttool', posttool), ('recall.edit', edits), ('stored', stored))]
+        if any(tally for _, tally in targets):
+            print('edit recall targets: ' + '; '.join(
+                f'{name} {_tally(tally)}' for name, tally in targets if tally))
     scores = [row for row in window if row.get('event') == 'learning.score' and _count(row.get('gold'))]
     if scores:
         last = scores[-1]
@@ -561,6 +568,13 @@ def _learning_inflow(window, promotions):
     if rotated:
         print(f'learning rotation: deleted={sum(rotated)} passes={len(rotated)}')
     _selector_maintenance(window)
+
+
+_EDIT_TARGETS = ('main', 'linked', 'linked_unproved', 'mixed', 'outside')
+
+
+def _edit_targets(rows):
+    return Counter(row['editTarget'] for row in rows if row.get('editTarget') in _EDIT_TARGETS)
 
 
 def _selector_maintenance(window):

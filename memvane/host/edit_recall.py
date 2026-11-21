@@ -44,6 +44,10 @@ MAX_SESSION_CARDS = 256
 MAX_SESSION_BYTES = 64 * 1024
 MAX_SWEEP = 32
 POOL_LIMIT = 15
+# The linked worktree proof of an edit outside the main checkout: two git
+# calls per checkout, bounded well inside the tail's ten seconds.
+CHECKOUT_PROOF_SECONDS = 1.0
+MAX_PROVED_CHECKOUTS = 2
 _HOSTS = ('claude', 'codex')
 _SKIP_SEGMENTS = frozenset(('.memvane', '.auto-context', '.git', 'node_modules'))
 _SKIP_NAMES = re.compile(r'(?:\.lock|-lock\.json|-lock\.ya?ml|\.min\.js|\.min\.css|\.map)\Z', re.I)
@@ -124,15 +128,16 @@ def _patch_sections(patch: str):
     return sections
 
 
-def edit_scope(decision: dict, linked=None) -> dict:
+def edit_scope(decision: dict, edit_root=None, skip_paths=()) -> dict:
     """Project root, collections and skip paths that judge an edited path.
 
-    A linked worktree edit is judged against the worktree root, with the
-    main route's collection roots rebased onto it.
+    A linked worktree edit is judged against that worktree's project root
+    (``edit_root``), with the main route's collection roots rebased onto it
+    and the worktree's own ``skipPaths`` added to the main route's.
     """
-    if linked is None:
+    if edit_root is None:
         return decision
-    main, root = Path(decision['projectRoot']), linked['worktreeProjectRoot']
+    main, root = Path(decision['projectRoot']), edit_root
     collections = []
     for item in decision.get('collections') or ():
         try:
@@ -140,8 +145,98 @@ def edit_scope(decision: dict, linked=None) -> dict:
         except (KeyError, TypeError, ValueError):
             continue
         collections.append(dict(item, sourceRoot=rebased))
-    return {'projectRoot': root, 'collections': collections,
-            'recallSettings': decision.get('recallSettings') or {}}
+    settings = dict(decision.get('recallSettings') or {})
+    settings['skipPaths'] = list(dict.fromkeys([*(settings.get('skipPaths') or []), *skip_paths]))
+    return {'projectRoot': root, 'collections': collections, 'recallSettings': settings}
+
+
+# ------------------------------------------------------------------ checkout
+
+def _proved_skip_paths(decision: dict, expected: Path, deadline: float):
+    """The worktree's own ``skipPaths`` when ``expected`` is this project's linked worktree.
+
+    The proof is the route's own: ``select_route`` classifies the folder as a
+    linked worktree whose main route is the session's. None otherwise.
+    """
+    from memvane.host.host_response import _RECALL_IDENTITY
+    from memvane.journal.api import select_route
+    try:
+        route = select_route(str(expected), action='posttool', deadline=deadline)
+        main = route.get('mainRoute') if isinstance(route, dict) else None
+        if (route.get('state') != 'worktree' or route.get('worktreeProjectRoot') != str(expected)
+                or not isinstance(main, dict)
+                or any(main.get(key) != decision.get(key) for key in _RECALL_IDENTITY)):
+            return None
+        return list(route['worktreeSettings']['skipPaths'])
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError, UnicodeError):
+        return None
+
+
+def edit_checkout(decision: dict, current: Path, inside: list, outside: list) -> dict:
+    """The checkout an edit of a main-checkout session belongs to.
+
+    Returns ``{'target', 'root', 'paths', 'skipPaths', 'skip', 'proofMs'}``.
+    ``target`` is ``main`` (paths of the main checkout), ``linked`` (paths of
+    one proved linked worktree of the same repository, ``root`` its project
+    root), ``linked_unproved``, ``mixed`` or ``outside``; the last three carry
+    the ``skip`` reason. A path is sorted by its nearest ``.git`` entry (stat
+    only); git runs once per linked worktree, never for an ordinary checkout.
+    With any main path only the main paths count; otherwise one proved
+    worktree's paths do.
+    """
+    from memvane.kernel.paths import dotgit_shape, find_dotgit
+    main = Path(decision['projectRoot'])
+    mains, wanted, unproved = [], {}, False
+    for raw, within in [*((raw, True) for raw in inside), *((raw, False) for raw in outside)]:
+        absolute = (current / raw).resolve(strict=False)
+        dotgit = find_dotgit(absolute.parent)
+        top = dotgit.parent if dotgit is not None else None
+        if within and (top is None or top == main or top in main.parents):
+            mains.append(raw)
+            continue
+        shape = dotgit_shape(dotgit) if dotgit is not None else None
+        if shape is None or shape[0] != 'worktree':
+            # Inside: a nested clone or submodule stays a main path, as before.
+            if within:
+                mains.append(raw)
+            continue
+        expected = None
+        if main == shape[1] or shape[1] in main.parents:
+            expected = top / main.relative_to(shape[1])
+            if absolute != expected and expected not in absolute.parents:
+                expected = None
+        if expected is None:
+            unproved = unproved or within
+            continue
+        wanted.setdefault(str(expected), (expected, []))[1].append(raw)
+    result = {'target': 'main', 'root': None, 'paths': mains, 'skipPaths': [], 'skip': None,
+              'proofMs': None}
+    if mains:
+        return result
+    if len(wanted) > MAX_PROVED_CHECKOUTS:
+        return dict(result, target='mixed', skip='skip_mixed_checkout')
+    began = time.monotonic()
+    deadline = min(began + CHECKOUT_PROOF_SECONDS,
+                   _budget_deadline(began) - SELECTOR_RESERVE_SECONDS)
+    proved = []
+    for root, (expected, paths) in wanted.items():
+        skips = _proved_skip_paths(decision, expected, deadline)
+        if skips is None:
+            unproved = True
+        else:
+            proved.append((root, paths, skips))
+    if wanted:
+        result['proofMs'] = round((time.monotonic() - began) * 1000, 3)
+    if len(proved) == 1:
+        root, paths, skips = proved[0]
+        return dict(result, target='linked', root=root, paths=paths, skipPaths=skips)
+    if proved:
+        return dict(result, target='mixed', skip='skip_mixed_checkout')
+    if unproved:
+        late = bool(wanted) and time.monotonic() >= deadline
+        return dict(result, target='linked_unproved',
+                    skip='skip_checkout_proof_timeout' if late else 'skip_outside_project')
+    return dict(result, target='outside', skip='skip_outside_project')
 
 
 def edit_query(decision: dict, payload: dict, current: Path, inside: list):
@@ -495,19 +590,26 @@ def _budget_deadline(now: float) -> float:
 
 
 def serve(host: str, decision: dict, proof, payload: dict, current: Path, inside: list, *,
-          linked=None, successful=True):
+          linked=None, successful=True, edit_root=None, skip_paths=()):
     """``(response, capture entry or None)`` of the posttool tail; never raises.
 
-    ``decision`` is the selected main route; ``linked`` the linked worktree
-    route when the edit ran there (search reads its own view, no capture).
+    ``decision`` is the selected main route. ``edit_root`` is the project
+    root of the proved linked worktree the edited files lie in (path rules
+    and relative paths count from it; None for the main checkout) and
+    ``skip_paths`` that worktree's own skip paths. ``linked`` is the linked
+    worktree route of a session opened there: search reads its own view and
+    nothing is captured.
     """
     from memvane.kernel.hook_budget import HookDeadlineExceeded
     began = time.monotonic()
-    event = {'outcome': None, 'reason': None}
+    if linked is not None:
+        edit_root = linked['worktreeProjectRoot']
+    event = {'outcome': None, 'reason': None,
+             'editTarget': 'main' if edit_root is None else 'linked'}
     try:
         with redirect_stderr(io.StringIO()):
             return _serve(host, decision, proof, payload, current, inside, linked, successful,
-                          began, event)
+                          began, event, edit_root, skip_paths)
     except Skip as exc:
         _trace_skip(str(exc))
         return {}, None
@@ -524,7 +626,8 @@ def _trace_skip(reason: str) -> None:
     _trace_fields(editRecall=reason)
 
 
-def _serve(host, decision, proof, payload, current, inside, linked, successful, began, event):
+def _serve(host, decision, proof, payload, current, inside, linked, successful, began, event,
+           edit_root, skip_paths):
     if host not in _HOSTS:
         raise Skip('skip_host')
     if os.environ.get(SWITCH, '').strip().lower() == 'off':
@@ -535,7 +638,7 @@ def _serve(host, decision, proof, payload, current, inside, linked, successful, 
     session = session_id(payload)
     if session is None:
         raise Skip('skip_no_session')
-    rels, text, operation, truncated = edit_query(edit_scope(decision, linked),
+    rels, text, operation, truncated = edit_query(edit_scope(decision, edit_root, skip_paths),
                                                   payload, current, inside)
     # Card provenance names main-checkout paths; a linked edit maps onto them.
     edited = {os.path.normpath(str(Path(decision['projectRoot']) / rel)) for rel in rels}
@@ -600,7 +703,11 @@ def _serve(host, decision, proof, payload, current, inside, linked, successful, 
                 'operation': operation, 'session_id': session,
                 'tool_use_id': _tool_use_id(payload), 'truncated': truncated,
                 'injected_ids': [item['path'] for item in rows]},
-            '_memvane_request_id': request_id, '_memvane_edit_paths': rels}
+            '_memvane_request_id': request_id, '_memvane_edit_paths': rels,
+            '_memvane_edit_target': event['editTarget']}
+        if edit_root is not None:
+            # The capture child proves this root again before it reads git there.
+            capture_payload['_memvane_edit_root'] = str(edit_root)
         capture = (host, decision, capture_payload, answer.capture[0], pool[:POOL_LIMIT],
                    selected)
     return response, capture

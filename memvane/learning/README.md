@@ -123,7 +123,14 @@ default-local namespace는 순환하지 않는다. `seam._store`가 `queued`·`d
 capture가 꺼져 있으면 출처 이벤트도 쓰지 않는다.
 
 학습 사례는 편집 recall에서만 수집한다(sample schema v5, `context_origin: tool_edit`).
-질의는 편집이 추가한 텍스트이고 편집 경로는 해시로만 남는다. default-teacher
+질의는 편집이 추가한 텍스트이고 편집 경로는 해시로만 남는다. main checkout 세션이
+같은 저장소의 연결 worktree 파일을 편집한 사례도 main 프로젝트의 사례다. 후보는 main
+view의 pool이고, capture 자식은 worktree의 프로젝트 root를 route로 다시 증명한 뒤
+(`edit_checkout_unproved`) 그 root에서 파일 해시를 읽는다. git 무시는 worktree와 main
+양쪽에서 검사해 어느 한쪽이 무시하면 저장하지 않고(`edit_git_ignored`), 한쪽이라도 git이
+답하지 못하면 저장하지 않는다(`edit_git_check_failed`). worktree settings가 capture를 끄면
+`disabled_in_checkout`이다. `learning.capture` 행의 `editTarget`이 `main`·`linked`를 가른다.
+default-teacher
 namespace에서 v5 사례는 기본 teacher의 입력이다. 명시 프로필의 cohort 배정은
 v5 사례를 건너뛴다. 기본 namespace의
 첫 worker pass는 schema 4 이하 prompt 사례(shared `cases`와 같은 request id의

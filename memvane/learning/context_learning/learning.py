@@ -123,12 +123,18 @@ def corpus_snapshot(project_root, config, *, decision=None):
         return None
 
 
-def _log(decision, host, status, *, elapsed=None, session=None):
+def edit_target(payload):
+    """``main`` or ``linked``: the checkout of a captured edit, or None (not an edit input)."""
+    value = payload.get('_memvane_edit_target') if isinstance(payload, dict) else None
+    return value if value in ('main', 'linked') else None
+
+
+def _log(decision, host, status, *, elapsed=None, session=None, target=None):
     """One ``learning.capture`` event in the install log; never raises."""
     try:
         from memvane.diagnostics import api as event_log
         event_log.emit('learning.capture', outcome=status, decision=decision, host=host,
-                       ms=elapsed, session=session)
+                       ms=elapsed, session=session, editTarget=target)
     except Exception:
         pass
 
@@ -158,5 +164,6 @@ def capture_recall(host, decision, payload, settings, pool, chosen, *, started=N
         status = 'capture_unavailable'
     _log(decision if isinstance(decision, dict) else None, host, status,
          elapsed=round((time.monotonic() - began) * 1000),
-         session=(payload.get('session_id') or payload.get('sessionId')) if isinstance(payload, dict) else None)
+         session=(payload.get('session_id') or payload.get('sessionId')) if isinstance(payload, dict) else None,
+         target=edit_target(payload))
     return status

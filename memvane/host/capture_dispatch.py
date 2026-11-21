@@ -32,6 +32,7 @@ def dispatch(slot, started):
             reason = str(exc) if deferred and str(exc) in ('cpu_budget_busy', 'cpu_capacity_unavailable') else (
                 'capture_budget_unavailable' if deferred else 'dispatch_failed')
             emit('learning.capture', outcome='deferred' if deferred else 'capture_unavailable',
-                 reason=reason, decision=entry[1], host=entry[0])
+                 reason=reason, decision=entry[1], host=entry[0],
+                 editTarget=entry[2].get('_memvane_edit_target'))
         except Exception:
             pass

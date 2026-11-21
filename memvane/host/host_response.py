@@ -1210,19 +1210,30 @@ def _edit_recall_tail(host, decision, proof, payload, *, linked=None) -> dict:
     try:
         from memvane.host import edit_recall
         if linked is None:
-            current, inside, _outside = _edit_targets(decision, payload, 'posttool',
-                                                      allow_outside=True)
+            current, inside, outside = _edit_targets(decision, payload, 'posttool',
+                                                     allow_outside=True)
+            # An edit outside the main checkout may lie in a linked worktree
+            # of the same repository: then it is this project's edit.
+            checkout = edit_recall.edit_checkout(decision, current, inside, outside)
         else:
             current, inside, _outside = _edit_targets(
                 {'projectRoot': linked['worktreeProjectRoot']}, payload, 'posttool',
                 allow_outside=True)
+            checkout = {'target': 'linked' if inside else 'outside', 'root': None,
+                        'paths': inside, 'skipPaths': [], 'proofMs': None,
+                        'skip': None if inside else 'skip_outside_project'}
     except (Exception, HookDeadlineExceeded):
         return {}
-    if not inside:
-        _trace_fields(editRecall='skip_outside_project')
+    _trace_fields(editTarget=checkout['target'])
+    if checkout['proofMs'] is not None:
+        _trace_fields(checkoutProofMs=checkout['proofMs'])
+    if checkout['skip'] is not None:
+        _trace_fields(editRecall=checkout['skip'])
         return {}
-    response, capture = edit_recall.serve(host, decision, proof, payload, current, inside,
-                                          linked=linked, successful=_successful_edit(payload))
+    response, capture = edit_recall.serve(
+        host, decision, proof, payload, current, checkout['paths'], linked=linked,
+        successful=_successful_edit(payload), edit_root=checkout['root'],
+        skip_paths=checkout['skipPaths'])
     if capture is not None:
         _set_learning_capture(capture)
     return response

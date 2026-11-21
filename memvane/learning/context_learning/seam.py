@@ -254,22 +254,63 @@ def _after_sha256(root, rels):
         return None
 
 
-def _edit_capture(payload, root, rows, pool_ids, selected_ids, compact_sources):
+_EDIT_IDENTITY = ('state', 'projectRoot', 'installId', 'scopeId', 'journalPath', 'storePath',
+                  'storeIncarnation')
+
+
+def _linked_edit_root(payload, decision):
+    """``(proved linked worktree project root, its capture switch)``; never trusts the hook.
+
+    The capture child repeats the hook's own judgment: the route of that
+    folder is a linked worktree whose main route is this case's. Raises
+    ValueError('edit_checkout_unproved') otherwise (the folder is gone, is
+    another repository's, or sits at another project's place).
+    """
+    from memvane.journal.api import select_route
+    raw = payload.get('_memvane_edit_root')
+    try:
+        if not isinstance(raw, str) or not Path(raw).is_absolute() or decision is None:
+            raise ValueError('edit_checkout_unproved')
+        root = Path(raw).resolve(strict=True)
+        route = select_route(raw, action='posttool')
+        main = route.get('mainRoute') if isinstance(route, dict) else None
+        if (str(root) != raw or not root.is_dir() or route.get('state') != 'worktree'
+                or route.get('worktreeProjectRoot') != raw or not isinstance(main, dict)
+                or any(main.get(key) != decision.get(key) for key in _EDIT_IDENTITY)):
+            raise ValueError('edit_checkout_unproved')
+        return root, route['worktreeSettings']['capture'] is True
+    except (OSError, RuntimeError, TypeError, KeyError, UnicodeError):
+        raise ValueError('edit_checkout_unproved') from None
+
+
+def _edit_capture(payload, root, rows, pool_ids, selected_ids, compact_sources, *, decision=None):
     """``(capture payload, status)`` of an edit case before it is stored.
 
     The stored query is only the text the edit added; the edited path stays
     out of the case (its SHA-256 is kept). Oversize or credential-shaped
     teacher input is not stored.
+
+    An edit in a linked worktree (``_memvane_edit_target: linked``) is read
+    from that worktree's project root, proved again here first. Its own
+    settings may turn capture off, and a path either checkout's git ignores
+    is not stored.
     """
     rels = payload.get('_memvane_edit_paths')
     event = payload.get('edit_event')
+    target = payload.get('_memvane_edit_target', 'main')
     if (not isinstance(rels, list) or not rels or any(not isinstance(rel, str) for rel in rels)
-            or not isinstance(event, dict)):
+            or not isinstance(event, dict) or target not in ('main', 'linked')):
         return None, 'edit_capture_invalid'
-    if _git_ignored(root, rels):
+    edit_root = root
+    if target == 'linked':
+        edit_root, enabled = _linked_edit_root(payload, decision)
+        if not enabled:
+            return None, 'disabled_in_checkout'
+    # A branch cut before main gained an ignore rule lacks it: both checkouts judge.
+    if any([_git_ignored(checkout, rels) for checkout in dict.fromkeys((edit_root, root))]):
         return None, 'edit_git_ignored'
     captured = [row['candidate_id'] for row in rows]
-    event = dict(event, after_sha256=_after_sha256(root, rels),
+    event = dict(event, after_sha256=_after_sha256(edit_root, rels),
                  injected_ids=[cid for cid in event.get('injected_ids', ()) if cid in captured])
     from .compact_input import derive
     from .store import canonical
@@ -424,8 +465,15 @@ def observe_published(payload, config, project_root, pool, selected, *, host, de
                     'index_revision': (current_corpus['fingerprint'] if current_corpus
                                        else 'unavailable'),
                     'candidate_limit': CAPTURE_POOL_LIMIT}
-        edit, status = _edit_capture(payload, root, rows, eligible,
-                                     sampling['baseline_selected_ids'], compact_sources)
+        try:
+            edit, status = _edit_capture(payload, root, rows, eligible,
+                                         sampling['baseline_selected_ids'], compact_sources,
+                                         decision=decision)
+        except ValueError as exc:
+            # Fixed codes of the two checks that refuse a case; anything else stays unavailable.
+            if str(exc) in ('edit_git_check_failed', 'edit_checkout_unproved'):
+                return str(exc)
+            raise
         if edit is None:
             return status
         request_id = payload.get('_memvane_request_id')

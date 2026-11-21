@@ -100,7 +100,8 @@ def _quiet(reason: str) -> dict:
     return _decision('blocked', reason, recallQuiet=True)
 
 
-def select_route(cwd: str, *, action: str = "recall", linked: bool = True) -> dict:
+def select_route(cwd: str, *, action: str = "recall", linked: bool = True,
+                 deadline: float | None = None) -> dict:
     """Classify a hook without creating a directory, database, or runtime.
 
     Candidate means only that the route record and source settings agree. It
@@ -111,10 +112,12 @@ def select_route(cwd: str, *, action: str = "recall", linked: bool = True) -> di
     verified selected route classifies as ``worktree`` (see
     ``_worktree_route``). The host serves the main checkout's published
     generation read-only; every other caller treats it like ``blocked``.
+    ``deadline`` (monotonic) bounds the git calls of that linked worktree
+    proof; past it the cwd keeps its own classification.
     """
     decision = _select_route(cwd, action=action)
     if linked and decision.get("state") in ("blocked", "legacy") and action in ROUTED_ACTIONS:
-        worktree = _worktree_route(cwd, action)
+        worktree = _worktree_route(cwd, action, deadline)
         if worktree is not None:
             return worktree
     return decision
@@ -142,7 +145,33 @@ def _settings_identity(project: Path) -> tuple:
             tuple(sorted(config.role_map(cfg).items())), cfg.get("wikiPath"))
 
 
-def _worktree_route(cwd: str, action: str) -> dict | None:
+def _checkout_settings(project) -> dict:
+    """``{'skipPaths', 'capture'}`` of a linked worktree's own settings file.
+
+    An edit there is judged by the main route and by these two values of
+    its own checkout, which the shared settings identity leaves out. Raises
+    ValueError or OSError on an absent, unsafe or non-minimal file: the
+    folder is then no worktree route.
+    """
+    project = Path(project)
+    settings = project_dir.settings_path(project)
+    if settings is None or settings.is_symlink():
+        raise ValueError("route_settings_not_selected")
+    raw = json.loads(_read_regular(settings, MAX_SETTINGS_BYTES).decode("utf-8"),
+                     object_pairs_hook=_pairs)
+    if not config.is_minimal_settings(raw):
+        raise ValueError("invalid_route_settings")
+    folder = project_types.CURRENT
+    cfg = config.normalize_config(config.expand_minimal_settings(raw, folder), folder)
+    skips = cfg.get("skipPaths")
+    learning = cfg.get("contextLearning")
+    if not isinstance(skips, list) or any(not isinstance(item, str) for item in skips):
+        raise ValueError("invalid_route_settings")
+    return {"skipPaths": list(skips),
+            "capture": isinstance(learning, dict) and learning.get("capture") is True}
+
+
+def _worktree_route(cwd: str, action: str, deadline: float | None = None) -> dict | None:
     """Read-only route of a linked git worktree onto its main checkout.
 
     Route records and selection markers are untracked runtime files, so a
@@ -154,6 +183,8 @@ def _worktree_route(cwd: str, action: str) -> dict | None:
     main project; the main project classifies exactly ``candidate``; and both
     settings derive the same name, collections, paths, roles and wiki path.
     Otherwise None, and the caller keeps today's classification.
+    ``worktreeSettings`` carries the worktree's own ``skipPaths`` and capture
+    switch, which that shared identity leaves out.
     """
     try:
         requested = Path(cwd)
@@ -163,7 +194,7 @@ def _worktree_route(cwd: str, action: str) -> dict | None:
         if not current.is_dir():
             return None
         from memvane.kernel import paths as git_branch_safety
-        linked = git_branch_safety.linked_worktree(current)
+        linked = git_branch_safety.linked_worktree(current, deadline=deadline)
         if linked is None:
             return None
         worktree, main = Path(linked["worktreeRoot"]), Path(linked["mainRoot"])
@@ -192,11 +223,13 @@ def _worktree_route(cwd: str, action: str) -> dict | None:
         if (main_decision.get("state") != 'candidate'
                 or main_decision.get("projectRoot") != str(main_project)):
             return None
+        own = _checkout_settings(project)
     except (OSError, RuntimeError, ValueError, TypeError, UnicodeError, KeyError):
         return None
     return {"state": "worktree", "reason": "linked_worktree_read_only",
             "worktreeRoot": str(worktree), "worktreeProjectRoot": str(project),
-            "gitCommonDir": linked["commonDir"], "mainRoute": main_decision}
+            "gitCommonDir": linked["commonDir"], "mainRoute": main_decision,
+            "worktreeSettings": own}
 
 
 def _select_route(cwd: str, *, action: str = "recall") -> dict:

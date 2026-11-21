@@ -130,10 +130,25 @@ class Funnel(StateRoot):
                               r'candidateEvalNonEmpty=25/10 candidateEvalEmpty=6/10 last=waiting ')
         self.assertNotIn('WARNING learning case table', out)
 
+    def test_t15_funnel_counts_edit_targets(self):
+        for target, reason in (('linked', None), ('linked', 'skip_throttled'), ('main', None),
+                               ('outside', 'skip_outside_project'),
+                               ('linked_unproved', 'skip_checkout_proof_timeout'),
+                               ('mixed', 'skip_mixed_checkout'), ('elsewhere', None)):
+            self.emit('posttool', outcome='empty', editRecall=reason, editTarget=target)
+        self.emit('posttool', outcome='empty', editRecall='skip_outside_project')
+        self.emit('recall.edit', outcome='served', reason='injected', editTarget='linked')
+        self.emit('recall.edit', outcome='empty', reason='no_new_cards', editTarget='main')
+        self.emit('learning.capture', outcome='stored', editTarget='linked')
+        self.emit('learning.capture', outcome='edit_git_ignored', editTarget='linked')
+        out = self.summary()
+        self.assertIn('edit recall targets: posttool linked 2, linked_unproved 1, main 1, mixed 1, '
+                      'outside 1; recall.edit linked 1, main 1; stored linked 1', out)
+
     def test_t10_2_no_events_no_lines(self):
         self.emit('recall', outcome='empty')
         out = self.summary()
-        for line in ('edit recall funnel', 'promotion progress', 'learning deferred'):
+        for line in ('edit recall funnel', 'edit recall targets', 'promotion progress', 'learning deferred'):
             self.assertNotIn(line, out)
 
     def test_t10_score_rows_carry_progress_counts(self):
