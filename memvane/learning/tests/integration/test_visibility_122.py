@@ -200,6 +200,103 @@ class Deferral(StateRoot):
         self.assertNotIn(str(self.project), text)
         self.assertNotIn(str(self.root), text)
 
+    def routed(self):
+        return (mock.patch('memvane.journal.api.select_route', return_value={'state': 'selected'}),
+                mock.patch('memvane.diagnostics.api.emit',
+                           side_effect=lambda event, decision=None, **f: self.emit(event, **f)))
+
+    def worker(self, report, require=None):
+        config = {'contextLearning': {'capture': True, 'autoCycle': True}}
+        policy = {'maxLoadPerCpu': .8, 'minAvailableMib': 5120}
+        route, emit = self.routed()
+        with route, emit, mock.patch.object(shared, '_safe_root', return_value=self.root), \
+                mock.patch.object(shared, '_policy', return_value=policy), \
+                mock.patch.object(project_worker, 'setup_ready', return_value=True), \
+                mock.patch.object(project_worker, '_retire_prompt_cases'), \
+                mock.patch.object(project_worker, '_delete_unchecked_edit_cases'), \
+                mock.patch.object(shared, 'resource_report', return_value=report), \
+                mock.patch('memvane.learning.context_learning.project_scope.require', side_effect=require), \
+                mock.patch.object(shared, 'run_training_pending',
+                                  side_effect=AssertionError('the cycle must not start')):
+            return project_worker.run(self.root, self.project, config)
+
+    def test_w3_a_pass_the_worker_admission_puts_off_leaves_one_cycle_row(self):
+        cases = (({'ready': False, 'available_mib': 9000, 'load_per_cpu': 1.4}, 'cpu_pressure'),
+                 ({'ready': False, 'available_mib': 3000, 'load_per_cpu': .2}, 'memory_available'),
+                 ({'ready': False, 'available_mib': 9000, 'load_per_cpu': .2,
+                   'observation_status': 'stale'}, 'observation_stale'),
+                 ({'ready': False, 'available_mib': 9000, 'load_per_cpu': .2,
+                   'memory_admission': {'reason': 'memory_reserve'}}, 'memory_reserve'),
+                 ({'ready': False}, 'resource_not_ready'))
+        for index, (report, reason) in enumerate(cases):
+            with self.subTest(reason=reason):
+                self.assertEqual(self.worker(report)['status'], 'deferred_resource')
+                rows = self.rows('learning.cycle')
+                self.assertEqual(len(rows), index + 1)
+                row = rows[-1]
+                self.assertEqual((row['outcome'], row['reason'], row['deferredBy']),
+                                 ('deferred_resource', reason, 'worker_admission'))
+                self.assertEqual((row.get('availableMib'), row.get('loadPerCpu')),
+                                 (report.get('available_mib'), report.get('load_per_cpu')))
+                self.assertEqual((row['loadLimit'], row['requiredMib']), (.8, 5120))
+
+    def test_w3_a_scope_inventory_deferral_leaves_one_cycle_row(self):
+        from memvane.learning.context_learning.local_cycle import ResourceDeferred
+        answer = self.worker({'ready': True, 'available_mib': 9000, 'load_per_cpu': .2},
+                             require=ResourceDeferred('learning_deferred_resource'))
+        self.assertEqual(answer, {'status': 'deferred_resource', 'reason': 'learning_deferred_resource'})
+        rows = self.rows('learning.cycle')
+        self.assertEqual([(row['outcome'], row['reason'], row['deferredBy']) for row in rows],
+                         [('deferred_resource', 'learning_deferred_resource', 'worker_admission')])
+        text = json.dumps(rows)
+        self.assertNotIn(str(self.project), text)
+        self.assertNotIn(str(self.root), text)
+
+    def test_w3_a_failed_event_write_does_not_change_the_pass_result(self):
+        with mock.patch('memvane.journal.api.select_route', side_effect=OSError('synthetic')):
+            config = {'contextLearning': {'capture': True, 'autoCycle': True}}
+            with mock.patch.object(shared, '_safe_root', return_value=self.root), \
+                    mock.patch.object(shared, '_policy', return_value={}), \
+                    mock.patch.object(project_worker, 'setup_ready', return_value=True), \
+                    mock.patch.object(project_worker, '_retire_prompt_cases'), \
+                    mock.patch.object(project_worker, '_delete_unchecked_edit_cases'), \
+                    mock.patch.object(shared, 'resource_report', return_value={'ready': False}):
+                answer = project_worker.run(self.root, self.project, config)
+        self.assertEqual(answer, {'status': 'deferred_resource', 'resources': {'ready': False}})
+        self.assertEqual(self.rows('learning.cycle'), [])
+
+    def test_w3_a_blocked_job_leaves_a_cycle_row_each_pass_that_meets_it(self):
+        import inspect
+        from memvane.learning.context_learning import automatic_staging
+        from memvane.learning.context_learning.project_scope import SCOPE
+        grant = {'scope': SCOPE, 'projectRoot': str(self.project)}
+        cases = ((dict(id='cohort-' + '3' * 20, status='blocked', reason='trainer_failed', failures=3),
+                  'learning_job_blocked'),
+                 (dict(id='cohort-' + '4' * 20, status='blocked', reason='source_revoked', failures=0),
+                  'staged_source_revoked'))
+        route, emit = self.routed()
+        with route, emit:
+            for job, status in cases:
+                self.assertEqual(automatic_staging._blocked_result(self.root, grant, job),
+                                 {'status': status, 'cycle_id': job['id']})
+        rows = self.rows('learning.cycle')
+        self.assertEqual([(row['outcome'], row['reason'], row['failures'], row['cycle']) for row in rows],
+                         [('blocked', job['reason'], job['failures'], job['id']) for job, _ in cases])
+        # The staged preparation answers a blocked job through this one function.
+        source = inspect.getsource(automatic_staging._prepare_staged)
+        self.assertEqual(source.count("if job['status']=='blocked':return _blocked_result(root,grant,job)"), 1)
+        self.assertNotIn("'learning_job_blocked'", source)
+
+    def test_w3_summary_and_slo_count_blocked_and_put_off_cycles(self):
+        self.emit('learning.cycle', outcome='deferred_resource', reason='cpu_pressure', deferredBy='worker_admission')
+        self.emit('learning.cycle', outcome='blocked', reason='trainer_failed', failures=3)
+        self.assertRegex(self.summary(), r'learning deferred: cpu_pressure 1; last trained none')
+        result = subprocess.run([sys.executable, '-B', str(LOGS), '--state-root', str(self.state), '--slo'],
+                                text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r'slo learning: ok stored=0 gold=0 trained=0 failed=0 '
+                                        r'deferred_resource=1 blocked=1 rearmed=0 withoutReason=0')
+
     def test_t11_3_summary_counts_deferrals_and_the_last_training(self):
         for reason in ('memory_reserve', 'memory_reserve', 'cpu_pressure'):
             self.emit('learning.cycle', outcome='deferred_resource', reason=reason)

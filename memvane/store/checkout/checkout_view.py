@@ -439,6 +439,7 @@ def _repository_fields(facts):
 
 
 def _persistent_directory_equal(stored, live):
+    # Stored record against a live directory: path and inode (kernel/persistent_identity.py).
     from memvane.kernel.persistent_identity import persistent_identity_equal
     return stored is None and live is None or persistent_identity_equal(stored, live)
 
@@ -569,6 +570,10 @@ def _cache_filesystem(path):
     return (tuple(value.fsid), value.flags, value.subtype, bytes(value.mount), bytes(value.source))
 
 
+def _records_live(pairs):
+    return all(_persistent_directory_equal(record, _directory(path)) for record, path in pairs)
+
+
 def _cache_fingerprint(project_root, repository, worktree, deadline):
     """Fresh no-follow observations for a conservative direct-ref subset."""
     try:
@@ -583,8 +588,8 @@ def _cache_fingerprint(project_root, repository, worktree, deadline):
         checkout = Path(worktree['checkout']['path'])
         admin = Path(worktree['gitDir']['path'])
         common = Path(repository['commonGitDir']['path'])
-        if (_directory(checkout) != worktree['checkout'] or _directory(admin) != worktree['gitDir']
-                or _directory(common) != repository['commonGitDir']
+        if (not _records_live(((worktree['checkout'], checkout), (worktree['gitDir'], admin),
+                               (repository['commonGitDir'], common)))
                 or _dotgit(project) != checkout / '.git'):
             return None
         filesystems = tuple(_cache_filesystem(path) for path in (project, checkout, admin, common))

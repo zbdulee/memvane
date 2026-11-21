@@ -28,6 +28,7 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki.card  # cards refused or split for the selector budget
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" errors --details     # "detailed errors": reassembled raw diagnostic text
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --all errors                      # "unified logs": every registered project, UTC order
+   python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" --slo               # service-level lines: each against its target (add --all for every project)
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --register /path/to/project       # only when the user asks to add a project
    ```
 
@@ -36,6 +37,22 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
 3. Report what the lines say. For a recall, `reason` is the final outcome (`selected`, `no_results_after_filter`, `no_candidates`, a refusal code) and `notes` lists the diagnostics on the way (`laya_vector_*` = no query vector, `laya_selector_*` = local selection fell back to hybrid rank, `laya_recall_proof_retry`, `laya_wiki_rows_filtered`). `degraded` identifies a `worktree` or `reader_endpoint` read. A recall served by the new index format carries `store_format: schema3`; its `reason` `view_preparing` means this checkout's view has no published generation yet (a linked worktree's first use or a branch just switched to), and `checkout_changed` that the checkout kept moving during the read. Both give no context until the next sync publishes the view. `reader_settings_resealing` means the project's recall settings (such as `skipPaths`) changed and the index reader is re-sealed by the next sync, which this recall requested; it gives no context until then.
 
 The summary reports each hook action's p50 and p95 from its latest 100 recorded durations. For recall it also reports the recorded semantic completion fraction, the latency targets, and the median of each recorded stage. A missing stage means it was not measured; it is not a zero-duration result. Event durations cover the recorded host action, not shell startup or the earlier hook classification.
+
+With `--slo` the script prints service-level lines for the window (24 hours unless `--hours` is given), one block per install under `--all`. Each line ends its name with `ok`, `over` or `no-data`; `no-data` means fewer rows than the line needs (20, or 5 for `sync`), and `shown` marks a line that is reported without a target.
+
+- `install`: whether the install is `large` (more than 1,000 wiki Markdown files under the route's wiki folder), `standard`, or `unknown` when the route cannot be read. A large install has its own `hook+selector` and `lexical` targets; for an unknown one the standard target judges and the large verdict is shown beside it.
+- `hook`: prompt recall duration without the selector's time; `hook+selector`: the duration of recalls that asked the selector.
+- `stage`: the median of each checkout observation stage against its own target, over recalls of one query vector (a recall with more vectors costs more by design).
+- `semantic`: the share of recalls with a query vector whose semantic search completed, the share answered from the vector arena once one answers (a recall whose arena was switched off is left out), the counts of each unfinished state, and the recorded vector cache states. `vectorCache=unmeasured` means no row in the window recorded the state; it is not a zero.
+- `selector`: the selector's duration and the share of answers that ran out of their time.
+- `host <name>`: duration and semantic share per host.
+- `dedup`: the share of injected cards the same session had already been given (after its last compaction or clear; for a host that sends no such signal, within its last 20 served recalls), and the recalls the exclusion left empty.
+- `sync`: the trailing failed passes, and the time from a sync request to the end of the first pass that started after it and published; `unanswered` requests have no such pass yet.
+- `failed`: failed or refused rows that name no reason.
+- `learning`: stored cases, teacher answers and cycle outcomes in the window, since when the cycle has been put off, and cycle rows that name no reason.
+- `identity`: whether the device number recorded in the install's route is the current one. A moved number is expected after some restarts and is shown, not judged.
+
+`recall observation p50` is the median of the stages that observe the checkout (`pin`, `lexical`, `stillCurrent`, `checkout`). Each is a few ms while the checkout observation cache serves; hundreds of ms mean every observation ran Git. `sync consecutive failed passes` counts the trailing `wake.sync` lines whose outcome is `failed` over every retained line, with their reasons and the time of the last pass that published; a pass still in progress neither counts nor ends the run. Under `--all` there is one such line per install. A count that keeps growing means the index is not publishing.
 
 
 When the default teacher has run, the summary adds its lines:
@@ -49,7 +66,7 @@ When the default teacher has run, the summary adds its lines:
 - `WARNING teacher tool calls`: calls during which the host CLI ran one of its built-in tools that cannot be turned off, with counts per tool name. The labels of those calls are kept; report the warning.
 - `score <checkpoint>`: the operating score of a checkpoint over the cases captured while it was active, from the latest `learning.score` row: `exactRate` (Laya's selection equals the gold), `microF1`, `emptyAgree`, `nonEmptyAgree`, cases answered by the default rank instead of the selector (`defaultRank`, not scored), `unknownSelection` and gold cards outside the selector's window (`goldOutsideK`), with the `exactRate` trend across the window.
 - `promotion`: the latest promotion decisions (`waiting`, `evaluated`, `applied`, `rejected`) with the training and evaluation case counts, empty-gold evaluation cases and both exact rates.
-- `learning deferred`: learning cycles the resource admission deferred, by inner reason, and the time of the last finished training.
+- `learning deferred`: learning cycles the resource admission deferred, by inner reason, and the time of the last finished training. A `learning.cycle` row with outcome `blocked` is a pass that met a job no retry reopens; `--slo` counts them on its `learning` line.
 - `learning rotation`: closed cases deleted to keep the case table at 1,800 rows (`deleted`) and the number of passes that deleted any. `nothing_closed` counts plans that found the table over its limit with every row still protected, `deferred` plans that could not run.
 - `edit recall targets`: where the edited files of the funnel's rows lie — `main` (the main checkout), `linked` (a linked git worktree of the same repository, taken as the main project's edit), `linked_unproved`, `mixed` and `outside` (never a case).
 - `selector maintenance`: maintenance runs by result (`completed`, `deferred` and `failed` by reason). `learning_prepare_busy` means another install held the per-user prepare lease; the run comes back about a minute later and `busyRetriesMax` is the longest such run of retries. `incomplete(...)` names the step a `maintenance_incomplete` run stopped at (`prepare_status`, `heal_status`, `warm_status`, `publish_owner_busy`, `install_changed`, `teacher_enable_pending`, `selector_state_missing`, `renewal_refused`, `version_invalid`).

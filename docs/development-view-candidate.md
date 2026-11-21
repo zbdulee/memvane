@@ -182,7 +182,7 @@ deadline을 확인하며 float32 바이트를 double로 넓혀 chunk별 cosine�
 기본 4,000,000이다. 필터를 통과한 고유 blob의 `chunk_count × dimension`
 합계를 계산하고 모든 set·행 digest를 검증한다.
 
-recall의 semantic 단계는 최대 1초이며 상한 초과·시간 초과에도 lexical
+recall의 semantic 단계는 최대 2초(프롬프트·편집 recall 공통, 남은 시간이 더 짧으면 그만큼)이며 상한 초과·시간 초과에도 lexical
 후보와 selector를 유지한다. recall 이벤트의 `vectorKernel`·`vectorSource`,
 `vectorRows`·`vectorVerified`, `vectorLoadMs`·`vectorScanMs`·`vectorVerifyMs`가
 사용 경로와 비용을 나타낸다. 기존 `vectorReadMs`·`vectorUnpackMs`·`vectorDotMs`도

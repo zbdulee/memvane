@@ -210,6 +210,42 @@ class CheckoutCacheChecks(existing.CheckoutCase):
             self.cap(self.root, repository, worktree)
         self.assertGreater(alternate_git.call_count, 0)
 
+    def test_records_from_another_boot_keep_the_cache(self):
+        with self.other_boot():
+            repository, worktree = self.bind(self.root)
+        live = view._directory(self.root)
+        self.assertEqual(worktree['project'], {**live, 'dev': live['dev'] + 7})
+        self.assertEqual(repository['commonGitDir']['dev'], live['dev'] + 7)
+        sealed = json.dumps([repository, worktree], sort_keys=True)
+        baseline = self.cap(self.root, repository, worktree)
+        with mock.patch.object(view, '_git', wraps=view._git) as git:
+            observed = self.cap(self.root, repository, worktree)
+        self.assertEqual(observed, baseline)
+        self.assertEqual(git.call_count, 0)
+        self.assertEqual(baseline['evidence']['project'], live)
+        self.assertEqual(json.dumps([repository, worktree], sort_keys=True), sealed)
+
+    def test_worktree_registered_after_the_device_moved_keeps_the_cache(self):
+        with self.other_boot():
+            repository = view.register_repository(str(self.root))
+        worktree = view.register_worktree(str(self.root), repository)
+        live = view._directory(self.root)
+        self.assertEqual(worktree['project'], live)
+        self.assertEqual(repository['commonGitDir']['dev'], live['dev'] + 7)
+        self.cap(self.root, repository, worktree)
+        with mock.patch.object(view, '_git', wraps=view._git) as git:
+            self.cap(self.root, repository, worktree)
+        self.assertEqual(git.call_count, 0)
+
+    def test_another_boot_record_with_a_moved_inode_is_refused(self):
+        with self.other_boot():
+            repository, worktree = self.bind(self.root)
+        moved = {**worktree, 'checkout': {**worktree['checkout'], 'ino': worktree['checkout']['ino'] + 1}}
+        self.assertIsNone(view._cache_fingerprint(str(self.root), repository, moved, time.monotonic() + 5))
+        with self.assertRaises(view.CheckoutUnavailable) as raised:
+            self.cap(self.root, repository, moved)
+        self.assertEqual(raised.exception.reason, 'worktree_binding_changed')
+
     def test_new_process_does_not_inherit_cached_proof(self):
         repository, worktree = self.bind(self.root)
         self.cap(self.root, repository, worktree)

@@ -509,6 +509,20 @@ class CheckoutCase(FixtureCase):
     def cap(self, root, repository, worktree, **kwargs):
         return view.capture_view(str(root), repository, worktree, **kwargs)
 
+    @contextlib.contextmanager
+    def other_boot(self, delta=7):
+        """Directory identities as another boot would have recorded them.
+
+        APFS can number a device differently on each boot. Records registered
+        inside this block carry ``dev + delta`` with the real path and inode.
+        """
+        real = view._directory
+        def moved(path):
+            value = real(path)
+            return {**value, 'dev': value['dev'] + delta}
+        with mock.patch.object(view, '_directory', side_effect=moved):
+            yield
+
     def refused(self, fn, *args, reason=None, **kwargs):
         with self.assertRaises(view.CheckoutUnavailable) as caught:
             fn(*args, **kwargs)

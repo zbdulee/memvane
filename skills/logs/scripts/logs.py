@@ -2,7 +2,7 @@
 """View MemVane install event logs and register unified-view targets.
 
 usage: logs.py [--cwd DIR | --state-root DIR | --all] [--hours N] [--limit N]
-               [--json] [--details] [--register PROJECT ...]
+               [--json] [--details] [--register PROJECT ...] [--slo]
                [summary|recalls|errors|events] [--event NAME]
 
 The state root comes from the project's selected route (the install
@@ -12,6 +12,8 @@ each route) in UTC order under one ``ALL_READ_LIMIT`` byte budget split
 equally between readable targets; a target that cannot be read is reported
 with its reason, never shown as empty. ``--register PROJECT`` (repeatable)
 explicitly adds projects to that registry (the only write this tool makes).
+``--slo`` prints the service-level lines of ``logs_slo`` for the window, one
+block per install.
 
 Raw diagnostics. Normal text and ``--json`` never print ``diagnostic.part``
 rows or stored ``prompt.text``; a ``diagnostic.header`` shows only its ID and
@@ -41,6 +43,8 @@ sys.path.insert(0, str(ROOT))
 
 from memvane.diagnostics import event_log  # noqa: E402
 from memvane.registry import log_targets  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import logs_slo  # noqa: E402
 
 ALL_READ_LIMIT = 16 * 1024 * 1024
 MAX_ALL_TARGETS = 128
@@ -174,6 +178,7 @@ class _View:
         self.details = details
         self.groups = []      # per target: diagnostic ID -> rows
         self.origin = {}      # id(display row) -> target index
+        self.roots = {}       # install ID (None: the single target) -> state root
 
     def detail(self, row, ident=None):
         ident = row.get('diagnostic_id') if ident is None else ident
@@ -339,7 +344,7 @@ def _header(state_root, info):
               f"(last {_esc(last.get('reason'))} at {_esc(last.get('ts'))})")
 
 
-def summary(rows, args):
+def summary(rows, args, unified=False):
     window = _since(rows, args.hours)
     label = f'last {args.hours}h' if args.hours is not None else 'all retained'
     print(f'events ({label}): {len(window)}')
@@ -391,6 +396,14 @@ def summary(rows, args):
             present = [f'{label}={statistics.median(data):g}ms' for label, data in stages if data]
             if present:
                 print('recall stage median: ' + ' '.join(present))
+            # Checkout observation stages: each is a few ms while the
+            # observation cache serves, and hundreds when every one runs Git.
+            observed = [(label, values(action_rows, key)) for key, label in
+                        (('pinMs', 'pin'), ('lexicalMs', 'lexical'),
+                         ('stillCurrentMs', 'stillCurrent'), ('checkoutMs', 'checkout'))]
+            present = [f'{label}={percentile(data, .5):g}ms' for label, data in observed if data]
+            if present:
+                print('recall observation p50: ' + ' '.join(present))
     recalls = [row for row in window if row.get('event') == 'recall']
     if recalls:
         empty = [row for row in recalls if row.get('outcome') != 'served']
@@ -405,6 +418,17 @@ def summary(rows, args):
         if degraded:
             print('degraded recalls: ' + ', '.join(f'{_esc(k)} {v}'
                                                    for k, v in degraded.items()))
+    # The trailing run over every retained row: a stalled index shows here even
+    # when the window holds no pass. One line per install: merged rows of a
+    # publishing install must not hide another install's run.
+    runs = logs_slo.sync_runs(rows if unified else [dict(row, install=None) for row in rows])
+    for install, (streak, reasons, last_ok) in sorted(runs.items(), key=lambda item: str(item[0])):
+        line = 'sync consecutive failed passes: ' + (f'install={_esc(install)} ' if unified else '') + str(streak)
+        if streak:
+            line += ' (' + ', '.join(f'{_esc(k)} {v}' for k, v in reasons.most_common(3)) + ')'
+        if last_ok:
+            line += f' last ok {_esc(str(last_ok))}'
+        print(line)
     for name, test in (('last publish', lambda row: row.get('event') == 'index.publish'),
                        ('last error', lambda row: row.get('severity') != 'warning' and
                         (row.get('outcome') in FAILED or row.get('event') == 'hook.error'))):
@@ -628,10 +652,13 @@ def _teacher_waits(passes):
 
 def _show(rows, args, view):
     """Render one view of already-visible rows (shared by single and --all)."""
+    if args.view in ('summary', 'slo') and args.hours is None:
+        args.hours = 24.0
+    if args.view == 'slo':
+        _slo(rows, args, view)
+        return
     if args.view == 'summary':
-        if args.hours is None:
-            args.hours = 24.0
-        summary(rows, args)
+        summary(rows, args, unified=view is not None and view.unified)
         return
     rows = _since(rows, args.hours)
     if args.view == 'recalls':
@@ -643,6 +670,31 @@ def _show(rows, args, view):
     else:
         _print([row for row in rows if not args.event or row.get('event') == args.event],
                args, _short, view)
+
+
+def _slo(rows, args, view):
+    """Service-level lines, one block per install (``--all``) or one block for the single target."""
+    unified = view is not None and view.unified
+    blocks = {}
+    for row in rows:
+        blocks.setdefault(row.get('install') if unified else None, []).append(row)
+    if not blocks:
+        blocks[None] = []
+    roots = view.roots if view is not None else {}
+    for install in sorted(blocks, key=str):
+        block = blocks[install]
+        lines = logs_slo.lines(block, args.hours, state_root=roots.get(install))
+        root = next((row.get('root') for row in block if row.get('root')), None) if unified else None
+        if args.json:
+            for line in lines:
+                print(_json_line({'slo': dict(line, **({'install': install, 'root': root} if unified else {}))}))
+            continue
+        if unified:
+            print(f'slo install={_esc(install)} root={_esc(root or "-")} (last {args.hours:g}h)')
+        else:
+            print(f'slo (last {args.hours:g}h)')
+        for line in lines:
+            print('  ' + logs_slo.render(line, _esc))
 
 
 def _register(args):
@@ -743,6 +795,7 @@ def _collect_all(details):
             view.groups.append({})
             continue
         view.groups.append(_groups(raw) if details else {})
+        view.roots[status['install_id']] = state_root
         shown = 0
         for seq, row in enumerate(raw):
             safe = _visible(row)
@@ -807,7 +860,13 @@ def main(argv=None):
     parser.add_argument('--limit', type=int, default=20)
     parser.add_argument('--event')
     parser.add_argument('--json', action='store_true')
+    parser.add_argument('--slo', action='store_true',
+                        help='service-level lines for the window (default 24h), per install')
     args = parser.parse_args(argv)
+    if args.slo:
+        if args.view not in (None, 'summary'):
+            parser.error('--slo is its own view; omit the view name')
+        args.view = 'slo'
     if args.view is None:
         args.view = 'events' if args.all else 'summary'
     if args.all and args.state_root:
@@ -832,6 +891,7 @@ def main(argv=None):
     # Newest bytes first, capped (event_log.READ_LIMIT); malformed lines are skipped.
     raw = event_log.read(state_root)
     view = _View(details=args.details)
+    view.roots[None] = state_root
     view.groups.append(_groups(raw) if args.details else {})
     rows = [row for row in map(_visible, raw) if row is not None]
     _show(rows, args, view)

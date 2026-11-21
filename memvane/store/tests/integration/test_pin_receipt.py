@@ -49,6 +49,38 @@ reader.close()
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_receipt_written_under_another_device_number_is_reused(self):
+        store, repository, handle, _manifest, _recipe, _profile, _gen, pin = self.ready()
+        store.release(pin)
+        store.close()
+        def pinned():
+            reader = self.Store.open_reader(self.db, repository=repository, scope_id=self.scope)
+            self.addCleanup(reader.close)
+            with mock.patch.object(reader, '_rows_verify', wraps=reader._rows_verify) as verify:
+                pin = reader.pin_view(reader.capture_view(handle.worktree_id))
+                how = reader.pin_verification(pin)['pinVerified']
+                reader.release(pin)
+            reader.close()
+            return how, verify.call_count
+        self.assertEqual(pinned(), ('full', 1))
+        receipt = self.db.parent / ('.view-pin-receipt-' + handle.view_id + '.json')
+        saved = json.loads(receipt.read_text(encoding='utf8'))
+        self.assertEqual(saved['database'][0], self.db.stat().st_dev)
+        def rewrite(index):
+            node = list(saved['database'])
+            node[index] += 7
+            receipt.write_text(json.dumps({**saved, 'database': node}), encoding='utf8')
+            os.chmod(receipt, 0o600)
+            return receipt.read_bytes()
+        sealed = rewrite(0)
+        self.assertEqual(pinned(), ('receipt', 0))
+        self.assertEqual(receipt.read_bytes(), sealed)
+        for index in (1, 2, 3, 4):
+            with self.subTest(index=index):
+                rewrite(index)
+                self.assertEqual(pinned(), ('full', 1))
+                self.assertEqual(json.loads(receipt.read_text(encoding='utf8')), saved)
+
     def test_mutated_card_forces_full_verification_and_refusal(self):
         store, repository, handle, _manifest, _recipe, _profile, _gen, pin = self.ready()
         store.release(pin)
