@@ -40,7 +40,13 @@ class LocalBinding(unittest.TestCase):
         self.persist()
         self.addCleanup(patch.stopall)
         patch.object(Path,'home',return_value=self.home).start()
-        patch.dict(os.environ,{'CODEX_HOME':str(self.home/'.codex')}).start()
+        # A stand-in ``codex`` on PATH: the binding looks the CLI up before the listing
+        # call, which ``cli`` below answers. It is never executed; a host without the
+        # real CLI (CI) runs the same checks.
+        tools=self.home/'bin';tools.mkdir(mode=0o700)
+        stub=tools/'codex';stub.write_text('#!/bin/sh\nexit 97\n');stub.chmod(0o700)
+        patch.dict(os.environ,{'CODEX_HOME':str(self.home/'.codex'),
+                               'PATH':str(tools)+os.pathsep+os.environ.get('PATH','')}).start()
         def cli(*args,**kwargs):
             self.assertEqual(args[0],['codex','plugin','list','--marketplace',MARKET,'--json'])
             self.assertNotIn('OPENAI_API_KEY',kwargs['env'])
