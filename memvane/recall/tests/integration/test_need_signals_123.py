@@ -13,7 +13,7 @@ from memvane.journal import api as journal_api
 from memvane.recall import reader_dispatch
 from memvane.recall.tests.support import RecallInstallCase
 from memvane.recall.types import HYBRID_LIST_LIMIT
-from memvane.settings.api import wiki_meta_pages
+from memvane.settings.types import WIKI_META_PAGES
 
 
 class _Store:
@@ -35,21 +35,26 @@ class _Store:
 class Signals(RecallInstallCase):
     CARDS = 1
 
-    def signals(self, store, queries, *, remaining=30.0, excluded=None):
+    def signals(self, store, queries, *, remaining=30.0, wiki_roots=()):
         timings = {}
         reader_dispatch._need_signals(store, object(), queries, timings, time.monotonic() + remaining,
-                                      HYBRID_LIST_LIMIT, excluded=excluded)
+                                      HYBRID_LIST_LIMIT, wiki_roots)
         return timings
 
     def test_f4_rare_top_score_is_the_best_bm25_and_counts_are_per_atom(self):
         store = _Store([(2, -3.5), (HYBRID_LIST_LIMIT, -9.0), (0, None), (3, -1.25)])
-        got = self.signals(store, ['a AND b', 'c AND d AND a'], excluded=['log.md'])
+        got = self.signals(store, ['a AND b', 'c AND d AND a'], wiki_roots={'wiki'})
         self.assertEqual((got['needAtoms'], got['needAtomsHit'], got['needAtomsRare']), (4, 3, 2))
         # bm25: lower is better. A full list (``limit`` hits) is not rare whatever its score.
         self.assertEqual(got['needRareTopScore'], -3.5)
         self.assertFalse(got['needProbeTruncated'])
         self.assertEqual([(call[0], call[1], call[2]) for call in store.calls],
-                         [(['a', 'b', 'c', 'd'], HYBRID_LIST_LIMIT, ['log.md'])])
+                         [(['a', 'b', 'c', 'd'], HYBRID_LIST_LIMIT, list(WIKI_META_PAGES))])
+        # Like the lexical lane's filter: only with exactly one wiki root.
+        for roots in ((), {'wiki', 'other'}):
+            store = _Store([(1, -1.0)])
+            self.signals(store, ['a'], wiki_roots=roots)
+            self.assertIsNone(store.calls[0][2])
         self.assertLessEqual(store.calls[0][3], reader_dispatch.NEED_BUDGET_SECONDS)
 
     def test_f3_unfinished_atoms_and_failures_are_truncated(self):
@@ -121,7 +126,7 @@ class CountOnlyRead(RecallInstallCase):
         # One read session, no card body and no checkout observation.
         self.assertEqual((probe['reading'], probe['blob'], probe['observe']), (1, 0, 0))
         # F-5: the reader passes the wiki-root meta pages its lexical lane drops.
-        self.assertEqual(probe['excluded'], wiki_meta_pages())
+        self.assertEqual(probe['excluded'], list(WIKI_META_PAGES))
         self.assertEqual(sorted(probe['excluded']), ['SCHEMA.md', 'index.md', 'log.md'])
         # The same count and best (lowest) score as the full search of each atom.
         for answer, full in zip(probe['answer'], probe['full']):

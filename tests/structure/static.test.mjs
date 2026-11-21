@@ -60,6 +60,7 @@ const TEACHER_MODULES = [
   'memvane.learning.context_learning.teacher_consent', 'memvane.learning.context_learning.teacher_model_tiers',
   'memvane.learning.context_learning.teacher_isolation', 'memvane.learning.context_learning.teacher_hosts',
   'memvane.learning.context_learning.prequential', 'memvane.learning.context_learning.candidate_close',
+  'memvane.learning.context_learning.case_rotation',
   'memvane.learning.context_learning.general_teacher',
   'memvane.learning.context_learning.default_teacher',
   'memvane.learning.context_learning.general_gold_ledger', 'memvane.learning.context_learning.claude_adapter',

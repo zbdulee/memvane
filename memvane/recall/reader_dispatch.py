@@ -228,13 +228,13 @@ def _need_signals_on():
             and os.environ.get(NEED_SWITCH, '').strip().lower() != 'off')
 
 
-def _need_signals(store, pin, queries, timings, deadline, limit, excluded=None):
+def _need_signals(store, pin, queries, timings, deadline, limit, wiki_roots=()):
     """Search-need judge signals (design §N stage 1 input); recorded, never decided on.
 
     Each distinct atom of the conjunctive queries (at most ``NEED_ATOMS``) is
     counted alone on the same pin in one count-only read (``probe_terms``: no
     card body), without the wiki-root meta pages the lexical lane drops
-    (``excluded``). ``needAtomsRare`` counts atoms with fewer hits than
+    (``auxiliary_wiki_row``: one wiki root). ``needAtomsRare`` counts atoms with fewer hits than
     ``limit`` (rare terms) and ``needRareTopScore`` is the best (lowest) bm25
     among them. The read gets ``NEED_BUDGET_SECONDS``, less when the reader
     would be left with under ``NEED_READER_RESERVE_SECONDS``; atoms it did not
@@ -253,8 +253,9 @@ def _need_signals(store, pin, queries, timings, deadline, limit, excluded=None):
         if atoms and left <= 0:
             truncated = True
         elif atoms:
-            answers = store.probe_terms(pin, atoms, limit, excluded_paths=excluded,
-                                        deadline_seconds=left)
+            from memvane.settings.types import WIKI_META_PAGES
+            answers = store.probe_terms(pin, atoms, limit, deadline_seconds=left,
+                                        excluded_paths=list(WIKI_META_PAGES) if len(wiki_roots) == 1 else None)
             truncated = len(answers) < len(atoms)
             for count, score in answers:
                 probed += 1
@@ -392,10 +393,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                 if timings is not None:
                     timings['lexicalMs'] = round((time.monotonic() - started) * 1000, 3)
             if timings is not None and _need_signals_on():
-                # Diagnostic only, never checked. The same wiki-root meta pages ``shaped`` drops.
-                from memvane.settings.api import wiki_meta_pages
-                _need_signals(store, pin, queries, timings, deadline, HYBRID_LIST_LIMIT,
-                              excluded=wiki_meta_pages() if len(roots) == 1 else None)
+                _need_signals(store, pin, queries, timings, deadline, HYBRID_LIST_LIMIT, roots)  # Diagnostic only, never checked.
             status='provider_absent' if query_vector is None else 'lexical_only' if vector is None else 'complete'
             nearest=None
             if semantic:

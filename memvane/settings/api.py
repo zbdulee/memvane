@@ -138,12 +138,6 @@ def is_wiki_meta_page(path, wiki_root=None):
     return implementation(path, wiki_root)
 
 
-def wiki_meta_pages():
-    """The wiki-root meta page names ``is_wiki_meta_page`` matches, as a new list."""
-    from memvane.settings.types import WIKI_META_PAGES
-    return list(WIKI_META_PAGES)
-
-
 def allowed_roots(config):
     from memvane.settings.resolve_paths import allowed_roots as implementation
     return implementation(config)

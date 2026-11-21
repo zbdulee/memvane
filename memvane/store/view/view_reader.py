@@ -213,8 +213,42 @@ class ReaderMixin:
         proves nothing about any card. A deadline ends it early with the
         queries finished so far (a shorter list). The lowest bm25 is the best.
         """
-        return self._rows_probe_terms(pin, fts_queries, limit, excluded_paths=excluded_paths,
-                                      deadline_seconds=deadline_seconds)
+        from memvane.store.view.view_rows import _pin_seal
+        if type(fts_queries) is not list or not 1 <= len(fts_queries) <= 16:
+            v.fail('fts_query_invalid')
+        for query in fts_queries:
+            _query(query, limit, None, excluded_paths, deadline_seconds)
+        deadline = time.monotonic() + deadline_seconds
+        record = self._pinned(pin)
+        answer = []
+        try:
+            with self._reading(deadline) as db:
+                head = self._rows_head_row(db, pin.view_id)
+                if (head.ordinal, head.gen_id, head.epoch) != (record['ordinal'], pin.gen_id, pin.epoch):
+                    v.fail('view_head_changed')
+                generation, _ = self._rows_verified(db, head, record['entry']['handle'], deadline, record)
+                if _pin_seal(generation) != record['seal']:
+                    v.fail('view_pin_changed')
+                name = fts.head_table(pin.view_id)
+                extra, excluded = '', list(excluded_paths or ())
+                if excluded:
+                    extra = ' AND c.path NOT IN (' + ','.join('?' for _ in excluded) + ')'
+                for query in fts_queries:
+                    _remaining(deadline)
+                    try:
+                        rows = db.execute(f'''SELECT bm25({name},1.5,4.0,1.0,0.0) AS score FROM {name}
+                            JOIN s_cards c ON c.view_id=? AND c.gen_to IS NULL AND c.path={name}.path_key
+                            WHERE {name} MATCH ? AND c.eligible=1 {extra}
+                            ORDER BY score ASC LIMIT ?''', (pin.view_id, query, *excluded, limit)).fetchall()
+                    except sqlite3.Error:
+                        _remaining(deadline)
+                        v.fail('fts_query_invalid')
+                    answer.append((len(rows), rows[0]['score'] if rows else None))
+        except BlobStoreError:
+            # Out of time: the queries finished so far are the answer.
+            if time.monotonic() < deadline:
+                raise
+        return answer
 
     def card_locations(self, pin, paths, *, deadline_seconds=2):
         """Source line locators of pinned members, from stored card provenance only.
