@@ -444,9 +444,13 @@ def _teacher_summary(window):
     calls = [row for row in teacher if row.get('outcome') in _CALL_OUTCOMES and row.get('request_id')
              and not (row.get('outcome') == 'gold' and row.get('reason') == _FROM_PARKED)]
     days = {}
+    gold = [row for row in teacher if row.get('outcome') == 'gold' and row.get('request_id')]
+    for row in gold:
+        day = (_ts(row) or _EPOCH).date().isoformat()
+        days.setdefault(day, {'calls': 0, 'gold': 0, 'failed': Counter(), 'usage': Counter()})['gold'] += 1
     for row in calls:
         day = (_ts(row) or _EPOCH).date().isoformat()
-        entry = days.setdefault(day, {'calls': 0, 'failed': Counter(), 'usage': Counter()})
+        entry = days.setdefault(day, {'calls': 0, 'gold': 0, 'failed': Counter(), 'usage': Counter()})
         entry['calls'] += 1
         if row.get('outcome') not in ('gold', 'parked'):
             entry['failed'][str(row.get('reason') or row.get('outcome'))] += 1
@@ -456,9 +460,8 @@ def _teacher_summary(window):
     for day, entry in sorted(days.items()):
         failed = sum(entry['failed'].values())
         usage = ' '.join(f'{key}={entry["usage"][key]}' for key in _USAGE if key in entry['usage'])
-        print(f"teacher {day}: calls={entry['calls']} failed={failed}"
+        print(f"teacher {day}: calls={entry['calls']} gold={entry['gold']} failed={failed}"
               + (f' ({_tally(entry["failed"])})' if failed else '') + (f' {usage}' if usage else ''))
-    gold = [row for row in teacher if row.get('outcome') == 'gold' and row.get('request_id')]
     parked = sum(1 for row in calls if row.get('outcome') == 'parked')
     if parked:
         later = sum(1 for row in gold if row.get('reason') == _FROM_PARKED)
@@ -553,6 +556,28 @@ def _learning_inflow(window, promotions):
     if deferred or trained:
         last = (str(trained[-1].get('ts', ''))[:19].replace('T', ' ') if trained else 'none')
         print('learning deferred: ' + (_tally(deferred) if deferred else 'none') + f'; last trained {_esc(last)}')
+    rotated = [row.get('count') for row in window if row.get('event') == 'learning.rotation'
+               and _count(row.get('count'))]
+    if rotated:
+        print(f'learning rotation: deleted={sum(rotated)} passes={len(rotated)}')
+    _selector_maintenance(window)
+
+
+def _selector_maintenance(window):
+    """Selector maintenance runs by result, with the reasons of the unfinished ones."""
+    runs = [row for row in window if row.get('event') == 'learning.selector.maintenance'
+            and row.get('outcome') in ('completed', 'deferred', 'failed')]
+    if not runs:
+        return
+    parts = [f"completed={sum(1 for row in runs if row['outcome'] == 'completed')}"]
+    for outcome in ('deferred', 'failed'):
+        reasons = Counter(str(row.get('reason')) for row in runs if row['outcome'] == outcome)
+        parts.append(f'{outcome}={sum(reasons.values())}' + (f' ({_tally(reasons)})' if reasons else ''))
+    busy = [row['busyRetries'] for row in runs if _count(row.get('busyRetries'))]
+    if busy:
+        # Consecutive retries behind another install's prepare lease (not failures).
+        parts.append(f'busyRetriesMax={max(busy)}')
+    print('selector maintenance: ' + ' '.join(parts))
 
 
 def _teacher_waits(passes):

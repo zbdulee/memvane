@@ -373,7 +373,9 @@ pinned cases, non-pending/non-rejected apply journal, `rejected_cycles`
 exclusion and `local_train` permission all match, emitting
 `learning.promotion` `carried`. Any remaining staged cycles from earlier
 approvals are closed in both profiles as `authorization_superseded`
-(`learning.promotion` `superseded`).
+(`learning.promotion` `superseded`), including one whose evaluation a stopped
+worker left `running`. A `ResourceDeferred` while carrying closes nothing and
+ends the pass as `deferred_resource`.
 
 ### Labeling
 
@@ -424,8 +426,12 @@ checks do not count.
   only the active case row via `prequential.admitted_one`. After the prompt
   body is sent (`sent=True`), `monitor` keeps the child RSS, timeout, output
   cap and scope checks and does not stop on system readiness; a `ResourceDeferred`
-  inside the pre-send guard ends as `deferred` (`pre_send_rejected`, case back
-  to `queued`) without consuming a retry attempt, and a post-send `ResourceDeferred`
+  inside the pre-send guard, and system pressure before the body
+  (`gold_system_pressure`), end as `deferred` (`pre_send_rejected`, case back
+  to `queued`) without consuming a retry attempt. A consent file read that an
+  I/O error cut short (anything but a missing file, a link or a permission
+  error) is such a `ResourceDeferred` (`teacher_consent_unreadable`), not a
+  withdrawal, so kept answers stay. A post-send `ResourceDeferred`
   during the commit scope check keeps the case as `first_done` with the ledger
   at `answer_parked` (`learning.teacher` `parked` with usage). The next pass
   commits kept answers at the start (before the empty-queue exit) without a
@@ -440,7 +446,8 @@ checks do not count.
   again. Three `unknown` or `invalid` failures in a row (outside the four
   scope/case-change reasons `NOT_HOST_FAILURES`: `teacher_scope_changed`,
   `gold_capture_changed`, `teacher_cohort_changed`,
-  `gold_case_changed_before_commit`) rest that host for a day.
+  `gold_case_changed_before_commit`, and outside every `project_scope_*` and
+  `teacher_consent_*` reason) rest that host for a day.
 - **Waits.** `teacher-host-state.json` (namespace root, 0600) keeps each
   host's wait, reason, failure count, queued cases and notice times. Codex
   also rests a pass when its weekly remaining quota is 30 % or less or cannot
@@ -471,10 +478,23 @@ times that map cases to checkpoints. Whether the selector answered a case comes
 from the `recall.edit` event with the same `request_id`; the worker stores it
 in the learning database on its first pass after capture. Shared `cases` stops
 accepting new rows at `CASE_LIMIT` (2,000 rows of any status) with
-`queue_full` (`learning.capture.shared`) without deleting existing rows. In a
+`queue_full` (`learning.capture.shared`). In a
 project without its own `.git` inside a parent work tree, every edit case
 captured before the teacher consent's `grantedAtUnixMs` stays out of labeling
-and training as `historical` (`pre_teacher_capture`); none is deleted.
+and training as `historical` (`pre_teacher_capture`); that rule deletes none.
+
+Above 1,800 rows a default-teacher worker pass deletes this project's oldest
+closed cases until the table is back at 1,800 (`case_rotation.py`, one
+transaction, `learning.rotation` with the deleted `count`). Closed means
+consumed gold, `pending_review` and `historical`. It never deletes a case
+that is not closed (`queued`, `first_running`, `first_done`), the newest 128
+gold and the newest 128 consumed gold, gold no trained job has consumed, the
+members and evaluation cases of a job still to be judged (not trained yet, an
+open candidate, the application journal's cycle, the newest applied
+candidate), the members of the active checkpoint's cycle and of the newest
+job, or another project's row. A delete count that differs from the plan
+rolls the transaction back. The private sample store and the gold ledger are
+not touched. Explicit profiles and default-local namespaces are not rotated.
 
 ### Turning the teacher off
 

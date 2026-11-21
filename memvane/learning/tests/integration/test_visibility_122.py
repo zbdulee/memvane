@@ -193,6 +193,36 @@ class Deferral(StateRoot):
         self.assertRegex(out, r'learning deferred: cpu_pressure 1, memory_reserve 2; last trained \d{4}-')
 
 
+    def test_summary_shows_selector_maintenance_rotation_and_daily_gold(self):
+        # 1.0.23: the daily look at learning needs these three in the summary.
+        self.emit('learning.selector.maintenance', outcome='started')
+        self.emit('learning.selector.maintenance', outcome='completed')
+        for retries in (1, 2, 7):
+            self.emit('learning.selector.maintenance', outcome='deferred',
+                      reason='learning_prepare_busy', busyRetries=retries)
+        self.emit('learning.selector.maintenance', outcome='deferred', reason='resource_deferred')
+        self.emit('learning.selector.maintenance', outcome='failed', reason='renewal_refused')
+        for count in (100, 3):
+            self.emit('learning.rotation', outcome='deleted', count=count, caseRows=1800, limit=1800)
+        self.emit('learning.teacher', outcome='gold', reason='single_pass', request_id='r1', usageIn=10)
+        self.emit('learning.teacher', outcome='gold', reason='parked_answer', request_id='r2')
+        self.emit('learning.teacher', outcome='pending_review', reason='gold_attempt_failed',
+                  request_id='r3')
+        out = self.summary()
+        self.assertIn('selector maintenance: completed=1 deferred=4 (learning_prepare_busy 3, '
+                      'resource_deferred 1) failed=1 (renewal_refused 1) busyRetriesMax=7', out)
+        self.assertIn('learning rotation: deleted=103 passes=2', out)
+        # Two calls (one gold, one set aside) and the gold a kept answer became without a call.
+        self.assertRegex(out, r'teacher \d{4}-\d\d-\d\d: calls=2 gold=2 failed=1 '
+                              r'\(gold_attempt_failed 1\) usageIn=10')
+
+    def test_summary_has_no_maintenance_or_rotation_line_without_rows(self):
+        self.emit('learning.selector.maintenance', outcome='started')
+        out = self.summary()
+        self.assertNotIn('selector maintenance:', out)
+        self.assertNotIn('learning rotation:', out)
+
+
 class OneRowGuard(TeacherFixture):
     def test_t7_1_running_guard_reads_one_case_row(self):
         for index in range(500):

@@ -8,6 +8,15 @@ base checkpoint 포인터는 `schema_version: 1`을 기록한다. 해당 키만 
 지속 실패 시 최대 1시간까지 지수 backoff를 적용한다. 자원 부족과
 시작 경로·권한·IO 실패는 별도 고정 사유 코드로 기록한다.
 
+사용자 단위 준비 lock(`learning-prepare.lock`)을 다른 설치가 쥐고 있으면
+(`learning_prepare_busy`) 실패로 세지 않는다. 요청 행에 `busyRetries`를 올리고
+60초 뒤(`BUSY_RETRY_SECONDS`) `learning` wake로 다시 요청하며, 그동안 10분 하한 대신
+60초 하한을 쓴다. 큐에 이미 `learning` wake가 있으면 그 due를 따른다. 연속 30회
+(`BUSY_RETRY_LIMIT`)에 닿으면 그 뒤 경합은 일반 미룸(실패 1회, 10분 하한, backoff)이다.
+완료와 경합이 아닌 결과는 `busyRetries`를 지운다. 횟수는 `learning.selector.request`와
+`learning.selector.maintenance`의 `busyRetries`에 남고, 경합 미룸은 유지보수 진입에서
+예외로 올라가지 않는다. `busyRetries`를 모르는 1.x 번들은 그 행을 10분 하한으로 읽는다.
+
 warm은 client 검증 30초, resident 준비 대기 60초, 준비 뒤 추론 요청
 30초를 각각 사용한다. 추론 요청 상한은 wire의 30초와 같다. 첫 추론
 요청이 시간 초과하면 같은 resident의 idle을 최대 60초 기다리고 30초
@@ -89,10 +98,19 @@ code/executable/manifest/adapter 지문과 기본 승인 체인, 현재 공식 r
 정체성·권한 거절은 후보 적용을 차단한다. `selector_heal.check_scope`는 갱신 intent나
 전환 intent(`teacher_enable_pending`)가 있으면 거절한다.
 
-구현: `context_learning_auto.py`, `context_learning_cli.py`, `prepare_laya_inference.py`, `project_learning_setup.py`, `project_learning_recovery.py`, `selector_maintenance.py`, `default_teacher_enable.py`, `candidate_close.py`.
+구현: `context_learning_auto.py`, `context_learning_cli.py`, `prepare_laya_inference.py`, `project_learning_setup.py`, `project_learning_recovery.py`, `selector_maintenance.py`, `default_teacher_enable.py`, `candidate_close.py`, `case_rotation.py`.
 
 공유 학습 `cases` 테이블은 상태와 무관하게 `CASE_LIMIT`(2,000행)에서 새 사례 수집을
-멈추고(`queue_full`), 기존 사례를 삭제하지 않는다. `seam._store`가 `queued`·`duplicate`
+멈춘다(`queue_full`). default-teacher namespace의 worker pass는 행 수가 1,800
+(`case_rotation.ROTATE_LIMIT`)을 넘으면 teacher 호출 전에 한 트랜잭션으로 이 프로젝트의
+가장 오래된 종결 사례(소비된 gold, `pending_review`, `historical`)를 지워 1,800행으로
+맞추고 `learning.rotation`(`count`, `caseRows`, `protected`, `limit`)을 남긴다. 지우지
+않는 것은 종결되지 않은 사례, 최근 gold 128건과 최근 소비 gold 128건, 어느 학습 job도
+소비하지 않은 gold, 판정 전 job(미학습, 열린 후보, apply journal의 cycle, 가장 새 적용
+후보)의 구성원과 평가 사례, 활성 checkpoint cycle과 가장 새 job의 구성원, 다른 프로젝트의
+행이다. 삭제 행 수가 계획과 다르거나 상태 파일을 읽지 못하면 아무것도 지우지 않고 다음
+pass에 다시 계획한다. private `samples`와 gold ledger는 그대로 둔다. 명시 프로필과
+default-local namespace는 순환하지 않는다. `seam._store`가 `queued`·`duplicate`
 밖의 결과를 받으면 `learning.capture.shared` 이벤트를 남긴다. worker pass는 자원 수락
 미룸 시 `resource-defer.json`의 안쪽 사유와 관측 수치를 `learning.cycle`(`deferred_resource`)에
 남기고, 학습이 끝나면 `learning.cycle`(`trained`)을 남긴다. worker 격리 env에 provider가
@@ -156,16 +174,19 @@ teacher는 학습 worker에서만 돈다(`general_teacher.process_pending_defaul
 호출·대기·차단기는 `teacher_hosts.py`와 namespace의 `teacher-host-state.json`이 맡는다.
 실행 중 guard는 `prequential.admitted_one`으로 해당 사례 한 행만 읽는다. 본문 전송 뒤(`sent=True`)
 감시는 자식 RSS·timeout·출력 상한·scope를 유지하고 시스템 전체 준비 상태로 중단하지 않는다.
-전송 전 guard의 `ResourceDeferred`는 본문 없이 `deferred`로 끝내며 `deferred`·`host` 대기는
-시도 횟수를 올리지 않는다. 응답 뒤 guard의 `ResourceDeferred`는 사례를 `first_done`, ledger를
+전송 전 guard의 `ResourceDeferred`와 전송 전 시스템 압박(`gold_system_pressure`)은 본문 없이
+`deferred`로 끝내며 `deferred`·`host` 대기는 시도 횟수를 올리지 않는다. 동의 파일을 끝까지
+읽지 못한 I/O 오류(파일 없음·link·권한 오류 밖)는 철회가 아니라
+`ResourceDeferred`(`teacher_consent_unreadable`)이므로 보관 답을 닫지 않는다.
+응답 뒤 guard의 `ResourceDeferred`는 사례를 `first_done`, ledger를
 `answer_parked`로 보관하고(`learning.teacher` `parked`), 다음 pass 맨 앞(빈 큐 조기 반환 전)에서
 현재 동의·활성·불변·payload 해시·`admitted_one`·보관 답 해시가 맞으면 호출 없이 gold로
 확정한다(`reason: parked_answer`). 차단기는 `NOT_HOST_FAILURES` 네 사유(`teacher_scope_changed`,
-`gold_capture_changed`, `teacher_cohort_changed`, `gold_case_changed_before_commit`)를 제외한
-`unknown`·`invalid`에서 오른다. 입력은 편집 텍스트와 후보 카드 본문 스냅숏뿐이다. 루트에 `.git`이
+`gold_capture_changed`, `teacher_cohort_changed`, `gold_case_changed_before_commit`)와
+`project_scope_`·`teacher_consent_`로 시작하는 사유를 제외한 `unknown`·`invalid`에서 오른다. 입력은 편집 텍스트와 후보 카드 본문 스냅숏뿐이다. 루트에 `.git`이
 없고 상위 work tree 안에 있는 프로젝트는 teacher 동의의 `grantedAtUnixMs`보다 먼저 수집된 v5
-편집 사례를 모두 teacher·학습 대상에서 빼고 지우지 않은 채 `historical`(`pre_teacher_capture`)로
-둔다. git이 답하지 못하면 그 pass는 부르지 않는다. gold는 holdout 없이 모두 학습에 들어가고,
+편집 사례를 모두 teacher·학습 대상에서 빼고 `historical`(`pre_teacher_capture`)로
+둔다(이 규칙은 지우지 않는다). git이 답하지 못하면 그 pass는 부르지 않는다. gold는 holdout 없이 모두 학습에 들어가고,
 승격은 학습 cutoff 뒤 사례로 판정한다. 승격 판정에는 grant의 cohort 한도에 더해 비지 않은 gold
 평가 사례 10건이 필요하다(`prequential.py`).
 
@@ -174,7 +195,8 @@ default-teacher는 gold가 `minQualityTrainCases`(100건) 전이면 job을 계�
 승인 해시가 바뀌면 `candidate_close.supersede`가 유효한 grant 아래에서 계보(`binding`을 뺀 grant
 해시)·`job_family`·base artifact·입력 view·후보 artifact·활성 stage·구성원 행·apply journal·`rejected_cycles`
 제외 조건이 모두 맞는 미완 후보를 현재 승인으로 옮기고(`carriedFrom`), 나머지 구승인 staged cycle은
-두 프로필 공통으로 `authorization_superseded`로 닫는다. 또한 후보 적용이 판정 사유(`candidate_apply.JUDGED`)로
+두 프로필 공통으로 `authorization_superseded`로 닫는다(평가가 `running`으로 남은 cycle 포함). 승계
+도중의 `ResourceDeferred`는 아무것도 닫지 않고 그 pass를 `deferred_resource`로 끝낸다. 또한 후보 적용이 판정 사유(`candidate_apply.JUDGED`)로
 거절되거나 apply journal이 `rejected`로 끝나면 `candidate_close.close_judged`가 `EvaluationQueue.reject`로
 두 프로필 모두에서 해당 후보(및 완료된 채 열려 있는 선행 후보 `superseded_by_judged`)를 닫아 재적용을
 막는다.
