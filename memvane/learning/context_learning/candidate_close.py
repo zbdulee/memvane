@@ -149,8 +149,10 @@ def supersede(root, policy, project):
     """Before the staged selection: carry the candidate, then close older approvals' cycles.
 
     Only under a currently valid grant: an expired or invalid one is refused
-    here and nothing is closed (renewal brings the same approval back).
+    here and nothing is closed (renewal brings the same approval back). A
+    ``ResourceDeferred`` while carrying is raised to the caller.
     """
+    from memvane.kernel.resource_deferred import ResourceDeferred
     from .runtime_authorization import require_operation
     try:
         grant = require_operation(root, policy, 'quality_evaluate')
@@ -158,8 +160,10 @@ def supersede(root, policy, project):
         return None
     try:
         carried = carry_candidate(root, policy, grant, project)
+    except ResourceDeferred:
+        raise  # Momentary pressure decides nothing: the pass ends and nothing is closed.
     except ValueError:
-        carried = None  # Not carried (refused, deferred or changed meanwhile): it is closed below.
+        carried = None  # Not carried (refused or changed meanwhile): it is closed below.
     closed = close_superseded(root, grant)
     if carried is not None:
         prequential._emit(project, 'learning.promotion', outcome='carried', cycle=carried[0], carriedFrom=carried[2])
