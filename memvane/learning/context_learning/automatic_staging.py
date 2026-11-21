@@ -122,6 +122,18 @@ def _cycle_event(project, outcome, **fields):
         pass  # Diagnostic only: the cycle row and the job telemetry are the record.
 
 
+def _blocked_result(root, grant, job):
+    """The pass result of a blocked job, with the ``learning.cycle`` row that makes the stop visible.
+
+    A blocked job answers every later pass the same way and no retry follows
+    (``learning_retry``), so without this row the cycle stops with nothing in the log.
+    """
+    _cycle_event(_project(root, grant), 'blocked', cycle=job['id'],
+                 reason=str(job['reason'])[:80] if job.get('reason') else None, failures=job.get('failures'))
+    return {'status': 'staged_source_revoked' if job['reason'] == 'source_revoked' else 'learning_job_blocked',
+            'cycle_id': job['id']}
+
+
 def job_family(policy):
     """A job's family: trainer interpreter, model identity, base artifact and input view."""
     from .adapter import EDIT_INPUT_VIEW, model_identity
@@ -214,8 +226,7 @@ def _prepare_staged(root,policy,grant):
         if frozen is not None:prequential.close(root,job['id'],'source_revoked')
         return {'status':'staged_source_revoked','cycle_id':job['id']}
     if sequential:validation=prequential.split(cohort_train,job)
-    if job['status']=='blocked':
-        return {'status':'staged_source_revoked' if job['reason']=='source_revoked' else 'learning_job_blocked','cycle_id':job['id']}
+    if job['status']=='blocked':return _blocked_result(root,grant,job)
     if synthetic and sum(len(json.loads(row[3])['candidates']) for row in train)>100:
         return {'status':'synthetic_training_budget_exhausted'}
     return root,queue,job,train,validation,cohort_train

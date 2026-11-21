@@ -550,7 +550,10 @@ Each pass writes an `outcome: pass` row with the host waits and queued counts,
 `candidateEval`, `candidateEvalNonEmpty`, `candidateEvalEmpty`), `learning.promotion`
 rows, and `learning.cycle` rows (`trained` on training completion, or
 `deferred_resource` with inner `reason`, `deferredBy`, `availableMib`,
-`requiredMib`, `loadPerCpu`, `loadLimit` and `latchPaused`). Rows never hold
+`requiredMib`, `loadPerCpu`, `loadLimit` and `latchPaused`, or `blocked` with the
+job's `reason` and `failures` when a pass meets a job that no retry reopens). A pass
+the worker's own resource check puts off before the teacher and the cycle leaves a
+`deferred_resource` row with `deferredBy: worker_admission`. Rows never hold
 the edit text, card bodies, source paths or global instructions. The
 `memvane:logs` summary aggregates them together with the edit-recall funnel,
 promotion progress, case-table warnings (`>= 90%` / `queue_full`), parked
