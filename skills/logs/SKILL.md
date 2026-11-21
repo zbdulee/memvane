@@ -42,12 +42,12 @@ With `--slo` the script prints service-level lines for the window (24 hours unle
 
 - `install`: whether the install is `large` (more than 1,000 wiki Markdown files under the route's wiki folder), `standard`, or `unknown` when the route cannot be read. A large install has its own `hook+selector` and `lexical` targets; for an unknown one the standard target judges and the large verdict is shown beside it.
 - `hook`: prompt recall duration without the selector's time; `hook+selector`: the duration of recalls that asked the selector.
-- `stage`: the median of each checkout observation stage against its own target, over recalls of one query vector (a recall with more vectors costs more by design).
-- `semantic`: the share of recalls with a query vector whose semantic search completed, the share answered from the vector arena once one answers (a recall whose arena was switched off is left out), the counts of each unfinished state, and the recorded vector cache states. `vectorCache=unmeasured` means no row in the window recorded the state; it is not a zero.
+- `stage`: the median of each checkout observation stage against its own target, over recalls of one query vector (a recall with more vectors costs more by design). Each stage is judged on its own rows (`pinN`, `lexicalN`, …): a stage with fewer than 20 is shown and not judged, and the line is `no-data` only when no stage reaches 20.
+- `semantic`: the share of recalls with a query vector whose semantic search completed, the share answered from the vector arena once one answers (a recall whose arena was switched off is left out), the counts of each unfinished state, and the recorded vector cache states. `vectorCache=unmeasured` means no row in the window recorded the state; it is not a zero. One recall whose cache state is `inconsistent` makes the line `over`.
 - `selector`: the selector's duration and the share of answers that ran out of their time.
 - `host <name>`: duration and semantic share per host.
 - `dedup`: the share of injected cards the same session had already been given (after its last compaction or clear; for a host that sends no such signal, within its last 20 served recalls), and the recalls the exclusion left empty.
-- `sync`: the trailing failed passes, and the time from a sync request to the end of the first pass that started after it and published; `unanswered` requests have no such pass yet.
+- `sync`: the trailing failed passes, and the time from a sync request to the end of the first pass that started after it and published; `unanswered` requests have no such pass yet. A request is a hook row that queued a sync (`reason` `sync_requested`); an edit outside the project or one that did not succeed queues none.
 - `failed`: failed or refused rows that name no reason.
 - `learning`: stored cases, teacher answers and cycle outcomes in the window, since when the cycle has been put off, and cycle rows that name no reason.
 - `identity`: whether the device number recorded in the install's route is the current one. A moved number is expected after some restarts and is shown, not judged.

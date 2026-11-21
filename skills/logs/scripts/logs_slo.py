@@ -159,21 +159,25 @@ def _hook(prompt, size):
 def _stage(prompt, size):
     """Stage medians of recalls with one query vector (more vectors cost more by design)."""
     single = [row for row in prompt if _one_query(row)]
-    values, over, n = {}, False, None
+    values, over, most = {}, False, 0
     for key, label, goal in STAGES:
+        # Each stage is judged on its own rows: a stage only served recalls
+        # record must not hide another one that is over its target.
         data = _values(single, key)
-        n = len(data) if n is None else min(n, len(data))
+        most = max(most, len(data))
         if not data:
             continue
         if key == 'lexicalMs' and size == 'large':
             goal = LEXICAL_LARGE
         values[label] = round(_percentile(data, .5), 3)
+        values[label + 'N'] = len(data)
         values[label + 'Target'] = goal
         over = over or (len(data) >= FLOOR and values[label] > goal)
         if key == 'lexicalMs' and size is None:
             values['lexicalLargeTarget'] = LEXICAL_LARGE
             values['lexicalLarge'] = _judge(len(data), FLOOR, values[label] > LEXICAL_LARGE)
-    return _line('stage', _judge(n or 0, FLOOR, over), n or 0, **values)
+    # ``n`` is the best-measured stage: the line has data once any stage reaches the floor.
+    return _line('stage', _judge(most, FLOOR, over), most, **values)
 
 
 def _semantic(prompt):
@@ -197,7 +201,9 @@ def _semantic(prompt):
         values['arenaTarget'] = ARENA_SHARE
     over = bool(asked) and (values['complete'] < SEMANTIC_COMPLETE
                             or values.get('arena', 1.0) < ARENA_SHARE
-                            or values['deferred_cache_building'] > 0)
+                            or values['deferred_cache_building'] > 0
+                            # The one cache state that is a fault: a single recall is over.
+                            or values['vectorCacheInconsistent'] > 0)
     return _line('semantic', _judge(len(asked), FLOOR, over), len(asked), **values)
 
 
@@ -276,9 +282,11 @@ def _dedup(rows, floor_time):
 
 
 def _requests(window):
+    """Hook rows that queued a sync wake. A row of these events without the reason queued none
+    (an edit outside the project, an edit that did not succeed)."""
     return [row for row in window
-            if (row.get('event') in ('update-queued', 'file-change-event') and row.get('reason') == 'sync_requested')
-            or (row.get('event') == 'index' and row.get('outcome') == 'ok')]
+            if row.get('event') in ('update-queued', 'file-change-event', 'index')
+            and row.get('reason') == 'sync_requested']
 
 
 def _sync(rows, window, now):

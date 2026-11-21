@@ -82,6 +82,7 @@ class Lines(unittest.TestCase):
         rows = [recall(i, queryChunks=4, **slow) for i in range(30)]
         stage = by_name(rows)['stage']
         self.assertEqual((stage['status'], stage['n']), ('no-data', 0))
+        self.assertNotIn('pinN', stage)
         rows += [recall(30 + i, queryChunks=1, **fast) for i in range(10)]
         rows += [recall(40 + i, **fast) for i in range(10)]  # a row from before the field has one vector
         stage = by_name(rows)['stage']
@@ -96,11 +97,29 @@ class Lines(unittest.TestCase):
             with self.subTest(stage=key):
                 rows = [recall(i, **{**ok, key: ok[key] + 1}) for i in range(20)]
                 self.assertEqual(by_name(rows)['stage']['status'], 'over')
-        # A stage no row measured is not a zero.
+        # A stage no row measured is not a zero, and it does not hold back the measured ones.
         rows = [recall(i, pinMs=10, lexicalMs=10) for i in range(20)]
         stage = by_name(rows)['stage']
-        self.assertEqual((stage['status'], stage['n']), ('no-data', 0))
+        self.assertEqual((stage['status'], stage['n'], stage['pinN']), ('ok', 20, 20))
         self.assertNotIn('checkout', stage)
+        self.assertNotIn('checkoutN', stage)
+
+    def test_a_stage_with_too_few_rows_does_not_hide_one_that_is_over(self):
+        # Only served recalls record the still-current stage: 19 of them, among 40 recalls.
+        rows = [recall(i, pinMs=900, lexicalMs=900, checkoutMs=10, stillCurrentMs=5) for i in range(19)]
+        rows += [recall(19 + i, outcome='empty', pinMs=900, lexicalMs=900, checkoutMs=10) for i in range(21)]
+        stage = by_name(rows)['stage']
+        self.assertEqual((stage['status'], stage['n']), ('over', 40))
+        self.assertEqual((stage['pinN'], stage['lexicalN'], stage['checkoutN'], stage['stillCurrentN']),
+                         (40, 40, 40, 19))
+        # The under-measured stage is shown and never judged: over its target with 19 rows changes nothing.
+        fast = [dict(row, pinMs=5, lexicalMs=5) for row in rows]
+        self.assertEqual(by_name(fast)['stage']['status'], 'ok')
+        slow_tail = [dict(row, pinMs=5, lexicalMs=5, **({'stillCurrentMs': 900} if 'stillCurrentMs' in row else {}))
+                     for row in rows]
+        self.assertEqual(by_name(slow_tail)['stage']['status'], 'ok')
+        # Every stage below the floor: nothing to judge.
+        self.assertEqual(by_name(rows[:19])['stage']['status'], 'no-data')
 
     def test_semantic_ratio_leaves_out_recalls_without_a_query_vector(self):
         rows = [recall(i, semantic='complete', vectorSource='store') for i in range(19)]
@@ -137,12 +156,23 @@ class Lines(unittest.TestCase):
         line = by_name(rows)['semantic']
         self.assertEqual((line['status'], line['arena'], line['vectorCache']),
                          ('ok', 1.0, {'disabled': 5, 'ok': 99}))
-        rows += [recall(110, semantic='complete', vectorSource='store', vectorCache='inconsistent'),
-                 recall(111, semantic='complete', vectorSource='store', vectorCache='building'),
+        rows += [recall(111, semantic='complete', vectorSource='store', vectorCache='building'),
                  recall(112, semantic='complete', vectorSource='store', vectorCache='not-a-state')]
         line = by_name(rows)['semantic']
         self.assertEqual((line['status'], line['vectorCacheInconsistent'], line['vectorCache']),
-                         ('over', 1, {'building': 1, 'disabled': 5, 'inconsistent': 1, 'ok': 99}))
+                         ('over', 0, {'building': 1, 'disabled': 5, 'ok': 99}))
+
+    def test_one_inconsistent_vector_cache_is_over_whatever_the_shares_are(self):
+        # Every recall completes and the arena answers all of them: only the state differs.
+        rows = [recall(i, semantic='complete', vectorSource='arena', vectorCache='ok') for i in range(200)]
+        line = by_name(rows)['semantic']
+        self.assertEqual((line['status'], line['complete'], line['arena'], line['vectorCacheInconsistent']),
+                         ('ok', 1.0, 1.0, 0))
+        rows[7] = recall(7, semantic='complete', vectorSource='arena', vectorCache='inconsistent')
+        line = by_name(rows)['semantic']
+        self.assertEqual((line['status'], line['complete'], line['arena'], line['vectorCacheInconsistent']),
+                         ('over', 1.0, 1.0, 1))
+        self.assertEqual(line['deferred_cache_building'], 0)
 
     def test_selector_counts_answers_that_ran_out_of_budget(self):
         rows = [recall(i, selectorLane='prompt', selectorMs=900) for i in range(49)]
@@ -232,10 +262,22 @@ class Lines(unittest.TestCase):
                          ('ok', 5, 98.0, 100.0))
         rows = [self.request(2400 - i) for i in range(5)] + [self.sync_pass(1900, 10_000)]
         self.assertEqual(by_name(rows)['sync']['status'], 'over')
-        # ``index`` rows are requests; a row that asked for no sync is not.
-        rows = [self.request(2000 - i, event='index', reason=None) for i in range(5)]
-        rows += [self.request(1995, reason=None), self.sync_pass(1900, 10_000)]
-        self.assertEqual(by_name(rows)['sync']['n'], 5)
+        # A row of any of the three events is a request only when it queued a wake.
+        for event in ('index', 'update-queued', 'file-change-event'):
+            with self.subTest(event=event):
+                rows = [self.request(2000 - i, event=event) for i in range(5)]
+                rows += [self.request(1995 - i, event=event, reason=None) for i in range(3)]
+                rows.append(self.sync_pass(1900, 10_000))
+                self.assertEqual(by_name(rows)['sync']['n'], 5)
+
+    def test_an_edit_that_queued_no_wake_is_not_an_unanswered_request(self):
+        # The last activity is edits outside the project (``index ok`` with no reason), long ago.
+        rows = [self.request(3000, event='index'), self.sync_pass(2900, 10_000)]
+        rows += [dict(self.request(2000 - i, event='index', reason=None), external_edits={'owners': 1})
+                 for i in range(4)]
+        line = by_name(rows)['sync']
+        self.assertEqual((line['status'], line['n']), ('no-data', 1))
+        self.assertNotIn('unanswered', line)
 
     def test_sync_reports_requests_no_pass_has_answered(self):
         rows = [self.request(200), self.request(100)]
@@ -327,7 +369,7 @@ class Skill(FixtureCase):
                           'slo host claude', 'slo dedup', 'slo sync', 'slo failed', 'slo learning', 'slo identity'])
         self.assertIn('slo hook: ok n=20 p50=100 p95=100 targetP50=700 targetP95=1200', out)
         self.assertIn('slo install: shown size=unknown', out)
-        self.assertIn('slo stage: ok n=20 pin=1 pinTarget=50 lexical=1 lexicalTarget=50 '
+        self.assertIn('slo stage: ok n=20 pin=1 pinN=20 pinTarget=50 lexical=1 lexicalN=20 lexicalTarget=50 '
                       'lexicalLargeTarget=150 lexicalLarge=ok', out)
         self.assertIn('slo semantic: ok n=20', out)
         self.assertIn('slo identity: no-data', out)
@@ -357,19 +399,21 @@ class Skill(FixtureCase):
         out = self.run_logs('--state-root', str(self.state), '--slo')[1]
         self.assertIn('slo install: shown size=standard', out)
         self.assertIn('slo hook+selector: over n=20 p50=1900 p95=1900 targetP50=1500 targetP95=2500', out)
-        self.assertIn('slo stage: over n=20 pin=1 pinTarget=50 lexical=120 lexicalTarget=50 stillCurrent', out)
+        self.assertIn('slo stage: over n=20 pin=1 pinN=20 pinTarget=50 lexical=120 lexicalN=20 lexicalTarget=50 '
+                      'stillCurrent', out)
         self.assertNotIn('lexicalLarge', out)
         (wiki / 'one-more.md').touch()
         self.assertEqual(logs_slo.install_size(self.state), 'large')
         out = self.run_logs('--state-root', str(self.state), '--slo')[1]
         self.assertIn('slo install: shown size=large', out)
         self.assertIn('slo hook+selector: ok n=20 p50=1900 p95=1900 targetP50=2000 targetP95=3000', out)
-        self.assertIn('slo stage: ok n=20 pin=1 pinTarget=50 lexical=120 lexicalTarget=150 stillCurrent', out)
+        self.assertIn('slo stage: ok n=20 pin=1 pinN=20 pinTarget=50 lexical=120 lexicalN=20 lexicalTarget=150 '
+                      'stillCurrent', out)
         # No readable route: the standard target judges and the large verdict stands beside it.
         (self.state / 'route.json').unlink()
         self.assertIsNone(logs_slo.install_size(self.state))
         out = self.run_logs('--state-root', str(self.state), '--slo')[1]
-        self.assertIn('lexical=120 lexicalTarget=50 lexicalLargeTarget=150 lexicalLarge=ok', out)
+        self.assertIn('lexical=120 lexicalN=20 lexicalTarget=50 lexicalLargeTarget=150 lexicalLarge=ok', out)
         self.assertIn('targetP50=1500 targetP95=2500 largeTargetP50=2000 largeTargetP95=3000 large=ok', out)
 
     def test_identity_shows_whether_the_sealed_device_number_is_the_live_one(self):
