@@ -481,7 +481,8 @@ class DeletionProof(LineageJudge):
 
     1. the fingerprint is ``observed`` by this worktree registration and the
        registration still names this checkout (root, checkout, admin dir by
-       dev/ino); the branch key is the recorded one;
+       path and inode; the device number is boot-local and is not compared);
+       the branch key is the recorded one;
     2. ``head_oid`` is a commit Git knows and an ancestor of HEAD, in a
        repository without shallow or grafted history (replace refs ignored);
        the path was committed at ``head_oid`` (an untracked file has no
