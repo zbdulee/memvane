@@ -164,6 +164,22 @@ class RetireAndReceiptShape(Repo):
         again = self.prove(fp, now_ns=8)
         self.assertEqual(again['receipt_id'], spec['receipt_id'])
 
+    def test_registration_from_another_boot_still_proves_the_deletion(self):
+        moved = {key: ({**value, 'dev': value['dev'] + 7} if isinstance(value, dict) else value)
+                 for key, value in self.worktree.items()}
+        self.assertNotEqual(moved['project'], self.worktree['project'])
+        fp = self.fingerprint(worktree=moved)
+        self.commit_delete()
+        spec = self.prove(fp, worktree=moved, now_ns=7)
+        self.assertEqual((spec['decision'], spec['reason']),
+                         ('retire', 'committed_deletion_in_lineage'), spec['proof_json'])
+        proof = json.loads(spec['proof_json'])
+        self.assertEqual((proof['worktree']['verdict'], proof['scan']['root']), ('same', 'same'))
+        self.assertEqual(proof['worktree']['checkout'], moved['checkout'])
+        # Another inode is another directory, whatever the device number.
+        other = {**moved, 'checkout': {**moved['checkout'], 'ino': moved['checkout']['ino'] + 1}}
+        self.assert_hold(self.prove(fp, worktree=other), 'worktree_identity_changed')
+
     def test_checkout_view_registration_is_accepted_as_is(self):
         from memvane.store import api as store_api
         from tests.support.project import make_project

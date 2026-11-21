@@ -107,6 +107,30 @@ class PendingRecovery(FixtureCase):
                                                  [(json.dumps(retry), retry), (json.dumps(recovered), recovered)])
         self.assertEqual(snapshots[self.pending], tuple(saved))
 
+    def test_a_receipt_from_another_boot_still_cleans_its_unchanged_candidate(self):
+        saved = fingerprint(self.pending)
+        moved = [saved[0] + 7] + saved[1:]
+        retry = self.receipt(print_=moved)
+        snapshots, _ = verify._pending_snapshots(self.root, self.cfg, [(json.dumps(retry), retry)])
+        self.assertEqual(snapshots[self.pending], tuple(saved))
+        self.write_queue(retry)
+        with mock.patch.object(verify, 'process_verify_job', side_effect=AssertionError('must not reverify')):
+            self.run_verify()
+        self.assertFalse(self.pending.exists())
+        self.assertEqual(self.target.read_text(encoding='utf-8'), 'live')
+
+    def test_a_receipt_from_another_boot_keeps_an_edited_candidate(self):
+        saved = fingerprint(self.pending)
+        moved = [saved[0] + 7] + saved[1:]
+        self.pending.write_text('candidate with user edits', encoding='utf-8')
+        retry = self.receipt(print_=moved)
+        snapshots, _ = verify._pending_snapshots(self.root, self.cfg, [(json.dumps(retry), retry)])
+        self.assertEqual(snapshots[self.pending], tuple(moved))
+        self.write_queue(retry)
+        with mock.patch.object(verify, 'process_verify_job', side_effect=AssertionError('must not reverify')):
+            self.run_verify()
+        self.assertEqual(self.pending.read_text(encoding='utf-8'), 'candidate with user edits')
+
     def test_a_recovered_job_does_not_reverify_an_edited_cleanup_candidate(self):
         saved = fingerprint(self.pending)
         self.pending.write_text('candidate with user edits', encoding='utf-8')

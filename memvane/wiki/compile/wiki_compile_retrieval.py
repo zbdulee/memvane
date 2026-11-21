@@ -21,6 +21,7 @@ import stat
 import sys
 import time
 
+from memvane.kernel.persistent_identity import persistent_identity_equal
 from memvane.settings import api as source_text
 from memvane.wiki.card import api as wiki_card
 from memvane.wiki.card.api import card_sources_allowed
@@ -53,6 +54,21 @@ def visible(rel: str) -> bool:
 def fingerprint(info) -> str:
     return json.dumps([info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
                        info.st_ctime_ns], separators=(',', ':'))
+
+
+def _stored_equal(stored, live, device_index) -> bool:
+    """A JSON list kept in the overlay database against this process's one.
+
+    The overlay outlives a boot, so the entry at ``device_index`` (a boot-local
+    device number) is left out. Two live fingerprints compare as strings.
+    """
+    if stored == live:
+        return True
+    try:
+        return persistent_identity_equal(json.loads(stored), json.loads(live),
+                                         device_index=device_index)
+    except (TypeError, ValueError):
+        return False
 
 
 @contextmanager
@@ -286,6 +302,10 @@ def overlay(root: Path, bound):
             os.close(fd)
 
 
+# Position of the wiki root's device number in the overlay identity list.
+IDENTITY_DEVICE_INDEX = 5
+
+
 def refresh(db, wiki_fd, bound, wiki, deadline):
     decision = bound[0]
     identity = json.dumps([decision.get(key) for key in
@@ -294,7 +314,7 @@ def refresh(db, wiki_fd, bound, wiki, deadline):
                             os.fstat(wiki_fd).st_dev, os.fstat(wiki_fd).st_ino,
                             decision['recallSettings']['skipPaths']], sort_keys=True)
     previous = db.execute("SELECT value FROM state WHERE key='identity'").fetchone()
-    if previous is None or previous[0] != identity:
+    if previous is None or not _stored_equal(previous[0], identity, IDENTITY_DEVICE_INDEX):
         db.execute('DELETE FROM cards')
         db.execute('DELETE FROM search')
         db.execute('DELETE FROM seen')
@@ -317,7 +337,7 @@ def refresh(db, wiki_fd, bound, wiki, deadline):
     for rel in (stored.keys() - seen) if complete else ():
         db.execute('DELETE FROM cards WHERE path=?', (rel,))
         db.execute('DELETE FROM search WHERE path=?', (rel,))
-    changed = [rel for rel, stamp in files.items() if stored.get(rel) != stamp]
+    changed = [rel for rel, stamp in files.items() if not _stored_equal(stored.get(rel), stamp, 0)]
     newest = sorted(changed, key=lambda rel: (-json.loads(files[rel])[3], rel))
     recent = newest[:REFRESH_FILES // 2]
     cursor = db.execute("SELECT value FROM state WHERE key='cursor'").fetchone()

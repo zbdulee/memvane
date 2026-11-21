@@ -32,6 +32,7 @@ import stat
 import time
 import unicodedata
 
+from memvane.kernel.persistent_identity import persistent_identity_equal
 from memvane.kernel.paths import (GIT_TIMEOUT_SECONDS, GitUnavailable, _env,
                                   find_dotgit, linked_worktree, repo_facts, run_git)
 
@@ -549,10 +550,12 @@ class DeletionProof(LineageJudge):
                 and all(_is_identity(worktree.get(key)) for key in ('project', 'checkout', 'gitDir')))
 
     def _worktree_same(self) -> bool:
+        # The registration record outlives a boot: path and inode, not the
+        # boot-local device number.
         worktree = self.worktree
-        return (_dir_identity(self.root) == worktree['project']
-                and _dir_identity(self.top) == worktree['checkout']
-                and _dir_identity(self.facts['gitDir']) == worktree['gitDir'])
+        return (persistent_identity_equal(worktree['project'], _dir_identity(self.root))
+                and persistent_identity_equal(worktree['checkout'], _dir_identity(self.top))
+                and persistent_identity_equal(worktree['gitDir'], _dir_identity(self.facts['gitDir'])))
 
     def _repo_path(self, path: str) -> str | None:
         try:
@@ -584,8 +587,11 @@ class DeletionProof(LineageJudge):
         return 'present'
 
     def _scan_root_same(self, scan) -> bool:
+        # The scan is this pass's own observation, so it meets the live root
+        # in full; the registration record meets it by path and inode.
         root = scan['root']
-        return root == self.worktree['project'] and _dir_identity(self.root) == root
+        return (persistent_identity_equal(self.worktree['project'], root)
+                and _dir_identity(self.root) == root)
 
     def _card_matches(self, expected) -> bool:
         if not isinstance(expected, dict):

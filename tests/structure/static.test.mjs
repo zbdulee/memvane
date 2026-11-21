@@ -303,3 +303,34 @@ test('the test runtime root write check flags every write form and no read', () 
   const flagged = testRootWrites(sources).map(row => row.split(':')[0]).sort();
   assert.deepEqual(flagged, writes.map((_line, i) => `w${i}`).sort());
 });
+
+// A record that outlives a boot meets a live observation by path and inode:
+// APFS can renumber the device at boot, and an immutable record compared with
+// its device number stays refused (memvane/kernel/persistent_identity.py).
+// Each site names the masked comparison it must keep and the whole comparison
+// it must not go back to. WHOLE lists the stored-against-live comparisons that
+// stay whole because the device number sits inside a digest; the kernel
+// docstring must name each of them.
+const PERSISTED = [
+  ['memvane/store/checkout/checkout_view.py', /_records_live\(\(\(worktree\['checkout'\], checkout\)/,
+    /_directory\(\w+\) != (worktree|repository)\[/],
+  ['memvane/wiki/lifecycle/git_branch_safety.py', /persistent_identity_equal\(worktree\['gitDir'\], _dir_identity\(/,
+    /_dir_identity\([^)]*\) == worktree\[|root == self\.worktree\[/],
+  ['memvane/store/view/pin_receipt.py', /persistent_identity_equal\(\s*saved\.pop\('database', None\), node, device_index=0\)/,
+    /'seal': seal, 'database': node\}\s*return/],
+  ['memvane/wiki/compile/wiki_compile_retrieval.py', /_stored_equal\(previous\[0\], identity, IDENTITY_DEVICE_INDEX\)/,
+    /previous\[0\] != identity|stored\.get\(rel\) != stamp/],
+  ['memvane/wiki/verify/wiki_verify_worker.py', /persistent_identity_equal\(fingerprint, live, device_index=0\)/,
+    /fingerprint = tuple\(marker\['fingerprint'\]\)\n\s+else:/],
+];
+const WHOLE = ['store/view/view_rows.py', 'view_store.py', 'view_reader.py'];
+
+test('records that outlive a boot meet live observations without the device number', () => {
+  for (const [path, masked, whole] of PERSISTED) {
+    const text = readFileSync(path, 'utf8');
+    assert.match(text, masked, path);
+    assert.doesNotMatch(text, whole, path);
+  }
+  const rule = readFileSync('memvane/kernel/persistent_identity.py', 'utf8');
+  for (const name of WHOLE) assert.ok(rule.includes(name), name);
+});

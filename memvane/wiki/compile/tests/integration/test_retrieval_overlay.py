@@ -119,6 +119,41 @@ class OverlayChecks(FixtureCase):
         self.assertLessEqual(read.call_count, 2 * retrieval.CANDIDATES)
         self.assertEqual(self.status()['refreshed'], 0)
 
+    def test_overlay_written_under_another_device_number_is_not_rebuilt(self):
+        for i in range(6):
+            self.card(f'card-{i}.md', f'# Archive\nstarship archive {i}')
+        self.assertEqual(len(self.query()), 3)
+        cache = self.root / '.memvane/compile/wiki-retrieval/cards.sqlite'
+        def shifted(text, index):
+            value = json.loads(text)
+            value[index] += 7
+            return value
+        with closing(sqlite3.connect(cache)) as db:
+            identity = db.execute("SELECT value FROM state WHERE key='identity'").fetchone()[0]
+            moved = shifted(identity, retrieval.IDENTITY_DEVICE_INDEX)
+            self.assertEqual(moved[retrieval.IDENTITY_DEVICE_INDEX], self.wiki.stat().st_dev + 7)
+            db.execute("UPDATE state SET value=? WHERE key='identity'", (json.dumps(moved, sort_keys=True),))
+            stamps = dict(db.execute('SELECT path, stamp FROM cards'))
+            self.assertEqual(len(stamps), 6)
+            for rel, stamp in stamps.items():
+                db.execute('UPDATE cards SET stamp=? WHERE path=?',
+                           (json.dumps(shifted(stamp, 0), separators=(',', ':')), rel))
+            db.commit()
+            sealed = sorted(db.execute('SELECT path, stamp FROM cards'))
+        with patch.object(retrieval, 'read_live', wraps=retrieval.read_live) as read:
+            self.assertEqual(len(self.query()), 3)
+        self.assertEqual(self.status()['refreshed'], 0)
+        self.assertLessEqual(read.call_count, 2 * retrieval.CANDIDATES)
+        with closing(sqlite3.connect(cache)) as db:
+            self.assertEqual(sorted(db.execute('SELECT path, stamp FROM cards')), sealed)
+        # Another inode at the wiki root is another directory: the overlay starts over.
+        with closing(sqlite3.connect(cache)) as db:
+            moved[retrieval.IDENTITY_DEVICE_INDEX + 1] += 1
+            db.execute("UPDATE state SET value=? WHERE key='identity'", (json.dumps(moved, sort_keys=True),))
+            db.commit()
+        self.assertEqual(len(self.query()), 3)
+        self.assertEqual(self.status()['refreshed'], 6)
+
     def test_new_changed_and_deleted_cards_are_visible_before_publication(self):
         target = self.card('card.md', '# Starship\nstarship archive')
         self.assertEqual(self.query()[0][0], target)

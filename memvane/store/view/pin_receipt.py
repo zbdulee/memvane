@@ -10,6 +10,7 @@ import stat
 
 from memvane.kernel.atomic_rename import atomic_json, private_state
 from memvane.kernel.memvane_version import plugin_version
+from memvane.kernel.persistent_identity import persistent_identity_equal
 
 SCHEMA = 'memvane-pin-receipt-v1'
 
@@ -63,9 +64,14 @@ def matches(path, view_id, incarnation, gen_id, seal, node):
         finally:
             os.close(fd)
         expected = {'schema': SCHEMA, 'version': plugin_version(), 'view': view_id,
-                    'incarnation': incarnation, 'generation': gen_id, 'seal': seal, 'database': node}
-        return (json.loads(raw.decode('utf8'), object_pairs_hook=_unique_pairs) == expected
-                and identity(path) == node)
+                    'incarnation': incarnation, 'generation': gen_id, 'seal': seal}
+        saved = json.loads(raw.decode('utf8'), object_pairs_hook=_unique_pairs)
+        # The receipt file outlives a boot: its database node meets the live
+        # one by inode, size and times, not by the boot-local device number.
+        # ``node`` and ``identity(path)`` are both of this process.
+        return (isinstance(saved, dict) and persistent_identity_equal(
+                    saved.pop('database', None), node, device_index=0)
+                and saved == expected and identity(path) == node)
     except (OSError, ValueError, TypeError, UnicodeError):
         return False
 
