@@ -5,6 +5,10 @@ import json,os,subprocess,sys,tempfile,time,unittest
 from memvane.runtime.api import coordinator as Coordinator
 from memvane.learning.context_learning.local_cycle import ResourceDeferred
 from memvane.learning.context_learning.training_cursor import UpdateCursor,record_completion,completion,run_updates
+# Imported before any ``patch.dict(sys.modules)`` below: a module first imported inside
+# one is dropped from ``sys.modules`` on exit while its package attribute stays, and a
+# later ``patch('…pairing.name')`` on Python 3.9 then patches that stale copy.
+from memvane.learning.context_learning import pairing as _pairing  # noqa: F401
 
 class Checks(unittest.TestCase):
  def setUp(self):

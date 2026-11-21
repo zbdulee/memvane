@@ -128,7 +128,8 @@ class Checks(unittest.TestCase):
   self.write(self.settings,{**self.raw,'contextLearning':{'autoCycle':False}})
   plan=self.plan(mode='preserve');self.assertFalse(plan['localTrain'])
   P.activate(self.project,self.root,accepted_sha256=P.digest(plan),choice='local-auto-apply',mode='preserve',expires_at_unix_ms=self.expiry)
-  self.write(self.root/shared.DATABASE_NAME,{'fixture':'only existence check; evaluation queue is injected'})
+  # A real (empty) history DB: the pass reads it before the injected evaluation queue.
+  with shared._db(self.root):pass
   cfg=config.find_project_config(str(self.project))['config']
   with patch.object(config,'find_project_config',return_value={'config':cfg}),patch.object(shared,'_safe_root',return_value=self.root),patch.object(EvaluationQueue,'pending',return_value=[{'cycle_id':'existing'}]),patch.object(automatic_staging,'evaluate_pending',return_value={'status':'staged_evaluated'}) as evaluate,patch.object(shared,'train_due',side_effect=AssertionError('training forbidden')):
    self.assertEqual(shared.run_training_pending(self.root,self.project)['status'],'staged_evaluated');evaluate.assert_called_once()
