@@ -80,6 +80,8 @@ def _run(project: Path):
         if idle:
             # A lifecycle pass that left nothing to compile skips the worker.
             return {'state': 'drained', 'processed': 0}
+    # What this pass has to work off, counted before the worker recovers and claims.
+    before = _backlog(project, source, bound)
     from memvane.kernel.bundle_paths import entry_argv
     proc = subprocess.run(
         entry_argv('wiki-compile-worker', '--cwd', str(project), '--json', '--flush-all'),
@@ -104,13 +106,41 @@ def _run(project: Path):
     if idle is None:
         return {'state': 'deferred', 'reason': 'compile_refresh_ledger_unavailable'}
     if not idle:
-        # processed may include a job whose refresh resolution failed and is
-        # still retained. Only committed terminal/removal counts prove progress.
-        progressed = any(type(answer.get(key)) is int and answer[key] > 0
-                         for key in ('completed', 'staleDropped'))
+        # A finished job is not progress by itself: one that ends with its
+        # refresh event neither resolved nor settled comes back on the next
+        # pass. Progress is a smaller backlog than the pass started with.
+        after = _backlog(project, source, bound)
+        progressed = before is not None and after is not None and after < before
         return {'state': 'pending', 'processed': answer['processed'],
                 **({'reason': 'compile_progress'} if progressed else {})}
     return {'state': 'drained', 'processed': answer['processed']}
+
+
+def _backlog(project: Path, source: Path, bound):
+    """Source queue rows (claims included) plus refresh events still to attempt; None if unknown.
+
+    The verify queue is left out: its rows are rewritten when they are kept,
+    and a pass that only has verify work left was never counted as progress.
+    """
+    from memvane.wiki.card import api as wiki_freshness
+    from memvane.wiki.compile import refresh_settlement
+    from memvane.settings.api import excluded_source
+    try:
+        unresolved = wiki_freshness.unresolved_pending_refreshes_strict(project)
+        if unresolved is None:
+            return None
+        count = len(refresh_settlement.unsettled(project, [
+            item for item in unresolved if not excluded_source(
+                item['sourcePath'], bound[0]['recallSettings']['skipPaths'])]))
+        if source.parent.is_dir():
+            claim = source.name + '.claimed.'
+            for child in source.parent.iterdir():
+                if child.name == source.name or child.name.startswith(claim):
+                    count += sum(1 for line in child.read_text(
+                        encoding='utf-8', errors='replace').splitlines() if line.strip())
+        return count
+    except OSError:
+        return None
 
 
 def _compile_idle(project: Path, source: Path, verify: Path, bound):
@@ -143,7 +173,10 @@ def _idle_locked(project: Path, source: Path, verify: Path, bound):
     from memvane.settings.api import excluded_source
     active_unresolved = [item for item in unresolved if not excluded_source(
         item['sourcePath'], bound[0]['recallSettings']['skipPaths'])]
-    if active_unresolved:
+    # An event whose compile attempt ended without a card stays unresolved for
+    # recall; the compile wake has nothing left to do for it.
+    from memvane.wiki.compile import refresh_settlement
+    if refresh_settlement.unsettled(project, active_unresolved):
         return False
     from memvane.wiki.intake.api import write_discard_receipt
     return not (_queue_busy(source, receipt_writer=write_discard_receipt) | _queue_busy(verify))

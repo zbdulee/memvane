@@ -234,34 +234,3 @@ class StaleSourceBacklog(FixtureCase):
         self.assertEqual(calls, [])
         self.assertEqual(report['staleDropped'], 1)
         self.assertEqual(self.remaining_jobs(), [])
-
-
-class ProductiveCompileResult(FixtureCase):
-    def setUp(self):
-        super().setUp()
-        self.project = make_project(self.home, git=False)
-        self.bound = ({'projectRoot': str(self.project.root), 'recallSettings': {'skipPaths': []}},
-                      {'productRouteAllowed': True})
-
-    def result_for(self, report):
-        child = SimpleNamespace(returncode=0, stdout=json.dumps(report), stderr='')
-        with patch.object(execution, 'selected', return_value=self.bound), \
-             patch.object(execution, 'recheck'), \
-             patch.object(workspace, 'claim_lifecycle', return_value=None), \
-             patch.object(execution.subprocess, 'run', return_value=child), \
-             patch.object(execution, '_compile_idle', return_value=False):
-            return execution.run(self.project.root)
-
-    def test_only_durable_terminal_progress_labels_pending(self):
-        cases = [({'processed': 1, 'completed': 1, 'staleDropped': 0}, True),
-                 ({'processed': 0, 'completed': 0, 'staleDropped': 5}, True),
-                 ({'processed': 1, 'completed': 0, 'staleDropped': 0}, False),
-                 ({'processed': 1}, False),  # old worker JSON proves no terminal count
-                 ({'processed': 1, 'completed': True, 'staleDropped': '1'}, False),
-                 ({'processed': 1, 'completed': -1, 'staleDropped': 0}, False),
-                 ({'processed': 0, 'completed': 0, 'staleDropped': 0}, False)]
-        for report, productive in cases:
-            with self.subTest(report=report):
-                result = self.result_for({**report, 'remaining': 1})
-                self.assertEqual(result['state'], 'pending')
-                self.assertEqual(result.get('reason') == 'compile_progress', productive)

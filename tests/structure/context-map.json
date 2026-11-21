@@ -1416,6 +1416,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/compile/refresh_settlement.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/compile/selected_execution.py": {
       "context": "wiki/compile",
       "layer": "adapter",

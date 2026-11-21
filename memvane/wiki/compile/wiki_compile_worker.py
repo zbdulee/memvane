@@ -189,7 +189,12 @@ def compact_similar_pages(root: Path, rows: list, cap_chars: int) -> list[dict]:
     return result
 
 
+# The last reason ``bounded_failure`` gave within one ``process_job_settled`` call.
+_LAST_REASON: ContextVar = ContextVar('compile_last_reason', default=None)
+
+
 def bounded_failure(action: str, job: dict, reason: str) -> dict:
+    _LAST_REASON.set(reason)
     raw_source = job.get("source")
     source = raw_source if isinstance(raw_source, dict) else {}
     return {
@@ -1364,10 +1369,53 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
     return True
 
 
+def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, *,
+                        checkout=None) -> tuple[bool, bool, list[str]]:
+    """``process_job``, then settle the refresh event a finished job left unresolved.
+
+    A job that is done and not kept (``True, False``) is never tried again from
+    the queue. When the source's refresh event is still unresolved at that
+    point (no card proves the revision: the writer wrote none, the content is
+    suppressed, the source is unreadable, the extractor returned nothing), the
+    attempt for that event and that content is recorded as over. Without the
+    record the next worker pass recovers the event and repeats the same
+    attempt, extractor call included, on every pass.
+    """
+    token = _LAST_REASON.set(None)
+    try:
+        result = process_job(root, config, compile_cfg, job, checkout=checkout)
+        reason = _LAST_REASON.get()
+    finally:
+        _LAST_REASON.reset(token)
+    if result[0] and not result[1]:
+        raw_source = job.get("source")
+        rel = raw_source.get("path") if isinstance(raw_source, dict) else None
+        pending = wiki_freshness.latest_unresolved_pending(root, rel) if isinstance(rel, str) and rel else None
+        if pending is not None:
+            from memvane.wiki.compile import refresh_settlement
+            sha = job.get('_processedContentRevision')
+            if not isinstance(sha, str):
+                snapshot = wiki_freshness.snapshot_file((root / rel).resolve()) if '..' not in Path(rel).parts else None
+                sha = snapshot.get('sha256') if isinstance(snapshot, dict) else None
+            # Ignored on failure (rule 3): the event only stays unsettled, the
+            # next pass tries the source once more and writes the record again.
+            refresh_settlement.settle(root, pending, sha, reason or 'not_refreshed')
+    return result
+
+
+def _unsettled_refreshes(root: Path) -> list[dict]:
+    from memvane.wiki.compile import refresh_settlement
+    return refresh_settlement.unsettled(root, wiki_freshness.unresolved_pending_refreshes(root))
+
+
 def recover_pending_refreshes(root: Path, config: dict, queue: Path) -> int:
-    """Reenqueue latest unresolved sources after either cross-file crash window."""
+    """Reenqueue latest unresolved sources after either cross-file crash window.
+
+    An event whose compile attempt is settled for the current source content
+    is not recovered: recovering it repeats an attempt that already ended.
+    """
     records = []
-    for pending in wiki_freshness.unresolved_pending_refreshes(root):
+    for pending in _unsettled_refreshes(root):
         record = _source_record(
             pending.get("sourcePath"), str(root), str(root), config,
             pending.get("engine", settings_types.UNKNOWN_ENGINE),
@@ -1476,7 +1524,7 @@ def _busy_report(root: Path, queue: Path) -> dict:
     except OSError:
         waiting = True
     if not waiting:
-        waiting = bool(wiki_freshness.unresolved_pending_refreshes(root))
+        waiting = bool(_unsettled_refreshes(root))
     report = {"processed": 0, "remaining": 0, "busy": True}
     if waiting:
         report["wakeAfterSeconds"] = RUN_LOCK_BUSY_RETRY_SECS
@@ -1645,7 +1693,7 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                                      bounded_failure('deferred', job, 'checkout_unavailable'))
                         processed, preserve, queued = False, True, []
                     else:
-                        processed, preserve, queued = process_job(
+                        processed, preserve, queued = process_job_settled(
                             root, config, compile_cfg, job, checkout=checkout)
                 finally:
                     _EXTRACTOR_BUDGET.reset(budget_token)
