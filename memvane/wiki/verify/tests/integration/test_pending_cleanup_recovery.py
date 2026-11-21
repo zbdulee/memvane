@@ -119,6 +119,35 @@ class PendingRecovery(FixtureCase):
         self.assertFalse(self.pending.exists())
         self.assertEqual(self.target.read_text(encoding='utf-8'), 'live')
 
+    def test_receipts_of_two_boots_for_one_unchanged_candidate_do_not_conflict(self):
+        saved = fingerprint(self.pending)
+        earlier = self.receipt(print_=[saved[0] + 7] + saved[1:])
+        later = self.receipt(print_=[saved[0] + 9] + saved[1:])
+        current = self.receipt()
+        rows = [(json.dumps(row), row) for row in (earlier, later, current)]
+        snapshots, jobs = verify._pending_snapshots(self.root, self.cfg, rows)
+        self.assertEqual(snapshots, {self.pending: tuple(saved)})
+        self.assertEqual(list(jobs), [self.pending])
+        self.write_queue(earlier, later, current)
+        with mock.patch.object(verify, 'process_verify_job', side_effect=AssertionError('must not reverify')):
+            self.run_verify()
+        self.assertFalse(self.pending.exists())
+        self.assertEqual(self.target.read_text(encoding='utf-8'), 'live')
+
+    def test_receipts_of_two_boots_still_conflict_when_one_saw_other_bytes(self):
+        before = fingerprint(self.pending)
+        self.pending.write_text('candidate with user edits', encoding='utf-8')
+        after = fingerprint(self.pending)
+        earlier = self.receipt(print_=[before[0] + 7] + before[1:])
+        later = self.receipt(print_=[after[0] + 9] + after[1:])
+        snapshots, _ = verify._pending_snapshots(self.root, self.cfg,
+                                                 [(json.dumps(earlier), earlier), (json.dumps(later), later)])
+        self.assertNotIn(self.pending, snapshots)
+        self.write_queue(earlier, later)
+        with mock.patch.object(verify, 'process_verify_job', side_effect=AssertionError('must not reverify')):
+            self.run_verify()
+        self.assertEqual(self.pending.read_text(encoding='utf-8'), 'candidate with user edits')
+
     def test_a_receipt_from_another_boot_keeps_an_edited_candidate(self):
         saved = fingerprint(self.pending)
         moved = [saved[0] + 7] + saved[1:]
