@@ -116,7 +116,10 @@ class IdentityChecks(unittest.TestCase):
               'candidates':[{'id':'synthetic/overflow','revision_sha256':'1'*64,
                              'input_text':'# Synthetic overflow\nbody','input_kind':'full_compact_wiki_body'}]}
         # The view's pairing proof reads the probe's prediction timing.
-        return patch('memvane.learning.context_learning.pairing.pairing_probe',return_value=(
+        # The module ``prepare`` imports (``sys.modules``), not the package attribute.
+        import importlib
+        pairing=importlib.import_module('memvane.learning.context_learning.pairing')
+        return patch.object(pairing,'pairing_probe',return_value=(
             case,lambda timing:timing.get('truncated_pairs')==1))
     def test_explicit_prepare_never_calls_train_or_smoke_and_rechecks_expiry(self):
         from memvane.learning.context_learning import inference_service as service, local_cycle, runtime_setup

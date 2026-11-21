@@ -7,8 +7,11 @@ explicit consent. Payload size and egress checks belong to the teacher.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 from pathlib import Path
+
+from memvane.kernel.resource_deferred import ResourceDeferred
 
 from .dataset import read_private_json
 from .store import canonical
@@ -24,6 +27,11 @@ KEYS = frozenset(('schema', 'projectRoot', 'purpose', 'recipients', 'modelPolicy
                   'grantedBy', 'grantedAtUnixMs', 'enabled'))
 BUDGETS = (('maxInputBytes', 1024, 65536), ('maxOutputBytes', 1024, 65536),
            ('timeoutSeconds', 1, 60), ('maxRssMib', 512, 4096))
+# A read that could not finish says nothing about the consent (deferred, retried).
+UNREADABLE = 'teacher_consent_unreadable'
+# Errors that describe the file itself: gone, a link, or not the owner's to read.
+FILE_ERRNOS = frozenset((errno.ENOENT, errno.ELOOP, errno.EACCES, errno.EPERM,
+                         errno.ENOTDIR, errno.EISDIR))
 
 
 def sha256(value):
@@ -48,7 +56,11 @@ def envelope(value):
 
 
 def require_consent_v2(root, project):
-    """Return the accepted v2 proposal or raise ``teacher_consent_*``."""
+    """Return the accepted v2 proposal or raise ``teacher_consent_*``.
+
+    An I/O error outside ``FILE_ERRNOS`` raises ``ResourceDeferred(UNREADABLE)``:
+    the caller keeps its state (a kept answer included) and reads again later.
+    """
     root, project = Path(root), Path(project).resolve(strict=True)
     if any(p.is_symlink() for p in (root, *root.parents)):
         raise ValueError('teacher_consent_scope')
@@ -76,5 +88,11 @@ def require_consent_v2(root, project):
             if type(row[key]) is not int or not low <= row[key] <= high:
                 raise ValueError('teacher_consent_budget')
         return row
-    except (KeyError, TypeError, OSError) as exc:
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            raise ValueError('teacher_consent_required') from exc
+        if exc.errno in FILE_ERRNOS:
+            raise ValueError('teacher_consent_scope') from exc
+        raise ResourceDeferred(UNREADABLE) from exc
+    except (KeyError, TypeError) as exc:
         raise ValueError('teacher_consent_scope') from exc

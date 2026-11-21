@@ -777,6 +777,8 @@ Reading (`skills/logs/scripts/logs.py`):
 | `learning.score` | prequential scorer (`memvane/learning/context_learning/prequential.py`) | `previous` / `current` / `counts`; operating score metrics plus `caseRows`, `caseLimit`, `gold`, `candidateTrain`, `candidateEval`, `candidateEvalNonEmpty`, `candidateEvalEmpty` |
 | `learning.promotion` | candidate promotion and carry (`memvane/learning/context_learning/prequential.py`, `candidate_close.py`) | `waiting`, `evaluated`, `applied`, `rejected`, `carried` (`cycle`, `carriedFrom`), `superseded` (`closed`) |
 | `learning.migration` | first default-namespace worker pass (`prompt_retirement.py`, `edit_git_migration.py`) | `prompt_cases_deleted` / migration outcome; `count`, `privateSamples` |
+| `learning.rotation` | default-teacher worker pass (`memvane/learning/context_learning/case_rotation.py`) | `deleted`; `count` (closed cases deleted), `caseRows` (rows left), `protected`, `limit` |
+| `learning.selector.request`, `learning.selector.maintenance` | selector maintenance request and run (`memvane/learning/selector_maintenance.py`) | request `spawned` / `skipped` / `deferred` / `failed` / `completed` (`failures`, `retryAfterNs`); run `started` / `completed` / `deferred` / `failed` with a fixed `reason` and `stage`. A held prepare lease is `deferred` with `reason: learning_prepare_busy` and `busyRetries` |
 | `wiki` | compile, verify, dedup, pending publish, lifecycle, source retirement | `created` / `updated` / `deleted` / `retired`; `reason` (`compile`, `pending_publish`, `verify_retire`, `dedup`, `lifecycle:<code>`, `source_deleted`), `path`, `title` |
 | `wake.sync`, `wake.compile` | off-hook dispatcher (`memvane/app/runtime_dispatch.py`) | dispatcher outcome, `generation`, `previousGeneration` |
 | `index.publish` | off-hook dispatcher | `generation`, `previousGeneration`, `epoch` |
@@ -795,7 +797,8 @@ carries `cards` (`[{path, sha}]`, exactly the injected cards), `count`,
 `reader_endpoint` (a recall the schema3 reader served), `retry`, `generation`,
 `filtered_count`/`filtered_reasons`, prompt-recall search-need probe signals
 (`needAtoms`, `needAtomsHit`, `needAtomsRare`, `needRareTopScore`, `needProbeMs`,
-`needProbeTruncated`; skipped when `MEMVANE_NEED_SIGNALS=off`), exact vector
+`needProbeTruncated`; skipped when `MEMVANE_NEED_SIGNALS=off`; `needRareTopScore`
+and `lexicalTopScore` are the best, that is the lowest, bm25), exact vector
 search phase timings (`vectorObserveMs`, `vectorOpenMs`, `vectorCardsMs`,
 `vectorSnapshotMs`, `vectorBodyMs`, `vectorTotalMs`) and `prompt`
 (`{sha256, chars}`).

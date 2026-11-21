@@ -15,6 +15,10 @@ jobs:
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history with tags: the old-bundle compatibility tests extract
+          # earlier releases from their tags (memvane/learning/tests/old_bundle_121.py).
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}

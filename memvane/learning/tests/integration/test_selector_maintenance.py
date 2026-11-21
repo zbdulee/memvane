@@ -55,6 +55,51 @@ with mock.patch('memvane.learning.api.run_selector_maintenance', side_effect=Run
         self.assertIn('synthetic_failure', recorded['tail'])
         self.assertLessEqual(len(recorded['tail'].encode()), 8192)
 
+    def test_busy_prepare_lease_is_recorded_without_raising_or_worker_stderr(self):
+        # F-9: the entry prints a traceback and captures ``worker_stderr`` for any exception.
+        import json
+        import subprocess
+        import sys
+        entry = Path(__file__).resolve().parents[4] / 'entry' / 'run.py'
+        script = r'''
+import json, runpy, sys
+from unittest import mock
+from memvane.learning import selector_maintenance
+from memvane.learning.context_learning.selector_heal import HealDeferred
+entry, project = sys.argv[1:]
+decision = {'projectRoot': project, 'journalPath': project + '/journal', 'installId': 'test'}
+captured, emitted, released = [], [], []
+def release(decision, **kwargs):
+    released.append(kwargs)
+    return {'busyRetries': 3}
+with mock.patch.object(selector_maintenance, '_run', side_effect=HealDeferred('learning_prepare_busy')), \
+     mock.patch('memvane.journal.api.select_route', return_value=decision), \
+     mock.patch('memvane.journal.api.verify_selected_route_for_write'), \
+     mock.patch.object(selector_maintenance, '_release_deferred_request', side_effect=release), \
+     mock.patch('memvane.diagnostics.api.emit', side_effect=lambda event, **row: emitted.append(
+         [event, row.get('outcome'), row.get('reason'), row.get('busyRetries')])), \
+     mock.patch('memvane.diagnostics.api.capture', side_effect=lambda *a, **k: captured.append(1)):
+    sys.argv = [entry, 'selector-maintenance', project, 'force']
+    try: runpy.run_path(entry, run_name='__main__')
+    except SystemExit as exc:
+        if exc.code: raise
+print(json.dumps({'captured': len(captured), 'emitted': emitted, 'released': released}))
+'''
+        with tempfile.TemporaryDirectory(prefix='mvs-busy-') as directory, \
+                tempfile.TemporaryFile(mode='w+b') as stderr:
+            result = subprocess.run([sys.executable, '-B', '-c', script, str(entry),
+                                     str(Path(directory).resolve())],
+                                    stdout=subprocess.PIPE, stderr=stderr, text=True, timeout=20)
+            stderr.seek(0)
+            printed = stderr.read().decode('utf8', 'replace')
+        self.assertEqual(result.returncode, 0, printed)
+        recorded = json.loads(result.stdout)
+        self.assertEqual(recorded['captured'], 0)
+        self.assertEqual(recorded['released'], [{'busy': True}])
+        self.assertEqual(recorded['emitted'], [['learning.selector.maintenance', 'deferred',
+                                                'learning_prepare_busy', 3]])
+        self.assertNotIn('Traceback', printed)
+
     def test_warm_starting_releases_retry_floor_as_deferral(self):
         from memvane.learning.context_learning.selector_heal import HealDeferred
         with tempfile.TemporaryDirectory(prefix='mvs-') as directory:

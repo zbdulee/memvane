@@ -40,7 +40,7 @@ The summary reports each hook action's p50 and p95 from its latest 100 recorded 
 
 When the default teacher has run, the summary adds its lines:
 
-- `teacher <date>`: per-case `learning.teacher` rows of that UTC day (`calls`), how many did not end in gold (`failed`, by reason) and the usage sums (`usageIn`, `usageOut`, `usageCached`, `usageReasoning`).
+- `teacher <date>`: per-case `learning.teacher` rows of that UTC day (`calls`), the gold labels of that day (`gold`, a kept answer committed later included), how many calls did not end in gold (`failed`, by reason) and the usage sums (`usageIn`, `usageOut`, `usageCached`, `usageReasoning`).
 - `teacher selected`: how many cards each gold label selected (0 to 3). An empty selection is a valid label.
 - `teacher models`: the host and resolved model of each gold label. This is the model in use; the `goldModel` value in the policy file is not.
 - `teacher pending_review`: cases set aside for review, by reason. The teacher does not call them again.
@@ -49,6 +49,9 @@ When the default teacher has run, the summary adds its lines:
 - `WARNING teacher tool calls`: calls during which the host CLI ran one of its built-in tools that cannot be turned off, with counts per tool name. The labels of those calls are kept; report the warning.
 - `score <checkpoint>`: the operating score of a checkpoint over the cases captured while it was active, from the latest `learning.score` row: `exactRate` (Laya's selection equals the gold), `microF1`, `emptyAgree`, `nonEmptyAgree`, cases answered by the default rank instead of the selector (`defaultRank`, not scored), `unknownSelection` and gold cards outside the selector's window (`goldOutsideK`), with the `exactRate` trend across the window.
 - `promotion`: the latest promotion decisions (`waiting`, `evaluated`, `applied`, `rejected`) with the training and evaluation case counts, empty-gold evaluation cases and both exact rates.
+- `learning deferred`: learning cycles the resource admission deferred, by inner reason, and the time of the last finished training.
+- `learning rotation`: closed cases deleted to keep the case table at 1,800 rows (`deleted`) and the number of passes that deleted any.
+- `selector maintenance`: maintenance runs by result (`completed`, `deferred` and `failed` by reason). `learning_prepare_busy` means another install held the per-user prepare lease; the run comes back about a minute later and `busyRetriesMax` is the longest such run of retries.
 
 Event rows never hold the edit text, card bodies, source paths or the user's global instructions.
 

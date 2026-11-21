@@ -55,6 +55,8 @@ SCOPE_ERRORS=('project_scope','setup_default_scope_changed')
 # Failures that say the case or its scope changed, not the host: the breaker stays.
 NOT_HOST_FAILURES=frozenset({'teacher_scope_changed','gold_capture_changed','teacher_cohort_changed',
                              'gold_case_changed_before_commit'})
+# The same for a scope or consent refusal met after the answer (``project_scope_*``, ``teacher_consent_*``).
+NOT_HOST_PREFIXES=('project_scope_','teacher_consent_')
 # A received answer whose scope check met resource pressure waits here (case
 # ``first_done``) for the next pass to check and commit it without a call.
 PARKED='answer_parked'
@@ -216,6 +218,8 @@ def process_pending_default(root,project,worker_policy,*,max_cases=8,environ=Non
     try:
         grant=_gt()._scope_default(root,policy)
         consent=require_consent_v2(root,project)
+    except ResourceDeferred:
+        raise  # An unreadable consent file is not a withdrawal: kept answers stay.
     except ValueError as exc:
         # The scope check also reads the v2 consent; only its refusal is a status.
         if not str(exc).startswith('teacher_consent'):raise
@@ -545,8 +549,9 @@ def _confirm_parked(root,project,grant,key,result):
             teacher=kept['teacher']
             gold=_gold_value(choice,input_sha,teacher['host'],teacher['model'],teacher['tier'],kept['pluginWarnings'])
             with _db(root) as db:
-                if db.execute("UPDATE cases SET status='gold',gold=?,error=NULL WHERE project_key=? AND request_id=? AND status='first_done' AND use_state='active' AND sample=? AND bodies=? AND first=?",
-                              (canonical(gold),key,rid,sample_json,bodies_json,first_json)).rowcount!=1:
+                # ``first`` ends as the choice alone, the same shape the direct commit writes.
+                if db.execute("UPDATE cases SET status='gold',first=?,gold=?,error=NULL WHERE project_key=? AND request_id=? AND status='first_done' AND use_state='active' AND sample=? AND bodies=? AND first=?",
+                              (canonical(choice),canonical(gold),key,rid,sample_json,bodies_json,first_json)).rowcount!=1:
                     raise ValueError('gold_case_changed_before_commit')
                 ledger.transition(db,key,rid,PHASE,(PARKED,),'committed')
         except ResourceDeferred:
@@ -615,7 +620,8 @@ def _failed(root,project,key,rid,host,failure,ready,counts,outcomes,base,elapsed
             row=state['hosts'][host]
             row.update(waitUntilUnixMs=teacher_state.wait_until_ms(now,teacher_state.PROVIDER_WAIT_SECONDS),
                        reason='teacher_provider_waiting',waitingSinceUnixMs=now)
-    elif kind in ('unknown','invalid') and code not in NOT_HOST_FAILURES:
+    elif (kind in ('unknown','invalid') and code not in NOT_HOST_FAILURES
+          and not code.startswith(NOT_HOST_PREFIXES)):
         def state_change(state):
             row=state['hosts'][host]
             row['consecutiveFailures']+=1

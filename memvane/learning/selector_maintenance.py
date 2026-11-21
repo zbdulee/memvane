@@ -10,6 +10,13 @@ import time
 
 REQUEST_SECONDS = 600
 REQUEST_FILE = 'selector-heal-request.json'
+# A held prepare lease (``learning_prepare_busy``) is another install's turn, not
+# a failure. The request comes back after about one maintenance run, without the
+# ten-minute floor and without growing the failure backoff, at most this many
+# times in a row (the row's ``busyRetries``); after that it is an ordinary deferral.
+BUSY_RETRY_SECONDS = 60
+BUSY_RETRY_LIMIT = 30
+PREPARE_BUSY = 'learning_prepare_busy'
 
 
 def _selector_state(project):
@@ -127,17 +134,24 @@ def _request_owned(decision, owner, *, force, origin='session', reoffer=True):
     except (OSError, ValueError, RuntimeError):
         last = None
     retry_after = previous.get('retryAfterNs', 0) if isinstance(previous, dict) else 0
-    floor = last + REQUEST_SECONDS * 10**9 if type(last) is int and 0 <= now - last else 0
+    busy = _busy_count(previous)
+    # A busy retry waits its own short floor instead of the ten-minute one.
+    floor = (last + (BUSY_RETRY_SECONDS if busy else REQUEST_SECONDS) * 10**9
+             if type(last) is int and 0 <= now - last else 0)
     due = max(floor, retry_after if type(retry_after) is int else 0)
     if now < due:
-        _request_event(decision, 'skipped', 'backoff' if retry_after and due == retry_after else 'request_floor',
-                       origin=origin, requestNs=last if type(last) is int else None, retryAfterNs=due)
+        _request_event(decision, 'skipped', 'busy_retry' if busy else
+                       'backoff' if retry_after and due == retry_after else 'request_floor',
+                       origin=origin, requestNs=last if type(last) is int else None, retryAfterNs=due,
+                       busyRetries=busy or None)
         # A sync pass runs before the learning deadline: hand the due time to
         # the learning wake. The wake probe instead keeps its own row pending.
         if origin == 'sync' and reoffer:
             _offer_retry(decision, {'retryAfterNs': due})
         return {'status': 'waiting', 'dueNs': due}
     attempt = {'requestedNs': now, 'failures': _failure_count(previous), 'retryAfterNs': 0}
+    if busy:
+        attempt['busyRetries'] = busy  # The run of busy retries continues across attempts.
     _write(path, attempt, replace=path.exists())
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER',
                                             'MEMVANE_TEST_RUNTIME_ROOT',
@@ -356,6 +370,9 @@ def _run_recorded(project, *, force=False):
             pass
         return
     except Exception as exc:
+        from memvane.learning.context_learning.selector_heal import HealDeferred as _Deferred
+        # Another install holds the prepare lease: recorded below, never a worker error.
+        busy = isinstance(exc, _Deferred) and str(exc) == PREPARE_BUSY
         # Diagnostics cannot authorize work; report only after selected proof.
         try:
             from memvane.journal.api import select_route, verify_selected_route_for_write
@@ -365,12 +382,14 @@ def _run_recorded(project, *, force=False):
             from memvane.learning.context_learning.selector_heal import HealDeferred
             decision = select_route(str(Path(project).resolve(strict=True)), action='update')
             deferred = isinstance(exc, (ResourceDeferred, HealDeferred))
+            settled = None
             if deferred:
-                _release_deferred_request(decision)
+                settled = (_release_deferred_request(decision, busy=True) if busy
+                           else _release_deferred_request(decision))
             else:
                 _record_request_result(decision)
             verify_selected_route_for_write(decision)
-            fixed = ('learning_prepare_memory_pressure', 'learning_prepare_busy', 'learning_pending_changed',
+            fixed = ('learning_prepare_memory_pressure', PREPARE_BUSY, 'learning_pending_changed',
                      'starting', 'deadline_expired', 'learning_runtime_not_installed',
                      'learning_runtime_not_official', 'learning_runtime_changed', 'learning_profile_rebind_required',
                      'learning_prepare_lock_unsafe', 'selector_policy_invalid', 'selector_warm_lock_unsafe',
@@ -399,9 +418,13 @@ def _run_recorded(project, *, force=False):
                 stage = exc.phase
             diagnostics.emit('learning.selector.maintenance', decision=decision,
                              outcome='deferred' if deferred else 'failed', reason=reason, stage=stage,
-                             error=type(exc).__name__, **_failure_timing(exc))
+                             error=type(exc).__name__,
+                             busyRetries=settled.get('busyRetries') if busy and settled else None,
+                             **_failure_timing(exc))
         except Exception:
             pass
+        if busy:
+            return
         raise
 
 
@@ -415,6 +438,20 @@ def _failure_count(row):
     return max(0, min(32, count)) if type(count) is int else 0
 
 
+def _busy_count(row):
+    count = row.get('busyRetries', 0) if isinstance(row, dict) else 0
+    return max(0, min(BUSY_RETRY_LIMIT, count)) if type(count) is int else 0
+
+
+def _busy_row(row, now):
+    """The next row of a busy deferral, or None once the run of busy retries is spent."""
+    count = _busy_count(row)
+    if count >= BUSY_RETRY_LIMIT:
+        return None
+    return {'requestedNs': row['requestedNs'], 'failures': _failure_count(row),
+            'retryAfterNs': now + BUSY_RETRY_SECONDS * 10**9, 'busyRetries': count + 1}
+
+
 def _retry_row(row, now, *, deferred):
     failures = _failure_count(row) + 1
     delay = min(3600, (60 if deferred else REQUEST_SECONDS) * 2 ** min(failures - 1, 6))
@@ -422,13 +459,16 @@ def _retry_row(row, now, *, deferred):
             'retryAfterNs': max(row['requestedNs'] + REQUEST_SECONDS * 10**9, now + delay * 10**9)}
 
 
-def _release_deferred_request(decision):
-    """Keep the request floor while recording a retryable failure."""
-    _record_request_result(decision, deferred=True)
+def _release_deferred_request(decision, *, busy=False):
+    """Keep the request floor while recording a retryable failure (a busy lease: a short retry)."""
+    return _record_request_result(decision, deferred=True, busy=busy)
 
 
-def _record_request_result(decision, *, deferred=False, completed=False, reschedule=True):
-    """Settle only the selected install's owning request, not product work proof."""
+def _record_request_result(decision, *, deferred=False, completed=False, reschedule=True, busy=False):
+    """Settle only the selected install's owning request, not product work proof.
+
+    Returns the row it wrote, or None when nothing was written.
+    """
     from memvane.journal.api import inspect_journal, ledger_read_json, ledger_write
     from memvane.runtime.api import sync_owner
     from memvane.diagnostics import api as diagnostics
@@ -452,14 +492,24 @@ def _record_request_result(decision, *, deferred=False, completed=False, resched
             if isinstance(row, dict) and row.get('requestedNs') == int(value):
                 if not completed and type(row.get('retryAfterNs')) is int and row['retryAfterNs'] > 0:
                     return  # The same request cannot count its failure twice.
-                updated = (dict(requestedNs=int(value), failures=0, retryAfterNs=0) if completed
-                           else _retry_row(row, time.time_ns(), deferred=deferred))
+                now = time.time_ns()
+                updated = dict(requestedNs=int(value), failures=0, retryAfterNs=0) if completed else None
+                if updated is None and busy:
+                    updated = _busy_row(row, now)
+                if updated is None:
+                    updated = _retry_row(row, now, deferred=deferred)
+                    if busy:
+                        # The run is spent: later busy deferrals stay ordinary until one completes.
+                        updated['busyRetries'] = BUSY_RETRY_LIMIT
                 ledger_write(path, updated, replace=True)
                 diagnostics.emit('learning.selector.request', outcome='completed' if completed else
                                  'deferred' if deferred else 'failed', requestNs=int(value),
-                                 failures=updated['failures'], retryAfterNs=updated['retryAfterNs'], decision=decision)
+                                 reason=PREPARE_BUSY if busy and not completed else None,
+                                 failures=updated['failures'], retryAfterNs=updated['retryAfterNs'],
+                                 busyRetries=updated.get('busyRetries'), decision=decision)
                 if not completed and reschedule:
                     _offer_retry(decision, updated)
+                return updated
         except (OSError, ValueError, RuntimeError):
             diagnostics.emit('learning.selector.request', outcome='failed', reason='retry_state_failed', decision=decision)
 

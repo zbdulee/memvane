@@ -173,13 +173,21 @@ class RetrySync(FixtureCase):
                     mock.patch('memvane.learning.runtime_activation.ensure_pending'), \
                     mock.patch.object(runtime, 'request') as offer, \
                     mock.patch('memvane.diagnostics.api.emit', side_effect=lambda event, **row: events.append((event, row))):
-                with self.assertRaisesRegex(selector_heal.HealDeferred, 'learning_prepare_busy'):
-                    maintenance.run(b.project.root, force=True)
+                # A held lease is another install's turn: recorded, never raised (no worker stderr).
+                maintenance.run(b.project.root, force=True)
             deferred = journal.ledger_read_json(path)
-            self.assertEqual(deferred['failures'], 1)
-            self.assertGreaterEqual(deferred['retryAfterNs'], seed + 600 * 10**9)
-            self.assertTrue(any(c.args[:2] == ('learning', str(b.project.root)) and
-                                0 < c.kwargs.get('delay', 0) <= 3600 for c in offer.call_args_list))
+            # Not a failure: a short retry instead of the ten-minute floor.
+            self.assertEqual((deferred['failures'], deferred['busyRetries']), (0, 1))
+            self.assertEqual(deferred['retryAfterNs'], (1001 + maintenance.BUSY_RETRY_SECONDS) * 10**9)
+            self.assertEqual([c.kwargs.get('delay') for c in offer.call_args_list
+                              if c.args[:2] == ('learning', str(b.project.root))],
+                             [maintenance.BUSY_RETRY_SECONDS])
+            busy = [r for e, r in events if r.get('reason') == 'learning_prepare_busy']
+            self.assertEqual(sorted((e, r['outcome'], r['busyRetries']) for e, r in events
+                                    if r.get('reason') == 'learning_prepare_busy'),
+                             [('learning.selector.maintenance', 'deferred', 1),
+                              ('learning.selector.request', 'deferred', 1)])
+            self.assertEqual(len(busy), 2)
         finally:
             os.close(lease)
         # Fixture guard stays enabled for the actual store pass. Only the public
@@ -209,7 +217,7 @@ class RetrySync(FixtureCase):
         self.assertEqual(spawn.call_count, 1)
         retried = journal.ledger_read_json(path)
         self.assertEqual(retried['requestedNs'], now)
-        self.assertEqual(retried['failures'], 1)
+        self.assertEqual((retried['failures'], retried['busyRetries']), (0, 1))
         self.assertEqual(retried['retryAfterNs'], 0)
 
     def test_request_exception_is_reported_with_fixed_code(self):

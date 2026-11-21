@@ -69,7 +69,9 @@ class NeedSignals(RecallInstallCase):
 
     def test_tb0_1_rare_and_common_terms_and_real_hook_claude_codex(self):
         prompt = 'zqheronx zqsharedx zqabsentx'
-        ctx, _err, event = self.recall(prompt)
+        # In process the probe budget is not what is tested: counts, not a 150 ms race.
+        with mock.patch.object(reader_dispatch, 'NEED_BUDGET_SECONDS', 20.0):
+            ctx, _err, event = self.recall(prompt)
         self.assertIn('zqheronx', ctx)
         self.assertEqual((event['needAtoms'], event['needAtomsHit'], event['needAtomsRare']), (3, 2, 1))
         self.assertIsInstance(event['needRareTopScore'], float)
@@ -86,8 +88,13 @@ class NeedSignals(RecallInstallCase):
                 for key in NEED_FIELDS:
                     self.assertIn(key, on_ev, key)
                     self.assertNotIn(key, off_ev, key)
-                self.assertEqual((on_ev['needAtoms'], on_ev['needAtomsHit'], on_ev['needAtomsRare']),
-                                 (3, 2, 1))
+                # The child runs the real 150 ms budget: a loaded machine may end the read early.
+                counts = (on_ev['needAtoms'], on_ev['needAtomsHit'], on_ev['needAtomsRare'])
+                if on_ev['needProbeTruncated']:
+                    self.assertLess(on_ev['needAtoms'], 3)
+                    self.assertTrue(all(got <= most for got, most in zip(counts, (3, 2, 1))), counts)
+                else:
+                    self.assertEqual(counts, (3, 2, 1))
 
     def test_tb0_2_edit_recall_runs_zero_probes_and_records_no_need_fields(self):
         decision = journal_api.select_route(str(self.project), action='recall')
@@ -116,26 +123,34 @@ class NeedSignals(RecallInstallCase):
         self.install.provider.admit_queries()
         twenty = ' AND '.join(f'"zq{topic}x"*' for topic in TOPICS)
         real_pin = journal_api.pin_schema3
-        search_calls = []
+        search_calls, probe_calls = [], []
 
         @contextmanager
         def spied_pin(*args, **kwargs):
             with real_pin(*args, **kwargs) as (store, handle, pin):
-                orig = store.search
+                orig, probe = store.search, store.probe_terms
 
                 def counted(p, fts_query, limit, **kw):
                     search_calls.append(fts_query)
                     return orig(p, fts_query, limit, **kw)
 
-                with mock.patch.object(store, 'search', side_effect=counted):
+                def probed(p, fts_queries, limit, **kw):
+                    probe_calls.append(list(fts_queries))
+                    return probe(p, fts_queries, limit, **kw)
+
+                with mock.patch.object(store, 'search', side_effect=counted), \
+                        mock.patch.object(store, 'probe_terms', side_effect=probed):
                     yield store, handle, pin
 
         with mock.patch.object(domain.rules, '_hybrid_fts_queries', return_value=[twenty]), \
+                mock.patch.object(reader_dispatch, 'NEED_BUDGET_SECONDS', 20.0), \
                 mock.patch.object(journal_api, 'pin_schema3', side_effect=spied_pin):
             _ctx2, _err2, event = self.recall('zqheronx')
         self.assertEqual(event['needAtoms'], 8)
-        # 1 conjunctive lexical query + 8 single-atom probes = 9 store.search calls.
-        self.assertEqual(len(search_calls), 9)
+        self.assertFalse(event['needProbeTruncated'])
+        # The conjunctive lexical query is the only ``search``; the 8 atoms go in one count-only read.
+        self.assertEqual(len(search_calls), 1)
+        self.assertEqual([len(atoms) for atoms in probe_calls], [8])
 
     def test_tb0_4_probe_exception_and_deadline_preserve_recall_and_search_exact(self):
         self.install.provider.admit_queries()
@@ -149,16 +164,7 @@ class NeedSignals(RecallInstallCase):
             @contextmanager
             def pinned(*args, **kwargs):
                 with real_pin(*args, **kwargs) as (store, handle, pin):
-                    orig = store.search
-                    calls = [0]
-
-                    def search(p, q, limit, **kw):
-                        calls[0] += 1
-                        if calls[0] > 1:
-                            raise error
-                        return orig(p, q, limit, **kw)
-
-                    with mock.patch.object(store, 'search', side_effect=search):
+                    with mock.patch.object(store, 'probe_terms', side_effect=error):
                         yield store, handle, pin
             return pinned
 

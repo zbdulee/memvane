@@ -120,7 +120,9 @@ class SelectorRetryQueue(FixtureCase):
 
     def test_completed_or_missing_request_does_not_enroll_or_spawn(self):
         journal.ledger_write(self.path, {'requestedNs': 1000*10**9, 'failures': 0, 'retryAfterNs': 0}, replace=True)
+        # "Completed" means the running bundle's version is the published one.
         with mock.patch('subprocess.Popen') as spawn, \
+                mock.patch('memvane.kernel.memvane_version.plugin_version', return_value='1.0.12'), \
                 mock.patch.object(journal, 'inspect_journal', return_value={
                     'state': 'selected', 'installId': 'fixture', 'maxPluginVersion': '1.0.12'}):
             for remove in (False, True):

@@ -78,7 +78,7 @@ class TeacherEvents(TeacherFixture):
         self.assertEqual(gold['b1']['toolWarnings'], [{'name': 'command_execution', 'count': 2},
                                                       {'name': 'mcp_tool_call:search', 'count': 1}])
         out = self.summary()
-        self.assertRegex(out, r'teacher \d{4}-\d\d-\d\d: calls=2 failed=0 usageIn=\d+ usageOut=\d+')
+        self.assertRegex(out, r'teacher \d{4}-\d\d-\d\d: calls=2 gold=2 failed=0 usageIn=\d+ usageOut=\d+')
         self.assertIn('teacher selected: 0=0 1=2 2=0 3=0', out)
         self.assertIn('teacher models: claude claude-haiku-5-5 1, codex gpt-6-luna 1', out)
         self.assertIn('WARNING teacher tool calls: 1 call(s); command_execution 2, '
@@ -114,7 +114,7 @@ class TeacherEvents(TeacherFixture):
              cycle='cycle-3', trainCases=100, evalCases=50, evalEmpty=10, candidateExact=0.5,
              activeExact=0.6)
         out = self.summary()
-        self.assertRegex(out, r'calls=6 failed=5 \(gold_attempts_exhausted 1, gold_invalid_choice 2, '
+        self.assertRegex(out, r'calls=6 gold=1 failed=5 \(gold_attempts_exhausted 1, gold_invalid_choice 2, '
                               r'provider_quota_waiting 1, teacher_isolation_violated 1\) '
                               r'usageIn=500 usageOut=25')
         self.assertIn('teacher selected: 0=1 1=0 2=0 3=0', out)

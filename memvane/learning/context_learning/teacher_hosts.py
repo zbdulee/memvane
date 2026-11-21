@@ -303,6 +303,9 @@ class _Run:
                 self.monitor(self.process.pid, sent)
             except ValueError as exc:
                 code = str(exc) if str(exc).startswith('gold_') else 'teacher_scope_changed'
+                if not sent and code == 'gold_system_pressure':
+                    # System pressure before the body is not the case's fault: no attempt is spent.
+                    raise CallFailure('deferred', code)
                 raise CallFailure('unknown' if sent else 'pre_send', code)
 
     def read(self, fd, sent):

@@ -34,6 +34,15 @@ result = {'step': step, 'children': [child.wait(timeout=120) for child in childr
           'state': json.loads((Path(%r) / 'training-worker-state.json').read_text())}
 '''
 
+# 1.0.23 adds ``busyRetries`` to the selector request row: an older bundle reads the
+# keys it knows and writes the row back without it.
+BUSY_ROW = '''
+from memvane.learning import selector_maintenance as maintenance
+row = {'requestedNs': 1000 * 10**9, 'failures': 0, 'retryAfterNs': 1060 * 10**9, 'busyRetries': 3}
+result = {'failures': maintenance._failure_count(row),
+          'retry': maintenance._retry_row(row, 1061 * 10**9, deferred=True)}
+'''
+
 GATES = '''
 from pathlib import Path
 from memvane.learning.context_learning import learning_profile, project_scope, shared
@@ -74,7 +83,7 @@ class OldBundles(EnabledInstall):
         rows = self.seed_122_rows(include_queued=True)
         files = self.namespace_files()
         refused = 'ValueError:project_scope_authorization_invalid'
-        for tag in [tag for tag in TAGS if tag != 'v1.0.21']:
+        for tag in [tag for tag in TAGS if tag not in ('v1.0.21', 'v1.0.22')]:
             with self.subTest(tag=tag):
                 seen = self.observe(tag)
                 # (a) rows and namespace files: only the old worker's own records move.
@@ -158,6 +167,28 @@ class OldBundles(EnabledInstall):
         self.assertEqual(self.rows(), rows)
         for name in self.watched_names():
             self.assertEqual(self.namespace_files().get(name), files[name], name)
+
+    def test_v1_0_22_bundle_leaves_rows_untouched_and_reads_a_busy_request_row(self):
+        self.assertIn('v1.0.22', TAGS)
+        rows = self.seed_122_rows(include_queued=False)
+        files = self.namespace_files()
+        seen = self.observe('v1.0.22')
+        self.assertEqual(self.rows(), rows)
+        for name in self.watched_names():
+            self.assertEqual(self.namespace_files().get(name), files[name], name)
+        self.assertEqual(self.launches(), [])
+        code, out, err = seen['worker']
+        self.assertEqual((code, json.loads(out)['status']), (1, 'failed'), err)
+        for name in ('recall', 'posttool'):
+            code, out, err = seen[name]
+            self.assertEqual(code, 0, err)
+            self.assertIn('zqheronx', json.loads(out)['hookSpecificOutput']['additionalContext'])
+        self.assertEqual(seen['maintenance'], (0, '', ''))
+        # The ten-minute floor and three keys: the 1.0.22 shape, the busy count gone.
+        self.assertEqual(self.driver(old_bundle('v1.0.22'), BUSY_ROW),
+                         {'failures': 0, 'retry': {'requestedNs': 1000 * 10**9, 'failures': 1,
+                                                   'retryAfterNs': 1600 * 10**9}})
+
 
 if __name__ == '__main__':
     unittest.main()

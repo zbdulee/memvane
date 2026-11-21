@@ -42,14 +42,16 @@ class EvaluationQueue:
         """Close a judged candidate's evaluation (``blocked``); created when missing.
 
         Unlike ``finish`` it moves a ``completed`` evaluation too, so the staged
-        selection never picks the same candidate again.
+        selection never picks the same candidate again. A ``running`` row (a
+        claim whose worker was stopped) closes as well: ``claim`` only ever
+        returns a row that is still ``running``.
         """
         job_id='evaluate:'+cycle_id
         with self.connect() as db:
             if self.get(job_id,db=db) is None:
                 db.execute("INSERT INTO learning_evaluations VALUES (?,?,?,?,?,'blocked',0,0,0,?)",(job_id,self.scope,cycle_id,'closed','closed',reason))
             else:
-                db.execute("UPDATE learning_evaluations SET status='blocked',retry_at=0,reason=? WHERE job_id=? AND namespace=? AND status IN ('completed','waiting_quality','queued','deferred')",(reason,job_id,self.scope))
+                db.execute("UPDATE learning_evaluations SET status='blocked',retry_at=0,reason=? WHERE job_id=? AND namespace=? AND status IN ('completed','waiting_quality','queued','running','deferred')",(reason,job_id,self.scope))
             return self.get(job_id,db=db)
 
     def refresh(self,cycle_id):

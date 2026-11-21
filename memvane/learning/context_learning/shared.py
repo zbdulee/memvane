@@ -2182,7 +2182,8 @@ def run_training_pending(root,project):
             if (root/DATABASE_NAME).exists():
                 # Before the staged selection: carry or close cycles of an earlier approval.
                 from .candidate_close import supersede
-                supersede(root,policy,project)
+                try:supersede(root,policy,project)
+                except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
         # Existing fixtures without a shared ledger have no evaluation work.
         if (root/DATABASE_NAME).exists():
             from .evaluation_queue import EvaluationQueue
