@@ -242,6 +242,7 @@ _TEST_G1_EXCEPTIONS = {
     ('tests/e2e/handoff_four_processes.py', 'memvane.resident.resident_service'): 'two-bundle resident handoff boundary',
     ('tests/e2e/handoff_four_processes.py', 'memvane.resident.tests.support'): 'model-free owned worker fixture',
     ('memvane/resident/tests/model/resident_embed_smoke.py', 'memvane.provider.runtime_digests'): 'prevent live digest-cache writes during real-model smoke',
+    ('tests/e2e/checkout_cache_e2e.py', 'memvane.store.checkout.checkout_view'): 'records sealed under another boot device number',
     ('tests/e2e/sync_profile_scale.py', 'memvane.store.tests.support'): 'synthetic row store fixture',
     ('tests/e2e/sync_profile_scale.py', 'memvane.sync.product_sync_worker'): 'measured sync fill path',
     # Reattestation E2E drives the real resident with a model-free socket worker.

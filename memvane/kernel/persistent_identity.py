@@ -3,6 +3,21 @@
 APFS device numbers are boot-local. Only the explicitly named device fields
 are masked; callers retain the original records and their content digests.
 Live fd/path and before/after observations must use their full identities.
+
+Which comparison a site needs:
+
+- A record that outlives the process (a store row, a receipt, a queue marker,
+  a cache database) against a live observation: path and inode, through the
+  functions here. A record that cannot be rewritten would otherwise stay
+  refused from the first boot that renumbers the device.
+- Two observations of one process (an fd against its path, before against
+  after): the full identity, device included.
+- A digest or canonical JSON whose input holds a device number is the first
+  kind as well. The checkout capture is one: ``checkoutDigest`` and the stage
+  and generation rows built from it (``store/view/view_rows.py``,
+  ``view_store.py``, ``view_reader.py``) compare whole. They stay as they are:
+  a stage from before the boot is abandoned by the next prepare, and the
+  generation comparison has no consumer that acts on it.
 """
 from __future__ import annotations
 
