@@ -28,6 +28,7 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki.card  # cards refused or split for the selector budget
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" errors --details     # "detailed errors": reassembled raw diagnostic text
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --all errors                      # "unified logs": every registered project, UTC order
+   python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" --slo               # service-level lines: each against its target (add --all for every project)
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --register /path/to/project       # only when the user asks to add a project
    ```
 
@@ -37,7 +38,20 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
 
 The summary reports each hook action's p50 and p95 from its latest 100 recorded durations. For recall it also reports the recorded semantic completion fraction, the latency targets, and the median of each recorded stage. A missing stage means it was not measured; it is not a zero-duration result. Event durations cover the recorded host action, not shell startup or the earlier hook classification.
 
-`recall observation p50` is the median of the stages that observe the checkout (`pin`, `lexical`, `stillCurrent`, `checkout`). Each is a few ms while the checkout observation cache serves; hundreds of ms mean every observation ran Git. `sync consecutive failed passes` counts the trailing `wake.sync` lines whose outcome is `failed` over every retained line, with their reasons and the time of the last pass that did not fail. A count that keeps growing means the index is not publishing.
+With `--slo` the script prints service-level lines for the window (24 hours unless `--hours` is given), one block per install under `--all`. Each line ends its name with `ok`, `over` or `no-data`; `no-data` means fewer rows than the line needs (20, or 5 for `sync`), and `shown` marks a line that is reported without a target.
+
+- `hook`: prompt recall duration without the selector's time; `hook+selector`: the duration of recalls that asked the selector, judged by the standard target with the verdict for an install of more than 1,000 cards beside it (`large`).
+- `stage`: the median of each checkout observation stage against its own target.
+- `semantic`: the share of recalls with a query vector whose semantic search completed, the share answered from the vector arena once one answers, and the counts of each unfinished state.
+- `selector`: the selector's duration and the share of answers that ran out of their time.
+- `host <name>`: duration and semantic share per host.
+- `dedup`: the share of injected cards the same session had already been given (after its last compaction or clear; for a host that sends no such signal, within its last 20 served recalls), and the recalls the exclusion left empty.
+- `sync`: the trailing failed passes, and the time from a sync request to the end of the first pass that started after it and published; `unanswered` requests have no such pass yet.
+- `failed`: failed or refused rows that name no reason.
+- `learning`: stored cases, teacher answers and cycle outcomes in the window, since when the cycle has been put off, and cycle rows that name no reason.
+- `identity`: whether the device number recorded in the install's route is the current one. A moved number is expected after some restarts and is shown, not judged.
+
+`recall observation p50` is the median of the stages that observe the checkout (`pin`, `lexical`, `stillCurrent`, `checkout`). Each is a few ms while the checkout observation cache serves; hundreds of ms mean every observation ran Git. `sync consecutive failed passes` counts the trailing `wake.sync` lines whose outcome is `failed` over every retained line, with their reasons and the time of the last pass that published; a pass still in progress neither counts nor ends the run. Under `--all` there is one such line per install. A count that keeps growing means the index is not publishing.
 
 
 When the default teacher has run, the summary adds its lines:
