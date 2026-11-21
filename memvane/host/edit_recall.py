@@ -597,8 +597,9 @@ def serve(host: str, decision: dict, proof, payload: dict, current: Path, inside
     root of the proved linked worktree the edited files lie in (path rules
     and relative paths count from it; None for the main checkout) and
     ``skip_paths`` that worktree's own skip paths. ``linked`` is the linked
-    worktree route of a session opened there: search reads its own view and
-    nothing is captured.
+    worktree route of a session opened there: search reads its own view, and
+    the pool is a case of the main project only while every card equals the
+    main head's.
     """
     from memvane.kernel.hook_budget import HookDeadlineExceeded
     began = time.monotonic()
@@ -694,7 +695,7 @@ def _serve(host, decision, proof, payload, current, inside, linked, successful, 
     response = ({'hookSpecificOutput': {'hookEventName': 'PostToolUse',
                                         'additionalContext': context}} if rows else {})
     capture = None
-    if linked is None and answer.capture is not None and pool:
+    if answer.capture is not None and pool:
         capture_payload = {
             'cwd': decision['projectRoot'], 'session_id': session,
             'context_origin': 'tool_edit', 'prompt': text,
@@ -708,6 +709,9 @@ def _serve(host, decision, proof, payload, current, inside, linked, successful, 
         if edit_root is not None:
             # The capture child proves this root again before it reads git there.
             capture_payload['_memvane_edit_root'] = str(edit_root)
+        if linked is not None:
+            # The pool is the worktree's own view: a case only while it equals the main head.
+            capture_payload['_memvane_view'] = 'linked'
         capture = (host, decision, capture_payload, answer.capture[0], pool[:POOL_LIMIT],
                    selected)
     return response, capture

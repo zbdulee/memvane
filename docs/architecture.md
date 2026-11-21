@@ -318,7 +318,7 @@ prompt recall's, and edit-recall times: 60 seconds apart, 12 per hour) is
 a non-blocking `flock`; a held lock skips the call, and idle files go after a
 day. Each run writes one `recall.edit` event (`request_id`, injected `cards`,
 `selected`, `selection`, `pool`, selector measurement, no edited path or
-text). After the answer is flushed the main checkout hands the pool to the
+text). After the answer is flushed the hook hands the pool to the
 `learning-capture` child (see `docs/continual-learning.md`). Hermes
 `post_tool_call` stays observer-only. The index owner handles durable sync. `index` wakes the same full-scan owner as SessionStart for
 edited paths inside the project. A path outside the project is not routed

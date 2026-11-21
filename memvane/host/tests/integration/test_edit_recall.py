@@ -324,19 +324,69 @@ class EditRecall(HostInstallCase):
         from memvane.learning.api import capture_recall
         self.assertEqual(capture_recall(host, decision, payload, off, pool, selected), 'disabled')
 
-    def test_linked_worktree_injects_from_its_own_view_without_capture(self):
-        linked = self.fixture.linked_worktree('wt', 'wt-branch')
+    def linked_session(self, name, session):
+        """``(worktree, capture entries)`` of an edit in a session opened in a linked worktree."""
+        linked = self.fixture.linked_worktree(name, name + '-branch')
         linked.write_note(NEW_FILE, EDIT_TEXT)
+        return linked, lambda: self.posttool(edit_payload(session), cwd=linked.root)
+
+    def store(self, entry, state):
+        host, decision, payload, settings, pool, selected = entry
+        settings = dict(settings, contextLearning={**settings['contextLearning'],
+                                                   'stateRoot': str(state)})
+        from memvane.learning.api import capture_recall
+        return capture_recall(host, decision, payload, settings, pool, selected)
+
+    def second_card(self):
+        self.fixture.write_card('pond.md', title='North pond', sources=[self.project / 'notes/heron.md'],
+                                body=CARD_BODY.strip() + ' The survey copy.\n')
+        self.fixture.git('add', '--', '.memvane/wiki/pond.md')
+        self.fixture.commit('second card', everything=False)
+
+    def test_a_linked_worktree_session_captures_while_its_view_equals_the_main_head(self):
+        self.second_card()
+        linked, edit = self.linked_session('wt', 'linked')
         self.install.settle()
-        answer, capture = self.posttool(edit_payload('linked'), cwd=linked.root)
-        self.assertEqual(capture, [])
-        rows = self.edit_events('linked')
-        self.assertEqual(len(rows), 1)
-        if rows[0]['outcome'] == 'served':
-            self.assertIn('zqheronx', context(answer))
-        else:
-            self.assertEqual(answer, {})
+        answer, [entry] = edit()
+        self.assertIn('zqheronx', context(answer))
+        [row] = self.edit_events('linked')
+        self.assertEqual((row['outcome'], row['editTarget'], row['pool']), ('served', 'linked', 2))
+        payload = entry[2]
+        self.assertEqual((payload['_memvane_view'], payload['_memvane_edit_target'],
+                          payload['_memvane_edit_root'], payload['cwd']),
+                         ('linked', 'linked', str(linked.root), str(self.project)))
+        self.assertEqual(entry[1]['projectRoot'], str(self.project))
+        state = self.tmp / 'linked-state'
+        state.mkdir(mode=0o700)
+        self.assertEqual(self.store(entry, state), 'stored')
+        [database] = state.rglob('learning.sqlite3')
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(str(database))) as db:
+            [(raw,)] = db.execute('SELECT body FROM samples').fetchall()
+        sample = json.loads(raw)
+        self.assertTrue(sample['sampling']['complete_within_returned_bound'])
+        self.assertEqual(sample['request_id'], row['request_id'])
+        self.assertNotIn('_memvane', raw)
         self.assertEqual(self.wakes.calls, [])
+
+    def test_a_linked_worktree_session_whose_view_diverged_stores_nothing(self):
+        self.second_card()
+        linked, edit = self.linked_session('fork', 'diverged')
+        # The branch rewrites one card: its view no longer equals the main head.
+        linked.write_card('pond.md', title='North pond', sources=[linked.root / 'notes/heron.md'],
+                          body=CARD_BODY.strip() + ' The branch copy.\n')
+        self.install.settle()
+        _answer, [entry] = edit()
+        [row] = self.edit_events('diverged')
+        self.assertEqual((row['editTarget'], row['pool']), ('linked', 2))
+        state = self.tmp / 'diverged-state'
+        state.mkdir(mode=0o700)
+        self.assertEqual(self.store(entry, state), 'edit_view_diverged')
+        self.assertEqual(list(state.rglob('learning.sqlite3')), [])
+        statuses = [(event['outcome'], event.get('editTarget')) for event in self.install.events()
+                    if event.get('event') == 'learning.capture' and event.get('session') == 'diverged']
+        self.assertEqual(statuses, [('edit_view_diverged', 'linked')])
 
 
 class EditRecallEntry(HostInstallCase):

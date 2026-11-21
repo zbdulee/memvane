@@ -452,6 +452,11 @@ def observe_published(payload, config, project_root, pool, selected, *, host, de
                              'eligible': True, 'excerpt': excerpt})
             except ValueError as exc:
                 failures.append({'candidate_id': cid, 'reason': str(exc)})
+        if (payload.get('_memvane_view') == 'linked'
+                and any(item['reason'] == 'candidate_index_stale' for item in failures)):
+            # A linked worktree session's own view differs from the main head: the pool
+            # is not the main project's, so nothing is stored, the private sample included.
+            return 'edit_view_diverged'
         captured = [r['candidate_id'] for r in rows]
         sampling = {'mode': 'eligible-policy-pool', 'scope': 'queried-phases-only',
                     'phase_counts': {'primary': len(pool)}, 'per_phase_limit': 30,

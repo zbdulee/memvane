@@ -130,6 +130,8 @@ view의 pool이고, capture 자식은 worktree의 프로젝트 root를 route로 
 양쪽에서 검사해 어느 한쪽이 무시하면 저장하지 않고(`edit_git_ignored`), 한쪽이라도 git이
 답하지 못하면 저장하지 않는다(`edit_git_check_failed`). worktree settings가 capture를 끄면
 `disabled_in_checkout`이다. `learning.capture` 행의 `editTarget`이 `main`·`linked`를 가른다.
+연결 worktree를 cwd로 연 세션의 pool은 그 worktree의 view다. 카드 하나라도 main 게시
+head와 다르면 private 표본도 남기지 않고 `edit_view_diverged`로 끝낸다.
 default-teacher
 namespace에서 v5 사례는 기본 teacher의 입력이다. 명시 프로필의 cohort 배정은
 v5 사례를 건너뛴다. 기본 namespace의

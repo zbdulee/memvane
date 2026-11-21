@@ -657,7 +657,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 - **Note:** a linked worktree whose settings derive the same name,
   collections, paths, roles and wiki path as the selected main checkout is
   served the main checkout's last published index read-only; sync, wiki
-  compile, wiki lifecycle and learning run only from the main checkout. This
+  compile, wiki lifecycle and learning runs happen only from the main checkout; edits here still count as its learning cases. This
   fixture's worktree has no settings and does not cover that path.
 - **Evidence:** cwd and `git rev-parse --show-toplevel` per session, recall
   `install` and `session` per `recall` event, probes.

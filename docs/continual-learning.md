@@ -26,16 +26,19 @@ most 15 cards with their frontmatter-free bodies, the selector's choice or the
 ranked card as `baseline_selected_ids`, and an `edit_event` of hashes and ids
 (`path_sha256`, `after_sha256`, `operation`, `session_id`, `tool_use_id`,
 `truncated`, `injected_ids`). The edited path itself is not stored. The case's
-`request_id` is the `recall.edit` event's. Only a session of the main checkout
-of an enrolled project captures, with a pool of at least two cards; a
+`request_id` is the `recall.edit` event's. Only an enrolled project captures,
+with a pool of at least two cards; a
 git-ignored edited file, a teacher input over 65,536 bytes or credential-shaped
-text stores nothing. An edit such a session makes in a linked git worktree of
-the same repository is a case of the main project (`editTarget: linked`): the
+text stores nothing. An edit a main-checkout session makes in a linked git
+worktree of the same repository is a case of the main project (`editTarget: linked`): the
 pool is the main view's, the capture child proves the worktree's project root
 by its route again (`edit_checkout_unproved` otherwise) and reads the file hash
 there, a path that either checkout's git ignores is not stored, and the
-worktree's own settings may turn capture off (`disabled_in_checkout`). A folder
-outside the repository is never a case. In a default-teacher namespace v5 cases are the default teacher's
+worktree's own settings may turn capture off (`disabled_in_checkout`). A
+session opened in a linked worktree searches that worktree's own view; its pool
+is a case of the main project only while every card equals the main head, and
+otherwise nothing is stored (`edit_view_diverged`). A folder outside the
+repository is never a case. In a default-teacher namespace v5 cases are the default teacher's
 input (see Default teacher); explicit profiles' cohort admission skips them.
 The first worker pass of a default
 namespace deletes, once, the prompt cases of schema 4 or lower (shared `cases`
