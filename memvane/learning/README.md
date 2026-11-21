@@ -102,9 +102,13 @@ code/executable/manifest/adapter 지문과 기본 승인 체인, 현재 공식 r
 
 공유 학습 `cases` 테이블은 상태와 무관하게 `CASE_LIMIT`(2,000행)에서 새 사례 수집을
 멈춘다(`queue_full`). default-teacher namespace의 worker pass는 행 수가 1,800
-(`case_rotation.ROTATE_LIMIT`)을 넘으면 teacher 호출 전에 한 트랜잭션으로 이 프로젝트의
+(`case_rotation.ROTATE_LIMIT`)을 넘으면 teacher 호출 전에 이 프로젝트의
 가장 오래된 종결 사례(소비된 gold, `pending_review`, `historical`)를 지워 1,800행으로
-맞추고 `learning.rotation`(`count`, `caseRows`, `protected`, `limit`)을 남긴다. 지우지
+맞추고 `learning.rotation`(`count`, `caseRows`, `protected`, `limit`)을 남긴다. 계획은
+트랜잭션 없이 읽어 hook의 capture 쓰기를 기다리게 하지 않고, 삭제만 짧은 쓰기 트랜잭션
+하나로 한다. 지울 것이 없으면(`nothing_closed`) 계획이 의존하는 개수와 상태의 서명을
+namespace의 `case-rotation-status.json`에 남기고, 서명이 같은 동안은 다시 계획하지 않는다.
+`nothing_closed`와 계획 실패(`deferred`)도 `learning.rotation` 이벤트로 남는다. 지우지
 않는 것은 종결되지 않은 사례, 최근 gold 128건과 최근 소비 gold 128건, 어느 학습 job도
 소비하지 않은 gold, 판정 전 job(미학습, 열린 후보, apply journal의 cycle, 가장 새 적용
 후보)의 구성원과 평가 사례, 활성 checkpoint cycle과 가장 새 job의 구성원, 다른 프로젝트의

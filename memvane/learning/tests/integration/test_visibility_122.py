@@ -231,6 +231,18 @@ class Deferral(StateRoot):
         self.assertRegex(out, r'teacher \d{4}-\d\d-\d\d: calls=2 gold=2 failed=1 '
                               r'\(gold_attempt_failed 1\) usageIn=10')
 
+    def test_summary_names_the_unfinished_maintenance_step_and_idle_rotation(self):
+        for step in ('warm_status', 'warm_status', 'publish_owner_busy'):
+            self.emit('learning.selector.maintenance', outcome='deferred',
+                      reason='maintenance_incomplete', incomplete=step, stage='warm')
+        self.emit('learning.rotation', outcome='nothing_closed', count=0, caseRows=1900,
+                  protected=1900, limit=1800)
+        self.emit('learning.rotation', outcome='deferred', reason='case_rotation_changed')
+        out = self.summary()
+        self.assertIn('selector maintenance: completed=0 deferred=3 (maintenance_incomplete 3) failed=0 '
+                      'incomplete(publish_owner_busy 1, warm_status 2)', out)
+        self.assertIn('learning rotation: deleted=0 passes=0 (deferred 1, nothing_closed 1)', out)
+
     def test_summary_has_no_maintenance_or_rotation_line_without_rows(self):
         self.emit('learning.selector.maintenance', outcome='started')
         out = self.summary()

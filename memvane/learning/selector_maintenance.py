@@ -134,8 +134,10 @@ def _request_owned(decision, owner, *, force, origin='session', reoffer=True):
     except (OSError, ValueError, RuntimeError):
         last = None
     retry_after = previous.get('retryAfterNs', 0) if isinstance(previous, dict) else 0
-    busy = _busy_count(previous)
-    # A busy retry waits its own short floor instead of the ten-minute one.
+    # The short floor belongs to a recorded busy deferral (``retryAfterNs`` set). An
+    # attempt row has no result yet: its run may still hold the lease, or died
+    # without one, and waits the ten-minute floor whatever its busy count.
+    busy = _busy_count(previous) if type(retry_after) is int and retry_after > 0 else 0
     floor = (last + (BUSY_RETRY_SECONDS if busy else REQUEST_SECONDS) * 10**9
              if type(last) is int and 0 <= now - last else 0)
     due = max(floor, retry_after if type(retry_after) is int else 0)
@@ -150,8 +152,9 @@ def _request_owned(decision, owner, *, force, origin='session', reoffer=True):
             _offer_retry(decision, {'retryAfterNs': due})
         return {'status': 'waiting', 'dueNs': due}
     attempt = {'requestedNs': now, 'failures': _failure_count(previous), 'retryAfterNs': 0}
-    if busy:
-        attempt['busyRetries'] = busy  # The run of busy retries continues across attempts.
+    if _busy_count(previous):
+        # The run of busy retries continues across attempts.
+        attempt['busyRetries'] = _busy_count(previous)
     _write(path, attempt, replace=path.exists())
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER',
                                             'MEMVANE_TEST_RUNTIME_ROOT',
@@ -353,19 +356,30 @@ def run(project, *, force=False):
         diagnostics.unbind(token)
 
 
+# The step a run that neither completed nor raised stopped at: reason -> stage.
+_INCOMPLETE = {'version_invalid': 'proof', 'prepare_status': 'prepare', 'renewal_refused': 'profile',
+               'teacher_enable_pending': 'profile', 'selector_state_missing': 'profile',
+               'heal_status': 'heal', 'warm_status': 'warm', 'publish_owner_busy': 'publish',
+               'install_changed': 'publish'}
+
+
 def _run_recorded(project, *, force=False):
     try:
-        result = _run(project, force=force)
+        incomplete = []
+        result = _run(project, force=force, incomplete=incomplete)
         try:
             from memvane.journal.api import select_route
             from memvane.diagnostics import api as diagnostics
             decision = select_route(str(Path(project).resolve(strict=True)), action='update')
             _record_request_result(decision, completed=result is True, deferred=result is not True,
                                    reschedule=result is not None)
+            why = incomplete[-1] if result is False and incomplete else None
             diagnostics.emit('learning.selector.maintenance', decision=decision,
                              outcome='completed' if result is True else 'deferred',
                              reason=None if result is True else
-                             'learning_runtime_pending' if result is None else 'maintenance_incomplete')
+                             'learning_runtime_pending' if result is None else 'maintenance_incomplete',
+                             incomplete=why if why in _INCOMPLETE else None,
+                             stage=_INCOMPLETE.get(why))
         except Exception:
             pass
         return
@@ -514,8 +528,17 @@ def _record_request_result(decision, *, deferred=False, completed=False, resched
             diagnostics.emit('learning.selector.request', outcome='failed', reason='retry_state_failed', decision=decision)
 
 
-def _run(project, *, force=False):
-    """Serialize selector repair and monotonic version publication off-hook."""
+def _run(project, *, force=False, incomplete=None):
+    """Serialize selector repair and monotonic version publication off-hook.
+
+    True when done, None when the runtime is not installed, False when a step
+    did not settle; ``incomplete`` (a list) then receives that step's fixed
+    reason, a key of ``_INCOMPLETE``.
+    """
+    def unsettled(reason):
+        if incomplete is not None:
+            incomplete.append(reason)
+        return False
     from memvane.learning.context_learning import selector_heal
     from memvane.journal.api import select_route
     from memvane.journal.api import inspect_journal, publish_plugin_version, verify_selected_route_for_write
@@ -543,7 +566,7 @@ def _run(project, *, force=False):
         row = inspect_journal(decision['journalPath'])
         running, highest = version_key(plugin_version()), version_key(row['maxPluginVersion'])
         if running is None or highest is None:
-            return False
+            return unsettled('version_invalid')
         if running < highest:
             return True
         enable = _teacher_enable_needed(decision)
@@ -566,7 +589,7 @@ def _run(project, *, force=False):
         if result.get('status') not in ('selected', 'preserved'):
             if result.get('status') == 'pending_runtime':
                 return None  # Needs installation/model choice, not an hourly poll.
-            return False
+            return unsettled('prepare_status')
         if result.get('status') == 'preserved':
             from memvane.learning.default_renewal import renew
             if enable:
@@ -578,19 +601,19 @@ def _run(project, *, force=False):
                 code = str(exc)
                 diagnostics.emit('learning.selector.maintenance', outcome='failed',
                                  reason=code if code.startswith('renewal_') else 'renewal_refused', decision=decision)
-                return False
+                return unsettled('renewal_refused')
             if renewed.get('status') == 'teacher_enable_pending':
-                return False
+                return unsettled('teacher_enable_pending')
             state = _selector_state(project)
             if state is None:
-                return False
+                return unsettled('selector_state_missing')
             result = selector_heal.heal(project, state=state, _lease_fd=lease)
             if result.get('status') not in ('selector_ready', 'selector_prepared', 'selector_not_prepared'):
-                return False
+                return unsettled('heal_status')
             if result.get('status') != 'selector_not_prepared':
                 warmed = selector_heal.warm(project, state=state)
                 if warmed.get('status') not in ('selector_warm', 'selector_warm_current'):
-                    return False
+                    return unsettled('warm_status')
                 from memvane.diagnostics import api as diagnostics
                 from memvane.learning.context_learning.inference_timing import clean
                 diagnostics.emit('learning.selector.warm', outcome=warmed.get('status'), decision=decision,
@@ -599,10 +622,10 @@ def _run(project, *, force=False):
                 _teacher_enable(project, decision, lease)
         with sync_owner(Path(decision['storePath']), wait=False) as owner:
             if owner is None:
-                return False
+                return unsettled('publish_owner_busy')
             current = verify_selected_route_for_write(decision)
             if current['installId'] != proof['installId']:
-                return False
+                return unsettled('install_changed')
             publish_plugin_version(decision, owner, running)
             return True
     finally:

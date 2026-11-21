@@ -2,9 +2,15 @@
 
 The shared ``cases`` table stops capture at ``shared.CASE_LIMIT`` rows. Above
 ``ROTATE_LIMIT`` rows a worker pass deletes this project's oldest closed
-cases until the table is back at the limit. One ``BEGIN IMMEDIATE``
-transaction plans and deletes, so no capture, teacher or trainer write falls
-between the two.
+cases until the table is back at the limit. The plan is read without a
+transaction, so a hook's capture is never kept waiting behind it; only the
+deletes run in one short ``BEGIN IMMEDIATE`` transaction. The worker lock
+keeps teacher and trainer writes out in between, a capture only adds rows,
+and each delete names the status the plan saw (a changed row rolls every
+delete back).
+
+A plan that finds nothing closed is remembered by the counts it depends on
+(``STATUS_FILE``): the next pass plans again only when one of them changed.
 
 Never deleted:
 
@@ -35,6 +41,7 @@ from . import prequential
 
 ROTATE_LIMIT = 1800
 WINDOW = 128
+STATUS_FILE = 'case-rotation-status.json'
 # A job whose members are not consumed yet: planned, never trained to the end.
 UNTRAINED = ('queued', 'running', 'deferred')
 
@@ -77,17 +84,17 @@ def _plan(db, root, project, grant, key, excess):
     from .candidate_apply import JOURNAL
     jobs = _jobs(db)
     # Still to be judged: members and evaluation cases stay.
-    judged = {_state_cycle(root, JOURNAL)}
+    pending = {_state_cycle(root, JOURNAL)}
     applied = prequential.candidate_job(db, grant, applied=True)
     if applied is not None:
-        judged.add(applied['id'])
+        pending.add(applied['id'])
     # Members only: the evaluation of these is over.
     members_only = {_state_cycle(root, 'active-checkpoint.json'), jobs[-1][0] if jobs else None}
     consumed_members, consumed_keys, shapes = set(), set(), set()
     for job_id, manifest, status, cycle_status, evaluation in jobs:
         job = json.loads(manifest)
         members = prequential._members(job)
-        if (job_id in judged or status in UNTRAINED
+        if (job_id in pending or status in UNTRAINED
                 or (cycle_status in prequential.OPEN and evaluation != 'blocked')):
             keep.update(rid for rid, _ in members)
             keep.update(row[1] for row in prequential.split(gold, job))
@@ -123,12 +130,45 @@ def _plan(db, root, project, grant, key, excess):
     return doomed, len(keep)
 
 
+def _signature(db, root, grant, key, limit) -> str:
+    """Digest of every count and state a plan's outcome depends on.
+
+    A case can become deletable, or leave a protected set, only when a closed
+    case appears or changes state, or when a job, cycle, evaluation or state
+    file changes. New waiting cases change none of these.
+    """
+    import hashlib
+    from .candidate_apply import JOURNAL
+    applied = prequential.candidate_job(db, grant, applied=True)
+    closed = db.execute(
+        "SELECT status,use_state,COUNT(*),TOTAL(rowid) FROM cases WHERE project_key=? AND "
+        "(status IN ('gold','pending_review') OR use_state='historical') "
+        'GROUP BY status,use_state ORDER BY status,use_state', (key,)).fetchall()
+    parts = {'limit': limit, 'window': WINDOW, 'closed': [list(row) for row in closed],
+             'jobs': [[row[0], row[2], row[3], row[4]] for row in _jobs(db)],
+             'applied': applied['id'] if applied is not None else None,
+             'states': [_state_cycle(root, JOURNAL), _state_cycle(root, 'active-checkpoint.json')]}
+    return hashlib.sha256(json.dumps(parts, sort_keys=True).encode('utf-8')).hexdigest()
+
+
+def _idle_signature(root):
+    """The signature of the last plan that found nothing closed, or None."""
+    from .dataset import read_private_json
+    try:
+        row = read_private_json(Path(root) / STATUS_FILE)
+    except (OSError, ValueError, TypeError):
+        return None
+    return row.get('signature') if isinstance(row, dict) else None
+
+
 def rotate(root, project, grant, *, limit=None) -> dict:
     """Delete this project's oldest closed cases above ``limit`` (``ROTATE_LIMIT``) rows.
 
-    Returns ``{'status', 'count', 'caseRows', 'protected'}``. Raises on any
-    read it cannot trust and when a planned row changed under the delete;
-    the transaction then rolls back and no row is gone.
+    Returns ``{'status', 'count', 'caseRows', 'protected'}``; ``nothing_closed``
+    with ``unchanged`` when the last plan found nothing and nothing it depends
+    on changed since. Raises on any read it cannot trust and when a planned
+    row changed under the delete; the transaction then rolls back and no row
+    is gone.
     """
     from .shared import DATABASE_NAME, _db, _project_key
     root, project = Path(root), Path(project).resolve(strict=True)
@@ -140,29 +180,43 @@ def rotate(root, project, grant, *, limit=None) -> dict:
         return {'status': 'within_limit', 'count': 0, 'caseRows': 0}
     key = _project_key(project)
     with _db(root) as db:
-        if not db.in_transaction:
-            db.execute('BEGIN IMMEDIATE')
+        # No transaction yet: each read holds the file lock only while it runs.
         total = db.execute('SELECT COUNT(*) FROM cases').fetchone()[0]
         if total <= limit:
             return {'status': 'within_limit', 'count': 0, 'caseRows': total}
+        signature = _signature(db, root, grant, key, limit)
+        if _idle_signature(root) == signature:
+            return {'status': 'nothing_closed', 'count': 0, 'caseRows': total, 'unchanged': True}
         doomed, protected = _plan(db, root, project, grant, key, total - limit)
         deleted = 0
-        for rid, status, use_state in doomed:
-            deleted += db.execute(
-                'DELETE FROM cases WHERE project_key=? AND request_id=? AND status=? AND use_state=?',
-                (key, rid, status, use_state)).rowcount
-        # Checked write: a row that is not the planned one must not go silently.
-        if deleted != len(doomed):
-            raise ValueError('case_rotation_changed')
-        if doomed and prequential._has(db, 'prequential_selection'):
-            # Unchecked: the selection kind of a deleted case is read by nothing.
-            db.executemany('DELETE FROM prequential_selection WHERE project_key=? AND request_id=?',
-                           [(key, rid) for rid, _, _ in doomed])
+        if doomed:
+            if not db.in_transaction:
+                db.execute('BEGIN IMMEDIATE')
+            # A capture since the plan only added rows; never go below the limit.
+            total = db.execute('SELECT COUNT(*) FROM cases').fetchone()[0]
+            doomed = doomed[:max(0, total - limit)]
+            for rid, status, use_state in doomed:
+                deleted += db.execute(
+                    'DELETE FROM cases WHERE project_key=? AND request_id=? AND status=? AND use_state=?',
+                    (key, rid, status, use_state)).rowcount
+            # Checked write: a row that is not the planned one must not go silently.
+            if deleted != len(doomed):
+                raise ValueError('case_rotation_changed')
+            if doomed and prequential._has(db, 'prequential_selection'):
+                # Unchecked: the selection kind of a deleted case is read by nothing.
+                db.executemany('DELETE FROM prequential_selection WHERE project_key=? AND request_id=?',
+                               [(key, rid) for rid, _, _ in doomed])
     result = {'status': 'deleted' if deleted else 'nothing_closed', 'count': deleted,
               'caseRows': total - deleted, 'protected': protected}
-    if deleted:
-        prequential._emit(project, 'learning.rotation', outcome='deleted', count=deleted,
-                          caseRows=total - deleted, protected=protected, limit=limit)
+    if not deleted:
+        try:
+            from .local_cycle import _atomic_json
+            # Unchecked: a lost memo only makes the next pass plan again.
+            _atomic_json(root / STATUS_FILE, {'signature': signature, 'status': 'nothing_closed'})
+        except Exception:
+            pass
+    prequential._emit(project, 'learning.rotation', outcome=result['status'], count=deleted,
+                      caseRows=total - deleted, protected=protected, limit=limit)
     return result
 
 
@@ -173,4 +227,5 @@ def rotate_quietly(root, project, grant) -> dict:
         return rotate(root, project, grant)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, sqlite3.Error) as exc:
         reason = str(exc)[:80] if isinstance(exc, ValueError) else type(exc).__name__
+        prequential._emit(project, 'learning.rotation', outcome='deferred', reason=reason)
         return {'status': 'rotation_deferred', 'count': 0, 'reason': reason}

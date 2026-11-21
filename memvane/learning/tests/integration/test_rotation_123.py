@@ -145,7 +145,8 @@ class FullTable(RotationFixture):
             self.assertEqual(case_rotation.rotate_quietly(self.root, self.project, self.grant),
                              {'status': 'rotation_deferred', 'count': 0, 'reason': 'case_rotation_changed'})
         self.assertEqual(self.ids(), before)
-        self.assertEqual(self.rotations(), [])
+        self.assertEqual([(row['outcome'], row['reason']) for row in self.rotations()],
+                         [('deferred', 'case_rotation_changed')])
 
     def test_an_interruption_after_the_deletes_leaves_every_row(self):
         self.build()
@@ -202,7 +203,8 @@ class Protected(RotationFixture):
         self.assertEqual(self.ids(), set(waiting))
         self.assertEqual(self.rotate(limit=10)['status'], 'nothing_closed')
         self.assertEqual(self.ids(), set(waiting))
-        self.assertEqual(len(self.rotations()), 1)
+        self.assertEqual([(row['outcome'], row['count'], row['caseRows']) for row in self.rotations()],
+                         [('deleted', 5, 15), ('nothing_closed', 0, 15)])
         self.assertEqual(closed, sorted(closed))
 
     def test_untrained_job_members_and_its_evaluation_cases_stay(self):

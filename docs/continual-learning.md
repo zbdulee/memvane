@@ -493,8 +493,13 @@ captured before the teacher consent's `grantedAtUnixMs` stays out of labeling
 and training as `historical` (`pre_teacher_capture`); that rule deletes none.
 
 Above 1,800 rows a default-teacher worker pass deletes this project's oldest
-closed cases until the table is back at 1,800 (`case_rotation.py`, one
-transaction, `learning.rotation` with the deleted `count`). Closed means
+closed cases until the table is back at 1,800 (`case_rotation.py`,
+`learning.rotation` with the deleted `count`). The plan is read without a
+transaction, so a hook's capture never waits behind it, and the deletes run in
+one short write transaction. A plan that finds nothing closed
+(`nothing_closed`) is remembered by the counts and states it depends on
+(`case-rotation-status.json` in the namespace) and is not repeated while they
+stay the same. Closed means
 consumed gold, `pending_review` and `historical`. It never deletes a case
 that is not closed (`queued`, `first_running`, `first_done`), the newest 128
 gold and the newest 128 consumed gold, gold no trained job has consumed, the
