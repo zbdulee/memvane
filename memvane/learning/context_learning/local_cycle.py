@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import signal
 import stat
@@ -61,6 +62,54 @@ def record_resource_defer(root, report, *, reason='trainer_system_pressure'):
     return value
 
 
+_SITE = re.compile(r'[A-Za-z0-9_.<>-]{1,80}:[0-9]{1,7} [A-Za-z0-9_.<>-]{1,80}\Z')
+
+
+def _error_site(value):
+    """A trainer sidecar's ``error_site`` when every entry is ``file:line function``, else None."""
+    if (not isinstance(value, list) or not 1 <= len(value) <= 8
+            or any(not isinstance(item, str) or not _SITE.match(item) for item in value)):
+        return None
+    return list(value)
+
+
+# Failure codes a trainer child may report in its sidecar; any other value is the generic failure.
+_TRAINER_ERRORS = frozenset((
+    'adapter_memory_error', 'adapter_permission_error', 'adapter_file_missing',
+    'adapter_runtime_error', 'adapter_unclassified_error',
+    'learning_control_invalid:root', 'learning_control_invalid:keys',
+    'learning_control_invalid:stop_fd', 'model_token_budget_exceeded',
+    'tokenizer_model_limit_exceeded', 'model_input_view_unsupported', 'invalid_complete_input',
+    'invalid_request_file', 'invalid_predict_request', 'head_artifact_provenance_mismatch',
+    'missing_artifact', 'invalid_model_max_len', 'unexpected_laya_logit_shape',
+    'checkpoint_reload_logits_changed', 'invalid_candidate_pool', 'invalid_case_count',
+    'invalid_case', 'invalid_model_input_view', 'invalid_edit_segmentation',
+    'edit_tokenizer_unsupported', 'invalid_edit_offsets', 'invalid_edit_window',
+    'invalid_edit_overlap', 'edit_segment_limit', 'edit_segment_coverage_failed', 'learning_yield',
+    'learning_control_invalid', 'learning_cursor_changed', 'learning_update_budget_exceeded',
+    'learning_lease_missing', 'cpu_thread_configuration_invalid',
+    'cpu_thread_configuration_unavailable', 'invalid_training_limits',
+    'training_memory_profile_changed', 'training_memory_unavailable', 'training_memory_budget',
+))
+
+
+def _trainer_failure(pending):
+    """``(error code, error site or None)`` of a failed trainer child's sidecar.
+
+    Without a validated sidecar the code is the historical generic
+    ``trainer_process_failed``; only audited codes gain specificity.
+    """
+    try:
+        failure = read_private_json(_safe_file(pending, max_size=4096))
+        if (isinstance(failure, dict) and set(failure) - {'error_site'} == {'schema_version', 'error_code'}
+                and failure['schema_version'] == 1 and failure['error_code'] in _TRAINER_ERRORS):
+            # Tokenizer-only segmentation shares the same bounded local process protocol as prediction.
+            return failure['error_code'], _error_site(failure.get('error_site'))
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        pass
+    return 'trainer_process_failed', None
+
+
 class LocalTrainer:
     """Trusted executable implementing train/predict JSON file protocol.
 
@@ -98,6 +147,7 @@ class LocalTrainer:
         self.last_resources = None
         self.last_exit_code = None
         self.last_error_code = None
+        self.last_error_site = None
 
     def _pressure_report(self,*,deadline=None):
         try:
@@ -139,6 +189,7 @@ class LocalTrainer:
         self.last_resources = None
         self.last_exit_code = None
         self.last_error_code = None
+        self.last_error_site = None
         if mode not in ('train', 'predict', 'smoke', 'segment'): raise ValueError('invalid_trainer_mode')
         limits = self._admission(cwd)
         if mode in ('train', 'predict') and limits is not None:
@@ -267,50 +318,21 @@ class LocalTrainer:
                     next_pressure_check=time.monotonic()+2
                 time.sleep(.05)
             if proc.returncode != 0:
-                code = 'trainer_process_failed'
-                try:
-                    failure = read_private_json(_safe_file(pending, max_size=512))
-                    if (isinstance(failure, dict) and set(failure) ==
-                            {'schema_version', 'error_code'} and failure['schema_version'] == 1
-                            and isinstance(failure['error_code'], str) and
-                            failure['error_code'] in {
-                                'adapter_memory_error', 'adapter_permission_error',
-                                'adapter_file_missing', 'adapter_runtime_error',
-                                'adapter_unclassified_error',
-                                'model_token_budget_exceeded',
-                                'tokenizer_model_limit_exceeded',
-                                'model_input_view_unsupported',
-                                'invalid_complete_input', 'invalid_request_file',
-                                'invalid_predict_request',
-                                'head_artifact_provenance_mismatch',
-                                'missing_artifact', 'invalid_model_max_len',
-                                'unexpected_laya_logit_shape',
-                                'checkpoint_reload_logits_changed',
-                                'invalid_candidate_pool', 'invalid_case_count',
-                                'invalid_case', 'invalid_model_input_view',
-                                'invalid_edit_segmentation',
-                                'edit_tokenizer_unsupported',
-                                'invalid_edit_offsets', 'invalid_edit_window',
-                                'invalid_edit_overlap', 'edit_segment_limit',
-                                'edit_segment_coverage_failed',
-                                'learning_yield', 'learning_control_invalid', 'learning_cursor_changed',
-                                'learning_update_budget_exceeded', 'learning_lease_missing',
-                                'cpu_thread_configuration_invalid','cpu_thread_configuration_unavailable',
-                                'invalid_training_limits', 'training_memory_profile_changed',
-                                'training_memory_unavailable', 'training_memory_budget'}):
-                        # Tokenizer-only segmentation shares the same bounded
-                        # local process protocol as prediction.
-                        code = failure['error_code']
-                except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-                    pass
+                code, site = _trainer_failure(pending)
                 self.last_error_code = code
+                self.last_error_site = site
                 # Keep the historical generic error for child exits without
                 # a validated sidecar; only audited codes gain specificity.
                 if code in {'learning_yield', 'adapter_memory_error', 'training_memory_budget',
                             'training_memory_profile_changed', 'training_memory_unavailable'}:
-                    raise ResourceDeferred('trainer_failed:' + code, {'reason': code})
-                raise ValueError('trainer_failed' if code == 'trainer_process_failed'
-                                 else 'trainer_failed:' + code)
+                    raised = ResourceDeferred('trainer_failed:' + code,
+                                              {'reason': code, **({'error_site': site} if site else {})})
+                else:
+                    raised = ValueError('trainer_failed' if code == 'trainer_process_failed'
+                                        else 'trainer_failed:' + code)
+                # Diagnostic only: the frames of the child's failure, never its message.
+                raised.error_site = site
+                raise raised
             cleaned=stop_owned(proc)
             if not cleaned:
                 raise ResourceDeferred('trainer_cleanup_unavailable',{'reason':'owned_child_cleanup_unavailable','completionAck':False})

@@ -89,7 +89,8 @@ def _record_deferral(root, project, policy, cycle, started):
              availableMib=_number(observed.get('available_mib')),
              requiredMib=reserve + extra if reserve is not None and extra is not None else None,
              loadPerCpu=_number(observed.get('load_per_cpu')),
-             loadLimit=_number(policy.get('maxLoadPerCpu')), latchPaused=latch)
+             loadLimit=_number(policy.get('maxLoadPerCpu')), latchPaused=latch,
+             errorSite=resources.get('error_site') if isinstance(resources.get('error_site'), list) else None)
     except Exception:
         pass  # Diagnostic only: the cycle's own retry state is the record.
 

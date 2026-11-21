@@ -70,6 +70,24 @@ class TrainingGuardTests(FixtureCase):
         finally:os.close(read);os.close(write)
 
 
+    def test_a_refused_control_request_names_the_check_that_refused_it(self):
+        from memvane.runtime import resource_coordination as coordination
+        good={'schema':1,'root':str(self.root),'policy':{},'namespace':'synthetic','job_id':'job'}
+        c=Coordinator(self.root)
+        with c._gate('trainer.lock') as fd,patch.object(coordination,'default_root',return_value=self.root):
+            cases=[(None,'',':keys'),({**good,'extra':1},'',':keys'),({**good,'schema':2},'',':keys'),
+                   ({key:value for key,value in good.items() if key!='job_id'},'',':keys'),
+                   ({**good,'root':str(self.root/'other')},'',':root'),(good,'not-a-number',':stop_fd')]
+            for control,stop,suffix in cases:
+                with self.subTest(suffix=suffix,stop=stop),patch.dict(os.environ,{'QMD_TRAINER_COORD_FD':str(fd),'QMD_TRAINER_STOP_FD':stop}):
+                    with self.assertRaises(ValueError) as caught:coordination.TrainingGuard(control)
+                    self.assertEqual(str(caught.exception),'learning_control_invalid'+suffix)
+            # A stop fd that is not a pipe: refused at the first poll.
+            with open(os.devnull) as plain:
+                with self.assertRaises(ValueError) as caught:coordination.poll_stop(plain.fileno())
+                self.assertEqual(str(caught.exception),'learning_control_invalid:stop_fd')
+
+
     def test_training_guard_yields_before_next_group_for_due_update(self):
         from memvane.runtime import runtime_work
         from memvane.runtime import resource_coordination as coordination
