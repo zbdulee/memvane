@@ -289,7 +289,7 @@ class Schema3Recall(RecallInstallCase):
         observed = []
         def slow_exact(_pin, _vector, _limit, **kwargs):
             observed.append((sum(sizes), kwargs['deadline_seconds'], kwargs['max_float_work']))
-            if kwargs['deadline_seconds'] <= 1.0:
+            if kwargs['deadline_seconds'] <= 2.0:
                 raise BlobStoreError('vector_deadline_exceeded')
             return []
         selected = []
@@ -312,7 +312,7 @@ class Schema3Recall(RecallInstallCase):
         self.assertEqual(event['outcome'], 'served')
         self.assertEqual(event['semantic'], 'deferred_deadline')
         self.assertEqual(observed[0][0], 18412)
-        self.assertLessEqual(observed[0][1], 1.0)
+        self.assertEqual(observed[0][1], 2.0)
         self.assertEqual(observed[0][2], 6000000)
 
     def test_recall_event_records_stage_times_without_prompt_or_body(self):

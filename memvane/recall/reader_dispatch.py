@@ -215,6 +215,9 @@ def _reader_remaining(deadline):
 
 
 NEED_SWITCH = 'MEMVANE_NEED_SIGNALS'
+# The exact semantic search of one recall (prompt or edit) ends after this long, or
+# earlier when the recall has less time left; an unfinished one serves lexical rows.
+SEMANTIC_DEADLINE_SECONDS = 2.0
 NEED_ATOMS = 8
 NEED_BUDGET_SECONDS = .15
 NEED_READER_RESERVE_SECONDS = 2.0
@@ -409,7 +412,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                     nearest=shaped(store.search_exact(pin,query_vector,HYBRID_LIST_LIMIT,
                                                       profile_id=vector['profile_id'],
                                                       max_float_work=6000000,
-                                                      deadline_seconds=min(1.0, remaining), timings=timings,
+                                                      deadline_seconds=min(SEMANTIC_DEADLINE_SECONDS, remaining), timings=timings,
                                                       preferred_paths=preferred))
                 except (BlobStoreError, ValueError) as exc:
                     status = _semantic_error_status(exc, timings)
