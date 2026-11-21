@@ -32,7 +32,10 @@ compile or learning work; their SessionStart shows one short onboarding notice
 current session or decline it for the project; an explicit onboarding request
 turns it back on.
 The local embedding runtime uses Node 22, 24 or 26 and a prebuilt native
-package for Apple Silicon macOS (arm64).
+package for Apple Silicon macOS (arm64). Preparing it downloads one pinned
+embedding model file and checks it against a fixed hash. If that download is
+refused or unavailable, ask the agent to prepare the runtime from a local copy
+of the same model file; a file with any other content is not accepted.
 
 | Host | Installation route | Runtime support |
 |---|---|---|

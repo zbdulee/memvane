@@ -551,10 +551,28 @@ Homebrew and system installs, accepting only real binaries (not shims) of
 major 22, 24 or 26. It runs `npm ci --ignore-scripts` on
 `locks/laya-embed-runtime` (node-llama-cpp 3.18.1 and the prebuilt
 `@node-llama-cpp/mac-arm64-metal`) and downloads
-`https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf`,
+`https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/a0f9bb7a85ab3b2b2ff2e540b91930b784518576/embeddinggemma-300M-Q8_0.gguf`,
 accepted only with sha256
 `f470220f84b6235197541352d22f10bf00098a8242c18eaacea9c8a4add557bc`.
-`--provider-model-file` uses a local copy of that exact file instead. GC lists
+`--provider-model-file` uses a local copy of that exact file instead.
+The address names the upstream revision that hash belongs to; a branch name
+would start refusing every new machine the day upstream replaces the file.
+
+Every byte the product fetches by itself is pinned twice, by an address that
+cannot move and by a hash of the same revision
+(`tests/structure/static.test.mjs` holds the list):
+
+| Fetched | Where | Address | Hash |
+|---|---|---|---|
+| Embedding GGUF | `memvane/provider/embed_runtime.py` | Hugging Face `resolve/<commit>` | `MODEL_SHA256` |
+| node-llama-cpp and its dependencies | `npm ci` of `locks/laya-embed-runtime` | the lock's `resolved` tarballs (exact versions) | the lock's `integrity` |
+| Learning runtime Python packages | `uv pip sync` in `memvane/learning/context_learning/runtime_installer.py` | PyPI, `==` versions | `--hash=sha256` on every line, and the lock file's sha256 |
+| Learning runtime CPython | `uv python install` in the same file | chosen by uv for the exact version `PYTHON_PIN` | held by the uv binary, which is matched by version and sha256 |
+
+The Laya repository, release and commit in
+`memvane/learning/context_learning/raw.py` are recorded as identity and are
+not fetched. Learning and inference processes run with `HF_HUB_OFFLINE` and
+`TRANSFORMERS_OFFLINE` set, and tokenizers load with `local_files_only`. GC lists
 generations and, with approval, removes those that are neither active, previous,
 nor named by any `provider-attestation.json` under `~/.local/state/memvane/v1/installs/*/`
 (historical `profileDependencyClosure` rows are ignored). `generations` must be a
