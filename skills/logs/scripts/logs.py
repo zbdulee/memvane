@@ -391,6 +391,14 @@ def summary(rows, args):
             present = [f'{label}={statistics.median(data):g}ms' for label, data in stages if data]
             if present:
                 print('recall stage median: ' + ' '.join(present))
+            # Checkout observation stages: each is a few ms while the
+            # observation cache serves, and hundreds when every one runs Git.
+            observed = [(label, values(action_rows, key)) for key, label in
+                        (('pinMs', 'pin'), ('lexicalMs', 'lexical'),
+                         ('stillCurrentMs', 'stillCurrent'), ('checkoutMs', 'checkout'))]
+            present = [f'{label}={percentile(data, .5):g}ms' for label, data in observed if data]
+            if present:
+                print('recall observation p50: ' + ' '.join(present))
     recalls = [row for row in window if row.get('event') == 'recall']
     if recalls:
         empty = [row for row in recalls if row.get('outcome') != 'served']
@@ -405,6 +413,19 @@ def summary(rows, args):
         if degraded:
             print('degraded recalls: ' + ', '.join(f'{_esc(k)} {v}'
                                                    for k, v in degraded.items()))
+    passes = [row for row in rows if row.get('event') == 'wake.sync']
+    if passes:
+        # The trailing run over every retained row: a stalled index shows here
+        # even when the window holds no pass.
+        streak = next((index for index, row in enumerate(reversed(passes))
+                       if row.get('outcome') != 'failed'), len(passes))
+        line = f'sync consecutive failed passes: {streak}'
+        if streak:
+            reasons = Counter(str(row.get('reason')) for row in passes[len(passes) - streak:])
+            line += ' (' + ', '.join(f'{_esc(k)} {v}' for k, v in reasons.most_common(3)) + ')'
+        if streak < len(passes):
+            line += f" last ok {_esc(str(passes[len(passes) - streak - 1].get('ts')))}"
+        print(line)
     for name, test in (('last publish', lambda row: row.get('event') == 'index.publish'),
                        ('last error', lambda row: row.get('severity') != 'warning' and
                         (row.get('outcome') in FAILED or row.get('event') == 'hook.error'))):

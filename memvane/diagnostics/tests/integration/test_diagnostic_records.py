@@ -200,6 +200,30 @@ class DiagnosticRecordTests(FixtureCase):
         finally:
             os.close(fd)
 
+    def test_logs_summary_reports_observation_stages_and_the_sync_failure_run(self):
+        import subprocess
+        import sys
+        script = Path(__file__).resolve().parents[4] / 'skills' / 'logs' / 'scripts' / 'logs.py'
+        def summary():
+            result = subprocess.run([sys.executable, '-B', str(script), '--state-root', str(self.state)],
+                                    text=True, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout
+        self.assertTrue(api.emit('gate', outcome='served', state_root=self.state))
+        self.assertNotIn('sync consecutive failed passes', summary())
+        self.assertNotIn('recall observation p50', summary())
+        for pin in (900, 20, 800):
+            self.assertTrue(api.emit('recall', outcome='served', state_root=self.state, ms=1000,
+                                     pinMs=pin, lexicalMs=pin / 2, stillCurrentMs=pin + 1, checkoutMs=7))
+        self.assertIn('recall observation p50: pin=800ms lexical=400ms stillCurrent=801ms checkout=7ms',
+                      summary())
+        self.assertTrue(api.emit('wake.sync', outcome='failed', reason='target_deferred', state_root=self.state))
+        self.assertTrue(api.emit('wake.sync', outcome='indexed', state_root=self.state))
+        self.assertIn('sync consecutive failed passes: 0 last ok ', summary())
+        for reason in ('target_deferred', 'target_deferred', 'owner_busy'):
+            self.assertTrue(api.emit('wake.sync', outcome='failed', reason=reason, state_root=self.state))
+        self.assertIn('sync consecutive failed passes: 3 (target_deferred 2, owner_busy 1) last ok ', summary())
+
     def test_logs_skill_reads_summary_without_mutating_state(self):
         import subprocess
         import sys

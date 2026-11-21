@@ -37,6 +37,8 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
 
 The summary reports each hook action's p50 and p95 from its latest 100 recorded durations. For recall it also reports the recorded semantic completion fraction, the latency targets, and the median of each recorded stage. A missing stage means it was not measured; it is not a zero-duration result. Event durations cover the recorded host action, not shell startup or the earlier hook classification.
 
+`recall observation p50` is the median of the stages that observe the checkout (`pin`, `lexical`, `stillCurrent`, `checkout`). Each is a few ms while the checkout observation cache serves; hundreds of ms mean every observation ran Git. `sync consecutive failed passes` counts the trailing `wake.sync` lines whose outcome is `failed` over every retained line, with their reasons and the time of the last pass that did not fail. A count that keeps growing means the index is not publishing.
+
 
 When the default teacher has run, the summary adds its lines:
 
