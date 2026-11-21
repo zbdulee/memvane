@@ -45,6 +45,11 @@ RETRY_CAPPED_KINDS = frozenset(('laya-sync', 'laya-compile'))
 # failures; any other outcome restarts the count.
 MISSING_DROP_SECS = 86400
 MISSING_DROP_MIN_OBSERVATIONS = 3
+# A compile pass that worked part of its backlog off comes back in 30 s without
+# counting an attempt. That many such passes in a row (about an hour) is either
+# a backlog of more than a thousand jobs or work that keeps being put back; from
+# then on the retries count, so the backoff and RETRY_CAP_ATTEMPTS bound it.
+COMPILE_PROGRESS_STREAK_CAP = 120
 # Reason recorded when a handler returns falsy without raising.
 NOT_DONE_REASON = 'pending'
 # A target that has just started (or is still loading) its detached owner is
@@ -129,8 +134,15 @@ def failure_reason(error):
     return NOT_DONE_REASON if error is None else type(error).__name__
 
 
+def compile_progress(kind, error):
+    """A compile wake whose pass reported progress with work left."""
+    return (kind == 'laya-compile' and isinstance(error, DispatchFailure)
+            and error.code == 'target_deferred'
+            and error.detail == 'deferred:pending:compile_progress')
+
+
 def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparing=None,
-           reported=False):
+           reported=False, progress=None):
     """Decide what happens to a claimed wake after one execution.
 
     leave: the row goes back to pending with its due, attempts and reason as
@@ -153,6 +165,9 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
     preparing streak. Once it spans ``PREPARING_STALL_SECS`` the wait retries
     at ``RETRY_MAX_SECS`` and, unless ``reported``, the step carries
     ``stalled`` so the caller reports the streak once. It is never dropped.
+    ``progress`` is the number of consecutive compile passes of this wake that
+    answered ``compile_progress``, this one included. Past
+    ``COMPILE_PROGRESS_STREAK_CAP`` the retry is counted like any failure.
     """
     if done and error is None:
         if isinstance(done, Dropped):
@@ -163,9 +178,8 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
                 'deferred:pending:schema3_progress_ingest',
                 'deferred:pending:schema3_progress_vector')):
         return {'ack': False, 'due': now + 30, 'reason': failure_reason(error), 'count': 0}
-    if (kind == 'laya-compile' and isinstance(error, DispatchFailure)
-            and error.code == 'target_deferred'
-            and error.detail == 'deferred:pending:compile_progress'):
+    if (compile_progress(kind, error)
+            and (progress is None or progress <= COMPILE_PROGRESS_STREAK_CAP)):
         return {'ack': False, 'due': now + 30,
                 'reason': failure_reason(error), 'count': 0}
     if (kind == 'laya-compile' and isinstance(error, DispatchFailure)

@@ -74,6 +74,8 @@ DROP_DETAIL_MAX_ROWS=64
 MISSING_FILE='runtime-wake-missing.json'
 # Each wake's consecutive target_preparing streak and whether it was reported.
 PREPARING_FILE='runtime-wake-preparing.json'
+# Each compile wake's consecutive ``compile_progress`` passes (``COMPILE_PROGRESS_STREAK_CAP``).
+PROGRESS_FILE='runtime-wake-progress.json'
 TIMER_LOCK='runtime-wake-timer.lock'
 # Rows this host left untouched for a newer host (``OTHER_HOST_REASONS``):
 # revision, plugin version and the time this host looks at the row again.
@@ -350,15 +352,18 @@ def drain(queue,*,execute,on_drop=None,on_stall=None,ready=None,clock=time.monot
             preparing=(isinstance(error,wake_policy.DispatchFailure)
                        and error.code in wake_policy.UNCOUNTED_DISPATCH_REASONS)
             waiting=_observe_preparing(queue.root,row,wall()) if preparing else None
+            progressing=wake_policy.compile_progress(row['kind'],error)
+            passes=_observe_missing(queue.root,row,wall(),PROGRESS_FILE)[1] if progressing else None
             with queue.connect() as db:
                 step=wake_policy.settle(row['attempts'],done=done,error=error,now=wall(),kind=row['kind'],
                                         missing=streak,preparing=waiting and waiting[:2],
-                                        reported=bool(waiting and waiting[2]))
+                                        reported=bool(waiting and waiting[2]),progress=passes)
                 if step.get('leave'):
                     _leave_for_other_host(db,queue.root,row,step,wall());continue
                 if step.get('drop'):_record_drop(queue.root,row,step,error,wall(),on_drop=on_drop)
                 if not missing or step['ack']:_clear_missing(queue.root,row['id'])
                 if not preparing or step['ack']:_clear_missing(queue.root,row['id'],PREPARING_FILE)
+                if not progressing or step['ack']:_clear_missing(queue.root,row['id'],PROGRESS_FILE)
                 if step.get('stalled'):_record_stall(queue.root,row,waiting,step,wall(),on_stall=on_stall)
                 if step['ack']:
                     # Revision-scoped ACK: a wake re-put while running survives, re-pended.
@@ -408,15 +413,15 @@ def _record_drop(root,row,step,error,now,*,on_drop=None):
             pass
 
 
-def _observe_missing(root,row,now):
-    """(first observation, observations) of this wake's missing streak, this one included."""
-    entry=_read_map(root/MISSING_FILE).get(row['id'])
+def _observe_missing(root,row,now,name=MISSING_FILE):
+    """(first observation, observations) of this wake's streak in ``name``, this one included."""
+    entry=_read_map(root/name).get(row['id'])
     first,seen=now,1
     if (isinstance(entry,dict) and entry.get('target')==row['target']
             and type(entry.get('at')) in (int,float) and math.isfinite(entry['at'])
             and entry['at']<=now and type(entry.get('seen')) is int and entry['seen']>=1):
         first,seen=entry['at'],entry['seen']+1
-    _record_tail(root/MISSING_FILE,row['id'],{'at':first,'seen':seen,'target':row['target']},
+    _record_tail(root/name,row['id'],{'at':first,'seen':seen,'target':row['target']},
                  limit=MAX_WAKES)
     return first,seen
 
