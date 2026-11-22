@@ -90,6 +90,18 @@ class Uninstalled(FixtureCase):
         with self.codex(NONE):
             self.assertFalse(identity.uninstalled())
 
+    def test_a_listing_that_fails_after_an_empty_one_is_unknown_again(self):
+        # W17 review F-7: a pass that could not read never inherits the pass before it.
+        identity = host_bundle.BundleIdentity(self.bundle())
+        with self.codex(NONE):
+            identity.uninstalled()
+            self.aged(host_bundle.UNINSTALLED_GRACE_SECONDS + 1)
+            self.assertTrue(identity.uninstalled())
+        host_bundle._BACKGROUND_INVENTORY['until'] = 0.0
+        with mock.patch.object(host_bundle, 'latest_installed', side_effect=subprocess.TimeoutExpired('codex', 1)):
+            self.assertIsNone(host_bundle.background_absent_seconds())
+            self.assertFalse(identity.uninstalled())
+
     def test_a_reinstalled_bundle_ends_the_absence(self):
         identity = host_bundle.BundleIdentity(self.bundle())
         with self.codex(NONE):

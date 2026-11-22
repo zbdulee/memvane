@@ -841,8 +841,8 @@ The default test command is:
 npm test
 ```
 
-Tests are deterministic and run through `scripts/development_guard.py` with
-file concurrency 1. They use fixtures, temporary projects and route records,
+Tests are deterministic and run through `scripts/development_guard.py`: the
+full run with file concurrency 3 (or 1 when asked), a focused run with 1. They use fixtures, temporary projects and route records,
 and sandbox env guards. Useful focused tests:
 
 ```bash

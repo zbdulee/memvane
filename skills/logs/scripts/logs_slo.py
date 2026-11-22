@@ -175,6 +175,8 @@ def _stage(prompt, size):
         values[label] = round(_percentile(data, .5), 3)
         values[label + 'N'] = len(data)
         values[label + 'Target'] = goal
+        # The stage's own verdict: a slow stage under the sample floor reads ``no-data`` here, not ``ok``.
+        values[label + 'Status'] = _judge(len(data), FLOOR, values[label] > goal)
         over = over or (len(data) >= FLOOR and values[label] > goal)
         if key == 'lexicalMs' and size is None:
             values['lexicalLargeTarget'] = LEXICAL_LARGE

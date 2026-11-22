@@ -293,3 +293,44 @@ class Everything(CleanupCase):
         self.assertEqual((result['status'], result['removed']), ('partial', 2))
         self.assertEqual(result['failed'], [{'root': 'state', 'reason': 'not_previewed'}])
         self.assertTrue(state.is_dir())
+
+
+class RealInstall(FixtureCase):
+    """What the installer itself leaves (W17 review F-4): its pointer files, classified as they are."""
+
+    def classified(self):
+        return {row['install']: (row['action'], row['reason']) for row in install.state_cleanup(self.home)['installs']}
+
+    def test_a_selected_install_is_selected_although_its_build_pointer_stays(self):
+        from tests.support.install_builder import build_install
+        from tests.support.project import make_project
+        fixture = make_project(self.home)
+        fixture.write_note('notes.md', 'Field notes: the emerald heron nests beside the reed pond.\n')
+        fixture.commit('fixture')
+        made = build_install(self, fixture)
+        name = made.state.name
+        self.assertTrue(list((memvane_paths.state_base(self.home) / 'initial-builds').glob('*.json')))
+        self.assertEqual(self.classified(), {name: ('keep', 'selected')})
+        # The route pointer alone, or the marker alone, still says selected.
+        folder = fixture.root / '.memvane'
+        route, marker = (folder / 'route.json').read_bytes(), (folder / 'selection.json').read_bytes()
+        self.assertIn(name.encode(), marker)
+        (folder / 'route.json').unlink()
+        self.assertEqual(self.classified(), {name: ('keep', 'selected')})
+        (folder / 'route.json').write_bytes(route)
+        (folder / 'selection.json').unlink()
+        self.assertEqual(self.classified(), {name: ('keep', 'selected')})
+        # Both gone while the build pointer stays: an onboarding in progress, never a removal.
+        (folder / 'route.json').unlink()
+        self.assertEqual(self.classified(), {name: ('keep', 'building')})
+        self.assertEqual(state_cleanup.cleanup(self.home, approve=True, owner=granted)['removed'], 0)
+        self.assertTrue(made.store_path.is_file())
+
+    def test_an_install_before_its_selection_is_building(self):
+        from tests.support.install_builder import build_install
+        from tests.support.project import make_project
+        fixture = make_project(self.home)
+        fixture.write_note('notes.md', 'Field notes.\n')
+        fixture.commit('fixture')
+        made = build_install(self, fixture, upto='prepared')
+        self.assertEqual(self.classified(), {made.state.name: ('keep', 'building')})

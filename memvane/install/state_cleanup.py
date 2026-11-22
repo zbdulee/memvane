@@ -111,26 +111,28 @@ def _classify(directory, building):
         return 'keep', 'unrecognized', None
     if building is None:
         return 'keep', 'build_pointer_unreadable', None
-    if str(directory) in building:
-        return 'keep', 'building', None
+    pointed = str(directory) in building  # The build pointer stays after onboarding, until a restore retires it.
     try:
         route = _record(directory / 'route.json')
     except ValueError:
-        return 'keep', 'project_unreachable', None
+        return 'keep', 'building' if pointed else 'project_unreachable', None
     project = route.get('projectRoot') if route else None
     if (not isinstance(project, str) or not os.path.isabs(project)
             or route.get('stateRoot') != str(directory)):
-        return 'keep', 'project_unreachable', None
+        return 'keep', 'building' if pointed else 'project_unreachable', None
     # A project on a volume that is not mounted looks the same as a deleted one: keep it.
     if not os.path.isdir(project):
-        return 'keep', 'project_unreachable', project
-    for name in ('route.json', 'selection.json'):
+        return 'keep', 'building' if pointed else 'project_unreachable', project
+    for name, key, value in (('route.json', 'stateRoot', str(directory)),
+                             ('selection.json', 'installId', directory.name)):
         try:
             pointer = _record(Path(project) / '.memvane' / name)
         except ValueError:
             return 'keep', 'pointer_unreadable', project
-        if pointer is not None and pointer.get('stateRoot') == str(directory):
+        if pointer is not None and pointer.get(key) == value:
             return 'keep', 'selected', project
+    if pointed:
+        return 'keep', 'building', project
     return 'remove', 'released', project
 
 

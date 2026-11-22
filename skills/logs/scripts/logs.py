@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import statistics
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 import json
@@ -393,9 +392,10 @@ def summary(rows, args, unified=False):
                       ('vectorDotMs', 'vectorDot'), ('vectorLoadMs', 'vectorLoad'),
                       ('vectorScanMs', 'vectorScan'), ('vectorVerifyMs', 'vectorVerify'))
             stages = [(label, values(action_rows, key)) for key, label in labels]
-            present = [f'{label}={statistics.median(data):g}ms' for label, data in stages if data]
+            # The same nearest-rank p50 as the observation line below: ``lexical`` is in both.
+            present = [f'{label}={percentile(data, .5):g}ms' for label, data in stages if data]
             if present:
-                print('recall stage median: ' + ' '.join(present))
+                print('recall stage p50: ' + ' '.join(present))
             # Checkout observation stages: each is a few ms while the
             # observation cache serves, and hundreds when every one runs Git.
             observed = [(label, values(action_rows, key)) for key, label in

@@ -252,6 +252,32 @@ class Reset(SessionCase):
             self.assertEqual(row['cards'], [])
         self.assertEqual(len(self.markers('s-one')), 1)
 
+    def test_a_record_of_long_korean_paths_is_cut_to_fit_and_is_not_swept_as_idle(self):
+        # W7 review F-5: past the byte bound the file read as empty and idle, and its own save swept it.
+        self.recall()
+        pairs = [['wiki/concepts/' + '가' * 80 + '-%03d.md' % index, '%064x' % index]
+                 for index in range(session_cards.MAX_CARDS)]
+        with edit_recall.session_state(self.decision, 's-one') as (row, save):
+            row['cards'] = list(pairs)
+            row['at'], row['seq'] = list(range(len(pairs))), len(pairs)
+            row['by'] = [session_cards.PROMPT] * len(pairs)
+            row['edits'] = [1.0, 2.0]
+            save()
+        path = self.record_path('s-one')
+        self.assertLessEqual(path.stat().st_size, edit_recall.MAX_SESSION_BYTES)
+        fd = os.open(str(path), os.O_RDONLY)
+        try:
+            self.assertGreater(edit_recall._updated(fd), 0.0)
+        finally:
+            os.close(fd)
+        with edit_recall.session_state(self.decision, 's-one') as (row, _save):
+            kept = len(row['cards'])
+            # The newest pairs stay, aligned with their times and contexts; the edit throttle is kept.
+            self.assertTrue(0 < kept < len(pairs), kept)
+            self.assertEqual(row['cards'], pairs[-kept:])
+            self.assertEqual(row['at'], list(range(len(pairs) - kept, len(pairs))))
+            self.assertEqual((len(row['by']), row['edits']), (kept, [1.0, 2.0]))
+
     def test_markers_older_than_a_day_are_swept(self):
         for session in ('gone-1', 'gone-2', 'fresh'):
             self.assertTrue(session_cards.mark_reset(self.decision, session))

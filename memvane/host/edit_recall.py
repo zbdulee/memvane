@@ -367,6 +367,13 @@ def _save(fd, row: dict) -> None:
     from memvane.host import session_cards
     row = {**session_cards.dumped(row), 'edits': row['edits'][-THROTTLE_PER_HOUR:], 'updated': time.time()}
     data = json.dumps(row, separators=(',', ':'), ensure_ascii=True).encode('utf-8')
+    # A file past the bound reads as empty and idle, and the sweep removes it with the edit
+    # throttle: the oldest pairs go until it fits (long non-ASCII paths take six bytes a character).
+    while len(data) > MAX_SESSION_BYTES and row['cards']:
+        drop = max(1, len(row['cards']) // 4)
+        for key in ('cards', 'at', 'by'):
+            row[key] = row[key][drop:] if len(row[key]) >= drop else []
+        data = json.dumps(row, separators=(',', ':'), ensure_ascii=True).encode('utf-8')
     os.lseek(fd, 0, os.SEEK_SET)
     os.ftruncate(fd, 0)
     view = memoryview(data)

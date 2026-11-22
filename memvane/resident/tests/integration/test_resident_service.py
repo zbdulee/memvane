@@ -62,6 +62,25 @@ class ServiceChecks(Fixture):
     def test_a_removed_bundle_no_host_enables_starts_no_successor(self):
         self.uninstalled(intact=False)
 
+    def test_a_bundle_removed_from_every_host_during_the_drain_waits_for_no_successor(self):
+        # W17 review F-7: the tick saw only a broken bundle; by the end of the drain no host has MemVane.
+        identity = Mock()
+        identity.intact.return_value = False
+        identity.uninstalled.side_effect = [False] + [True] * 8
+        service = self.service(start=False)
+        self.assertTrue(service.acquire(wait=5))
+        reasons = []
+        with patch.object(svc, 'BACKGROUND_BUNDLE', identity), \
+                patch.object(svc, '_event', side_effect=lambda _t, name, outcome, reason=None, **_k:
+                             reasons.append((name, outcome, reason))), \
+                patch.object(svc, 'wait_for_successor') as waited, \
+                patch.object(svc, '_spawn', return_value=True) as successor:
+            service.start()
+            self.assertTrue(service.stopped.wait(scaled(30)), 'the service did not end')
+        self.assertEqual([reason for name, outcome, reason in reasons if (name, outcome) == ('resident.drain', 'started')],
+                         ['bundle_changed'])
+        self.assertEqual((waited.call_count, successor.call_count), (0, 0))
+
     def test_an_unknown_inventory_keeps_the_service(self):
         identity = Mock()
         identity.intact.return_value = True

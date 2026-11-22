@@ -118,6 +118,11 @@ class Lines(unittest.TestCase):
         slow_tail = [dict(row, pinMs=5, lexicalMs=5, **({'stillCurrentMs': 900} if 'stillCurrentMs' in row else {}))
                      for row in rows]
         self.assertEqual(by_name(slow_tail)['stage']['status'], 'ok')
+        # The line stays ``ok``, and the stage says for itself that it was not judged.
+        stage = by_name(slow_tail)['stage']
+        self.assertEqual((stage['stillCurrentStatus'], stage['pinStatus'], stage['lexicalStatus'], stage['checkoutStatus']),
+                         ('no-data', 'ok', 'ok', 'ok'))
+        self.assertEqual(by_name(rows)['stage']['pinStatus'], 'over')
         # Every stage below the floor: nothing to judge.
         self.assertEqual(by_name(rows[:19])['stage']['status'], 'no-data')
 
@@ -510,8 +515,8 @@ class Skill(FixtureCase):
                           'slo host claude', 'slo dedup', 'slo sync', 'slo failed', 'slo learning', 'slo identity'])
         self.assertIn('slo hook: ok n=20 p50=100 p95=100 targetP50=700 targetP95=1200', out)
         self.assertIn('slo install: shown size=unknown', out)
-        self.assertIn('slo stage: ok n=20 pin=1 pinN=20 pinTarget=50 lexical=1 lexicalN=20 lexicalTarget=50 '
-                      'lexicalLargeTarget=150 lexicalLarge=ok', out)
+        self.assertIn('slo stage: ok n=20 pin=1 pinN=20 pinTarget=50 pinStatus=ok lexical=1 lexicalN=20 '
+                      'lexicalTarget=50 lexicalStatus=ok lexicalLargeTarget=150 lexicalLarge=ok', out)
         self.assertIn('slo semantic: ok n=20', out)
         self.assertIn('slo identity: no-data', out)
         self.assertEqual(sorted((p.name, p.lstat().st_mtime_ns) for p in self.state.iterdir()), before)
@@ -540,21 +545,21 @@ class Skill(FixtureCase):
         out = self.run_logs('--state-root', str(self.state), '--slo')[1]
         self.assertIn('slo install: shown size=standard', out)
         self.assertIn('slo hook+selector: over n=20 p50=1900 p95=1900 targetP50=1500 targetP95=2500', out)
-        self.assertIn('slo stage: over n=20 pin=1 pinN=20 pinTarget=50 lexical=120 lexicalN=20 lexicalTarget=50 '
-                      'stillCurrent', out)
+        self.assertIn('slo stage: over n=20 pin=1 pinN=20 pinTarget=50 pinStatus=ok lexical=120 lexicalN=20 '
+                      'lexicalTarget=50 lexicalStatus=over stillCurrent', out)
         self.assertNotIn('lexicalLarge', out)
         (wiki / 'one-more.md').touch()
         self.assertEqual(logs_slo.install_size(self.state), 'large')
         out = self.run_logs('--state-root', str(self.state), '--slo')[1]
         self.assertIn('slo install: shown size=large', out)
         self.assertIn('slo hook+selector: ok n=20 p50=1900 p95=1900 targetP50=2000 targetP95=3000', out)
-        self.assertIn('slo stage: ok n=20 pin=1 pinN=20 pinTarget=50 lexical=120 lexicalN=20 lexicalTarget=150 '
-                      'stillCurrent', out)
+        self.assertIn('slo stage: ok n=20 pin=1 pinN=20 pinTarget=50 pinStatus=ok lexical=120 lexicalN=20 '
+                      'lexicalTarget=150 lexicalStatus=ok stillCurrent', out)
         # No readable route: the standard target judges and the large verdict stands beside it.
         (self.state / 'route.json').unlink()
         self.assertIsNone(logs_slo.install_size(self.state))
         out = self.run_logs('--state-root', str(self.state), '--slo')[1]
-        self.assertIn('lexical=120 lexicalN=20 lexicalTarget=50 lexicalLargeTarget=150 lexicalLarge=ok', out)
+        self.assertIn('lexical=120 lexicalN=20 lexicalTarget=50 lexicalStatus=over lexicalLargeTarget=150 lexicalLarge=ok', out)
         self.assertIn('targetP50=1500 targetP95=2500 largeTargetP50=2000 largeTargetP95=3000 large=ok', out)
 
     def test_identity_shows_whether_the_sealed_device_number_is_the_live_one(self):
