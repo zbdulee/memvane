@@ -105,6 +105,10 @@ class WorkerFixture(TeacherFixture):
             (shared, '_case_active', mock.Mock(return_value=True)),
             (shared, 'resource_report', mock.Mock(side_effect=lambda *a, **k:
                                                   dict(ready, observed_at_mono=time.monotonic()))),
+            # The teacher reads its own binding of resource_report: without this the
+            # pre-send check samples the machine the test runs on.
+            (general_teacher, 'resource_report', mock.Mock(side_effect=lambda *a, **k:
+                dict(ready, observed_at_mono=time.monotonic()))),
             (shared, 'run_training_pending', self.training),
             (project_scope, 'require', mock.Mock(side_effect=grant)),
             (project_scope, 'present', mock.Mock(return_value=True)),
