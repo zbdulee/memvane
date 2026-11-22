@@ -387,6 +387,33 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
         diagnostics.emit('sync.profile', decision=decision, outcome='observed',
                          ms=(time.monotonic_ns() - started) / 1000000, **fields)
     result = _after_sync(decision, proof, grants, result, raw_snapshot=raw_scan.get('snapshot'))
+    def reoffer():
+        from memvane.runtime import api as runtime_work
+        runtime_work.request('laya-sync', str(project), delay=SCHEMA3_VECTOR_REOFFER_SECONDS)
+    backlog = result.pop('linkedBacklog', None) if isinstance(result, dict) else None
+    linked = 'none'
+    if result.get('state') in ('indexed', 'unchanged'):
+        from memvane.sync import linked_reoffer
+        linked = linked_reoffer.decide(decision.get('stateRoot'), backlog)
+    return _settle_vectors(result, reoffer, linked)
+
+    detail = _schema3_vector_detail(result)
+    if detail:
+        result = {**result, 'detail': detail}
+    return result
+
+def _settle_vectors(result, reoffer, linked='none'):
+    """The pass result after its views' vectors and waiting linked views are weighed.
+
+    ``reoffer()`` asks for the same wake again shortly and raises when it
+    cannot. ``linked`` is ``linked_reoffer.decide`` for the pass's waiting
+    linked views: ``offer`` (a waiting view was not reached or has less left
+    than before), ``capped`` (offered too often without less to do) or ``none``.
+
+    A published main view is a success whatever linked views wait for. The
+    pass fails only for the main view's own unfinished vectors, a provider
+    defect of the install (whichever view met it), or a capped linked wait.
+    """
     main = result.get('vector') or {}
     views = [main, *(item.get('vector') or {} for item in result.get('worktrees', ()))]
     # A provider defect is the install's, whichever view met it.
@@ -394,14 +421,13 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
     progressed = main.get('state') == 'pending' and main.get('progress', 0) > 0
     published = result.get('state') in ('indexed', 'unchanged')
     main_waits = main.get('state') in ('pending', 'deferred')
-    if published and not blocked and (progressed or (result.get('linkedReoffer') and not main_waits)):
-        # The main view's vectors moved this pass, or a linked view waits and
-        # the pass moved something: ACK (not a counted failure) and offer the
-        # same wake again shortly, so the work goes on with a warm worker
-        # instead of waiting for the next edit.
+    if published and not blocked and (progressed or (linked == 'offer' and not main_waits)):
+        # The main view's vectors moved this pass, or a waiting linked view has
+        # less left to do: ACK (not a counted failure) and offer the same wake
+        # again shortly, so the work goes on with a warm worker instead of
+        # waiting for the next edit.
         try:
-            from memvane.runtime import api as runtime_work
-            runtime_work.request('laya-sync', str(project), delay=SCHEMA3_VECTOR_REOFFER_SECONDS)
+            reoffer()
             result = {**result, 'vectorReoffer': True}
         except Exception:
             # Unchecked for a linked view's offer: the pass published the main
@@ -416,6 +442,10 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
         # view's unfinished vectors are ``linkedWaiting``, not a failed pass.
         first = blocked[0] if blocked else main
         result = {**result, 'state': 'blocked' if blocked else main['state'], 'reason': first.get('reason')}
+    elif published and linked == 'capped':
+        # Offered again and again with no less left to do: from here the wait
+        # is a counted failure, bounded by the backoff and the retry cap.
+        result = {**result, 'state': 'pending', 'reason': 'schema3_linked_pending'}
     detail = _schema3_vector_detail(result)
     if detail:
         result = {**result, 'detail': detail}
@@ -563,9 +593,13 @@ def _publish_schema3(decision, proof, writer, vectors=None):
                 outcome = {**outcome, 'state': 'held'}
             if outcome['state'] == 'indexed':
                 gc_worktrees.append(worktree_id)
+            progress = outcome.get('ingestProgress') or {}
             linked.append({'root': str(project), **{k: outcome[k] for k in
                            ('state', 'reason', 'generation', 'ingested', 'pending', 'vector', 'provenance')
-                           if k in outcome}})
+                           if k in outcome},
+                           # Cards this view still has to ingest (its store observation), when the pass counted them.
+                           **({'remaining': progress['total'] - progress['done']}
+                              if outcome['state'] in ('pending', 'deferred') and 'total' in progress else {})})
         # Keep the existing owner and writer proof until every view succeeds.
         # A live SQLite reader can defer maintenance until a later publication.
         if all(item['state'] in ('indexed', 'unchanged') for item in linked):
@@ -593,38 +627,32 @@ def _publish_schema3(decision, proof, writer, vectors=None):
     result = {**result, 'worktrees': linked}
     if result['state'] == 'unchanged' and any(item['state'] == 'indexed' for item in linked):
         result['state'] = 'indexed'
-    main = result.get('vector') or {}
-    advanced = ((main.get('state') == 'pending' and main.get('progress', 0) > 0)
-                or main.get('state') == 'published')
-    waiting, moved = _linked_waiting(linked)
+    waiting, backlog = _linked_waiting(linked)
     if waiting:
         # The main view is published: the pass is a success whatever the
         # linked views still wait for, and only a main failure counts a retry.
         result['linkedWaiting'] = waiting
-    # A waiting linked view is offered again only by a pass that moved
-    # something (the main view published or filled vectors, a linked view
-    # ingested, published or filled). A pass without progress ends; the next
-    # sync request reaches the linked views.
-    if waiting and waiting['waiting'] and (advanced or moved or result['state'] == 'indexed'):
-        result['linkedReoffer'] = True
+    if backlog is not None:
+        # ``_run_sync`` weighs it against the pass before (``linked_reoffer``) and drops the key.
+        result['linkedBacklog'] = backlog
     return result, proof
 
 
 def _linked_waiting(linked):
-    """``(summary, moved)`` of a pass's linked views.
+    """``(summary, backlog)`` of a pass's linked views.
 
     ``summary`` counts the views left without a current generation
     (``waiting``: the view or its vectors are ``pending``/``deferred``;
     ``held``: refused until its checkout changes) by reason, None when every
-    view is current. ``moved``: a linked view ingested, published or filled
-    vectors this pass.
+    view is current. ``backlog`` describes the waiting ones for the re-offer
+    decision: how many wait, how many of them the pass did not reach
+    (``schema3_pass_budget``) and what each still has to ingest (``remaining``
+    by root, where the pass counted it); None when none waits.
     """
-    summary, moved = {'waiting': 0, 'held': 0, 'reasons': {}}, False
+    summary = {'waiting': 0, 'held': 0, 'reasons': {}}
+    backlog = {'views': 0, 'unreached': 0, 'remaining': {}}
     for item in linked:
         vector = item.get('vector') or {}
-        moved = moved or bool(item['state'] == 'indexed' or item.get('ingested')
-                              or (vector.get('state') == 'pending'
-                                  and (vector.get('progress') or vector.get('filled') or 0) > 0))
         if item['state'] == 'held':
             kind, reason = 'held', item.get('reason')
         elif item['state'] in ('pending', 'deferred'):
@@ -636,7 +664,13 @@ def _linked_waiting(linked):
         reason = reason if isinstance(reason, str) and reason else 'unlabeled'
         summary[kind] += 1
         summary['reasons'][reason] = summary['reasons'].get(reason, 0) + 1
-    return (summary if summary['waiting'] or summary['held'] else None), moved
+        if kind == 'waiting':
+            backlog['views'] += 1
+            backlog['unreached'] += reason == 'schema3_pass_budget'
+            if type(item.get('remaining')) is int and item['remaining'] >= 0:
+                backlog['remaining'][item['root']] = item['remaining']
+    return ((summary if summary['waiting'] or summary['held'] else None),
+            (backlog if backlog['views'] else None))
 
 
 def _schema3_linked_projects(decision, deadline):
