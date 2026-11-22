@@ -6,6 +6,8 @@ journal, pointer and evidence files; a fake resident transport).
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import sys
 import unittest
 from unittest import mock
 
@@ -278,6 +280,77 @@ class Restore(Case):
         result = R.restore(case.root)
         self.assertEqual((result['status'], result['reason']), ('rollback_blocked', 'rollback_previous_artifact_changed'))
         self.assertEqual((self.files(case), A.read_journal(case.root)['phase']), (after, 'activated'))
+
+    def test_two_applications_are_undone_one_at_a_time_through_the_archived_journal(self):
+        # W13b review F-7: after the newer one is undone the pointer's marker names an archived journal.
+        case = self.applied()
+        applied, later = self.later_candidate(case, 'activated')
+        receipt = {**applied['new_receipt'], 'checkpoint_sha256': learning_profile.digest(later['new_pointer'])}
+        later.update(old_receipt=applied['new_receipt'], new_receipt=receipt)
+        A.put(case.root / A.JOURNAL, later)
+        case.json(case.root / inference_identity.RECEIPT, receipt)
+        case.json(case.root / inference_identity.BINDING,
+                  {'schema': inference_identity.SCHEMA, 'receipt_sha256': learning_profile.digest(receipt)})
+        case.json(case.root / 'active-checkpoint.json', later['new_pointer'])
+        A.readable(case.root)
+        first = R.restore(case.root)
+        self.assertEqual((first['status'], first['cycle_id'], first['previousCycle']),
+                         ('restored', later['cycle_id'], case.cycle), first)
+        self.assertEqual(self.read(case, 'active-checkpoint.json'), applied['new_pointer'])
+        self.assertEqual(self.read(case, inference_identity.RECEIPT), applied['new_receipt'])
+        # The live journal is the undone candidate's; the active one is read from the archive.
+        self.assertEqual(A.read_journal(case.root)['reason'], R.REASON)
+        A.readable(case.root)
+        plan = R.plan(case.root)
+        self.assertEqual((plan['status'], plan['cycle_id'], plan['phase']), ('rollback_planned', case.cycle, 'activated'))
+        second = R.restore(case.root)
+        self.assertEqual((second['status'], second['cycle_id']), ('restored', case.cycle), second)
+        self.assertEqual(self.files(case), self.before)
+        A.readable(case.root)
+        self.assertEqual(R.restore(case.root)['status'], 'already_restored')
+        self.assertEqual(prequential.rejected_cycles(case.root) >= {case.cycle, later['cycle_id']}, True)
+
+    def recorded(self, case, argv):
+        return inference_identity._record(
+            case.root, argv, view=case.profile['view'],
+            verified={'base_model_sha256': 'a' * 64, 'adapter_sha256': inference_identity.file_sha(Path(argv[1]))})
+
+    def test_a_receipt_the_inference_preparation_recorded_is_admitted_again_after_the_restore(self):
+        # W13b review F-7: the real record's receipt, judged by the real client gate.
+        for again in (False, True):
+            with self.subTest(prepared_again_after_the_application=again):
+                case = self.fixture()
+                runtime, model = case.root / 'runtime', case.root / 'model'
+                for folder in (runtime, model):
+                    folder.mkdir()
+                    (folder / 'file').write_text('synthetic\n')
+                argv = [sys.executable, str(Path(inference_identity.__file__).with_name('adapter.py')), str(model)]
+                case.json(case.root / 'live-selector.json', {'trainerArgv': argv})
+                case.json(case.root / 'laya-synthetic-attestation.json', {'schema': 'synthetic'})
+                for name, value in (('runtime_roots', [runtime]), ('device_identity', {'backend': 'cpu'}),
+                                    ('_module_scope', None), ('code_identity', 'c' * 64)):
+                    patch = mock.patch.object(inference_identity, name, return_value=value)
+                    patch.start()
+                    self.addCleanup(patch.stop)
+                base = self.recorded(case, argv)
+                self.assertEqual(inference_identity.admit(case.root, argv, case.profile['view']), base)
+                self.assertEqual(case.run_apply()['status'], 'applied')
+                if again:
+                    # A plugin update: the receipts written before it are refused from here on.
+                    update = mock.patch('memvane.kernel.memvane_version.plugin_version', return_value='9.9.9')
+                    update.start()
+                    self.addCleanup(update.stop)
+                    with self.assertRaises(ValueError):
+                        inference_identity.admit(case.root, argv, case.profile['view'])
+                    self.recorded(case, argv)
+                applied = inference_identity.admit(case.root, argv, case.profile['view'])
+                self.assertEqual(applied['checkpoint_sha256'], learning_profile.digest(A.read_journal(case.root)['new_pointer']))
+                self.assertEqual(R.restore(case.root)['status'], 'restored')
+                receipt = inference_identity.admit(case.root, argv, case.profile['view'])
+                self.assertEqual(receipt['checkpoint_sha256'], learning_profile.digest(case.old))
+                if not again:
+                    self.assertEqual(receipt, base)
+                A.readable(case.root)
 
     def test_nothing_applied_is_nothing_to_restore(self):
         case = self.fixture()
