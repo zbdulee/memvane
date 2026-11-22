@@ -19,6 +19,7 @@ from memvane.learning.context_learning.contracts import digest
 from memvane.learning.context_learning.state_model import ABSENT, M1, M2
 from memvane.learning.tests.fake_teacher_cli_121 import TeacherFixture
 from memvane.learning.tests.integration.test_teacher_parked_122 import ParkMixin
+from memvane.learning.tests.support import invariants
 
 RID = 'a1'
 # The ledger stage each case state is built with.
@@ -150,7 +151,9 @@ class TeacherPassTable(ParkMixin, TeacherFixture):
                     self.build(state)
                     self.spare = 1 if state == 'first_running' else 0
                     self.assertEqual(self.observed(), (state, LEDGER_OF[state]))
+                    self.assertEqual(invariants.check(self.root), [])
                     self.stimulate(name)
+                    self.assertEqual(invariants.check(self.root), [])
                     self.assertEqual(self.observed(),
                                      fold_pair(state, LEDGER_OF[state], case_events, ledger_events))
                 cells += 1
@@ -173,6 +176,41 @@ class TeacherPassTable(ParkMixin, TeacherFixture):
                          set(M1.events) - NOT_DRIVEN)
         self.assertEqual({event for stimulus in STIMULI.values() for event in stimulus[1]},
                          set(M2.events))
+
+    def test_each_invariant_names_the_state_that_breaks_it(self):
+        self.assertEqual(invariants.check(self.home / 'no-namespace'), [])
+        sample, _bodies = self.add(RID)
+        payload = digest(json.dumps(sample))
+        with shared._db(self.root) as db:
+            ledger.ensure(db)
+            db.execute("UPDATE cases SET status='first_running' WHERE request_id=?", (RID,))
+        self.assertEqual(invariants.check(self.root), ['I-1 a1 first_running with ledger None'])
+        self.tearDown_cell()
+        self.park()
+        with shared._db(self.root) as db:
+            db.execute("UPDATE cases SET first=? WHERE request_id=?",
+                       (json.dumps({'choice': {'selected_ids': []}}), RID))
+        self.assertEqual(invariants.check(self.root), ['I-2 a1 kept answer does not match the ledger'])
+        with shared._db(self.root) as db:
+            db.execute("UPDATE project_gold_attempts SET stage='dispatched_uncertain'")
+        self.assertEqual(invariants.check(self.root), ['I-2 a1 first_done with ledger dispatched_uncertain'])
+        self.tearDown_cell()
+        self.add(RID)
+        self.run_pass()
+        with shared._db(self.root) as db:
+            db.execute("UPDATE project_gold_attempts SET stage='answer_received'")
+        self.assertEqual(invariants.check(self.root), ['I-3 a1 gold with ledger answer_received'])
+        with shared._db(self.root) as db:
+            db.execute("UPDATE project_gold_attempts SET stage='committed'")
+            db.execute('INSERT INTO project_gold_attempts VALUES (?,?,?,?,?,NULL,NULL,NULL,1,1)',
+                       (self.key, 'again', 'first', payload, 'dispatched'))
+            sha = db.execute("SELECT input_sha256 FROM project_gold_attempts WHERE request_id=?", (RID,)).fetchone()[0]
+            db.execute("UPDATE project_gold_attempts SET input_sha256=? WHERE request_id='again'", (sha,))
+        self.assertEqual(invariants.check(self.root), ['G-1 input %s asked 2 times' % sha[:12]])
+        # A proven non-transmission may be asked again.
+        with shared._db(self.root) as db:
+            db.execute("UPDATE project_gold_attempts SET stage='pre_send_rejected' WHERE request_id='again'")
+        self.assertEqual(invariants.check(self.root), [])
 
     def tearDown_cell(self):
         """Back to an empty namespace between cells (same fixture, new rows)."""
