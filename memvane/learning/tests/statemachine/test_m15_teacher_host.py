@@ -112,6 +112,28 @@ class TeacherHostTable(TeacherFixture):
         self.assertEqual(driven, set(M15.transitions))
         self.assertEqual({event for events in STIMULI.values() for event in events}, set(M15.events))
 
+    def test_the_pairs_no_pass_reaches_are_the_calls_of_a_resting_host(self):
+        seen = set()
+        for state in M15.states:
+            for events in STIMULI.values():
+                at = state
+                for event in events:
+                    seen.add((at, event))
+                    at = M15.next(at, event)
+        # A resting host is not called, so its call cannot be refused or fail.
+        self.assertEqual(set(M15.cells()) - seen,
+                         {('resting', 'provider_refused'), ('resting', 'failure_limit')})
+        self.assertEqual((len(M15.cells()), len(seen)), (20, 18))
+        self.add('rested')
+        self.environ['PATH'] = '/usr/bin:/bin'
+        try:
+            for scenario in ({'mode': 'quota'}, {'mode': 'exit'}):
+                self.scenario(HOST, scenario)
+                self.run_pass()
+                self.assertEqual((self.host(), self.runs(HOST), self.failures()), ('resting', 0, 0))
+        finally:
+            self.environ['PATH'] = self.path
+
     def test_failures_below_the_limit_only_count_and_an_answer_resets_them(self):
         self.one_pass({'mode': 'exit'})
         self.one_pass({'mode': 'exit'})

@@ -16,7 +16,7 @@ def resolve(dotted):
 
 class StateModel(unittest.TestCase):
     def test_every_machine_is_closed_over_its_states_and_events(self):
-        self.assertEqual([machine.name for machine in state_model.MACHINES], ['M1', 'M2', 'M15'])
+        self.assertEqual([machine.name for machine in state_model.MACHINES], ['M1', 'M1U', 'M2', 'M15'])
         for machine in state_model.MACHINES:
             with self.subTest(machine=machine.name):
                 self.assertEqual(len(set(machine.states)), len(machine.states))

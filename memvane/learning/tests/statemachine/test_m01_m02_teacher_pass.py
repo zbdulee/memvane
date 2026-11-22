@@ -5,8 +5,13 @@ branch (fake host CLIs, a scope check that defers at a chosen ledger stage).
 It names the model events the pass attempts, in order. The expected state is
 the model's ``next`` folded over those events from the starting state, so an
 event that is not listed for a state must leave the state as it is. The number
-of cells run equals states x stimuli, and the events driven are exactly the
-model's events (``capture`` and ``rotation`` have their own integration tests).
+of cells run equals states x stimuli.
+
+A stimulus evaluates the (state, event) pairs its events pass through, not
+every pair. The pairs of the model are accounted for one by one: evaluated by
+a stimulus, driven directly (``capture`` and the two rotations, each state
+under the real writer), unreachable in any pass order (listed by rule), or
+evaluated by another module (listed with that module).
 """
 from __future__ import annotations
 
@@ -14,10 +19,10 @@ import json
 from unittest import mock
 
 from memvane.learning.context_learning import general_gold_ledger as ledger
-from memvane.learning.context_learning import general_teacher, shared, state_model
+from memvane.learning.context_learning import case_rotation, edit_git_migration, general_teacher, shared
 from memvane.learning.context_learning.contracts import digest
-from memvane.learning.context_learning.state_model import ABSENT, M1, M2
-from memvane.learning.tests.fake_teacher_cli_121 import TeacherFixture
+from memvane.learning.context_learning.state_model import ABSENT, M1, M1U, M2
+from memvane.learning.tests.fake_teacher_cli_121 import TeacherFixture, edit_sample
 from memvane.learning.tests.integration.test_teacher_parked_122 import ParkMixin
 from memvane.learning.tests.support import invariants
 
@@ -43,7 +48,42 @@ STIMULI = {
                             ['recover', 'reject_kept'] + _SENT + ['answer', 'commit']),
     'consent_withdrawn': (['consent_withdrawn'], ['reject_kept']),
 }
-NOT_DRIVEN = {'capture', 'rotation'}
+# Events no pass stimulus attempts: driven directly below or evaluated elsewhere.
+DIRECT = ('capture', 'rotation', 'rotation_historical')
+DELETIONS = ('prompt_retired', 'git_migrated')
+NOT_DRIVEN = set(DIRECT) | set(DELETIONS)
+_CALL_ENDS = ('answer_committed', 'answer_kept', 'not_sent', 'not_sent_exhausted',
+              'provider_refused', 'content_refused', 'uncertain')
+# Pairs no order of a pass reaches.
+UNREACHABLE = (
+    # A call ends only for the case the same pass claimed.
+    {('queued', event) for event in _CALL_ENDS}
+    # A pass settles a kept answer at its start, before it reads the queue.
+    | {('first_done', event) for event in (*_CALL_ENDS, 'claim', 'local_check_failed')}
+    # A pass closes an interrupted call at its start, before anything else.
+    | {('first_running', event) for event in ('claim', 'local_check_failed',
+                                              'kept_confirmed', 'kept_rejected')})
+# Pairs another module evaluates with the rows that writer needs.
+ELSEWHERE = {
+    # A consumed gold outside the kept window, with its job and cycle rows.
+    ('gold', 'rotation'): 'memvane/learning/tests/integration/test_rotation_123.py',
+    **{(state, 'prompt_retired'): 'memvane/learning/tests/integration/test_prompt_retirement_118.py'
+       for state in M1.states},
+    **{(state, 'git_migrated'): 'memvane/learning/tests/integration/test_edit_git_119.py'
+       for state in M1.states},
+}
+
+
+def visited():
+    """The (state, event) pairs of M1 the stimuli pass through."""
+    seen = set()
+    for state in M1.states:
+        for case_events, _ledger_events in STIMULI.values():
+            at = state
+            for event in case_events:
+                seen.add((at, event))
+                at = M1.next(at, event)
+    return seen
 
 
 def fold(machine, state, events):
@@ -169,13 +209,104 @@ class TeacherPassTable(ParkMixin, TeacherFixture):
                     at = M2.next(at, event)
         self.assertEqual(cells, len(M1.states) * len(STIMULI))
         self.assertEqual((len(M1.states), len(STIMULI)), (6, 10))
-        # Every listed case transition is taken by some cell, except the two with their own tests.
+        # Every listed case transition is taken by some cell, except those of the events
+        # no stimulus attempts.
         missed = {pair for pair in M1.transitions if pair not in driven['M1']}
         self.assertEqual({event for _state, event in missed}, NOT_DRIVEN)
         self.assertEqual({event for stimulus in STIMULI.values() for event in stimulus[0]},
                          set(M1.events) - NOT_DRIVEN)
         self.assertEqual({event for stimulus in STIMULI.values() for event in stimulus[1]},
                          set(M2.events))
+
+    # -- the pairs no stimulus evaluates ----------------------------------------
+    def test_every_case_cell_is_evaluated_driven_unreachable_or_listed_elsewhere(self):
+        cells = set(M1.cells())
+        direct = {(state, event) for state in M1.states for event in DIRECT} - set(ELSEWHERE)
+        self.assertEqual(cells - visited() - direct, UNREACHABLE | set(ELSEWHERE))
+        self.assertFalse(visited() & UNREACHABLE)
+        self.assertEqual((len(cells), len(visited()), len(direct), len(UNREACHABLE), len(ELSEWHERE)),
+                         (108, 58, 17, 20, 13))
+        from pathlib import Path
+        repo = Path(__file__).resolve().parents[4]
+        for name in set(ELSEWHERE.values()):
+            self.assertTrue((repo / name).is_file(), name)
+
+    def capture(self):
+        """One capture of RID through the real writer; its answer."""
+        sample, _bodies = edit_sample(RID)
+        sources = {}
+        for candidate in sample['candidates']:
+            text = '---\ntitle: card\n---\n%s body\n' % candidate['candidate_id']
+            candidate['revision_sha256'] = digest(text)
+            sources[candidate['candidate_id']] = text
+        with mock.patch.object(shared, '_safe_root', return_value=self.root), \
+                mock.patch.object(shared, '_policy', return_value={}), \
+                mock.patch.object(shared, '_consent', return_value=True):
+            return shared.enqueue({}, self.project, sample, sources)
+
+    def leave_use(self):
+        """The case leaves use the way a pass finds its consent or source changed."""
+        with shared._db(self.root) as db:
+            db.execute("UPDATE cases SET use_state='historical',error='consent_or_source_changed' "
+                       "WHERE request_id=? AND use_state='active'", (RID,))
+
+    def drive(self, event):
+        if event == 'capture':
+            return self.capture()
+        if event == 'rotation_historical':
+            self.leave_use()
+        return case_rotation.rotate(self.root, self.project, self.grant, limit=0)['status']
+
+    def test_capture_and_rotation_on_every_case_state(self):
+        cells = 0
+        for state in M1.states:
+            for event in DIRECT:
+                if (state, event) in ELSEWHERE:
+                    continue
+                with self.subTest(state=state, event=event):
+                    self.tearDown_cell()
+                    self.build(state)
+                    self.assertEqual(self.observed()[0], state)
+                    answer = self.drive(event)
+                    self.assertEqual(self.observed()[0], M1.next(state, event), answer)
+                    if event == 'capture':
+                        # A second capture of the same request never replaces the row.
+                        self.assertEqual(answer in ('duplicate', 'conflict'), state != ABSENT, answer)
+                cells += 1
+        self.assertEqual(cells, len(M1.states) * len(DIRECT) - 1)
+
+    # -- M1U: whether the case is still used -------------------------------------
+    def use(self):
+        row = self.cases().get(RID)
+        return row[2] if row else ABSENT
+
+    def test_every_use_state_under_every_event_ends_where_the_model_says(self):
+        cells = 0
+        for state, event in M1U.cells():
+            with self.subTest(state=state, event=event):
+                self.tearDown_cell()
+                if state != ABSENT:
+                    self.add(RID)
+                if state == 'historical':
+                    self.leave_use()
+                self.assertEqual(self.use(), state)
+                if event == 'capture':
+                    self.capture()
+                elif event == 'captured_before_grant':
+                    self.proposal['grantedAtUnixMs'] = 10 ** 15
+                    with mock.patch.object(edit_git_migration, 'affected', return_value=True), \
+                            mock.patch.object(edit_git_migration, '_unchecked', return_value=True):
+                        self.run_pass()
+                elif event == 'scope_changed':
+                    with mock.patch.object(general_teacher, '_case_active', return_value=False):
+                        self.run_pass()
+                self.assertEqual(self.use(), M1U.next(state, event))
+                if state == 'active' and event != 'capture':
+                    # A case that left use is neither asked about nor answered.
+                    self.assertEqual((self.runs(), self.cases()[RID][0]), (0, 'queued'))
+            cells += 1
+        self.assertEqual(cells, len(M1U.states) * len(M1U.events))
+        self.assertEqual((len(M1U.states), len(M1U.events)), (3, 3))
 
     def test_each_invariant_names_the_state_that_breaks_it(self):
         self.assertEqual(invariants.check(self.home / 'no-namespace'), [])
@@ -222,7 +353,7 @@ class TeacherPassTable(ParkMixin, TeacherFixture):
         for path in self.logs.glob('claude-*.json'):
             path.unlink()
         self.defer_at, self.fail_at, self.spare = (), {}, 0
-        self.proposal.update(maxInputBytes=65536, enabled=True)
+        self.proposal.update(maxInputBytes=65536, enabled=True, grantedAtUnixMs=0)
         # Host waits of the previous cell would keep this cell's pass from calling.
         from memvane.learning.context_learning import teacher_state
         (self.root / teacher_state.STATE_NAME).unlink(missing_ok=True)

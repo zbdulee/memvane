@@ -21,20 +21,46 @@ teacher)만 담는다.
 |---|---|---|---|
 | `(absent)` | `capture` | `queued` | `shared.enqueue` |
 | `queued` | `claim` | `first_running` | `default_teacher._default_case` |
+| `queued` | `git_migrated` | `(absent)` | `edit_git_migration.migrate` |
 | `queued` | `local_check_failed` | `pending_review` | `default_teacher._default_case` |
+| `queued` | `prompt_retired` | `(absent)` | `prompt_retirement.retire` |
+| `queued` | `rotation_historical` | `(absent)` | `case_rotation.rotate` |
 | `first_running` | `answer_committed` | `gold` | `default_teacher._call` |
 | `first_running` | `answer_kept` | `first_done` | `default_teacher._park` |
 | `first_running` | `content_refused` | `pending_review` | `default_teacher._failed` |
+| `first_running` | `git_migrated` | `(absent)` | `edit_git_migration.migrate` |
 | `first_running` | `not_sent` | `queued` | `default_teacher._failed` |
 | `first_running` | `not_sent_exhausted` | `pending_review` | `default_teacher._failed` |
 | `first_running` | `pass_start` | `pending_review` | `default_teacher.process_pending_default` |
+| `first_running` | `prompt_retired` | `(absent)` | `prompt_retirement.retire` |
 | `first_running` | `provider_refused` | `queued` | `default_teacher._failed` |
 | `first_running` | `uncertain` | `pending_review` | `default_teacher._failed` |
 | `first_done` | `consent_withdrawn` | `pending_review` | `default_teacher._review_parked` |
+| `first_done` | `git_migrated` | `(absent)` | `edit_git_migration.migrate` |
 | `first_done` | `kept_confirmed` | `gold` | `default_teacher._confirm_parked` |
 | `first_done` | `kept_rejected` | `pending_review` | `default_teacher._confirm_parked` |
+| `first_done` | `prompt_retired` | `(absent)` | `prompt_retirement.retire` |
+| `gold` | `git_migrated` | `(absent)` | `edit_git_migration.migrate` |
+| `gold` | `prompt_retired` | `(absent)` | `prompt_retirement.retire` |
 | `gold` | `rotation` | `(absent)` | `case_rotation.rotate` |
+| `gold` | `rotation_historical` | `(absent)` | `case_rotation.rotate` |
+| `pending_review` | `git_migrated` | `(absent)` | `edit_git_migration.migrate` |
+| `pending_review` | `prompt_retired` | `(absent)` | `prompt_retirement.retire` |
 | `pending_review` | `rotation` | `(absent)` | `case_rotation.rotate` |
+| `pending_review` | `rotation_historical` | `(absent)` | `case_rotation.rotate` |
+
+## M1U case use
+
+- 저장 위치: learning DB cases.use_state
+- lock: project-worker.lock
+- 쓰는 주체: hook capture child (insert), teacher pass
+- 상태: `(absent)`, `active`, `historical` (종결)
+
+| 상태 | 사건 | 다음 | 쓰는 곳 |
+|---|---|---|---|
+| `(absent)` | `capture` | `active` | `shared.enqueue` |
+| `active` | `captured_before_grant` | `historical` | `default_teacher._migration_ready` |
+| `active` | `scope_changed` | `historical` | `default_teacher._default_case` |
 
 ## M2 gold ledger
 
@@ -75,8 +101,8 @@ teacher)만 담는다.
 ## M15 teacher host
 
 - 저장 위치: teacher-host-state.json hosts.<host>
-- lock: teacher-host-state.lock (under project-worker.lock)
-- 쓰는 주체: teacher pass
+- lock: teacher-host-state.lock
+- 쓰는 주체: teacher pass (a SessionStart hook writes notice times only)
 - 상태: `ready`, `resting`, `provider_waiting`, `failing`
 
 | 상태 | 사건 | 다음 | 쓰는 곳 |

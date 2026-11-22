@@ -41,9 +41,13 @@ class Machine:
 _TEACHER = 'memvane.learning.context_learning.default_teacher.'
 _LEDGER = 'memvane.learning.context_learning.general_gold_ledger.'
 
-# M1: one captured edit case (learning DB ``cases.status``). ``use_state``
-# (``active`` -> ``historical``) and ``trained_cycle`` are attributes of the
-# row with their own one-way steps (``M1_USE``, ``M1_TRAINED``).
+# M1: one captured edit case (learning DB ``cases.status``). ``use_state`` is an
+# attribute of the same row with its own one-way step (``M1U`` below). Rotation
+# deletes closed cases (``gold`` whose training use is over, ``pending_review``)
+# and, of the cases that left use (``historical``), the ``queued`` and ``gold``
+# ones. Two deletions run before every pass, whatever the status: prompt cases of
+# an older sample schema, and edit cases captured unchecked in a project inside a
+# parent work tree.
 _RUNNING, _KEPT = 'first_running', 'first_done'
 M1 = Machine(
     'M1', 'case', store='learning DB cases.status', lock='project-worker.lock',
@@ -67,6 +71,9 @@ M1 = Machine(
         (_KEPT, 'consent_withdrawn'): 'pending_review',
         ('gold', 'rotation'): ABSENT,
         ('pending_review', 'rotation'): ABSENT,
+        **{(status, 'rotation_historical'): ABSENT for status in ('queued', 'gold', 'pending_review')},
+        **{(status, event): ABSENT for event in ('prompt_retired', 'git_migrated')
+           for status in ('queued', _RUNNING, _KEPT, 'gold', 'pending_review')},
     },
     where={
         'capture': 'memvane.learning.context_learning.shared.enqueue',
@@ -84,6 +91,28 @@ M1 = Machine(
         'kept_rejected': _TEACHER + '_confirm_parked',
         'consent_withdrawn': _TEACHER + '_review_parked',
         'rotation': 'memvane.learning.context_learning.case_rotation.rotate',
+        'rotation_historical': 'memvane.learning.context_learning.case_rotation.rotate',
+        'prompt_retired': 'memvane.learning.context_learning.prompt_retirement.retire',
+        'git_migrated': 'memvane.learning.context_learning.edit_git_migration.migrate',
+    })
+
+# M1U: whether a case is still used (``cases.use_state``). One way: a case that
+# left use never returns, and no teacher call or training reads it again. The
+# explicit and synthetic paths write the same step from their own reconcile.
+M1U = Machine(
+    'M1U', 'case use', store='learning DB cases.use_state', lock='project-worker.lock',
+    owner='hook capture child (insert), teacher pass',
+    states=(ABSENT, 'active', 'historical'),
+    terminal=('historical',),
+    transitions={
+        (ABSENT, 'capture'): 'active',
+        ('active', 'captured_before_grant'): 'historical',
+        ('active', 'scope_changed'): 'historical',
+    },
+    where={
+        'capture': 'memvane.learning.context_learning.shared.enqueue',
+        'captured_before_grant': _TEACHER + '_migration_ready',
+        'scope_changed': _TEACHER + '_default_case',
     })
 
 # M2: the dispatch identity of one case's teacher call (``project_gold_attempts.stage``).
@@ -134,7 +163,7 @@ M2 = Machine(
 # consecutive failures only move the counter; an answer resets it.
 M15 = Machine(
     'M15', 'teacher host', store='teacher-host-state.json hosts.<host>',
-    lock='teacher-host-state.lock (under project-worker.lock)', owner='teacher pass',
+    lock='teacher-host-state.lock', owner='teacher pass (a SessionStart hook writes notice times only)',
     states=('ready', 'resting', 'provider_waiting', 'failing'),
     terminal=(),
     transitions={
@@ -153,4 +182,4 @@ M15 = Machine(
         'wait_expired': 'memvane.learning.context_learning.teacher_state.host_waiting',
     })
 
-MACHINES = (M1, M2, M15)
+MACHINES = (M1, M1U, M2, M15)
