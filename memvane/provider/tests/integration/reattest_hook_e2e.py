@@ -125,14 +125,14 @@ class ReattestHook(FixtureCase):
         self.assertIn('확인하는 중',json.loads(hook.stdout)['hookSpecificOutput']['additionalContext'])
         wakes = [r for r in queue.pending() if r['kind']=='laya-sync' and r['target']==str(project.root)]
         self.assertEqual(len(wakes),1)
-        recall = {'cwd':str(project.root),'session_id':'fixture','hook_event_name':'UserPromptSubmit',
+        recall = {'cwd':str(project.root),'session_id':'fixture-lexical','hook_event_name':'UserPromptSubmit',
                   'prompt':'recoverybeacon'}
         lexical = subprocess.run(['bash',str(ROOT/'hooks/run-hook'),'recall','claude'],
             input=json.dumps(recall),text=True,capture_output=True,env=env,cwd=project.root,timeout=60)
         self.assertEqual(lexical.returncode,0,lexical.stderr)
         self.assertIn('recoverybeacon', lexical.stdout)
         sparse = subprocess.run(['bash',str(ROOT/'hooks/run-hook'),'recall','claude'],
-            input=json.dumps({**recall,'prompt':'recoverybeacon missingfixtureterm'}),text=True,
+            input=json.dumps({**recall,'session_id':'fixture-sparse','prompt':'recoverybeacon missingfixtureterm'}),text=True,
             capture_output=True,env=env,cwd=project.root,timeout=60)
         self.assertEqual(sparse.returncode,0,sparse.stderr)
         self.assertIn('recoverybeacon', sparse.stdout)
@@ -202,14 +202,14 @@ class ReattestHook(FixtureCase):
             self.assertTrue(service.stopped.wait(10), 'synthetic worker drained')
             service.close()
             for item in reversed(patches): item.stop()
-        payload = {'cwd':str(project.root),'session_id':'fixture','hook_event_name':'UserPromptSubmit',
+        payload = {'cwd':str(project.root),'session_id':'fixture-resealed','hook_event_name':'UserPromptSubmit',
                    'prompt':'recoverybeacon'}
         hook = subprocess.run(['bash',str(ROOT/'hooks/run-hook'),'recall','claude'],
             input=json.dumps(payload),text=True,capture_output=True,env=env,cwd=project.root,timeout=60)
         self.assertEqual(hook.returncode,0,hook.stderr)
         self.assertIn('recoverybeacon',hook.stdout)
         cold = subprocess.run(['bash',str(ROOT/'hooks/run-hook'),'recall','claude'],
-            input=json.dumps({**payload,'prompt':'recoverybeacon missingfixtureterm'}),
+            input=json.dumps({**payload,'session_id':'fixture-cold','prompt':'recoverybeacon missingfixtureterm'}),
             text=True,capture_output=True,env=env,cwd=project.root,timeout=60)
         self.assertEqual(cold.returncode,0,cold.stderr)
         self.assertIn('recoverybeacon',cold.stdout)

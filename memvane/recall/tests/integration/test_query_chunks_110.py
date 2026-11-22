@@ -30,11 +30,14 @@ class LongPromptRecall(RecallInstallCase):
 
     def recall_counted(self, prompt):
         """``(context, event, embedding children, provider wakes)`` of one recall."""
-        real = reader_dispatch.subprocess.Popen
+        from memvane.provider.api import query_embed_child_argv
+        real, child = reader_dispatch.subprocess.Popen, query_embed_child_argv()
+        # ``subprocess`` is one module: the stand-in sees every child of the recall (git too).
         with mock.patch.object(reader_dispatch.subprocess, 'Popen', side_effect=real) as popen, \
                 mock.patch('memvane.recall.recall_scope._wake_provider') as wake:
             context, _err, event = self.recall(prompt)
-        return context, event, popen.call_count, wake.call_count
+        children = sum(call.args[0] == child for call in popen.call_args_list)
+        return context, event, children, wake.call_count
 
     def test_a_twelve_thousand_character_prompt_asks_four_windows_in_one_child(self):
         self.provider.bound_queries(1500)
