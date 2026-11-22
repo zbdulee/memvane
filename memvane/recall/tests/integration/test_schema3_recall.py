@@ -12,9 +12,10 @@ from contextlib import closing
 import json
 import os
 import sqlite3
+from pathlib import Path
 import struct
+import subprocess
 import sys
-import threading
 import unittest
 from unittest import mock
 
@@ -22,10 +23,12 @@ from memvane.journal.types import JournalEvidenceError
 from memvane.recall import api as recall_api
 from memvane.recall.types import HostResponseError
 from memvane.recall.tests.support import NOTE, RecallInstallCase
+from tests.support.case import scaled
 from tests.support.project import settle_index
 from tests.support.sqlite_hot_journal import kill_mid_write
 
 HOSTS = ('claude', 'codex', 'hermes')
+REPOSITORY = Path(__file__).resolve().parents[4]
 PROMPT = 'what marker does the heron protocol keep?'
 _OPENED = []
 
@@ -437,33 +440,17 @@ class Schema3Recall(RecallInstallCase):
         self.write_card('heron')
         self.write_card('glacier')
         self.fixture.commit('second card')
-        done = threading.Event()
-        errors, published = [], []
-
-        def publish():
-            from memvane.store import api as store_api
-            real_open = store_api.open_store
-            class RecordedStore:
-                def __init__(self, base): self.base = base
-                def __getattr__(self, name): return getattr(self.base, name)
-                def publish_generation(self, handle, gen_id, **kwargs):
-                    result = self.base.publish_generation(handle, gen_id, **kwargs)
-                    published.append(gen_id)
-                    return result
-            try:
-                with mock.patch.object(store_api, 'open_store',
-                                       side_effect=lambda *a, **kw: RecordedStore(real_open(*a, **kw))):
-                    self.install.settle()
-            except BaseException:  # noqa: BLE001 - reported below, with where the pass stopped
-                import traceback
-                errors.append(traceback.format_exc())
-            finally:
-                done.set()
-        worker = threading.Thread(target=publish)
-        worker.start()
+        # The publish runs in its own process, as the sync worker does beside a hook's recall.
+        out = self.tmp / 'publish.json'
+        worker = subprocess.Popen(
+            [sys.executable, '-B', '-m', 'memvane.recall.tests.publish_driver', str(self.project),
+             str(self.install.journal), str(out)],
+            cwd=str(REPOSITORY), env=dict(os.environ), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (worker.poll() is None and worker.terminate(), worker.wait(), worker.stderr.close()))
         seen = []
         try:
-            while not done.is_set() and len(seen) < 50:
+            while worker.poll() is None and len(seen) < 50:
                 try:
                     context, _err, event = self.recall(PROMPT)
                 except HostResponseError as exc:
@@ -482,8 +469,11 @@ class Schema3Recall(RecallInstallCase):
                     self.assertEqual(self.generation(context), event['generation'])
                 seen.append(self.generation(context) if context else None)
         finally:
-            worker.join(120)
-        self.assertEqual(errors, [])
+            code = worker.wait(timeout=scaled(120))
+        report = json.loads(out.read_text(encoding='utf-8')) if out.exists() else {'error': worker.stderr.read()}
+        # A failure names the SQLite in use and the exception's args and errno.
+        self.assertEqual((code, report.get('error')), (0, None), report)
+        published = report['published']
         new = self.generation(self.recall(PROMPT)[0])
         self.assertNotEqual(new, old)
         self.assertIn(new, published)
