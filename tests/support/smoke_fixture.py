@@ -10,7 +10,8 @@ file without a card would start one, so there is none (no README).
 sha256, token) and the prompts P0..P4 with the sha256 an event row records and
 the ASCII mark a short prompt shows on the screen (the long P2 has none).
 ``delta(out, plan)`` applies the RS-SYNC change in place: one document and
-card added, one changed, one deleted. All content is invented.
+card added, one changed, one deleted. It can be applied again to a plan
+that does not record the change yet. All content is invented.
 """
 from __future__ import annotations
 
@@ -154,7 +155,9 @@ def delta(out, plan):
     after = _write(project, topic[0], topic[1], topic[2] + ' 개정판에서 한 줄이 더해졌다.',
                    'SMK%sCH' % run_id)
     for name in (deleted['source'], deleted['file']):
-        (out / name).unlink()
+        # Already gone when a change cut before its plan was saved is applied again.
+        if (out / name).exists():
+            (out / name).unlink()
     text = _question(added['token'], after['token'], deleted['token'])
     mark = 'SMK%sPS' % run_id
     refresh = '%s 실행: 이 프로젝트의 MemVane 인덱스를 새로고침해 줘.' % mark

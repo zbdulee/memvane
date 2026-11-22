@@ -46,14 +46,19 @@ const ALLOWLIST = join(ROOT, 'tests', 'structure', 'time-allowlist.json');
 const HELPERS = new Set(['tests/support/case.py']);
 const ELAPSED = /\b(assertLess|assertLessEqual|assertGreater|assertGreaterEqual|assertAlmostEqual)\(.*\b(elapsed|duration|took|monotonic\(\)|perf_counter\(\)|time\.time\(\))/;
 const SHORT_TIMEOUT = /\btimeout\s*=\s*(\d+(?:\.\d+)?|\.\d+)\s*[,)]/g;
+// ``event.wait(2)``: a literal wait on an Event, Condition or process.
+const LITERAL_WAIT = /\.wait\(\s*(\d+(?:\.\d+)?|\.\d+)\s*\)/g;
 
-/** `{ sleep, elapsed, shortTimeout }` line counts of Python test source `text`. */
+/** `{ sleep, elapsed, shortTimeout, eventWait }` counts of Python test source `text`. */
 export function timeCounts(text) {
-  const counts = { sleep: 0, elapsed: 0, shortTimeout: 0 };
+  const counts = { sleep: 0, elapsed: 0, shortTimeout: 0, eventWait: 0 };
   for (const line of text.split('\n')) {
     const code = line.replace(/#.*$/, '');
     if (/\btime\.sleep\(/.test(code)) counts.sleep += 1;
     if (ELAPSED.test(code)) counts.elapsed += 1;
+    for (const match of code.matchAll(LITERAL_WAIT)) {
+      if (Number(match[1]) <= 5) counts.eventWait += 1;
+    }
     // A timeout handed to the waiting helper is already scaled: it is the rule, not an exception.
     if (/\bwait_until(?:_async)?\(/.test(code)) continue;
     for (const match of code.matchAll(SHORT_TIMEOUT)) {
@@ -68,7 +73,7 @@ export function measuredTimeCounts() {
   const found = {};
   for (const file of sourceFiles(['.py']).filter((name) => isTestFile(name) && !HELPERS.has(name))) {
     const counts = timeCounts(readFileSync(join(ROOT, file), 'utf8'));
-    if (counts.sleep || counts.elapsed || counts.shortTimeout) found[file] = counts;
+    if (counts.sleep || counts.elapsed || counts.shortTimeout || counts.eventWait) found[file] = counts;
   }
   return found;
 }
@@ -99,8 +104,10 @@ test('the time counter sees sleeps, elapsed assertions and short literal timeout
     'run(a, timeout=limit)',
     'self.wait_until(lambda: ready(), timeout=3)',
     'await wait_until_async(ready, timeout=0.5)',
+    'started.wait(2); stopped.wait( 0.5 )',
+    'done.wait(30); done.wait(scaled(2)); child.wait()',
   ].join('\n');
-  assert.deepEqual(timeCounts(text), { sleep: 1, elapsed: 2, shortTimeout: 3 });
+  assert.deepEqual(timeCounts(text), { sleep: 1, elapsed: 2, shortTimeout: 3, eventWait: 2 });
 });
 
 test('a count over its record is reported and a lower count is not', () => {
@@ -117,3 +124,18 @@ test('time-dependent test code stays within time-allowlist.json', () => {
   assert.deepEqual(overAllowance(measuredTimeCounts(), allowed), []);
 });
 
+
+// A node test waits through tests/support/timing.mjs (waitUntil, waitUntilAsync, scaled).
+const NODE_WAITS = /['"]sleep['"]|\bsetTimeout\(|\bDate\.now\(|\bperformance\.now\(/;
+const NODE_HELPERS = new Set(['tests/support/timing.mjs', 'tests/support/temp.mjs', 'tests/support/runner.mjs']);
+
+test('node tests spawn no sleep and read no wall clock', () => {
+  const hits = [];
+  for (const file of sourceFiles(['.mjs', '.js']).filter((name) => isTestFile(name) && !NODE_HELPERS.has(name))) {
+    if (file === 'tests/structure/test-timing.test.mjs') continue;
+    readFileSync(join(ROOT, file), 'utf8').split('\n').forEach((line, index) => {
+      if (NODE_WAITS.test(line.replace(/\/\/.*$/, ''))) hits.push(`${file}:${index + 1}`);
+    });
+  }
+  assert.deepEqual(hits, []);
+});

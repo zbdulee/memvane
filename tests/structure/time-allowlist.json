@@ -14,6 +14,12 @@
   "elapsed": 1,
   "shortTimeout": 0
  },
+ "memvane/host/tests/integration/test_host_response.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 0,
+  "eventWait": 2
+ },
  "memvane/host/tests/integration/test_onboarding_choice_boundaries.py": {
   "sleep": 0,
   "elapsed": 0,
@@ -32,7 +38,8 @@
  "memvane/learning/tests/integration/test_context_learning_candidate_apply.py": {
   "sleep": 1,
   "elapsed": 1,
-  "shortTimeout": 0
+  "shortTimeout": 0,
+  "eventWait": 1
  },
  "memvane/learning/tests/integration/test_context_learning_coordination.py": {
   "sleep": 1,
@@ -42,7 +49,14 @@
  "memvane/learning/tests/integration/test_context_learning_inference_service.py": {
   "sleep": 9,
   "elapsed": 2,
-  "shortTimeout": 11
+  "shortTimeout": 11,
+  "eventWait": 10
+ },
+ "memvane/learning/tests/integration/test_context_learning_selector_warm.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 0,
+  "eventWait": 2
  },
  "memvane/learning/tests/integration/test_context_learning_transport.py": {
   "sleep": 12,
@@ -57,7 +71,8 @@
  "memvane/learning/tests/integration/test_inference_service_119.py": {
   "sleep": 1,
   "elapsed": 0,
-  "shortTimeout": 0
+  "shortTimeout": 0,
+  "eventWait": 5
  },
  "memvane/learning/tests/integration/test_learning_full_worker.py": {
   "sleep": 0,
@@ -83,6 +98,12 @@
   "sleep": 2,
   "elapsed": 0,
   "shortTimeout": 0
+ },
+ "memvane/learning/tests/scripts/project_learning_recovery_lock.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 0,
+  "eventWait": 3
  },
  "memvane/learning/tests/unit/test_context_learning_evaluation_queue.py": {
   "sleep": 0,
@@ -122,7 +143,14 @@
  "memvane/resident/tests/integration/test_resident_service.py": {
   "sleep": 0,
   "elapsed": 0,
-  "shortTimeout": 3
+  "shortTimeout": 3,
+  "eventWait": 8
+ },
+ "memvane/resident/tests/integration/test_service_root.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 0,
+  "eventWait": 1
  },
  "memvane/resident/tests/support.py": {
   "sleep": 2,
@@ -202,12 +230,14 @@
  "memvane/wiki/compile/tests/integration/test_claim_recovery.py": {
   "sleep": 0,
   "elapsed": 0,
-  "shortTimeout": 2
+  "shortTimeout": 2,
+  "eventWait": 4
  },
  "tests/e2e/handoff_four_processes.py": {
   "sleep": 1,
   "elapsed": 0,
-  "shortTimeout": 3
+  "shortTimeout": 3,
+  "eventWait": 1
  },
  "tests/e2e/onboarding_real.py": {
   "sleep": 2,

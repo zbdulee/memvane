@@ -59,6 +59,9 @@ elif command == 'stuff' and typed.exists():
             out.write(json.dumps({'event': 'recall', 'session': 'fake', 'ts': '2026-11-22T00:00:00Z',
                                   'prompt': {'sha256': hashlib.sha256(text).hexdigest(),
                                              'chars': len(text.decode())}}) + '\n')
+            if b'PS ' in text and mode not in ('no_publish', 'no_pass'):
+                out.write(json.dumps({'event': 'wake.sync', 'outcome': 'indexed',
+                                      'ts': '2026-11-22T00:00:08Z'}) + '\n')
             if b'PS ' in text and mode != 'no_publish':
                 out.write(json.dumps({'event': 'index.publish', 'outcome': 'published',
                                       'ts': '2026-11-22T00:00:09Z'}) + '\n')
@@ -521,15 +524,82 @@ class RoundTrip(FixtureCase):
         self.assertEqual(self.git(fixture, 'status', '--porcelain'), '')
         self.assertIsNone(smoke._load_plan(record)['delta'])
 
-    def test_the_change_asks_the_host_to_refresh_and_waits_for_a_later_publish(self):
+    def test_a_file_the_host_staged_by_itself_is_not_in_the_change_commit(self):
+        remote, account, _state, record, _plan = self.prepared()
+        fixture = account / 'memvane-smoke/feed04/fixture'
+        self.seed_events(account, '2026-11-21T10:00:00Z')
+        (fixture / 'notes-by-host.md').write_text('staged by a host session\n')
+        self.git(fixture, 'add', '--', 'notes-by-host.md')
+        change = smoke.apply_delta(remote, record)['delta']
+        committed = set(self.git(fixture, 'show', '--name-only', '--format=', 'HEAD').split())
+        self.assertEqual(len(committed), 6)
+        self.assertNotIn('notes-by-host.md', committed)
+        self.assertIn(change['added']['file'], committed)
+        self.assertEqual(self.git(fixture, 'status', '--porcelain').splitlines(), ['A  notes-by-host.md'])
+
+    def test_a_change_cut_before_its_plan_was_saved_is_applied_again(self):
+        remote, account, _state, record, _plan = self.prepared()
+        fixture = account / 'memvane-smoke/feed04/fixture'
+        self.seed_events(account, '2026-11-21T10:00:00Z')
+        head = self.git(fixture, 'rev-parse', 'HEAD')
+        puts = []
+
+        def cut(local, target, **kwargs):
+            puts.append(target)
+            if len(puts) == 3:
+                raise RuntimeError('upload failed: connection lost')
+            return Local.put(remote, local, target, **kwargs)
+        with mock.patch.object(remote, 'put', cut), self.assertRaisesRegex(RuntimeError, 'connection lost'):
+            smoke.apply_delta(remote, record)
+        # The local tree is changed, the plan is not, and nothing is committed.
+        self.assertIsNone(smoke._load_plan(record)['delta'])
+        self.assertEqual(self.git(fixture, 'rev-parse', 'HEAD'), head)
+        change = smoke.apply_delta(remote, record)['delta']
+        self.assertEqual(smoke._load_plan(record)['delta'], change)
+        self.assertEqual(len(self.git(fixture, 'show', '--name-only', '--format=', 'HEAD').split()), 6)
+        for card in (change['added'], change['changed']['after']):
+            self.assertEqual(hashlib.sha256((fixture / card['file']).read_bytes()).hexdigest(), card['sha256'])
+        self.assertFalse((fixture / change['deleted']['file']).exists())
+        self.assertEqual(self.git(fixture, 'status', '--porcelain'), '')
+        with self.assertRaisesRegex(ValueError, 'already applied'):
+            smoke.apply_delta(remote, record)
+
+    def test_a_time_unreadable_after_the_commit_falls_back_to_the_one_before_it(self):
+        remote, account, _state, record, _plan = self.prepared()
+        self.seed_events(account, '2026-11-21T10:00:00Z')
+        reads = []
+
+        def once(_remote):
+            reads.append(1)
+            return '2026-11-21T10:00:00Z' if len(reads) == 1 else None
+        waits = []
+        with mock.patch.object(smoke, 'last_event_time', once):
+            change = smoke.apply_delta(remote, record, host='claude', pause=waits.append,
+                                       publish_reads=2)['delta']
+        self.assertEqual(len(reads), 1 + smoke.AFTER_TS_READS)
+        self.assertEqual((change['afterTs'], change['afterTsBeforeCommit']), ('2026-11-21T10:00:00Z', True))
+        # The refresh request still went out and was judged by its own rows.
+        self.assertEqual((change['syncRequested'], change['syncSeen']), (True, True))
+        self.assertEqual(smoke._load_plan(record)['delta'], change)
+
+    def test_the_change_asks_the_host_to_refresh_and_waits_for_its_own_pass_and_publish(self):
         quiet = lambda _seconds: None
-        for mode, seen in (('ok', True), ('no_publish', False)):
+        for mode, seen in (('ok', True), ('no_publish', False), ('no_pass', False), ('elsewhere', False)):
             with self.subTest(mode=mode):
-                remote, account, state, record, _plan = self.prepared(mode)
+                remote, account, state, record, _plan = self.prepared('no_publish' if mode == 'elsewhere' else mode)
                 self.seed_events(account, '2026-11-21T10:00:00Z')
+                if mode == 'elsewhere':
+                    # Another install of the account indexes and publishes meanwhile.
+                    other = account / '.local/state/memvane/v1/installs/earlier/events.jsonl'
+                    with open(other, 'a') as out:
+                        for event, outcome in (('wake.sync', 'indexed'), ('index.publish', 'published')):
+                            out.write(json.dumps({'event': event, 'outcome': outcome,
+                                                  'ts': '2026-11-23T00:00:00Z'}) + '\n')
                 after = smoke.apply_delta(remote, record, host='claude', pause=quiet, publish_reads=3)
                 change = after['delta']
-                self.assertEqual(change['afterTs'], '2026-11-21T10:00:00Z')
+                self.assertEqual(change['afterTs'], '2026-11-23T00:00:00Z' if mode == 'elsewhere'
+                                 else '2026-11-21T10:00:00Z')
+                self.assertNotIn('afterTsBeforeCommit', change)
                 self.assertEqual((change['syncRequested'], change['syncSeen']), (True, seen))
                 self.assertEqual(smoke._load_plan(record)['delta']['syncSeen'], seen)
                 submitted = (state / 'submitted').read_bytes()

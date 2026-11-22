@@ -79,5 +79,13 @@ class SmokeFixture(FixtureCase):
                       change['deleted']['token']):
             self.assertIn(token, after['prompts']['P4']['text'])
         self.assertIsNone(plan['delta'])
+        # Applied again to the plan that was never saved: the same paths, and the
+        # plan names the bytes that are on disk.
+        again = smoke_fixture.delta(out, plan)['delta']
+        self.assertEqual(again['deleted'], change['deleted'])
+        for card, first in ((again['added'], change['added']),
+                            (again['changed']['after'], change['changed']['after'])):
+            self.assertEqual((card['file'], card['token']), (first['file'], first['token']))
+            self.assertEqual(hashlib.sha256((out / card['file']).read_bytes()).hexdigest(), card['sha256'])
         with self.assertRaises(ValueError):
             smoke_fixture.delta(out, after)

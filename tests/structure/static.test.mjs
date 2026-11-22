@@ -481,13 +481,16 @@ const TOOL_CALLS = [
   ['scripts/release_smoke.py', /curl -sfL -o "\$f" %s/, 'the fetch of the pinned model address, hash-compared by its caller'],
 ];
 const DOWNLOADERS = /https?\.(?:request|get)\(|urllib\.request\.Request|build_opener|['"]tool['"],\s*['"]install|['"](?:fetch|pull)['"]|urlopen|urlretrieve|hf_hub_download|snapshot_download|requests\.(?:get|post)|http\.client|\bcurl\b|\bwget\b|\bnpx\b|['"]clone['"]|pip['"]?,?\s*['"]?install|npm['"]?,?\s*['"]?install|['"]ci['"]|['"]python['"],\s*['"]install|['"]pip['"],\s*['"]sync|brew install/;
+// A shell script names the same calls without quotes.
+const SHELL_DOWNLOADERS = /\bgit\s+(?:fetch|pull|clone)\b|\buv\s+tool\s+install\b/;
 
 test('every call that can download is a listed, pinned call', () => {
   const hits = [];
   for (const file of fetchedCode()) {
     readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
       // ``fetch(`` is the network call of JavaScript only (Python code names a local helper so).
-      if (DOWNLOADERS.test(line) || (/\.m?js$/.test(file) && /\bfetch\(/.test(line))) hits.push([file, index + 1, line]);
+      if (DOWNLOADERS.test(line) || (/\.m?js$/.test(file) && /\bfetch\(/.test(line))
+        || (/\.sh$/.test(file) && SHELL_DOWNLOADERS.test(line.replace(/#.*$/, '')))) hits.push([file, index + 1, line]);
     });
   }
   for (const [file, number, line] of hits) {

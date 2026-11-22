@@ -491,39 +491,56 @@ def last_event_time(remote):
     return text.strip() or None if code == 0 else None
 
 
-# Counts ``index.publish`` rows later than a time on the smoke account.
-_PUBLISHED_AFTER = r'''
+# Counts the installs whose log holds the row of a prompt hash and, later than
+# that row, an indexed sync pass and a publish. Other installs of the account
+# (a long-lived one that publishes on its own) do not count.
+_SYNCED_AFTER_PROMPT = r'''
 import glob, json, os, sys
-mark, count = sys.argv[1], 0
+wanted, count = sys.argv[1], 0
 for path in glob.glob(os.path.expanduser('~/.local/state/memvane/v1/installs/*/events.jsonl')):
+    asked, passes, publishes = [], [], []
     for line in open(path, errors='replace'):
-        if 'index.publish' not in line: continue
+        if wanted not in line and 'wake.sync' not in line and 'index.publish' not in line: continue
         try: row = json.loads(line)
         except ValueError: continue
-        if (isinstance(row, dict) and row.get('event') == 'index.publish'
-                and row.get('outcome') == 'published' and str(row.get('ts', '')) > mark):
-            count += 1
+        if not isinstance(row, dict) or not isinstance(row.get('ts'), str): continue
+        if isinstance(row.get('prompt'), dict) and row['prompt'].get('sha256') == wanted:
+            asked.append(row['ts'])
+        elif row.get('event') == 'wake.sync' and row.get('outcome') == 'indexed':
+            passes.append(row['ts'])
+        elif row.get('event') == 'index.publish' and row.get('outcome') == 'published':
+            publishes.append(row['ts'])
+    if asked and max(passes or ['']) > min(asked) and max(publishes or ['']) > min(asked):
+        count += 1
 print(count)
 '''
+# How often the time of the change is read again after the commit.
+AFTER_TS_READS = 5
 
 
 def apply_delta(remote, out, *, host=None, last_ts=None, pause=time.sleep, publish_reads=90, **sending):
     """Apply the RS-SYNC change to the remote fixture and record it in the plan.
 
-    Only the three changed documents and cards are written or removed, and only
-    those paths are staged: whatever else the project holds by then (the host's
-    own files, an edit a prompt asked for) stays as it is. The newest event row
-    on the account is read after the commit and kept as ``afterTs``; a sync pass
-    counts for RS-SYNC only when it is later. Without a readable time nothing
-    is changed. With ``host``, the refresh prompt is then sent to that host's
-    session (nothing else wakes a sync after a change made outside a hook) and
-    a publish later than the change is waited for (``syncSeen``).
+    Only the three changed documents and cards are written or removed, and the
+    commit names only those paths: whatever else the project holds by then (the
+    host's own files, staged or not, an edit a prompt asked for) stays as it
+    is. The newest event row on the account is read after the commit and kept
+    as ``afterTs``; a sync pass counts for RS-SYNC only when it is later.
+    Without a readable time nothing is changed. When the time cannot be read
+    after the commit, the one read before it is kept and
+    ``afterTsBeforeCommit`` is true: the operator compares the rows by hand.
+    With ``host``, the refresh prompt is then sent to that host's session
+    (nothing else wakes a sync after a change made outside a hook) and the
+    install that recorded this prompt is watched for an indexed sync pass and a
+    publish later than the prompt's row (``syncSeen``). A change cut before
+    its plan was saved is applied again by the same call.
     """
     from tests.support import smoke_fixture
     out = Path(out)
     plan = _load_plan(out)
     tree = out / TREE
-    if not (last_ts or last_event_time(remote)):
+    before = last_ts or last_event_time(remote)
+    if not before:
         raise RuntimeError('no event time can be read on the account: the change is not applied')
     after = smoke_fixture.delta(tree, plan)
     change = after['delta']
@@ -533,14 +550,24 @@ def apply_delta(remote, out, *, host=None, last_ts=None, pause=time.sleep, publi
     removed = [change['deleted']['source'], change['deleted']['file']]
     for name in written:
         remote.put(tree / name, '%s/%s' % (target, name))
+    gone, kept = (' '.join(shlex.quote(name) for name in names) for names in (removed, written))
+    # The commit names the six paths: what a host session staged by itself is not in it.
     code, _out, err = remote.run(
         'cd %s && %s rm -q --ignore-unmatch -- %s && %s add -- %s && '
-        '{ %s diff --cached --quiet || %s commit -qm change; }'
-        % (rpath(target), _GIT, ' '.join(shlex.quote(name) for name in removed),
-           _GIT, ' '.join(shlex.quote(name) for name in written), _GIT, _GIT))
+        '{ %s diff --cached --quiet -- %s %s || %s commit -qm change -- %s %s; }'
+        % (rpath(target), _GIT, gone, _GIT, kept, _GIT, gone, kept, _GIT, gone, kept))
     if code:
         raise RuntimeError('change commit failed: ' + err.strip()[:200])
-    change['afterTs'] = last_ts or last_event_time(remote)
+    after_ts = last_ts
+    for _ in range(AFTER_TS_READS):
+        if after_ts:
+            break
+        after_ts = last_event_time(remote)
+        if not after_ts:
+            pause(1)
+    change['afterTs'] = after_ts or before
+    if not after_ts:
+        change['afterTsBeforeCommit'] = True
     _save(_plan_path(out), after)
     for name in ('P4', 'PS'):
         (out / ('prompt-%s.txt' % name)).write_text(after['prompts'][name]['text'], encoding='utf-8')
@@ -548,9 +575,9 @@ def apply_delta(remote, out, *, host=None, last_ts=None, pause=time.sleep, publi
         asked = send(remote, out, host, 'PS', pause=pause, **sending)
         seen = False
         if sent(asked):
-            count = 'python3 -B - %s' % shlex.quote(change['afterTs'])
+            count = 'python3 -B - %s' % shlex.quote(after['prompts']['PS']['sha256'])
             for _ in range(publish_reads):
-                code, text, _err = remote.run(count, stdin=_PUBLISHED_AFTER)
+                code, text, _err = remote.run(count, stdin=_SYNCED_AFTER_PROMPT)
                 if code == 0 and text.strip().isdigit() and int(text.strip()) > 0:
                     seen = True
                     break

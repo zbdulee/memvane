@@ -19,7 +19,7 @@ card bodies. Record a run with the
 | P1 static | Every host manifest, the marketplace entries and `teacher_model_tiers.RELEASE` carry the version of `package.json` (a test asserts it). The old-bundle compatibility tags are the three previous releases. Document links resolve. When a provider file changed, the known worker/provider SHA pair table holds the previous release. Every external address the product downloads from is pinned and listed (structure tests). The teacher tier table was compared with each host's model documentation (a person records the date). | PR CI |
 | P2 focused | The changed domains and what they affect, on Python 3.13 and on `/usr/bin/python3` (3.9). | guard run ids |
 | P3 PR CI | Every job green, including the macOS arm64 job on the system Python 3.9. | run URL |
-| P4 full suite | `npm test` on the final commit in its own worktree, which is not edited while the suite runs. | three guard run ids |
+| P4 full suite | `npm test` on the final commit in its own worktree, which is not edited while the suite runs. | four guard run ids |
 | P5 real model | The resident embedding smoke below. When the learning cycle path changed, also the real-model learning check. A guard refusal or stop is not a pass. | guard run id |
 | P6 independent review | A review of the final patch with no blocking finding. | review document |
 
@@ -100,7 +100,7 @@ whatever the window shows.
 | recall | After the vector generation is published: a short prompt and a 12,000 character prompt, each targeting a different card. | RS-RECALL per host |
 | repeat | The short prompt again in the same session. | RS-DEDUP |
 | edit | A request to append a fixed paragraph to one file with the host's edit tool. | RS-EDIT per host |
-| sync | The tool writes, removes and commits exactly the three changed documents and their cards (nothing else in the project is touched or staged), records the time of the account's newest event row, and asks one host session to refresh the index: a change made outside a hook wakes no sync by itself. It waits for a publish later than that time and exits non-zero without one. A prompt then names all three documents. Only a sync pass and a publish later than the recorded time count; without the time nothing is changed. | RS-SYNC |
+| sync | The tool writes, removes and commits exactly the three changed documents and their cards (nothing else in the project is touched, and the commit names only those paths), records the time of the account's newest event row, and asks one host session to refresh the index: a change made outside a hook wakes no sync by itself. In the log of the install that recorded the request it waits for an indexed sync pass and a publish later than the request's row, and exits non-zero without them. A run cut in the middle is run again with the same record directory. A prompt then names all three documents. Only a sync pass and a publish later than the recorded time count; without the time nothing is changed. | RS-SYNC |
 | verdict | The tool copies the listed fields of the project's event rows and writes the gate files. | — |
 
 A recall passes when its row is `semantic: complete` with at least one
