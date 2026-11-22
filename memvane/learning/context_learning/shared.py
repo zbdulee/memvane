@@ -2174,7 +2174,10 @@ def run_training_pending(root,project):
             path=root/candidate_apply.JOURNAL
             if path.exists() or path.is_symlink():
                 intent=candidate_apply.read_journal(root)
-                if intent['phase'] not in ('activated','rejected'):
+                # Something is committed under ``prepared`` and later: that application is
+                # resumed first. An ``intent`` commits nothing, so the pass goes on as usual
+                # and a stale evaluation is refreshed before the candidate is applied.
+                if intent['phase'] not in ('activated','rejected','intent'):
                     if not profile['autoApply']:return {'status':'apply_blocked','reason':'profile_apply_disabled'}
                     return _profile_apply(root,policy,profile,{'status':'already_staged_evaluated','cycle_id':intent['cycle_id']})
                 if intent['phase']=='activated':

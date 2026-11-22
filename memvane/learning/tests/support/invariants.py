@@ -16,7 +16,10 @@ Rules (design appendix B-3):
 - I-4 a ``staged`` or ``staged_evaluated`` cycle has a ``staged`` job, and its
   candidate artifact is the file its evidence names with the recorded hash.
 - I-5 every consumed evidence key is a member of a ``staged`` job.
-- I-8 a ``blocked`` job has a reason.
+- I-6 a ``completed`` evaluation belongs to a ``staged_evaluated`` or ``applied`` cycle.
+- I-7 an ``activated`` application journal: the active pointer is its new pointer and
+  its cycle is ``applied`` (G-7: the pointer is the journal's old or new pointer).
+- I-8 a ``blocked`` job or evaluation has a reason.
 - I-9 at most one job of an (approval, cohort, family) is neither ``staged``
   nor ``blocked``.
 - G-1 one teacher call per (project, input): at most one ledger row of an
@@ -103,6 +106,14 @@ def _jobs(db, tables):
             status, members, _ = jobs.get(job_id, (None, set(), None))
             if status != 'staged' or key not in members:
                 found.append('I-5 consumed key of job %s (%s)' % (job_id, status))
+    cycles = dict(db.execute('SELECT cycle_id,status FROM cycles'))
+    if 'learning_evaluations' in tables:
+        for cycle_id, status, reason in db.execute('SELECT cycle_id,status,reason FROM learning_evaluations'):
+            if status == 'blocked' and not reason:
+                found.append('I-8 evaluation of %s blocked without a reason' % cycle_id)
+            if status == 'completed' and cycles.get(cycle_id) not in ('staged_evaluated', 'applied'):
+                found.append('I-6 completed evaluation of a %s cycle %s' % (cycles.get(cycle_id), cycle_id))
+    found += _application(Path(db.execute('PRAGMA database_list').fetchone()[2]).parent, cycles)
     for cycle_id, status, evidence in db.execute('SELECT cycle_id,status,evidence FROM cycles'):
         if status not in ('staged', 'staged_evaluated'):
             continue
@@ -112,4 +123,23 @@ def _jobs(db, tables):
         path = Path(str(stage.get('artifactPath', '')))
         if not path.is_file() or shared._hash(path) != stage.get('artifactSha256'):
             found.append('I-4 cycle %s artifact differs from its evidence' % cycle_id)
+    return found
+
+
+def _application(root, cycles):
+    from memvane.learning.context_learning import candidate_apply
+    journal, pointer = root / candidate_apply.JOURNAL, root / 'active-checkpoint.json'
+    if not journal.is_file() or not pointer.is_file():
+        return []
+    row, active = _json(journal.read_text()), _json(pointer.read_text())
+    if not isinstance(row, dict):
+        return ['I-7 unreadable application journal']
+    found = []
+    if active not in (row.get('old_pointer'), row.get('new_pointer')):
+        found.append('G-7 the active pointer is neither pointer of the application journal')
+    if row.get('phase') == 'activated':
+        if active != row.get('new_pointer'):
+            found.append('I-7 activated application with another active pointer')
+        if cycles.get(row.get('cycle_id')) != 'applied':
+            found.append('I-7 activated application of a %s cycle' % cycles.get(row.get('cycle_id')))
     return found

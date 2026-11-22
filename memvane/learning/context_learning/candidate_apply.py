@@ -186,8 +186,10 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
         path=root/JOURNAL
         row=read_journal(root) if path.exists() or path.is_symlink() else None
         if row and row['cycle_id']!=cycle_id:
-            if row['phase'] not in ('activated','rejected'):raise ValueError('apply_other_transaction_pending')
-            _archive(root,row);row=None
+            # Another candidate's intent commits nothing and is replaced; a finished journal is archived.
+            if row['phase'] not in ('activated','rejected','intent'):raise ValueError('apply_other_transaction_pending')
+            if row['phase']!='intent':_archive(root,row)
+            row=None
         if row is not None and row['phase']=='intent' and row.get('retry_at',0)>time.time():
             return {'status':'apply_deferred','next_retry':row['retry_at'],'cycle_id':cycle_id}
         if row is None or row['phase']=='intent':

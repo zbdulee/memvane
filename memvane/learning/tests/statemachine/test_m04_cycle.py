@@ -19,6 +19,8 @@ from memvane.learning.tests.support import invariants
 from memvane.learning.tests.integration.test_carry_122 import CarryFixture, FakeTrainer
 
 TRAIN_EVENTS = ('train_started', 'trained', 'train_failed', 'train_deferred')
+# Driven by ``EvaluationAndApplication`` below (``carried`` by the real renewal of
+# ``memvane/learning/tests/integration/test_carry_122.py``).
 NOT_DRIVEN = {'evaluated', 'reevaluation_needed', 'carried', 'applied'}
 
 
@@ -185,6 +187,66 @@ class CycleTable(CycleFixture):
         self.trained.clear()
         self.cycle_events.clear()
         self.groups = 0
+
+
+class EvaluationAndApplication(CycleFixture):
+    """The evaluation and application events of M4, through the worker command."""
+
+    def pointer(self):
+        return json.loads((self.root / 'active-checkpoint.json').read_text())
+
+    def evaluation(self):
+        return next(iter(self.evaluations().values()), (None, None))[0]
+
+    def test_a_staged_cycle_is_evaluated_and_an_improved_candidate_is_applied(self):
+        self.attempt()
+        self.assertEqual((self.cycle(), self.evaluation()), ('staged', 'waiting_quality'))
+        before = self.pointer()
+        self.golds('v', 50, empty=10)
+        result = self.attempt()
+        self.assertEqual(result['status'], 'applied', result)
+        # staged -> staged_evaluated -> applied in one pass (M4 ``evaluated``, ``applied``).
+        self.assertEqual((self.cycle(), self.evaluation()), (M4.next(M4.next('staged', 'evaluated'), 'applied'),
+                                                             'completed'))
+        after = self.pointer()
+        self.assertNotEqual(after, before)
+        first = self.job()[0]
+        self.assertEqual(after['cycle_id'], first)
+        self.assertEqual(self.violations(), [])
+        # A later pass plans the next job; the applied cycle and the pointer stay.
+        self.due_now()
+        self.worker()
+        self.assertEqual((self.pointer(), self.cycle_rows()[first]), (after, 'applied'))
+        self.assertEqual(self.violations(), [])
+
+    def test_an_evaluated_candidate_that_cannot_be_applied_yet_is_evaluated_again_when_stale(self):
+        from memvane.learning.context_learning.local_cycle import ResourceDeferred
+
+        def busy(command, record):
+            raise ResourceDeferred('apply_busy')
+        self.attempt()
+        self.golds('v', 50, empty=10)
+        self.transport = busy
+        self.assertEqual(self.attempt()['status'], 'apply_deferred')
+        self.assertEqual((self.cycle(), self.evaluation()), ('staged_evaluated', 'completed'))
+        scored = len(self.predicted)
+        # The evaluation grows old while the application waits (M4 ``reevaluation_needed``).
+        with shared._db(self.root) as db:
+            evidence = json.loads(db.execute('SELECT evidence FROM cycles').fetchone()[0])
+            evidence['metrics']['evaluatedAt'] = 1
+            db.execute('UPDATE cycles SET evidence=?', (json.dumps(evidence, sort_keys=True, separators=(',', ':')),))
+        del self.transport
+        with shared._db(self.root) as db:
+            db.execute("UPDATE learning_evaluations SET retry_at=0")
+        journal = self.root / 'candidate-apply.json'
+        waiting = json.loads(journal.read_text())
+        waiting['retry_at'] = 0
+        journal.write_text(json.dumps(waiting))
+        journal.chmod(0o600)
+        result = self.attempt()
+        self.assertEqual(result['status'], 'applied', result)
+        self.assertEqual(len(self.predicted), scored + 2)
+        self.assertEqual((self.cycle(), self.violations()), ('applied', []))
 
 
 class TrainingAttempts(CycleFixture):
