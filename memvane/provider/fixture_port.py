@@ -38,6 +38,11 @@ The spec (``schema`` ``memvane-test-provider-fixture-v1``)::
     queryEmbedding     what the query embed child answers: 'vector' (the spec
                        vector, the default) or 'provider_unavailable' (a cold
                        provider)
+    queryMaxChars      a query text longer than this is refused with
+                       provider_result_invalid, as the worker refuses a text
+                       past its context (default: no bound)
+    queryLog           True appends the character count of every query text
+                       asked to ``provider-query-log`` beside the spec
 
 The fixture handle embeds one chunk per document: a body over the first
 chunking pass's single-chunk bound (2,700 UTF-16 units) is refused.
@@ -147,17 +152,20 @@ class FixtureProvider:
         admission = spec.get('queryAdmission', 'refuse')
         embedding = spec.get('queryEmbedding', 'vector')
         changed = spec.get('identityChanged', False)
+        bound, logged = spec.get('queryMaxChars'), spec.get('queryLog', False)
         if (not isinstance(vector, list) or len(vector) != dimension
                 or not all(type(x) in (int, float) for x in vector)
                 or not all(isinstance(x, str) and _SHA.fullmatch(x) for x in (proposal, runtime))
                 or admission not in ('refuse', 'admit')
-                or embedding not in ('vector', 'provider_unavailable') or type(changed) is not bool):
+                or embedding not in ('vector', 'provider_unavailable') or type(changed) is not bool
+                or (bound is not None and (type(bound) is not int or bound < 1)) or type(logged) is not bool):
             raise ValueError('provider_fixture_invalid')
         self.dimension = dimension
         self.vector = [float(x) for x in vector]
         self.proposal_sha256, self.runtime_files_sha256 = proposal, runtime
         self.query_admission, self.identity_changed = admission, changed
         self.query_embedding = embedding
+        self.query_max_chars, self.query_log = bound, logged
 
     def vector_profile(self):
         from memvane.kernel.bundle_paths import PROVIDER_RELATIVE_PATH
@@ -215,6 +223,15 @@ class FixtureProvider:
 
     def query_result(self, request):
         """The query embed child's answer: ``{'vector': [...]}`` or ``{'error': code}``."""
+        if self.query_log:
+            path = Path(os.environ['MEMVANE_TEST_RUNTIME_ROOT']) / 'provider-query-log'
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+            try:
+                os.write(fd, (str(len(request['prompt'])) + '\n').encode())
+            finally:
+                os.close(fd)
+        if self.query_max_chars is not None and len(request['prompt']) > self.query_max_chars:
+            return {'error': 'provider_result_invalid'}
         if self.query_embedding == 'vector':
             return {'vector': list(self.vector)}
         code = self.query_embedding

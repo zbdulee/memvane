@@ -66,6 +66,14 @@ class FixtureSeamChecks(unittest.TestCase):
         os.symlink(target, self.root / FIXTURE_FILE)
         yield 'symlink spec', str(self.root)
 
+    def test_a_chunked_request_without_a_seam_answers_the_production_refusal_too(self):
+        request = {'manifest': self.manifest, 'prompt': 'q' * 7000, 'timeout': 1, 'chunks': True,
+                   'allowed': ['provider_closure_unapproved']}
+        result = subprocess.run(provider.query_embed_child_argv(), input=json.dumps(request), text=True,
+                                capture_output=True, timeout=60, env=self.environ(None))
+        self.assertEqual((result.returncode, json.loads(result.stdout)),
+                         (0, {'error': 'provider_closure_unapproved'}))
+
     def test_without_an_active_seam_both_checks_stay_production(self):
         seen = []
         for label, value in self.off_cases():

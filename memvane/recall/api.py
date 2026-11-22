@@ -29,10 +29,10 @@ def approved_profile_matches(candidate, proof):
     return implementation(candidate, proof)
 
 
-def approved_query_vector(*, authority, snapshot, decision, provider, prompt, deadline):
+def approved_query_vector(*, authority, snapshot, decision, provider, prompt, deadline, info=None):
     from memvane.recall.reader_dispatch import approved_query_vector as implementation
     return implementation(authority=authority, snapshot=snapshot, decision=decision, provider=provider,
-                          prompt=prompt, deadline=deadline)
+                          prompt=prompt, deadline=deadline, info=info)
 
 
 def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline, snapshot=None, decision=None,

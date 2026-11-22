@@ -25,6 +25,7 @@ def _fused_sources(lexical, nearest, timings):
     rows = _fuse_verified_lists(lists, max_rows=15) if any(lists) else []
     if timings is not None:
         semantic = {row['path'] for row in nearest or []}
+        timings['semanticOnly'] = sorted(semantic - {row['path'] for lane in lexical for row in lane})
         timings['semanticSources'] = {row['path']: timings.get('vectorSource', 'python')
                                      if row['path'] in semantic else 'lexical' for row in rows}
     return rows
@@ -96,11 +97,14 @@ def _vector_proof(authority,snapshot,decision,provider,deadline):
 
 
 def _provider_vector(provider,prompt,budget):
-    """Use the existing provider in a child with an absolute completion bound."""
+    """``(vectors, requested)`` from the existing provider in a child with an absolute completion bound.
+
+    A long prompt comes back as up to four window vectors (``query_embed_child.embed_chunks``).
+    """
     from memvane.kernel.errors import IndexContractError
     from memvane.provider.api import query_embed_child_argv
     deadline=time.monotonic()+budget
-    payload=json.dumps({'manifest':provider.manifest,'prompt':prompt,'timeout':budget,
+    payload=json.dumps({'manifest':provider.manifest,'prompt':prompt,'timeout':budget,'chunks':True,
                         'allowed':sorted(_PROVIDER_ERRORS)},
                        ensure_ascii=True,separators=(',',':'))
     child=subprocess.Popen(query_embed_child_argv(),
@@ -124,7 +128,11 @@ def _provider_vector(provider,prompt,budget):
     try:
         result=json.loads(out)
         if isinstance(result,dict) and set(result)=={'vector'}:
-            return result['vector']
+            return [result['vector']],1
+        if (isinstance(result,dict) and set(result)=={'vectors','requested'} and type(result['vectors']) is list
+                and 1<=len(result['vectors'])<=4 and type(result['requested']) is int
+                and len(result['vectors'])<=result['requested']<=64):
+            return result['vectors'],result['requested']
         if isinstance(result,dict) and set(result)=={'error'} and result['error'] in _PROVIDER_ERRORS:
             raise IndexContractError(result['error'])
     except (TypeError,ValueError) as exc:
@@ -133,16 +141,26 @@ def _provider_vector(provider,prompt,budget):
     raise IndexContractError('provider_result_invalid')
 
 
+def _vector_key(vector):
+    """One query vector or a list of them as a tuple of tuples."""
+    several=type(vector) in (list,tuple) and vector and type(vector[0]) in (list,tuple)
+    return tuple(tuple(item) for item in (vector if several else [vector]))
+
+
 @contextmanager
-def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline):
-    """Bind one provider result to the live v6 snapshot and calling context."""
+def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline,info=None):
+    """Bind one provider result to the live v6 snapshot and calling context.
+
+    Yields one query vector, or a list of them for a prompt asked as windows.
+    ``info`` receives ``queryChunks`` (vectors answered) and ``queryChunksRequested``.
+    """
     from memvane.store.api import query_values
     from memvane.kernel.errors import IndexContractError
     proof=_vector_proof(authority,snapshot,decision,provider,deadline)
     remaining=min(2,deadline-time.monotonic())
     if remaining<=0:raise ValueError('reader_snapshot_deadline')
     try:
-        vector=_provider_vector(provider,prompt,remaining)
+        vectors,requested=_provider_vector(provider,prompt,remaining)
     except IndexContractError as exc:
         if str(exc) not in ('provider_unavailable','provider_identity_mismatch',
                             'provider_result_invalid','provider_socket_invalid','provider_socket_changed'):
@@ -151,11 +169,15 @@ def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline
             raise ValueError('reader_vector_caller_unproved')
         yield None
         return
-    query_values(vector)
+    for vector in vectors:
+        query_values(vector)
+    if info is not None:
+        info.update(queryChunks=len(vectors),queryChunksRequested=requested)
+    vector=vectors[0] if len(vectors)==1 else [list(item) for item in vectors]
     if _vector_proof(authority,snapshot,decision,provider,deadline)!=proof:
         raise ValueError('reader_vector_caller_unproved')
     active=[True]
-    entry=(authority,snapshot,copy.deepcopy(decision),provider,prompt,tuple(vector),deadline,copy.deepcopy(proof),active)
+    entry=(authority,snapshot,copy.deepcopy(decision),provider,prompt,_vector_key(vector),deadline,copy.deepcopy(proof),active)
     token=_approved_vectors.set((*_approved_vectors.get(),entry))
     try:
         yield list(vector)
@@ -326,11 +348,12 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
     valid=None
     if query_vector is not None:
         from memvane.store.api import query_values
-        query_values(query_vector)
+        for item in _vector_key(query_vector):
+            query_values(item)
         valid=[entry for entry in _approved_vectors.get()
                if entry[0] is authority and authority is endpoint and entry[1] is None
                and entry[2]==decision and entry[3] is provider and entry[4]==prompt
-               and entry[5]==tuple(query_vector) and entry[8][0] and time.monotonic()<entry[6]]
+               and entry[5]==_vector_key(query_vector) and entry[8][0] and time.monotonic()<entry[6]]
         if not valid:
             raise ValueError('reader_vector_caller_unproved')
         deadline=min(deadline,valid[-1][6])

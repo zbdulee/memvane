@@ -23,6 +23,8 @@ macOS exact semantic 검색은 `view/vector_accel.py`의 지연 로드 Accelerat
 
 다른 도메인은 `memvane.store.api`의 함수만 쓴다. `open_store`가 돌려준 열린 view store의 공개 메서드(`capture_view`, `head`, `pin_view`, `release`, `prepare_generation`, `publish_generation`, `ingest_attested_card`, `fill_view`, `fill_status`, `search_exact`, `vectors`, `close` 등)는 그대로 부른다. 그 밖에 store의 `_` 멤버나 store 테이블(`store_meta`, `worktrees`, `s_*`, `embedding_sets`, `chunk_sets` 등)이 필요한 읽기·쓰기는 아래 함수로 한다.
 
+`search`·`search_exact`·`search_hybrid`는 경로 제외(`excluded_paths`)와 함께 `excluded_cards`(`[상대 경로, blob sha]` 256쌍 이하)를 받는다. pin한 세대의 행과 쌍으로 대조하므로 같은 경로라도 sha가 다른 카드는 후보로 남고, 제외된 카드는 한도를 쓰지 않으며 exact lane은 그 벡터를 읽지 않는다(지운 적격 카드 수는 `vectorExcluded`). `search_exact`의 `query_vector`는 벡터 하나 또는 1~4개의 목록이고, 목록이면 한 번의 읽기에서 카드별 최고 점수를 낸다.
+
 - `application/store_ops.py` — 수명과 정체성(`observe_binding`: 열거나 만들고 워크트리 하나를 관측한 뒤 닫는다, `open_store`, `store_identity`), store 헤더·워크트리 행 읽기(`read_header`: store 파일을 직접 열어 한 query_only 스냅샷으로 `store_meta`와 워크트리 행을 읽고 `types.STORE_HEADER_KEYS` dict나 None을 돌려준다. `recover=True`는 hot journal을 rollback한다. 파일 정체 대조는 호출자가 앞뒤로 한다), pinned 읽기(`pinned_vector`, `vector_profile`, `eligible_members`, `worktree_wiki_root`), `skipPaths` 판정(`admitted_paths`).
 - `application/view_sync.py` — sync owner의 view pass가 쓰는 store 읽기·쓰기(`read_view_baseline`, `head_same`, `compile_evidence_stored`, `linked_worktree_id`, `embedding_sets_missing`, `embedding_coverage`, `fill_plan`, `put_source_fingerprints`). 무엇을 넣고 언제 게시할지와 journal fence는 sync가 정한다.
 - 값 함수 — checkout capture(`capture_view`, `capture_matches`), provider vector spec(`provider_spec`, `register_provider_spec`, `qmd_first_pass`, `query_values`, `profile`), blob 값(`regular`, `digest`, `markdown_title`, `provenance_digests`, `relative`).

@@ -21,10 +21,11 @@ def _fail(code: str):
 def _search_trace(trace, timings):
     """Keep candidate paths off the bounded recall event; capture retains them."""
     sources = timings.pop('semanticSources', {})
+    only = frozenset(timings.pop('semanticOnly', ()))
     trace.fields(**timings)
     if timings.get('vectorKernelUnavailable'):
         trace.note('laya_vector_kernel_unavailable')
-    return sources
+    return sources, only
 
 
 def _vector_off_fallback(decision, main_proof, vector_off, trace):
@@ -105,13 +106,13 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
     with ExitStack() as stack:
         vector = None
         if provider is not None and not vector_off and not unsealed:
-            started = time.monotonic()
+            started, chunks = time.monotonic(), {}
             try:
                 vector = stack.enter_context(dispatch.approved_query_vector(
                     authority=endpoint, snapshot=None, decision=decision, provider=provider,
-                    prompt=prompt, deadline=deadline))
+                    prompt=prompt, deadline=deadline, info=chunks))
             finally:
-                trace.fields(queryEmbeddingMs=round((time.monotonic() - started) * 1000, 3))
+                trace.fields(queryEmbeddingMs=round((time.monotonic() - started) * 1000, 3), **chunks)
             if vector is None and not vector_off:
                 vector_off.append('provider_unavailable')
         for attempt in range(2):
@@ -123,7 +124,7 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
                         deadline=deadline, snapshot=None, decision=decision, provider=provider,
                         authority=endpoint, linked=linked, timings=timings)
                 finally:
-                    semantic_sources = _search_trace(trace, timings)
+                    semantic_sources, semantic_only = _search_trace(trace, timings)
                 break
             except Exception as exc:
                 # Design 5.1/5.2: a cold view, or a checkout that moved twice
@@ -188,6 +189,9 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
         vector_fallback=vector_fallback, allow_mixed_generation=False, trace=trace,
         own_view=own_view)
     answer.capture_sources = semantic_sources
+    if result.semantic_status == 'complete':
+        # Injected cards the lexical lists did not have: what the semantic lane added.
+        trace.fields(semanticOnlyInjected=sum(row['path'] in semantic_only for row in answer.rows))
     return answer
 
 
