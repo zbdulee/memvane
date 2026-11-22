@@ -1,15 +1,18 @@
 # Release agent QA gate
 
-Every version release must pass this agent-executed QA gate on the **final
-installed candidate**. The gate does not rerun unit tests. It is a set of
+This is the contract of the full run (Q6 of the
+[release checklist](release.md)): an agent-executed QA of the **final
+installed version**, performed for every minor version. It does not block a
+merge or a release; the checks that do are P1 to P6 of the checklist, and the
+per-release smoke is its RS-core. The run does not rerun unit tests. It is a set of
 reproducible scenarios that an operator agent performs in fresh, real Claude
 Code and Codex host sessions, against disposable synthetic fixtures. Each
 scenario captures objective evidence. Record each run with
 [the run record template](templates/release-agent-qa-run.md). The
 [release checklist](release.md) links here.
 
-Open QA items, including the user-deferred assertions, are tracked in
-[TODO.md](TODO.md).
+Open QA items, including the user-deferred assertions, are tracked in the
+[roadmap](ROADMAP.md).
 The [architecture flow charts](architecture/flows/README.md) explain the
 implemented paths and boundaries; they are not L1 verdicts.
 

@@ -70,6 +70,6 @@ flowchart TD
 
 ### QA 증거와 미검증
 
-- 학습 자원 QA 계약(`RQA-RES-02`)은 [release-agent-qa.md](../../release-agent-qa.md)에 있습니다. 실제 학습 실행은 검증되지 않았고, 학습 결과가 recall에 반영되는지도 검증되지 않았습니다. 열린 항목은 [TODO](../../TODO.md)의 「학습 runtime」 절에 있습니다.
+- 학습 자원 QA 계약(`RQA-RES-02`)은 [release-agent-qa.md](../../release-agent-qa.md)에 있습니다. 실제 학습 실행은 검증되지 않았고, 학습 결과가 recall에 반영되는지도 검증되지 않았습니다. 열린 항목은 [로드맵](../../ROADMAP.md)에 있습니다.
 - checkpoint 선택 pointer(`live_select`) 코드는 이 문서의 설명 범위 밖이라 도표에서 노드 하나로 표시했습니다.
 - learning profile action과 `project-learning-setup.json`이 어떻게 연결되는지는 발췌로 확인하지 못했습니다. 그래서 도표에서 점선으로 표시했습니다.

@@ -8,9 +8,9 @@ MemVane은 프로젝트 안의 문서, 메모, wiki를 자동으로 찾아서
 
 지원 에이전트:
 
-- Claude Code
-- Codex
-- Hermes Agent
+- Claude Code (매 출시 검증)
+- Codex (매 출시 검증)
+- Hermes Agent (미검증)
 
 설치 후 사용자는 터미널 명령을 외우지 않아도 됩니다. 프로젝트 온보딩,
 인덱스 갱신, recall 진단 같은 작업은 에이전트에게 자연어로 요청하면
@@ -37,11 +37,11 @@ embedding model file and checks it against a fixed hash. If that download is
 refused or unavailable, ask the agent to prepare the runtime from a local copy
 of the same model file; a file with any other content is not accepted.
 
-| Host | Installation route | Runtime support |
-|---|---|---|
-| Claude Code | Claude plugin marketplace | recall, update, gate, post-edit sync, wiki compile |
-| Codex | Codex plugin marketplace | recall, update, gate, post-edit sync, wiki compile |
-| Hermes Agent | Hermes plugin install | recall, update, gate, post-edit sync, wiki compile |
+| Host | Installation route | Runtime support | Verification |
+|---|---|---|---|
+| Claude Code | Claude plugin marketplace | recall, update, gate, post-edit sync, wiki compile | verified on every release |
+| Codex | Codex plugin marketplace | recall, update, gate, post-edit sync, wiki compile | verified on every release |
+| Hermes Agent | Hermes plugin install | recall, update, gate, post-edit sync, wiki compile | not verified |
 
 For data handling, including the optional wiki-compile path, see
 [docs/privacy.md](docs/privacy.md). For commands and Korean-language setup,
