@@ -13,6 +13,12 @@ Rules (design appendix B-3):
   hash is the hash of the choice kept in the case.
 - I-3 a ``gold`` case of the default teacher (``review: single_pass``) has a
   ledger row at ``committed``.
+- I-4 a ``staged`` or ``staged_evaluated`` cycle has a ``staged`` job, and its
+  candidate artifact is the file its evidence names with the recorded hash.
+- I-5 every consumed evidence key is a member of a ``staged`` job.
+- I-8 a ``blocked`` job has a reason.
+- I-9 at most one job of an (approval, cohort, family) is neither ``staged``
+  nor ``blocked``.
 - G-1 one teacher call per (project, input): at most one ledger row of an
   input is at a stage other than ``pre_send_rejected``.
 """
@@ -74,4 +80,36 @@ def check(root):
                 value = _json(gold)
                 if isinstance(value, dict) and value.get('review') == 'single_pass' and stage != 'committed':
                     found.append('I-3 %s gold with ledger %s' % (rid, stage))
+        if 'learning_jobs' in tables:
+            found += _jobs(db, tables)
+    return found
+
+
+def _jobs(db, tables):
+    found, jobs = [], {}
+    for job_id, approval, cohort, family, manifest, status, reason in db.execute(
+            'SELECT job_id,approval,cohort,family,manifest,status,reason FROM learning_jobs'):
+        value = _json(manifest)
+        members = {m.get('key') for m in value.get('members', [])} if isinstance(value, dict) else set()
+        jobs[job_id] = (status, members, (approval, cohort, family))
+        if status == 'blocked' and not reason:
+            found.append('I-8 job %s blocked without a reason' % job_id)
+    open_keys = [key for status, _members, key in jobs.values() if status not in ('staged', 'blocked')]
+    for key in sorted(set(open_keys)):
+        if open_keys.count(key) > 1:
+            found.append('I-9 %d open jobs of one approval, cohort and family' % open_keys.count(key))
+    if 'learning_consumption' in tables:
+        for key, job_id in db.execute('SELECT evidence_key,job_id FROM learning_consumption'):
+            status, members, _ = jobs.get(job_id, (None, set(), None))
+            if status != 'staged' or key not in members:
+                found.append('I-5 consumed key of job %s (%s)' % (job_id, status))
+    for cycle_id, status, evidence in db.execute('SELECT cycle_id,status,evidence FROM cycles'):
+        if status not in ('staged', 'staged_evaluated'):
+            continue
+        if jobs.get(cycle_id, (None,))[0] != 'staged':
+            found.append('I-4 cycle %s %s with job %s' % (cycle_id, status, jobs.get(cycle_id, (None,))[0]))
+        stage = _json(evidence) or {}
+        path = Path(str(stage.get('artifactPath', '')))
+        if not path.is_file() or shared._hash(path) != stage.get('artifactSha256'):
+            found.append('I-4 cycle %s artifact differs from its evidence' % cycle_id)
     return found

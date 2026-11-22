@@ -62,6 +62,17 @@ teacher)만 담는다.
 | `active` | `captured_before_grant` | `historical` | `default_teacher._migration_ready` |
 | `active` | `scope_changed` | `historical` | `default_teacher._default_case` |
 
+## M1T case training mark
+
+- 저장 위치: learning DB cases.trained_cycle
+- lock: learning-claim.lock
+- 쓰는 주체: learning cycle of the project worker
+- 상태: `unmarked`, `marked` (종결)
+
+| 상태 | 사건 | 다음 | 쓰는 곳 |
+|---|---|---|---|
+| `unmarked` | `cycle_staged` | `marked` | `automatic_staging._train_pinned` |
+
 ## M2 gold ledger
 
 - 저장 위치: learning DB project_gold_attempts.stage

@@ -115,6 +115,16 @@ M1U = Machine(
         'scope_changed': _TEACHER + '_default_case',
     })
 
+# M1T: whether a gold case was a member of a finished training (``cases.trained_cycle``).
+# Set once, with the cycle id, in the transaction that stages the cycle.
+M1T = Machine(
+    'M1T', 'case training mark', store='learning DB cases.trained_cycle',
+    lock='learning-claim.lock', owner='learning cycle of the project worker',
+    states=('unmarked', 'marked'),
+    terminal=('marked',),
+    transitions={('unmarked', 'cycle_staged'): 'marked'},
+    where={'cycle_staged': 'memvane.learning.context_learning.automatic_staging._train_pinned'})
+
 # M2: the dispatch identity of one case's teacher call (``project_gold_attempts.stage``).
 # A stage that proves nothing was answered (``pre_send_rejected``, ``provider_refused``)
 # is reserved again by a later pass; ``answer_parked`` is never touched by ``recover``.
@@ -253,4 +263,4 @@ M4 = Machine(
         'applied': 'memvane.learning.context_learning.candidate_apply._finish_cycle',
     })
 
-MACHINES = (M1, M1U, M2, M3, M4, M15)
+MACHINES = (M1, M1U, M1T, M2, M3, M4, M15)

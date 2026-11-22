@@ -14,7 +14,8 @@ import os
 from unittest import mock
 
 from memvane.learning.context_learning import automatic_staging, learning_queue, shared
-from memvane.learning.context_learning.state_model import ABSENT, M4
+from memvane.learning.context_learning.state_model import ABSENT, M1T, M4
+from memvane.learning.tests.support import invariants
 from memvane.learning.tests.integration.test_carry_122 import CarryFixture, FakeTrainer
 
 TRAIN_EVENTS = ('train_started', 'trained', 'train_failed', 'train_deferred')
@@ -44,6 +45,9 @@ class ScriptedTrainer(FakeTrainer):
             super().call(mode, request, result_path, cwd=cwd)
             raise ValueError('trainer_failed')
         if step == 'end_process':
+            raise ProcessEnded()
+        if step == 'artifact_then_end':
+            super().call(mode, request, result_path, cwd=cwd)
             raise ProcessEnded()
         raise AssertionError(step)
 
@@ -105,6 +109,17 @@ class CycleFixture(CarryFixture):
         self.assertLessEqual(len(rows), 1)
         return next(iter(rows.values()), ABSENT)
 
+    def marks(self):
+        """How many gold cases carry each training mark (M1T)."""
+        with shared._db(self.root) as db:
+            return dict(db.execute("SELECT CASE WHEN trained_cycle IS NULL THEN 'unmarked' ELSE 'marked' END,"
+                                   "COUNT(*) FROM cases WHERE status='gold' GROUP BY 1"))
+
+    def violations(self):
+        """Violations of the job and cycle rules. The fixture's gold cases are inserted
+        as rows, without the teacher call a ledger row records, so I-3 is not asked."""
+        return [line for line in invariants.check(self.root) if not line.startswith('I-3 ')]
+
     def outcomes(self):
         return [event['outcome'] for event in self.cycle_events]
 
@@ -146,6 +161,10 @@ class CycleTable(CycleFixture):
                         # The first attempt writes the row and then ends: two events in one pass.
                         expected = M4.next('training', event)
                     self.assertEqual(self.cycle(), expected)
+                    self.assertEqual(self.violations(), [])
+                    # M1T: the members are marked in the transaction that stages the cycle.
+                    marked = M1T.next('unmarked', 'cycle_staged') if expected == 'staged' else 'unmarked'
+                    self.assertEqual(self.marks(), {marked: 100})
                 cells += 1
                 if (state, event) in M4.transitions:
                     driven.add((state, event))
@@ -169,6 +188,30 @@ class CycleTable(CycleFixture):
 
 
 class TrainingAttempts(CycleFixture):
+    def test_each_job_and_cycle_invariant_names_the_state_that_breaks_it(self):
+        self.attempt()
+        self.assertEqual(self.violations(), [])
+        job_id = self.job()[0]
+        artifact = self.root / 'cycles' / job_id / 'candidate.artifact'
+        kept = artifact.read_bytes()
+        artifact.write_bytes(b'other bytes')
+        self.assertEqual(self.violations(), ['I-4 cycle %s artifact differs from its evidence' % job_id])
+        artifact.write_bytes(kept)
+        with shared._db(self.root) as db:
+            db.execute("UPDATE learning_jobs SET status='blocked',reason=NULL")
+        found = self.violations()
+        self.assertEqual(found[0], 'I-8 job %s blocked without a reason' % job_id)
+        self.assertEqual(found[-1], 'I-4 cycle %s staged with job blocked' % job_id)
+        self.assertEqual({line.split()[0] for line in found}, {'I-8', 'I-5', 'I-4'})
+        with shared._db(self.root) as db:
+            db.execute("UPDATE learning_jobs SET status='staged'")
+            row = db.execute('SELECT namespace,approval,cohort,family,manifest FROM learning_jobs').fetchone()
+            for name in ('twin-a', 'twin-b'):
+                db.execute("INSERT INTO learning_jobs VALUES (?,?,?,?,?,?,'queued',NULL,0,0,0,NULL)",
+                           (name, *row))
+        self.assertEqual(self.violations(), ['I-9 2 open jobs of one approval, cohort and family'])
+
+
     def test_three_trainer_failures_block_the_job_and_a_day_later_it_trains_again(self):
         for failures in (1, 2):
             self.assertEqual(self.attempt('fail')['status'], 'failed')

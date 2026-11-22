@@ -1,15 +1,21 @@
-"""A teacher pass stopped after each of its durable writes, then entered again.
+"""A teacher pass and a training pass stopped after each durable write, then entered again.
 
 For every write k of one pass over one queued case, a child interpreter runs
 the real pass and is killed right after write k (``tests/support/crash.py``).
 The namespace it leaves must satisfy the invariants, and passes entered again
 must end the case with the host CLI started at most once for it. The number
-of writes of a pass is fixed here: a new write is a new crash point.
+of writes of a pass is fixed here: a new write is a new crash point. The
+point right after the host CLI returned its answer is one of them.
+
+The training pass runs in an enrolled install (``CycleFixture``), which a new
+interpreter cannot rebuild: there the stop is ``crash.interrupt_after``. Its
+points include the trainer having written the candidate artifact.
 """
 from __future__ import annotations
 
 from memvane.learning.context_learning import shared, teacher_state
 from memvane.learning.tests.fake_teacher_cli_121 import TeacherFixture
+from memvane.learning.tests.statemachine.test_m04_cycle import CycleFixture, ProcessEnded
 from memvane.learning.tests.support import crash, invariants
 
 HOST = 'claude'
@@ -17,9 +23,13 @@ RID = 'case'
 # scenario -> (fake CLI behaviour, durable writes of one uninterrupted pass,
 #              case states the re-entered passes may end in).
 SCENARIOS = {
-    'answered': ({}, 8, ('gold', 'pending_review')),
+    'answered': ({}, 9, ('gold', 'pending_review')),
     'provider_refused': ({'mode': 'quota'}, 7, ('queued', 'pending_review')),
+    'content_refused': ({'mode': 'content'}, 6, ('pending_review',)),
+    'cli_failed': ({'mode': 'exit'}, 7, ('pending_review',)),
 }
+# The scenarios in which a call may be made again: the provider proved nothing was answered.
+MAY_CALL_AGAIN = {'provider_refused'}
 REENTRIES = 3
 
 
@@ -57,11 +67,76 @@ class CrashPoints(TeacherFixture):
                         self.run_pass()
                         self.assertEqual(invariants.check(self.root), [])
                     self.assertIn(self.status(), ends)
-                    if name == 'answered':
-                        # G-1: an answer may have been produced once, never twice.
+                    if name not in MAY_CALL_AGAIN:
+                        # G-1: the host was asked about this case once at most.
                         self.assertLessEqual(self.runs(HOST), 1)
                 points += 1
             # One write past the last: the pass ends by itself.
             self.fresh(behaviour)
             self.assertEqual(crash.crash_after(writes + 1, self), crash.FINISHED)
         self.assertEqual(points, sum(writes for _b, writes, _e in SCENARIOS.values()))
+
+
+# Durable writes of one uninterrupted training pass over 100 gold cases, in a
+# namespace an earlier pass already ran in (the first pass of a namespace also
+# writes what is written once).
+TRAINING_WRITES = 10
+
+
+class TrainingCrashPoints(CycleFixture):
+    def fresh(self):
+        with shared._db(self.root) as db:
+            for table in ('cycles', 'learning_jobs', 'learning_consumption', 'learning_evaluations'):
+                if db.execute('SELECT 1 FROM sqlite_master WHERE name=?', (table,)).fetchone():
+                    db.execute('DELETE FROM %s' % table)
+            db.execute('UPDATE cases SET trained_cycle=NULL')
+        cycles = self.root / 'cycles'
+        if cycles.is_dir():
+            import shutil
+            shutil.rmtree(cycles)
+        self.trained.clear()
+        self.script[:] = []
+
+    def finish(self):
+        """Passes entered again until the job is staged; how many it took."""
+        for entered in range(1, REENTRIES + 1):
+            self.due_now()
+            self.worker()
+            self.assertEqual(self.violations(), [])
+            if self.job() and self.job()[1] == 'staged':
+                return entered
+        self.fail('not staged after %d passes: %r %r' % (REENTRIES, self.job(), self.cycle()))
+
+    def setUp(self):
+        super().setUp()
+        self.fresh()
+        self.worker()
+
+    def test_writes_of_one_training_pass_are_counted(self):
+        self.fresh()
+        self.assertEqual(crash.count(self.worker), TRAINING_WRITES)
+        self.assertEqual((self.job()[1], self.cycle()), ('staged', 'staged'))
+
+    def test_a_training_pass_stopped_after_any_write_is_finished_by_the_next_passes(self):
+        for k in range(1, TRAINING_WRITES + 1):
+            with self.subTest(k=k):
+                self.fresh()
+                self.assertTrue(crash.interrupt_after(k, self.worker))
+                self.assertEqual(self.violations(), [])
+                self.finish()
+                self.assertEqual((self.job()[1], self.cycle()), ('staged', 'staged'))
+                self.assertEqual(self.marks(), {'marked': 100})
+                # One training, or two when the first ended before its completion was recorded.
+                self.assertIn(self.trained, ([100], [100, 100]))
+        self.fresh()
+        self.assertFalse(crash.interrupt_after(TRAINING_WRITES + 1, self.worker))
+
+    def test_a_process_gone_right_after_the_trainer_wrote_the_artifact(self):
+        # The external effect between two writes: the artifact exists, nothing records it.
+        self.fresh()
+        self.assertEqual(self.attempt('artifact_then_end')['status'], 'process_ended')
+        self.assertEqual(self.violations(), [])
+        self.assertEqual(self.finish(), 1)
+        self.assertEqual((self.trained, self.marks()), ([100, 100], {'marked': 100}))
+        folder = self.root / 'cycles' / self.job()[0]
+        self.assertEqual(len([path for path in folder.iterdir() if '.uncertain-' in path.name]), 1)
