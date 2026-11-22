@@ -10,6 +10,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Module results of the run (tests/support/runner.mjs), for scripts/test_flaky_report.py.
+  # A pull request run names its head commit, not the merge commit.
+  MEMVANE_TEST_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   # Linux: a pull request runs Node 22 only; a push to main runs every Node version.
   test:
@@ -34,7 +39,16 @@ jobs:
           python3 --version
           bash --version
       - name: Run deterministic tests
+        env:
+          MEMVANE_TEST_RESULTS: ${{ runner.temp }}/module-results.jsonl
         run: npm run test:part${{ matrix.shard }}
+      - name: Keep module results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-results-ubuntu-node${{ matrix.node-version }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/module-results.jsonl
+          if-no-files-found: ignore
 
   # The product's platform: macOS arm64 with the system Python 3.9 that hooks run.
   test-macos:
@@ -69,4 +83,13 @@ jobs:
           test "$(python3 -c 'import sys; print(sys.version_info[:2])')" = "(3, 9)"
           bash --version
       - name: Run deterministic tests
+        env:
+          MEMVANE_TEST_RESULTS: ${{ runner.temp }}/module-results.jsonl
         run: npm run test:part${{ matrix.shard }}
+      - name: Keep module results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-results-macos-${{ matrix.shard }}
+          path: ${{ runner.temp }}/module-results.jsonl
+          if-no-files-found: ignore

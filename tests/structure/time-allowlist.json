@@ -2,7 +2,7 @@
  "memvane/app/tests/integration/test_capture_supervisor.py": {
   "sleep": 1,
   "elapsed": 0,
-  "shortTimeout": 2
+  "shortTimeout": 1
  },
  "memvane/app/tests/integration/test_runtime_dispatch.py": {
   "sleep": 2,
@@ -18,11 +18,6 @@
   "sleep": 0,
   "elapsed": 0,
   "shortTimeout": 4
- },
- "memvane/host/tests/integration/test_session_exclusion_110.py": {
-  "sleep": 0,
-  "elapsed": 1,
-  "shortTimeout": 0
  },
  "memvane/journal/tests/integration/test_writer_schema3_plan.py": {
   "sleep": 0,
@@ -194,6 +189,11 @@
   "elapsed": 2,
   "shortTimeout": 0
  },
+ "memvane/store/tests/measure/vector_read_measure.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
  "memvane/store/tests/support.py": {
   "sleep": 1,
   "elapsed": 0,
@@ -237,6 +237,6 @@
  "tests/support/test_support.py": {
   "sleep": 0,
   "elapsed": 1,
-  "shortTimeout": 2
+  "shortTimeout": 0
  }
 }

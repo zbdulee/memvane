@@ -54,6 +54,8 @@ export function timeCounts(text) {
     const code = line.replace(/#.*$/, '');
     if (/\btime\.sleep\(/.test(code)) counts.sleep += 1;
     if (ELAPSED.test(code)) counts.elapsed += 1;
+    // A timeout handed to the waiting helper is already scaled: it is the rule, not an exception.
+    if (/\bwait_until(?:_async)?\(/.test(code)) continue;
     for (const match of code.matchAll(SHORT_TIMEOUT)) {
       if (Number(match[1]) <= 5) counts.shortTimeout += 1;
     }
@@ -95,6 +97,8 @@ test('the time counter sees sleeps, elapsed assertions and short literal timeout
     'run(a, timeout=.5); run(b, timeout=2)',
     'run(a, timeout=scaled(2))',
     'run(a, timeout=limit)',
+    'self.wait_until(lambda: ready(), timeout=3)',
+    'await wait_until_async(ready, timeout=0.5)',
   ].join('\n');
   assert.deepEqual(timeCounts(text), { sleep: 1, elapsed: 2, shortTimeout: 3 });
 });

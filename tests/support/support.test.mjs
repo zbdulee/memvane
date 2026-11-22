@@ -6,7 +6,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { leftoverProcesses, moduleName, moduleTimeoutMs, recordedDurations, runModule,
+import { leftoverProcesses, moduleName, moduleTimeoutMs, recordedDurations, resultCommit, runModule,
   testModules } from './runner.mjs';
 import { fixtureEnv, fixtureHome, removeTemp } from './temp.mjs';
 import { REFERENCE_START_MS, TIME_SCALE_ENV, clampScale, scaleOf, timeScale } from './timing.mjs';
@@ -107,6 +107,10 @@ test('a failing module is reported under its own name and the other module passe
     assert.deepEqual(rows.map((row) => [row.module, row.status]),
       modules.map((file, index) => [file, outcome[index]]));
     assert.ok(rows.every((row) => typeof row.seconds === 'number' && row.seconds >= 0));
+    // Each row carries the run's load scale and the commit of this checkout.
+    assert.ok(rows.every((row) => row.scale === timeScale() && row.commit === resultCommit()));
+    assert.match(resultCommit(), /^[0-9a-f]{40}$/);
+    assert.equal(resultCommit({ MEMVANE_TEST_COMMIT: 'pr-head' }), 'pr-head');
   } finally {
     if (saved === undefined) delete process.env.MEMVANE_TEST_RESULTS;
     else process.env.MEMVANE_TEST_RESULTS = saved;

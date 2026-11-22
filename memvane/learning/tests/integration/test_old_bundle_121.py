@@ -106,9 +106,12 @@ class OldBundles(EnabledInstall):
                                  (1, {'status': 'failed', 'reason': 'project_scope_authorization_invalid'}), err)
                 step = seen['step']
                 self.assertEqual(step['step'], {'status': 'started', 'mode': 'training', 'starts': 1})
-                self.assertEqual(step['children'], [1])
-                self.assertEqual((step['state']['outcome'], step['state']['revision']),
-                                 ('failed', int(tag.split('.')[-1])))
+                # One assertion with the child's own records: a child that ends another
+                # way names its outcome and the tail of its log here.
+                log = self.root / 'worker.log'
+                detail = (step, log.read_text(encoding='utf8', errors='replace')[-800:] if log.is_file() else None)
+                self.assertEqual((step['children'], step['state']['outcome'], step['state']['revision']),
+                                 ([1], 'failed', int(tag.split('.')[-1])), detail)
                 # (c) hooks exit 0; recall answers by hybrid rank.
                 code, out, err = seen['recall']
                 self.assertEqual(code, 0, err)

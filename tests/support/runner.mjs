@@ -16,7 +16,7 @@
 // (tests/support/durations.json, written by scripts/test_durations.py), at
 // least 60 s; 180 s without a record; all times the run's load scale
 // (timing.mjs). With MEMVANE_TEST_RESULTS set, each
-// module appends one JSON line {module, status, seconds, commit} to that file.
+// module appends one JSON line {module, status, seconds, commit, scale} to that file.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -117,12 +117,24 @@ export function moduleName(file) {
   return file.replace(/\.py$/, '').split(/[\\/]/).join('.');
 }
 
+let checkout;
+
+/** The commit a result row belongs to: MEMVANE_TEST_COMMIT (CI sets the pull request head), else this checkout's HEAD. */
+export function resultCommit(env = process.env, root = ROOT) {
+  if (env.MEMVANE_TEST_COMMIT) return env.MEMVANE_TEST_COMMIT;
+  if (checkout === undefined) {
+    const r = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000 });
+    checkout = r.status === 0 && /^[0-9a-f]{40}$/.test(r.stdout.trim()) ? r.stdout.trim() : null;
+  }
+  return checkout;
+}
+
 function record(module, status, seconds) {
   const target = process.env.MEMVANE_TEST_RESULTS;
   if (!target) return;
   try {
-    appendFileSync(target, `${JSON.stringify({ module, status, seconds,
-      commit: process.env.MEMVANE_TEST_COMMIT || process.env.GITHUB_SHA || null })}\n`);
+    appendFileSync(target, `${JSON.stringify({ module, status, seconds, commit: resultCommit(),
+      scale: timeScale() })}\n`);
   } catch { /* a result record never fails a test */ }
 }
 
@@ -155,6 +167,8 @@ export function runModule(file, { root = ROOT, timeoutMs, label = file } = {}) {
 
 export function runDomain({ domain, tiers = ['unit', 'integration'] }) {
   const durations = recordedDurations();
+  // Once per test file: the scale every wait and timeout of this run is multiplied by.
+  process.stderr.write(`[tests] ${domain}: load scale ${timeScale()}\n`);
   for (const tier of tiers) {
     const start = join('memvane', domain, 'tests', tier);
     const modules = testModules(join(ROOT, start));
