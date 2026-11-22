@@ -2,15 +2,19 @@
 
 A durable write is a learning-database transaction that changed a row and
 committed, or an atomic replace of a state file (``teacher-host-state.json``,
-the files of a training cycle). One external effect is a point of its own:
-the host CLI returned its answer. ``count`` runs an action in this process and
-returns how many points it passed.
+the files of a training cycle, the application journal, pointer, receipt and
+binding). External effects are points of their own: the host CLI returned its
+answer, and a stand-in that answers for another process calls ``passed()``
+(the resident's prepare and activate answers). ``count`` runs an action in
+this process and returns how many points it passed.
 ``crash_after`` runs one default-teacher pass of a ``TeacherFixture`` in a
 child interpreter that leaves with ``os._exit(137)`` right after write ``k``:
 no cleanup, no further write, the way a killed worker leaves. The child is a
 new process (a fork of a test process is not safe on every supported
 Python), so it applies the fixture's stand-ins again from the values the
-fixture holds.
+fixture holds. A fixture whose scope check defers at a ledger stage
+(``defer_at``, ``ParkMixin``) is rebuilt with the same deferral for the case
+named by ``DEFER_RID``.
 
 ``interrupt_after`` is the in-process stand-in for fixtures a new interpreter
 cannot rebuild (a whole enrolled install): point ``k`` is the last that
@@ -31,7 +35,17 @@ from unittest import mock
 from memvane.learning.context_learning import local_cycle, shared, teacher_hosts, teacher_state, training_cursor
 
 KILLED = 137
+# The case whose ledger stage a deferring scope check reads (``ParkMixin``).
+DEFER_RID = 'a1'
 FINISHED = 0
+# The point function of the counting in effect, for ``passed``.
+_ACTIVE = []
+
+
+def passed():
+    """An external effect happened (another process answered): a point when a counting is in effect."""
+    if _ACTIVE:
+        _ACTIVE[-1]()
 
 
 class Interrupted(BaseException):
@@ -46,6 +60,9 @@ class _Discard(Exception):
 def _counting(exit_at=None, *, leave=None):
     """Count the points; at ``exit_at`` call ``leave`` (default: end the process)."""
     seen, gone = [0], []
+    # ``candidate_apply`` binds ``_atomic_json`` by name when it is imported: its own
+    # reference is replaced too, or the application's file writes would not be points.
+    from memvane.learning.context_learning import candidate_apply
     opened, replace, invoke = shared._db_at, teacher_state.atomic_json, teacher_hosts.invoke
     files = local_cycle._atomic_json
 
@@ -94,8 +111,13 @@ def _counting(exit_at=None, *, leave=None):
             mock.patch.object(teacher_state, 'atomic_json', written(replace)), \
             mock.patch.object(local_cycle, '_atomic_json', written(files)), \
             mock.patch.object(training_cursor, '_atomic_json', written(files)), \
+            mock.patch.object(candidate_apply, '_atomic_json', written(files)), \
             mock.patch.object(teacher_hosts, 'invoke', answered):
-        yield seen
+        _ACTIVE.append(wrote)
+        try:
+            yield seen
+        finally:
+            _ACTIVE.pop()
 
 
 def count(action):
@@ -121,7 +143,7 @@ def crash_after(k, fixture):
     """One pass of ``fixture`` in a child killed after write ``k``; the child's exit code."""
     spec = {'k': k, 'root': str(fixture.root), 'project': str(fixture.project),
             'policy': fixture.policy, 'proposal': fixture.proposal, 'grant': fixture.grant,
-            'environ': fixture.environ}
+            'environ': fixture.environ, 'deferAt': list(getattr(fixture, 'defer_at', ()))}
     repo = Path(__file__).resolve().parents[4]
     done = subprocess.run([sys.executable, '-B', '-m', __name__], input=json.dumps(spec),
                           cwd=str(repo), env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'),
@@ -132,9 +154,23 @@ def crash_after(k, fixture):
 
 
 def _child(spec):
+    import sqlite3
+    from memvane.kernel.resource_deferred import ResourceDeferred
     from memvane.learning.context_learning import general_teacher
+
+    def scope(*_args, **_kwargs):
+        if spec.get('deferAt'):
+            try:
+                with shared._db(spec['root']) as db:
+                    row = db.execute('SELECT stage FROM project_gold_attempts WHERE request_id=?',
+                                     (DEFER_RID,)).fetchone()
+            except sqlite3.OperationalError:
+                row = None  # No attempt was ever reserved in this namespace.
+            if row and row[0] in spec['deferAt']:
+                raise ResourceDeferred('fixture_pressure')
+        return spec['grant']
     stand_ins = {'_policy': lambda root: spec['policy'],
-                 '_scope_default': lambda *a, **k: spec['grant'],
+                 '_scope_default': scope,
                  '_consent_file_v2': lambda root, project: dict(spec['proposal']),
                  '_case_active': lambda *a, **k: True,
                  'resource_report': lambda *a, **k: {'ready': True},

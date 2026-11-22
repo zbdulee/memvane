@@ -221,6 +221,43 @@ class LearningJobTable(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'learning_block_reason_invalid'):
             self.q.block(self.job_id, 'trainer_failed')
 
+    def test_the_unrepeatable_failures_are_these_four_with_or_without_the_trainer_prefix(self):
+        self.assertEqual(learning_queue.UNREPEATABLE,
+                         ('learning_train_intent_changed', 'learning_batch_source_changed',
+                          'learning_cursor_changed', 'learning_completion_uncertain'))
+        for name in learning_queue.UNREPEATABLE:
+            self.assertEqual(learning_queue.unrepeatable(name), name)
+            # The trainer child reports its own failure with the worker's prefix.
+            self.assertEqual(learning_queue.unrepeatable('trainer_failed:' + name), name)
+        for other in ('trainer_failed', 'trainer_failed:learning_yield', 'trainer_timeout',
+                      'prefix:learning_cursor_changed', ''):
+            self.assertIsNone(learning_queue.unrepeatable(other))
+
+    def test_a_job_that_keeps_failing_is_closed_for_good_at_the_attempt_limit(self):
+        limit = learning_queue.ATTEMPT_LIMIT
+        self.assertEqual((limit, learning_queue.ATTEMPTS_EXHAUSTED in learning_queue.FINAL_BLOCKS), (30, True))
+        # One attempt below the limit: blocked for a day and queued again, as before.
+        self.fresh()
+        self.job_id = self.plan()['id']
+        self.force(attempts=limit - 1, failures=2)
+        self.q.defer(self.job_id, 'trainer_failed', failure=True, now=NOW)
+        self.assertEqual(self.q.get(self.job_id)['reason'], 'trainer_failed')
+        self.assertEqual(self.q.rearm(now=NOW + learning_queue.REARM_SECONDS), [self.job_id])
+        # At the limit the third failure closes the job with its own reason: no rearm, and
+        # the next plan pins other members.
+        self.force(status='deferred', attempts=limit, failures=2)
+        closed = self.q.defer(self.job_id, 'trainer_failed', failure=True, now=NOW)
+        self.assertEqual((closed['status'], closed['reason'], closed['attempts']),
+                         ('blocked', learning_queue.ATTEMPTS_EXHAUSTED, limit))
+        self.assertEqual(self.q.rearm(now=NOW * 10), [])
+        self.assertEqual(self.plan()['id'], self.job_id)
+        self.assertNotEqual(self.plan((3, 4))['id'], self.job_id)
+        # A deferral that is not a failure never closes a job, whatever its attempts.
+        self.fresh()
+        self.job_id = self.plan()['id']
+        self.force(attempts=limit * 3, failures=2)
+        self.assertEqual(self.q.defer(self.job_id, 'resource', now=NOW)['status'], 'deferred')
+
     def test_a_block_of_another_reason_is_not_rearmed(self):
         self.blocked('failed', at=0)
         self.assertEqual(self.q.rearm(now=NOW * 10), [])

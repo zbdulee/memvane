@@ -21,6 +21,8 @@ from memvane.learning.context_learning.state_model import MAINTENANCE_RESULTS
 from memvane.learning.tests.integration import test_selector_retry as retry_tests
 
 SECOND = retry_tests.SECOND
+# How long a stand-in step waits before it gives up: long against the patched deadline.
+STUCK_SECONDS = 20
 INCOMPLETE = [name for name, row in MAINTENANCE_RESULTS.items() if row[2] == 'maintenance_incomplete']
 
 
@@ -111,19 +113,40 @@ class MaintenanceResults(retry_tests.MaintenanceRetry):
     def test_a_run_past_the_deadline_ends_with_the_timeout_and_restores_the_signal(self):
         release = threading.Event()
         self.addCleanup(release.set)
-        swallowed = []
+        swallowed, returned = [], []
         def stuck(project, *, force=False, incomplete=None):
             try:
-                release.wait()  # A step that never returns.
+                # A step that does not return in time. The wait is bounded so that a run
+                # without a deadline comes back here and fails below instead of hanging.
+                release.wait(STUCK_SECONDS)
+                returned.append(True)
             except Exception:  # A step's own broad handler does not keep the run going.
                 swallowed.append(True)
         before = signal.getsignal(signal.SIGALRM)
         with mock.patch.object(maintenance, 'MAINTENANCE_SECONDS', 0.05):
             row, event, offers, raised = self.ended(stuck)
-        self.assertIsNone(raised)
+        self.assertEqual((returned, swallowed, raised), ([], [], None))
         self.assertEqual((event['outcome'], event['reason']), ('failed', 'maintenance_timeout'))
-        self.assertEqual((row['failures'], row['retryAfterNs'] > 0, offers, swallowed), (1, True, 1, []))
+        self.assertEqual((row['failures'], row['retryAfterNs'] > 0, offers), (1, True, 1))
         self.assertIs(signal.getsignal(signal.SIGALRM), before)
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
+
+    def test_a_step_that_keeps_going_past_the_first_timeout_is_ended_by_the_next(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        caught, returned = [], []
+        def stubborn(project, *, force=False, incomplete=None):
+            try:
+                release.wait(STUCK_SECONDS)
+            except BaseException:  # Swallows the first timeout and goes on waiting.
+                caught.append(True)
+            release.wait(STUCK_SECONDS)
+            returned.append(True)
+        with mock.patch.object(maintenance, 'MAINTENANCE_SECONDS', 0.05), \
+                mock.patch.object(maintenance, '_TIMEOUT_REPEAT_SECONDS', 0.05):
+            row, event, _offers, raised = self.ended(stubborn)
+        self.assertEqual((caught, returned, raised), ([True], [], None))
+        self.assertEqual((event['outcome'], event['reason'], row['failures']), ('failed', 'maintenance_timeout', 1))
         self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
 
     def test_a_run_inside_the_deadline_leaves_no_timer(self):

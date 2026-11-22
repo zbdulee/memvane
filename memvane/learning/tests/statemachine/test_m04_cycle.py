@@ -43,6 +43,8 @@ class ScriptedTrainer(FakeTrainer):
             raise ValueError('trainer_timeout')
         if step == 'intent_changed':
             raise ValueError('learning_train_intent_changed')
+        if step == 'child_cursor_changed':
+            raise ValueError('trainer_failed:learning_cursor_changed')
         if step == 'defer':
             raise automatic_staging.ResourceDeferred('trainer_failed:learning_yield', {'reason': 'learning_yield'})
         if step == 'artifact_then_fail':
@@ -490,6 +492,30 @@ class TrainingAttempts(CycleFixture):
         self.assertEqual(self.trained, [100, 100])
         self.assertNotIn('learning_completion_uncertain',
                          [event.get('reason') for event in self.cycle_events])
+
+    def test_a_cursor_failure_the_trainer_child_reports_closes_the_job_at_once(self):
+        result = self.attempt('child_cursor_changed')
+        self.assertEqual((result['status'], result['reason']), ('failed', 'trainer_failed:learning_cursor_changed'))
+        job = self.job()
+        # One failure, not three: the job is closed with the bare reason and is never rearmed.
+        self.assertEqual((job[1], job[3]), ('blocked', 'learning_cursor_changed'))
+        self.assertEqual(learning_queue.LearningQueue(self.root).rearm(now=10 ** 12), [])
+
+    def test_a_pass_that_ends_held_writes_its_row_once(self):
+        self.assertEqual(self.attempt('fail')['status'], 'failed')
+        cycle_id = self.job()[0]
+        # A cycle row in a state no training attempt owns: every pass answers the same.
+        with shared._db(self.root) as db:
+            db.execute("UPDATE cycles SET status='rejected' WHERE cycle_id=?", (cycle_id,))
+        with mock.patch('memvane.diagnostics.api.emit') as emit:
+            self.due_now()
+            first = self.worker()['cycle']
+            self.due_now()
+            second = self.worker()['cycle']
+        self.assertEqual((first['status'], second['status']), ('cohort_cycle_conflict',) * 2)
+        held = [call.kwargs for call in emit.call_args_list
+                if call.args[0] == 'learning.cycle' and call.kwargs.get('outcome') == 'held']
+        self.assertEqual([(row['reason'], row['cycle']) for row in held], [('cohort_cycle_conflict', cycle_id)])
 
     def test_only_the_newest_set_aside_artifact_is_kept(self):
         from memvane.learning.context_learning import automatic_staging

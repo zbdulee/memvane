@@ -1,11 +1,11 @@
-"""The three previous releases beside this bundle's open learning states (design L-5).
+"""An old bundle's hooks beside this bundle's open learning states (design L-5).
 
-Two directions. An old worker, let past its own scope check by the installed-host
-stand-ins, meets the rows this bundle leaves open (a job waiting to be rearmed, a
-job closed for good, a deferred job with a retry time) and changes none of them.
-And after an old bundle's hooks (recall, an edit with its capture and launch,
-selector maintenance) wrote on this install, this bundle's readers and worker
-still answer.
+After the hooks of each of the three previous releases (recall, an edit with its
+capture and launch, selector maintenance) wrote on this install, this bundle's
+readers, hook and worker still answer, and the job rows this bundle left open
+are as they were. The other direction, an old worker on this bundle's open job
+states, needs real gold cases and is part of the end-to-end run
+(``test_lp1_e2e``).
 """
 from __future__ import annotations
 
@@ -51,24 +51,6 @@ class PreviousBundles(old_tests.OldBundles):
 
     def test_the_previous_three_releases_are_the_last_tags(self):
         self.assertEqual(TAGS[-3:], PREVIOUS)
-
-    def test_an_old_worker_changes_none_of_this_bundles_open_rows(self):
-        rows = self.open_states()
-        self.assertEqual(len(rows['learning_jobs']), 1 + len(OPEN_JOBS))
-        files = self.namespace_files()
-        for tag in PREVIOUS:
-            with self.subTest(tag=tag):
-                code, out, err = self.entry(old_bundle(tag), 'learning-shared', 'run-project', str(self.project),
-                                            patched=True, resource_ready=True)
-                self.assertEqual(code, 0, (out, err))
-                result = json.loads(out)
-                self.assertEqual((result['teacher']['status'], result['teacher']['calls']), ('drained', 0), result)
-                # The old worker handles the cases of its own release by its own rules; the
-                # job, evaluation and cycle rows this bundle left are not its to move.
-                self.assertEqual(self.open_rows(), rows)
-                self.assertEqual(self.launches(), [])
-                for name in self.watched_names():
-                    self.assertEqual(self.namespace_files().get(name), files[name], name)
 
     def test_after_an_old_bundles_hooks_this_bundle_still_reads_and_answers(self):
         rows = self.open_states()

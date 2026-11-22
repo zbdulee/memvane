@@ -198,6 +198,9 @@ M15 = Machine(
 # a day later (``rearm``); ``blocked`` by a failure another attempt would repeat, or
 # because the members themselves changed
 # (``already_consumed``, ``source_revoked``) stays: the next plan pins other members, or answers with it when they are the same.
+# A job that trainer failures block after 30 training attempts in all is closed for good
+# (``trainer_attempts_exhausted``). A trainer child's own report of an unrepeatable
+# failure (``trainer_failed:learning_cursor_changed``) closes the job like the worker's.
 # ``source_revoked`` has two causes with one reason: a member row is gone before the job
 # trained (an open job, or one waiting for its rearm time), and a member that was not
 # active when the trained job was checked. The check answers false for a transient read
@@ -357,6 +360,11 @@ M7 = Machine(
 # The dispatcher's step counts a start before it spawns the owned child; three starts
 # without an outcome are abandoned. A result of the retry set keeps the request open
 # with its starts at zero; any other result is the outcome, acknowledged by the next step.
+# M8: a child that ends with a retry result (resources not ready, a deferred evaluation or
+# application) leaves the request open and asks for another wake. The 288th such result
+# in a row with one status settles the request with that status instead: no wake is
+# asked for, and one ``learning.cycle`` ``retry_cap`` row names the status. The next hook
+# launch opens a new request.
 _SHARED = 'memvane.learning.context_learning.shared.'
 M8 = Machine(
     'M8', 'worker request', store='full-worker-request.json, full-worker-state.json',

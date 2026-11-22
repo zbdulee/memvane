@@ -19,7 +19,9 @@ Rules (design appendix B-3):
 - I-5 every consumed evidence key is a member of a ``staged`` job.
 - I-6 a ``completed`` evaluation belongs to a ``staged_evaluated`` or ``applied`` cycle.
 - I-7 an ``activated`` application journal: the active pointer is its new pointer and
-  its cycle is ``applied`` (G-7: the pointer is the journal's old or new pointer).
+  its cycle is ``applied`` (G-7: the pointer is the journal's old or new pointer). A
+  cycle still ``staged_evaluated`` under such a journal is not a violation: the journal
+  is written before the cycle row, and the next pass finishes the row.
 - I-8 a ``blocked`` job or evaluation has a reason.
 - I-9 at most one job of an (approval, cohort, family) is neither ``staged``
   nor ``blocked``.
@@ -143,7 +145,7 @@ def _application(root, cycles):
     if row.get('phase') == 'activated':
         if active != row.get('new_pointer'):
             found.append('I-7 activated application with another active pointer')
-        if cycles.get(row.get('cycle_id')) != 'applied':
+        if cycles.get(row.get('cycle_id')) not in ('applied', 'staged_evaluated'):
             found.append('I-7 activated application of a %s cycle' % cycles.get(row.get('cycle_id')))
     return found
 

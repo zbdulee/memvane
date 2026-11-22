@@ -5,7 +5,9 @@ the real pass and is killed right after write k (``tests/support/crash.py``).
 The namespace it leaves must satisfy the invariants, and passes entered again
 must end the case with the host CLI started at most once for it. The number
 of writes of a pass is fixed here: a new write is a new crash point. The
-point right after the host CLI returned its answer is one of them.
+point right after the host CLI returned its answer is one of them. The passes
+the resource check puts off (before the launch, and after the answer, which
+is then kept) and the pass that takes a kept answer are stopped the same way.
 
 The training pass runs in an enrolled install (``CycleFixture``), which a new
 interpreter cannot rebuild: there the stop is ``crash.interrupt_after``. Its
@@ -17,6 +19,7 @@ import shutil
 
 from memvane.learning.context_learning import shared, teacher_state
 from memvane.learning.tests.fake_teacher_cli_121 import TeacherFixture
+from memvane.learning.tests.integration.test_teacher_parked_122 import ParkMixin
 from memvane.learning.tests.statemachine.test_m04_cycle import CycleFixture, ProcessEnded
 from memvane.learning.tests.lp1 import Lp1Fixture
 from memvane.learning.tests.support import crash, invariants
@@ -36,8 +39,8 @@ MAY_CALL_AGAIN = {'provider_refused'}
 REENTRIES = 3
 
 
-class CrashPoints(TeacherFixture):
-    def fresh(self, behaviour):
+class Wiped:
+    def wipe(self):
         for name in (shared.DATABASE_NAME, shared.DATABASE_NAME + '-wal',
                      shared.DATABASE_NAME + '-shm', teacher_state.STATE_NAME):
             path = self.root / name
@@ -46,6 +49,11 @@ class CrashPoints(TeacherFixture):
         calls = self.logs / 'calls.jsonl'
         if calls.exists():
             calls.unlink()
+
+
+class CrashPoints(Wiped, TeacherFixture):
+    def fresh(self, behaviour):
+        self.wipe()
         self.add(RID)
         self.scenario(HOST, behaviour)
 
@@ -78,6 +86,69 @@ class CrashPoints(TeacherFixture):
             self.fresh(behaviour)
             self.assertEqual(crash.crash_after(writes + 1, self), crash.FINISHED)
         self.assertEqual(points, sum(writes for _b, writes, _e in SCENARIOS.values()))
+
+
+# A pass the resource check puts off, and the pass that takes a kept answer:
+# scenario -> (ledger stages at which the scope check of the stopped pass
+#              defers, whether an answer was kept before it, its durable writes).
+DEFERRED = {
+    'launch_deferred': (('reserved',), False, 4),
+    'answer_kept': (('answer_received',), False, 9),
+    'kept_answer_taken': ((), True, 1),
+}
+# What the uninterrupted pass of each scenario leaves: (case status, ledger stage, host calls).
+LEFT = {
+    'launch_deferred': ('queued', 'pre_send_rejected', 0),
+    'answer_kept': ('first_done', 'answer_parked', 1),
+    'kept_answer_taken': ('gold', 'committed', 1),
+}
+
+
+class DeferredCrashPoints(Wiped, ParkMixin, TeacherFixture):
+    def setUp(self):
+        super().setUp()
+        self.install_scope()
+
+    def fresh(self, defer_at, kept):
+        self.wipe()
+        self.scenario(HOST, {})
+        if kept:
+            self.park()
+            self.expire_waits()
+        else:
+            self.add(crash.DEFER_RID)
+        self.defer_at = defer_at
+
+    def test_writes_of_one_deferred_pass_are_counted(self):
+        for name, (defer_at, kept, writes) in DEFERRED.items():
+            with self.subTest(scenario=name):
+                self.fresh(defer_at, kept)
+                self.assertEqual(crash.count(self.run_pass), writes)
+
+    def test_a_deferred_pass_killed_after_any_write_is_finished_without_a_second_call(self):
+        points = 0
+        for name, (defer_at, kept, writes) in DEFERRED.items():
+            for k in range(1, writes + 1):
+                with self.subTest(scenario=name, k=k):
+                    self.fresh(defer_at, kept)
+                    self.assertEqual(crash.crash_after(k, self), crash.KILLED)
+                    self.assertEqual(invariants.check(self.root), [])
+                    # The pressure is gone for the passes entered again.
+                    self.defer_at = ()
+                    for _ in range(REENTRIES):
+                        self.expire_waits()
+                        self.run_pass()
+                        self.assertEqual(invariants.check(self.root), [])
+                    self.assertIn(self.cases()[crash.DEFER_RID][0], ('gold', 'pending_review'))
+                    # G-1: a kept answer is used, never asked for again.
+                    self.assertLessEqual(self.runs(HOST), 1)
+                points += 1
+            # The child took the path the scenario names: an uninterrupted one leaves its state.
+            self.fresh(defer_at, kept)
+            self.assertEqual(crash.crash_after(writes + 1, self), crash.FINISHED)
+            self.assertEqual((self.cases()[crash.DEFER_RID][0], self.stage(crash.DEFER_RID),
+                              self.runs(HOST)), LEFT[name])
+        self.assertEqual(points, sum(writes for _d, _k, writes in DEFERRED.values()))
 
 
 # Durable writes of one uninterrupted training pass over 100 gold cases, in a
@@ -150,23 +221,13 @@ class WorkerProcessCrashPoints(Lp1Fixture):
 
     The namespace a pass starts from is kept as a copy and restored for every
     point. Two passes: the one that trains 100 gold cases, and the one that
-    evaluates the staged cycle against 50 later cases and applies it (its
-    points include the journal, pointer, receipt and binding writes on either
-    side of the resident's answers).
+    evaluates the staged cycle against 50 later cases and applies it. The
+    application's points are every journal, pointer, receipt and binding
+    write of ``apply_candidate`` and the resident's answers (prepare, activate),
+    besides the evaluation's and the cycle's database commits.
     """
     # pass -> durable writes of one uninterrupted run of it.
-    WRITES = {'training': 13, 'application': 8}
-
-    def keep(self):
-        self.kept = self.tmp / 'namespace-copy'
-        if self.kept.exists():
-            shutil.rmtree(self.kept)
-        shutil.copytree(self.root, self.kept, symlinks=True)
-
-    def restore(self):
-        for path in self.root.iterdir():
-            shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
-        shutil.copytree(self.kept, self.root, symlinks=True, dirs_exist_ok=True)
+    WRITES = {'training': 13, 'application': 20}
 
     def violations(self):
         # The gold cases are seeded as rows, without the teacher call a ledger row records.

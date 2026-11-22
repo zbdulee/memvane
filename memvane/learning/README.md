@@ -11,6 +11,11 @@ base checkpoint 포인터는 `schema_version: 1`을 기록한다. 해당 키만 
 `maintenance_timeout` 실패로 끝나 요청이 backoff하고 준비 잠금을 반납한다.
 `learning` wake는 미완으로 끝난 pass가 연속 288회(약 24시간)면 `retry_cap`으로
 버려지고(`wake.drop`), 다음 hook의 요청이나 selector 재제안이 새 행을 만든다.
+worker 자식이 같은 재시도 결과(`deferred_resource` 등)로 연속 288회 끝나면 그 요청은 더 깨우지 않고
+그 결과로 정산되며 `learning.cycle` `retry_cap` 행(사유 = 그 결과, `retries`)이 남는다(`worker_retry.py`).
+다음 hook의 요청부터 다시 센다. trainer 실패로 막힌 job은 누적 학습 시도가 30회에 닿으면 재무장하지 않고
+`trainer_attempts_exhausted`로 닫히며, trainer 자식이 보고한 반복 불가 사유(`trainer_failed:` 접두)도
+worker의 것과 같이 즉시 닫힌다.
 유지보수가 끝나는 모든 방식과 요청·등록·갱신·teacher 전환·warm의 전이는
 `docs/dev/learning-state.md`의 M9~M16 표다.
 

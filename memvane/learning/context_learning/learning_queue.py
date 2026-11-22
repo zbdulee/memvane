@@ -20,9 +20,20 @@ REARMED_REASON = 'trainer_failed'
 # final artifact is not what was written. Such a job is closed at once, not rearmed.
 UNREPEATABLE = ('learning_train_intent_changed', 'learning_batch_source_changed',
                 'learning_cursor_changed', 'learning_completion_uncertain')
+# A job whose trainer failures blocked it after this many training attempts in all
+# (over every rearm; about ten days at three a day) is closed with this reason instead
+# of being queued again.
+ATTEMPT_LIMIT = 30
+ATTEMPTS_EXHAUSTED = 'trainer_attempts_exhausted'
 # Blocks no later attempt can clear. The next plan pins other members when there are
 # any; with the same members it answers with the blocked job.
-FINAL_BLOCKS = ('source_revoked', 'already_consumed', *UNREPEATABLE)
+FINAL_BLOCKS = ('source_revoked', 'already_consumed', ATTEMPTS_EXHAUSTED, *UNREPEATABLE)
+
+
+def unrepeatable(code):
+    """The ``UNREPEATABLE`` name of a failure code, with or without the trainer child's prefix; else None."""
+    bare = code[len('trainer_failed:'):] if code.startswith('trainer_failed:') else code
+    return bare if bare in UNREPEATABLE else None
 
 
 def semantic_key(row, namespace, family, *, normalize_query=False):
@@ -154,6 +165,7 @@ class LearningQueue:
             if job is None:raise ValueError('learning_job_scope_invalid')
             failures=job['failures']+int(failure)
             blocked=failures>=3
+            if blocked and failure and job['attempts']>=ATTEMPT_LIMIT:reason=ATTEMPTS_EXHAUSTED  # final: never rearmed
             retry=now+(REARM_SECONDS if blocked else min(300,30*2**min(job['attempts'],4)))
             db.execute("UPDATE learning_jobs SET status=?,failures=?,retry_at=?,reason=? WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",('blocked' if blocked else 'deferred',failures,retry,reason,job_id,self.scope))
             return self.get(job_id,db=db)

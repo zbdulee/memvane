@@ -377,8 +377,9 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
                     ('deferred' if deferred else 'failed', canonical({'reason': str(exc)[:80],
                                 'authorizationSha256': grant_sha,
                                 'trainEvidenceSha256': train_sha}), cycle_id))
-            from .learning_queue import UNREPEATABLE
-            if not deferred and str(exc)[:80] in UNREPEATABLE:queue.block(cycle_id,str(exc)[:80])  # the same again: closed, not rearmed
+            from .learning_queue import unrepeatable
+            final=None if deferred else unrepeatable(str(exc)[:80])
+            if final:queue.block(cycle_id,final)  # the same again: closed, not rearmed
             else:queue.defer(cycle_id,'trainer_progress' if advanced else 'resource' if deferred else 'trainer_failed',failure=not deferred)
             if not deferred:
                 # A deferral gets the worker's own row; a failure names the trainer's frames.

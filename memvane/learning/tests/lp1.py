@@ -27,6 +27,9 @@ from memvane.learning.context_learning.store import canonical
 from memvane.learning.tests.fake_teacher_cli_121 import edit_sample
 from memvane.learning.tests.old_bundle_121 import ROOT, SITECUSTOMIZE, EnabledInstall, edit_payload
 
+# A worker child of this fixture ends well inside this; a longer wait is a hang.
+CHILD_SECONDS = 300
+
 READY = {'ready': True, 'available_mib': 10000, 'load_per_cpu': 0.1, 'total_mib': 16384,
          'query_status': {'memory_pressure': 'ok'},
          'memory_pressure': {'level': 'normal', 'system_free_percent': 70}}
@@ -85,7 +88,10 @@ class ChildFixture:
                     db.execute("SELECT request_id,gold FROM cases WHERE status='gold'")}
 
     def transport(self, command, record):
-        return {'status': 'prepared' if command == 'prepare' else 'activated', 'token': record['apply_id']}
+        from memvane.learning.tests.support import crash
+        answer = {'status': 'prepared' if command == 'prepare' else 'activated', 'token': record['apply_id']}
+        crash.passed()  # The resident answered: nothing of the answer is recorded yet.
+        return answer
 
 
 class _Logged:
@@ -207,6 +213,18 @@ class Lp1Fixture(EnabledInstall):
     def pointer(self):
         return json.loads((self.root / 'active-checkpoint.json').read_text())
 
+    # -- a namespace kept as a copy ------------------------------------------------------
+    def keep(self):
+        self.kept = self.tmp / 'namespace-copy'
+        if self.kept.exists():
+            shutil.rmtree(self.kept)
+        shutil.copytree(self.root, self.kept, symlinks=True)
+
+    def restore(self):
+        for path in self.root.iterdir():
+            shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
+        shutil.copytree(self.kept, self.root, symlinks=True, dirs_exist_ok=True)
+
     # -- the worker as a child process ---------------------------------------------------
     def child_env(self, patched=False, *, bundle=ROOT, resource_ready=False):
         env = super().child_env(patched, bundle=bundle, resource_ready=resource_ready)
@@ -236,6 +254,33 @@ class Lp1Fixture(EnabledInstall):
             return code, json.loads(out)
         except ValueError:
             return code, None
+
+    def owned_pass(self, revision):
+        """One pass the way the wake dispatcher runs it; (the step, the child's exit code, the settled state).
+
+        ``learning_worker_step`` reads the request the hook's launch wrote and starts
+        ``run-owned-worker`` as a real child that inherits the lease; the child runs the
+        pass and settles the request (``_settle_owned``).
+        """
+        import subprocess
+        self.child_log = self.tmp / 'child-trainer.jsonl'
+        self.child_config = {'root': str(self.root), 'log': str(self.child_log), 'environ': self.environ,
+                             'tmp': tempfile.gettempdir(), 'k': None, 'seeded': False}
+        children = []
+
+        def spawn(argv, **options):
+            # The product's own environment (the job's variables), with the stand-ins of a fixture child.
+            options['env'] = {**options['env'], **{key: value for key, value in self.child_env(patched=True).items()
+                                                   if key in ('PYTHONPATH', 'MV121_CHILD', 'MV110_LP1', 'PATH')}}
+            children.append(subprocess.Popen(argv, **options))
+            return children[-1]
+        try:
+            step = shared.learning_worker_step(self.root, self.project, revision, spawn=spawn)
+            codes = [child.wait(CHILD_SECONDS) for child in children]
+        finally:
+            self.child_config = None
+        state = json.loads((self.root / shared.FULL_WORKER_STATE).read_text())
+        return step, codes, state
 
     def child_calls(self, kind):
         if not self.child_log.is_file():
