@@ -174,6 +174,36 @@ class Lines(unittest.TestCase):
                          ('over', 1.0, 1.0, 1))
         self.assertEqual(line['deferred_cache_building'], 0)
 
+    def test_one_inconsistent_vector_cache_is_over_below_the_floor_and_without_a_query_vector(self):
+        rows = [recall(i, semantic='complete', vectorSource='arena', vectorCache='ok') for i in range(18)]
+        self.assertEqual(by_name(rows)['semantic']['status'], 'no-data')
+        rows.append(recall(18, semantic='complete', vectorSource='arena', vectorCache='inconsistent'))
+        line = by_name(rows)['semantic']
+        self.assertEqual((line['status'], line['n'], line['vectorCacheInconsistent']), ('over', 19, 1))
+        # The state is the fault, whatever else the row says.
+        rows = [recall(0, semantic='provider_absent', vectorCache='inconsistent')]
+        self.assertEqual(by_name(rows)['semantic']['status'], 'over')
+
+    def test_selector_shows_what_its_answers_report_and_leaves_out_rows_that_do_not(self):
+        rows = [recall(i, selectorLane='prompt', selectorMs=900) for i in range(20)]
+        line = by_name(rows)['selector']
+        for key in ('rankedOverlap', 'checkpoints', 'droppedPairs', 'identityReused'):
+            self.assertNotIn(key, line)
+        rows[0].update(rankedOverlap=2, count=3, candidates=12, selectorCheckpoint='ckpt-a',
+                       selectorDroppedPairs=0, selectorIdentityReused=1)
+        rows[1].update(rankedOverlap=0, count=1, candidates=9, selectorCheckpoint='ckpt-a',
+                       selectorDroppedPairs=4, selectorIdentityReused=0)
+        rows[2].update(selectorCheckpoint='ckpt-b', selectorIdentityReused=1)
+        # A recall that asked no selector does not count, whatever it carries.
+        rows.append(recall(20, rankedOverlap=3, count=3, candidates=5, selectorDroppedPairs=7))
+        line = by_name(rows)['selector']
+        self.assertEqual((line['overlapRecalls'], line['rankedOverlap'], line['overlapServed'],
+                          line['overlapCandidates']), (2, 2, 4, 21))
+        self.assertEqual(line['checkpoints'], {'ckpt-a': 2, 'ckpt-b': 1})
+        self.assertEqual((line['droppedPairRecalls'], line['droppedPairs']), (1, 4))
+        self.assertEqual((line['identityReused'], line['identityReusedN']), (0.6667, 3))
+        self.assertEqual(line['status'], 'ok')
+
     def test_selector_counts_answers_that_ran_out_of_budget(self):
         rows = [recall(i, selectorLane='prompt', selectorMs=900) for i in range(49)]
         rows.append(recall(49, selectorLane='prompt', selectorMs=900,

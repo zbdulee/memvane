@@ -22,10 +22,12 @@ def _search_trace(trace, timings):
     """Keep candidate paths off the bounded recall event; capture retains them."""
     sources = timings.pop('semanticSources', {})
     only = frozenset(timings.pop('semanticOnly', ()))
+    # Every candidate's path and cosine: only the injected cards' cosines reach the event (``injectedCosine``).
+    cosine = timings.pop('semanticCosine', {})
     trace.fields(**timings)
     if timings.get('vectorKernelUnavailable'):
         trace.note('laya_vector_kernel_unavailable')
-    return sources, (only, timings.pop('semanticCosine', {})), timings.get('sessionExcludedHits', 0)
+    return sources, (only, cosine), timings.get('sessionExcludedHits', 0)
 
 
 def _note_semantic_only(trace, result, semantic, answer):

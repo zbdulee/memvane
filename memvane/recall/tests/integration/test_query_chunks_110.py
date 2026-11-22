@@ -49,6 +49,12 @@ class LongPromptRecall(RecallInstallCase):
         self.assertIn('zqheronx', context)
         self.assertIn('semanticOnlyInjected', event)
         self.assertNotIn('vector_fallback', event)
+        # One cosine per injected card, in injection order; the other candidates' paths and cosines stay off the row.
+        self.assertEqual(len(event['injectedCosine']), len(event['cards']))
+        self.assertTrue(event['cards'])
+        self.assertTrue(all(value is None or -1.0 <= value <= 1.0001 for value in event['injectedCosine']))
+        self.assertTrue(any(value is not None for value in event['injectedCosine']))
+        self.assertNotIn('semanticCosine', event)
 
     def test_a_five_thousand_character_prompt_that_fails_whole_goes_on_as_windows(self):
         self.provider.bound_queries(1500)

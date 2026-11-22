@@ -250,6 +250,10 @@ class Results(DispatchCase):
         (event,), _acked = self.wake_events('laya-sync', {'state': 'unchanged', 'linkedWaiting': {
             'waiting': 1, 'held': 0, 'reasons': {'Private Path/x.md': 1, 'candidate_busy': 'many', '': 3}}})
         self.assertEqual(event['linked'], {'waiting': 1, 'held': 0, 'reasons': {'_rivate__ath_x.md': 1}})
+        # Two reasons that clean to one code are added, not overwritten.
+        (event,), _acked = self.wake_events('laya-sync', {'state': 'unchanged', 'linkedWaiting': {
+            'waiting': 3, 'held': 0, 'reasons': {'view busy': 1, 'view_busy': 2}}})
+        self.assertEqual(event['linked'], {'waiting': 3, 'held': 0, 'reasons': {'view_busy': 3}})
         for shape in ('2 views', {'waiting': True, 'held': 0, 'reasons': {}}, {'waiting': 1, 'held': 0},
                       {'waiting': -1, 'held': 0, 'reasons': {}}):
             with self.subTest(shape=shape):

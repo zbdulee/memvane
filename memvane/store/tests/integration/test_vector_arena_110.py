@@ -113,6 +113,29 @@ class ArenaSearch(VectorCase):
         self.assertEqual(timings['vectorScanMs'], 2000)
         self.assertEqual(int(timings['vectorLoadMs']) // 1000, 2)
 
+    def test_a_deadline_inside_the_arena_scan_stays_a_deadline(self):
+        from memvane.store.blob.blob_values import BlobStoreError
+        self.write_arena(self.whole())
+        native = vector_accel.kernel()
+
+        def expired(buffer, *_args, **_kwargs):
+            self.assertGreater(len(buffer), 0)  # The mapped rows are in the failing frame.
+            raise BlobStoreError('vector_deadline_exceeded')
+        # Inside the store read's bound and past it (a large install the arena covers).
+        for bound in (view_accel_search.MAX_ROWS, 0):
+            with self.subTest(bound=bound), mock.patch.object(view_accel_search, 'MAX_ROWS', bound), \
+                    mock.patch.object(native, 'scores', side_effect=expired):
+                timings = {}
+                refusal = self.bounded_refusal(self.store.search_exact, self.pin, A, 3, profile_id=self.profile,
+                                               timings=timings)
+                self.assertEqual(refusal.reason, 'vector_deadline_exceeded')
+                self.assertEqual(self.reported(timings), ('arena', None, 'ok'))
+                answer = self.store.search_hybrid(self.pin, 'hello', A, 3, profile_id=self.profile)
+                self.assertEqual((answer['semantic_status'], answer['semantic']), ('deferred_deadline', []))
+        # Nothing is left broken: the next search answers from the arena.
+        rows, timings = self.search()
+        self.assertEqual((rows, self.reported(timings)), (self.from_store()[0], ('arena', 0, 'ok')))
+
     def test_sets_the_arena_does_not_hold_come_from_the_store(self):
         blobs = list(self.vectors)
         self.write_arena([(blobs[0], self.vectors[blobs[0]]), (blobs[2], self.vectors[blobs[2]])])

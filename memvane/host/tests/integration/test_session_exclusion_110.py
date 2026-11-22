@@ -97,6 +97,13 @@ class PromptExclusion(SessionCase):
         last = events[-1]
         self.assertEqual((last['outcome'], last['reason'], last['sessionExcluded']),
                          ('empty', 'no_candidates_after_exclusion', len(injected)), last)
+        # The row of a recall the exclusion emptied reads like any other row without candidates.
+        self.assertEqual((last['selection'], last['candidates'], last['generation']),
+                         ('no_candidates', 0, events[0]['generation']), last)
+        self.assertTrue(events[0]['generation'])
+        for event in events:
+            self.assertNotIn('semanticCosine', event)
+            self.assertNotIn('semanticSources', event)
         record = self.record('s-one')
         self.assertEqual((record['v'], len(record['cards']), set(record['by'])), (1, len(injected), {'p'}))
         self.assertEqual(record['seq'], len(events) - 1)

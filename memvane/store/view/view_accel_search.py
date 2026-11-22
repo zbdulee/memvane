@@ -100,7 +100,7 @@ def _arena_scores(store, groups, heads, recipe_id, profile_id, dimension, query,
     from memvane.vectorcache import api as vectorcache
     if os.environ.get('MEMVANE_VECTOR_ACCEL', '').lower() == 'store':
         return {}, {}, list(groups), 'disabled'
-    started, scanned = time.perf_counter(), 0.0
+    started, scanned, missing, wrong = time.perf_counter(), 0.0, (), 0
     try:
         directory = Path(store._path).parent / vectorcache.DIRECTORY
         with vectorcache.opened(directory, profile_id=profile_id, recipe_id=recipe_id, dimension=dimension,
@@ -121,6 +121,8 @@ def _arena_scores(store, groups, heads, recipe_id, profile_id, dimension, query,
         return scores, covered, missing, state
     except v.BlobStoreError as exc:
         if exc.reason == vectors.DEADLINE_EXCEEDED:
+            # The scan ran out of time on the arena's rows: that is where this search read.
+            stats.update(vectorSource='arena', vectorCache='inconsistent' if wrong else 'building' if missing else 'ok')
             raise
         return {}, {}, list(groups), 'absent'
     except Exception:  # noqa: BLE001 - a derived file never fails the search; the store answers

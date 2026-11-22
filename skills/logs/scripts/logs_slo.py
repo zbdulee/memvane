@@ -215,10 +215,10 @@ def _semantic(prompt):
                           arenaSemanticP95=round(_percentile(timed, .95), 3), arenaSemanticN=len(timed))
     over = bool(asked) and (values['complete'] < SEMANTIC_COMPLETE
                             or values.get('arena', 1.0) < ARENA_SHARE
-                            or values['deferred_cache_building'] > 0
-                            # The one cache state that is a fault: a single recall is over.
-                            or values['vectorCacheInconsistent'] > 0)
-    return _line('semantic', _judge(len(asked), FLOOR, over), len(asked), **values)
+                            or values['deferred_cache_building'] > 0)
+    # The one cache state that is a fault: a single recall is over, however few recalls the window holds.
+    status = 'over' if values['vectorCacheInconsistent'] > 0 else _judge(len(asked), FLOOR, over)
+    return _line('semantic', status, len(asked), **values)
 
 
 def _selector(prompt):
@@ -232,7 +232,40 @@ def _selector(prompt):
     return _line('selector', _judge(len(ran), FLOOR, p50 > SELECTOR[0], p95 > SELECTOR[1],
                                     share > SELECTOR_OVER_BUDGET), len(ran),
                  p50=round(p50, 3), p95=round(p95, 3), targetP50=SELECTOR[0], targetP95=SELECTOR[1],
-                 overBudget=round(share, 4), overBudgetTarget=SELECTOR_OVER_BUDGET)
+                 overBudget=round(share, 4), overBudgetTarget=SELECTOR_OVER_BUDGET, **_selector_detail(ran))
+
+
+def _count(value):
+    return value if type(value) is int and value >= 0 else None
+
+
+def _selector_detail(ran):
+    """What the selector's answers say beside their time; nothing here is judged.
+
+    A row without a field did not report it (the selector did not answer, or
+    an older bundle wrote the row): it is left out, never counted as zero.
+    """
+    values = {}
+    answered = [row for row in ran if _count(row.get('rankedOverlap')) is not None]
+    if answered:
+        # No share: the overlap is read beside how many cards were served and how many were candidates.
+        values.update(overlapRecalls=len(answered), rankedOverlap=sum(row['rankedOverlap'] for row in answered),
+                      overlapServed=sum(_count(row.get('count')) or 0 for row in answered),
+                      overlapCandidates=sum(_count(row.get('candidates')) or 0 for row in answered))
+    checkpoints = {}
+    for row in ran:
+        if _text(row.get('selectorCheckpoint')):
+            checkpoints[row['selectorCheckpoint']] = checkpoints.get(row['selectorCheckpoint'], 0) + 1
+    if checkpoints:
+        values['checkpoints'] = dict(sorted(checkpoints.items()))
+    dropped = [row['selectorDroppedPairs'] for row in ran if _count(row.get('selectorDroppedPairs')) is not None]
+    if dropped:
+        values.update(droppedPairRecalls=sum(1 for value in dropped if value), droppedPairs=sum(dropped))
+    reused = [row['selectorIdentityReused'] for row in ran
+              if type(row.get('selectorIdentityReused')) in (int, bool) and row['selectorIdentityReused'] in (0, 1)]
+    if reused:
+        values.update(identityReused=round(sum(reused) / len(reused), 4), identityReusedN=len(reused))
+    return values
 
 
 def _hosts(prompt):

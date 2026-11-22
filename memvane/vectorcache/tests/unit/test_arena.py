@@ -188,6 +188,20 @@ class Reader(ArenaCase):
         os.chmod(self.directory, 0o750)
         self.assertIsNone(arena.open_arena(self.directory, **SPEC))
 
+    def test_an_exception_that_holds_scanned_rows_leaves_the_context_unchanged(self):
+        self.build([(sha(1), sha(101), rows((1, 0), (0, 1)))])
+
+        class Expired(Exception):
+            pass
+
+        def scan(found):
+            held = found.span(0, 2)  # The frame keeps this slice alive while the exception travels.
+            raise Expired(len(held))
+        with self.assertRaises(Expired):
+            with arena.opened(self.directory, **SPEC) as found:
+                scan(found)
+        found.close()  # Closing again is a no-op.
+
     def test_the_context_closes_the_arena_and_passes_no_directory_through(self):
         self.build([(sha(1), sha(101), rows((1, 0)))])
         with arena.opened(self.directory, **SPEC) as found:

@@ -130,12 +130,22 @@ class Arena:
         self._view = memoryview(mapped) if mapped is not None else None
 
     def close(self):
-        if self._view is not None:
-            self._view.release()
-            self._view = None
-        if self._mapped is not None:
-            self._mapped.close()
-            self._mapped = None
+        """Release the mapping; never raises.
+
+        An exception leaving a scan keeps the scanned slices alive in its
+        traceback, and closing a map with exported buffers raises
+        ``BufferError``. That would replace the exception on its way out (a
+        deadline would read as "no arena"), so such a map is left to the
+        collector, which unmaps it once the traceback is gone.
+        """
+        view, mapped, self._view, self._mapped = self._view, self._mapped, None, None
+        try:
+            if view is not None:
+                view.release()
+            if mapped is not None:
+                mapped.close()
+        except BufferError:
+            pass
 
     def span(self, first_row, chunk_count):
         """The writable (private) bytes of ``chunk_count`` rows from ``first_row``."""

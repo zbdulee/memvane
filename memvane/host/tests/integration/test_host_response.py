@@ -326,9 +326,12 @@ class RecallRetry(unittest.TestCase):
                     ValueError('reader_store_changed')):
             with self.subTest(code=str(exc)):
                 self.logged.clear()
-                result, seen, select = self.recall([exc, self.SERVED])
+                with mock.patch.object(response, '_trace_fields') as fields:
+                    result, seen, select = self.recall([exc, self.SERVED])
                 self.assertEqual(result, self.SERVED)
                 self.assertEqual(len(seen), 2)
+                # The retry holds no session exclusions, and its row says so.
+                self.assertIn(mock.call(sessionExcluded=0, sessionState='retry'), fields.call_args_list)
                 self.assertEqual(select.call_args, mock.call('/synthetic/project', action='recall'))
                 self.assertEqual([(args[1], kwargs) for args, kwargs in self.logged],
                                  [('laya_recall_proof_retry', {'retry': str(exc)})])
