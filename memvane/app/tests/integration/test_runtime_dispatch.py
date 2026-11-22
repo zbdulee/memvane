@@ -246,6 +246,10 @@ class Results(DispatchCase):
         self.assertEqual((event['outcome'], event['reason'], event['linked']), ('unchanged', None, waiting))
         (event,), acked = self.wake_events('laya-sync', {'state': 'unchanged'})
         self.assertEqual((acked, event['linked']), (True, None))
+        self.assertIsNone(event.get('reoffer'))
+        # A pass that asked for the same wake again says so on its row.
+        (event,), _acked = self.wake_events('laya-sync', {'state': 'unchanged', 'vectorReoffer': True})
+        self.assertIs(event['reoffer'], True)
         # Only fixed codes and counts reach the log.
         (event,), _acked = self.wake_events('laya-sync', {'state': 'unchanged', 'linkedWaiting': {
             'waiting': 1, 'held': 0, 'reasons': {'Private Path/x.md': 1, 'candidate_busy': 'many', '': 3}}})

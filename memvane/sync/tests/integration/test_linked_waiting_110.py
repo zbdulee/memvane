@@ -221,6 +221,19 @@ class Reoffer(FixtureCase):
         self.assertEqual(self.decide(a=20), 'offer')
         self.assertEqual(json.loads(self.path.read_text())['streak'], 0)
 
+    def test_a_count_that_goes_up_and_down_is_cut_off_by_the_absolute_bound_once_and_starts_over(self):
+        # One view between 51 and 50 beside a view no pass reaches: every pass is offered, each
+        # second one sets a new low, so the streak never grows.
+        answers = [self.decide(views=2, unreached=1, a=51 - index % 2)
+                   for index in range(linked_reoffer.ABSOLUTE_CAP + 3)]
+        self.assertEqual(answers[:linked_reoffer.ABSOLUTE_CAP], ['offer'] * linked_reoffer.ABSOLUTE_CAP)
+        self.assertEqual(answers[linked_reoffer.ABSOLUTE_CAP:], ['capped', 'offer', 'offer'])
+        self.assertLessEqual(json.loads(self.path.read_text())['streak'], 1)
+        # A pass that is not offered (the view is reached and has as much left) ends the row.
+        last = 51 - (linked_reoffer.ABSOLUTE_CAP + 2) % 2
+        self.assertEqual(self.decide(views=2, a=last), 'none')
+        self.assertEqual(json.loads(self.path.read_text())['offers'], 0)
+
     def test_more_views_than_are_followed_do_not_read_as_new_ones(self):
         # Seventy views wait; each pass counts a different half of them and none gets smaller.
         names = ['v%02d' % index for index in range(70)]
@@ -249,7 +262,7 @@ class Reoffer(FixtureCase):
         self.path.write_text('{"streak": "many", "remaining": [1], "floor"')
         self.assertEqual(self.decide(a=10), 'offer')
         self.assertEqual(json.loads(self.path.read_text()),
-                         {'floors': {'/a': 10}, 'remaining': {'/a': 10}, 'streak': 0, 'views': 1})
+                         {'floors': {'/a': 10}, 'offers': 1, 'remaining': {'/a': 10}, 'streak': 0, 'views': 1})
         self.assertEqual(linked_reoffer.decide(None, {'views': 1, 'unreached': 1, 'remaining': {}}), 'none')
         with mock.patch('memvane.kernel.atomic_rename.atomic_json', side_effect=OSError('read-only')):
             self.assertEqual(self.decide(views=5, unreached=5), 'none')

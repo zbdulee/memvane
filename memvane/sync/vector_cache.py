@@ -10,8 +10,8 @@ The sync owner is its only writer. A pass
     finish          reports (``vector.cache`` events) and says whether the
                     same wake should be offered again
 
-The wake is offered again only when this pass's catch-up appended at least
-one row and sets are still left: an arena that cannot move (quota, a newer
+The wake is offered again only when this pass appended at least one row
+(catching up, or ahead of a publication) and sets are still left: an arena that cannot move (quota, a newer
 format, an unwritable directory, sets the store cannot read) is ``skipped``
 with that reason and waits for the next wake of its own.
 
@@ -102,7 +102,8 @@ def finish(vectors, decision):
             return False
         report = writer.summary()
         writer.close()
-        common = dict(decision=decision, ms=ms, remaining=report['remaining'], deadRows=report['deadRows'],
+        # ``ms``: the arena's own work (check, compaction, appends), not the pass around it.
+        common = dict(decision=decision, ms=report['ms'], remaining=report['remaining'], deadRows=report['deadRows'],
                       bytes=report['bytes'])
         for outcome, fields in (('rebuild', {} if report['rebuilt'] else None),
                                 ('compact', {} if report['compacted'] else None),
@@ -115,7 +116,7 @@ def finish(vectors, decision):
             diagnostics.emit('vector.cache', outcome='skipped', reason=report['skipped'], **common)
         elif session['failed']:
             diagnostics.emit('vector.cache', outcome='failed', reason=session['failed'], **common)
-        return bool(report['catchupRows'] and report['remaining'] and not report['skipped']
-                    and not session['failed'])
+        return bool((report['catchupRows'] or report['appendRows']) and report['remaining']
+                    and not report['skipped'] and not session['failed'])
     except Exception:  # noqa: BLE001 - reporting never fails the pass
         return False

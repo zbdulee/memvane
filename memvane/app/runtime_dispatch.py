@@ -329,7 +329,7 @@ def _event(target, kind, started, *, outcome, reason=None, result=None, extra=No
                        previousGeneration=target.get('generation'),
                        detail=result.get('detail'), path=result.get('path'),
                        cause=result.get('cause'), provenance=_provenance(result),
-                       linked=_linked(result),
+                       linked=_linked(result), reoffer=True if result.get('vectorReoffer') is True else None,
                        **(extra if isinstance(extra, dict) else {}), **common)
         if result.get('state') == 'indexed':
             event_log.emit('index.publish', outcome='published',

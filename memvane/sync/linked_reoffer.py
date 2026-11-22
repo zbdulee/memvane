@@ -18,6 +18,10 @@ row without a new low (of any view, or of the number that wait) end the free
 re-offers: the pass then fails as
 ``schema3_linked_pending`` and the wake queue's backoff and retry cap bound it.
 
+Apart from that, ``ABSOLUTE_CAP`` offers in a row (a pass that is not offered
+ends the row) fail one pass the same way, whatever moved: a count that rises
+and falls again sets a new low every other pass.
+
 The file is a cache. Unreadable, it reads as no history; when it cannot be
 written no re-offer is made (the count could not advance), and the next sync
 request reaches the linked views.
@@ -29,6 +33,8 @@ from pathlib import Path
 
 NAME = 'linked-reoffer.json'
 CAP = 20
+# Offers in a row whatever moved: a count that goes up and down sets a new low every other pass.
+ABSOLUTE_CAP = 200
 _MAX_BYTES = 256 * 1024
 _MAX_VIEWS = 64
 _MAX_FLOORS = 4 * _MAX_VIEWS
@@ -49,9 +55,11 @@ def _read(path):
     if not isinstance(value, dict):
         return {}
     views, streak = value.get('views'), value.get('streak')
+    offers = value.get('offers')
     return {'remaining': _counts(value.get('remaining')), 'floors': _counts(value.get('floors')),
             'views': views if type(views) is int and views >= 0 else None,
-            'streak': streak if type(streak) is int and streak >= 0 else 0}
+            'streak': streak if type(streak) is int and streak >= 0 else 0,
+            'offers': offers if type(offers) is int and offers >= 0 else 0}
 
 
 def decide(state_root, backlog) -> str:
@@ -91,11 +99,13 @@ def decide(state_root, backlog) -> str:
         views, streak = backlog['views'] if views is None else min(views, backlog['views']), 0
     elif eligible:
         streak += 1
+    # Every offer since the views last stopped waiting, whatever moved; one counted failure starts it over.
+    offers = before.get('offers', 0) + 1 if eligible else 0
+    answer = 'none' if not eligible else 'capped' if streak > CAP or offers > ABSOLUTE_CAP else 'offer'
     try:
-        atomic_json(path, {'remaining': remaining, 'floors': floors, 'views': views, 'streak': streak})
+        atomic_json(path, {'remaining': remaining, 'floors': floors, 'views': views, 'streak': streak,
+                           'offers': 0 if offers > ABSOLUTE_CAP else offers})
     except (OSError, ValueError, TypeError):
         # Checked: without the written count the re-offers would have no bound.
         return 'none'
-    if not eligible:
-        return 'none'
-    return 'capped' if streak > CAP else 'offer'
+    return answer

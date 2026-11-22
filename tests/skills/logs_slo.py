@@ -204,6 +204,30 @@ class Lines(unittest.TestCase):
         self.assertEqual((line['identityReused'], line['identityReusedN']), (0.6667, 3))
         self.assertEqual(line['status'], 'ok')
 
+    def test_semantic_shows_what_the_sync_owner_last_said_about_the_arena(self):
+        rows = [recall(i, semantic='complete', vectorSource='arena', vectorCache='ok') for i in range(20)]
+        line = by_name(rows)['semantic']
+        self.assertNotIn('arenaSkipped', line)
+        self.assertNotIn('arenaRemaining', line)
+        rows.append({'ts': at(120), 'event': 'vector.cache', 'outcome': 'catchup', 'rows': 4096, 'remaining': 310})
+        line = by_name(rows)['semantic']
+        self.assertEqual((line.get('arenaSkipped'), line['arenaRemaining']), (None, 310))
+        rows.append({'ts': at(60), 'event': 'vector.cache', 'outcome': 'skipped', 'reason': 'quota', 'remaining': 310})
+        line = by_name(rows)['semantic']
+        self.assertEqual((line['arenaSkipped'], line['arenaRemaining'], line['status']), ('quota', 310, 'ok'))
+
+    def test_sync_shows_the_passes_in_a_row_that_asked_for_the_wake_again(self):
+        def sync(index, reoffer):
+            return {'ts': at(3000 - index * 30), 'event': 'wake.sync', 'outcome': 'unchanged', 'ms': 900,
+                    **({'reoffer': True} if reoffer else {})}
+        rows = [sync(index, index not in (0, 4)) for index in range(8)]
+        line = by_name(rows)['sync']
+        self.assertEqual((line['reofferRun'], line['reofferRunMax']), (3, 3))
+        rows.append(sync(8, False))
+        line = by_name(rows)['sync']
+        self.assertEqual((line['reofferRun'], line['reofferRunMax']), (0, 3))
+        self.assertNotIn('reofferRun', by_name([sync(0, False)])['sync'])
+
     def test_selector_counts_answers_that_ran_out_of_budget(self):
         rows = [recall(i, selectorLane='prompt', selectorMs=900) for i in range(49)]
         rows.append(recall(49, selectorLane='prompt', selectorMs=900,

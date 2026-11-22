@@ -131,6 +131,26 @@ class CatchUp(ArenaCase):
             self.run_pass()
         self.assertEqual(len(wakes), total - 1)
 
+    def test_sets_a_publication_leaves_behind_are_caught_up_by_the_offered_wake(self):
+        for index, token in enumerate(('ternprobe', 'ploverprobe', 'gullprobe')):
+            self.card(self.CARDS[index][0], token)
+        wakes, recorded = self.wakes()
+        before = len(self.events('vector.cache'))
+        with recorded, mock.patch('memvane.vectorcache.types.PASS_VECTORS', 1):
+            first = self.run_pass()
+            self.assertEqual((first['vector']['state'], first.get('vectorReoffer')), ('published', True), first)
+            self.assertEqual(len(wakes), 1)
+            while self.cover()[1]:
+                self.run_pass()
+            self.run_pass()
+        events = self.events('vector.cache')[before:]
+        self.assertEqual(events[0]['outcome'], 'append')
+        self.assertGreater(events[0]['remaining'], 0)
+        self.assertEqual(events[-1]['remaining'], 0)
+        # Each pass that moved and left sets offered the wake once; the last one did not.
+        self.assertEqual(len(wakes), len(events) - 1)
+        self.assertTrue(all(type(event['ms']) in (int, float) and event['ms'] >= 0 for event in events))
+
     def skipped(self, reason, context=None):
         """One pass whose arena cannot move: it publishes, offers no wake and reports one ``skipped``."""
         from contextlib import nullcontext

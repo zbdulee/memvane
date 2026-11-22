@@ -183,7 +183,20 @@ def _stage(prompt, size):
     return _line('stage', _judge(most, FLOOR, over), most, **values)
 
 
-def _semantic(prompt):
+def _arena(window):
+    """What the sync owner last said about the vector arena: why it did not move, and the sets left."""
+    events = [row for row in window if row.get('event') == 'vector.cache']
+    if not events:
+        return {}
+    last, values = events[-1], {}
+    if last.get('outcome') in ('skipped', 'failed') and _text(last.get('reason')):
+        values['arenaSkipped'] = last['reason']
+    if _number(last.get('remaining')) is not None:
+        values['arenaRemaining'] = int(last['remaining'])
+    return values
+
+
+def _semantic(prompt, window=()):
     stated = [row for row in prompt if _text(row.get('semantic'))]
     asked = [row for row in stated if row['semantic'] != 'provider_absent']
     counts = Counter(row['semantic'] for row in stated)
@@ -218,7 +231,7 @@ def _semantic(prompt):
                             or values['deferred_cache_building'] > 0)
     # The one cache state that is a fault: a single recall is over, however few recalls the window holds.
     status = 'over' if values['vectorCacheInconsistent'] > 0 else _judge(len(asked), FLOOR, over)
-    return _line('semantic', status, len(asked), **values)
+    return _line('semantic', status, len(asked), **values, **_arena(window))
 
 
 def _selector(prompt):
@@ -408,6 +421,14 @@ def _sync(rows, window, now):
     if last:
         values.update(linkedWaitingLast=int(_number(last.get('waiting')) or 0),
                       linkedHeldLast=int(_number(last.get('held')) or 0))
+    # Passes in a row that asked for the same wake again (vector fill, linked views, the vector arena).
+    run = longest = 0
+    for row in rows:
+        if row.get('event') == 'wake.sync':
+            run = run + 1 if row.get('reoffer') is True else 0
+            longest = max(longest, run) if id(row) in inside else longest
+    if longest:
+        values.update(reofferRun=run, reofferRunMax=longest)
     stalled = count > SYNC_STREAK or (waiting and max(waiting) > SYNC_SECONDS)
     status = 'over' if stalled else _judge(len(delays), SYNC_FLOOR, delays and values['p95Seconds'] > SYNC_SECONDS)
     return _line('sync', status, len(delays), **values)
@@ -466,7 +487,7 @@ def lines(rows, hours, *, state_root=None, now=None):
     prompt = [row for row in window if row.get('event') == 'recall']
     size = install_size(state_root) if state_root is not None else None
     return [_line('install', 'shown', size=size or 'unknown'),
-            *_hook(prompt, size), _stage(prompt, size), _semantic(prompt), _selector(prompt), *_hosts(prompt),
+            *_hook(prompt, size), _stage(prompt, size), _semantic(prompt, window), _selector(prompt), *_hosts(prompt),
             _dedup(rows, floor_time), _sync(rows, window, now), _failed(window),
             _learning(rows, window), _identity(state_root) if state_root is not None else _line('identity', 'no-data')]
 
