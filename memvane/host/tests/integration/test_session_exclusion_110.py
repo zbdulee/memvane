@@ -13,6 +13,7 @@ import json
 import os
 import time
 import unittest
+from unittest import mock
 
 from memvane.host import edit_recall, session_cards
 from memvane.host.tests.support import HostInstallCase, context
@@ -87,11 +88,10 @@ class SessionCase(HostInstallCase):
 class PromptExclusion(SessionCase):
     def test_each_recall_leaves_out_what_the_session_holds_until_nothing_is_left(self):
         events, injected = self.drain()
-        # The three shared cards, and the fixture's own card when the relaxed query reaches it.
-        self.assertGreaterEqual(len(injected), len(TOPICS))
-        self.assertEqual(len(set(injected)), len(injected), 'no card is injected twice')
-        for topic in TOPICS:
-            self.assertEqual(sum(path.endswith(f'concepts/{topic}.md') for path, _sha in injected), 1)
+        # Exactly the three cards the question matches: once they are held, the query is not
+        # widened to single terms, so the fixture's own card (one common word) is never injected.
+        self.assertEqual(sorted(path.rsplit('/', 1)[-1] for path, _sha in injected),
+                         sorted(topic + '.md' for topic in TOPICS))
         self.assertEqual((events[0]['sessionState'], events[0]['sessionExcluded']), ('none', 0))
         self.assertTrue(all(event['sessionState'] == 'ok' for event in events[1:]), events)
         last = events[-1]
@@ -107,6 +107,16 @@ class PromptExclusion(SessionCase):
         _text, unrelated = self.recall('s-one', prompt='what does zqnowherex mean?')
         self.assertEqual((unrelated['outcome'], unrelated['reason'], unrelated['sessionExcluded']),
                          ('empty', 'no_candidates', len(injected)), unrelated)
+
+    def test_a_question_whose_matches_are_all_held_is_not_widened_to_single_terms(self):
+        # The fixture's own card shares one word ("marker") with the question, never the shared token.
+        self.drain()
+        text, event = self.recall()
+        self.assertEqual((text, event['outcome'], event['reason']), ('', 'empty', 'no_candidates_after_exclusion'))
+        # Without held cards the same kind of miss still falls back to single terms.
+        text, other = self.recall('s-fresh', prompt='which marker does zqnowherex keep?')
+        self.assertEqual((other['outcome'], other['sessionExcluded']), ('served', 0), other)
+        self.assertIn('zqheronx', text)
 
     def test_a_card_that_changed_comes_back(self):
         _events, injected = self.drain()
@@ -140,16 +150,18 @@ class Concurrency(SessionCase):
         fd = os.open(str(self.record_path('s-one')), os.O_RDWR)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
-            started = time.monotonic()
-            text, held = self.recall()
+            with mock.patch.object(session_cards.time, 'sleep') as waited:
+                text, held = self.recall()
         finally:
             os.close(fd)
+        # The write was tried the fixed number of times, with a wait between tries only.
+        self.assertEqual([call.args for call in waited.call_args_list],
+                         [(session_cards.WRITE_RETRY_SECONDS,)] * (session_cards.WRITE_ATTEMPTS - 1))
         self.assertEqual((held['outcome'], held['sessionExcluded'], held['sessionState']),
                          ('served', 0, 'write_skipped'), held)
         self.assertEqual(held['cards'], first['cards'])
         self.assertIn(SHARED, text)
         self.assertEqual(self.record('s-one')['seq'], 1)
-        self.assertLess(time.monotonic() - started, 30)
         # The lock is free again: the record is read and written as usual.
         _text, after = self.recall()
         self.assertEqual((after['sessionState'], after['sessionExcluded']), ('ok', len(first['cards'])))
@@ -256,7 +268,8 @@ class Contexts(SessionCase):
 
     def excluded(self, session, host='claude'):
         _text, event = self.recall(session, host=host)
-        self.assertEqual(event['outcome'], 'served', event)
+        # With every match held the recall is empty; with none held it serves them again.
+        self.assertEqual(event['outcome'], 'empty' if event['sessionExcluded'] else 'served', event)
         return event['sessionExcluded']
 
     def test_only_the_main_context_entries_are_left_out(self):
@@ -265,6 +278,9 @@ class Contexts(SessionCase):
                 count = self.seed('ctx-' + by, by)
                 event_text, event = self.recall('ctx-' + by)
                 self.assertEqual(event['sessionExcluded'], count if expected else 0, event)
+                self.assertEqual((event['outcome'], event['reason']),
+                                 ('empty', 'no_candidates_after_exclusion') if expected else ('served', 'selected'),
+                                 event)
 
     def test_a_record_of_an_older_bundle_or_a_damaged_one_excludes_nothing(self):
         self.seed('old-shape', None)
@@ -320,9 +336,9 @@ class EditContexts(SessionCase):
         _answer, event, _capture = self.edit('main', host='codex')
         self.assertEqual((event['agentScoped'], event['injectedBy']), (False, 'e'), event)
         _text, prompt = self.recall('main', prompt='what marker does the emerald heron keep?', host='codex')
-        self.assertEqual(prompt['sessionExcluded'], 1, prompt)
-        # The heron card the edit recall injected is not injected again; other ranks may fill in.
-        self.assertFalse(any(card['path'].endswith('/heron.md') for card in prompt.get('cards') or []), prompt)
+        # The heron card the edit recall injected was the question's only match: nothing else is injected.
+        self.assertEqual((prompt['sessionExcluded'], prompt['outcome'], prompt['reason'], prompt.get('cards', [])),
+                         (1, 'empty', 'no_candidates_after_exclusion', []), prompt)
 
 
 class Rules(unittest.TestCase):

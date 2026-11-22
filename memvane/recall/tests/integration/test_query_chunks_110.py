@@ -81,6 +81,57 @@ class LongPromptRecall(RecallInstallCase):
         self.assertIn('zqheronx', context)
 
 
+class EditQuery(RecallInstallCase):
+    """An edit recall asks its query whole, whatever its length: its pool is a learning case."""
+
+    CARDS = 2
+
+    def edit_recall(self, prompt):
+        import time
+        from memvane.journal import api as journal_api
+        from memvane.recall import recall_scope, selected_recall
+        from memvane.recall.types import RecallTrace
+        from tests.support.install_builder import ROOT
+
+        class Trace(RecallTrace):
+            def __init__(self):
+                self.data = {}
+
+            def fields(self, **fields):
+                self.data.update(fields)
+        decision = journal_api.select_route(str(self.project), action='recall')
+        with journal_api.resolve_endpoint(self.project, action='recall', host_root=ROOT) as endpoint:
+            _record, _attestation, proof = journal_api.recheck_reader(endpoint)
+        trace = Trace()
+        with recall_scope.recall_scope():
+            recall_scope.set_edit_recall(deadline=time.monotonic() + 10, selector_deadline=time.monotonic() + 10)
+            answer = selected_recall.serve_endpoint_recall(
+                'claude', {'cwd': str(self.project), 'prompt': prompt, 'session_id': 'edit-whole'},
+                cwd=str(self.project), trace=trace, route_decision=decision, main_proof=proof)
+        return answer, trace.data
+
+    def test_a_long_edit_query_is_one_whole_request(self):
+        provider = self.install.provider
+        provider.admit_queries()
+        provider.bound_queries(None)
+        query = long_prompt(8192)
+        answer, data = self.edit_recall(query)
+        self.assertEqual(provider.query_lengths(), [len(query)])
+        self.assertEqual((data['semantic'], data['queryChunks'], data['queryChunksRequested']), ('complete', 1, 1))
+        self.assertTrue(answer.rows)
+
+    def test_a_long_edit_query_the_provider_refuses_is_not_asked_as_windows(self):
+        provider = self.install.provider
+        provider.admit_queries()
+        provider.bound_queries(1500)
+        query = long_prompt(6001)
+        answer, data = self.edit_recall(query)
+        self.assertEqual(provider.query_lengths(), [len(query)])
+        self.assertEqual(data['semantic'], 'provider_absent')
+        self.assertNotIn('queryChunks', data)
+        self.assertTrue(answer.rows, 'the lexical lists still answer')
+
+
 class ExcludedHits(RecallInstallCase):
     """What an empty recall counts as removed by the session exclusions."""
 

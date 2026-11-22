@@ -30,7 +30,8 @@ def _session_excluded(name):
 
 def _fused_sources(lexical, nearest, timings, emptied=None):
     from memvane.recall.domain.rules import _fuse_verified_lists
-    if emptied is not None and emptied[3] and timings is not None and not any(lexical) and not nearest:
+    if (emptied is not None and emptied[3] and timings is not None and not any(lexical) and not nearest
+            and 'sessionExcludedHits' not in timings):
         store, pin, queries, excluded, status, deadline = emptied
         timings['sessionExcludedHits'] = _excluded_hits(store, pin, queries, excluded, status, timings, deadline)
     lists = lexical + ([] if nearest is None else [nearest])
@@ -108,7 +109,7 @@ def _vector_proof(authority,snapshot,decision,provider,deadline):
     return proof
 
 
-def _provider_vector(provider,prompt,budget):
+def _provider_vector(provider,prompt,budget,chunks=True):
     """``(vectors, requested)`` from the existing provider in a child with an absolute completion bound.
 
     A long prompt comes back as up to four window vectors (``query_embed_child.embed_chunks``).
@@ -116,7 +117,7 @@ def _provider_vector(provider,prompt,budget):
     from memvane.kernel.errors import IndexContractError
     from memvane.provider.api import query_embed_child_argv
     deadline=time.monotonic()+budget
-    payload=json.dumps({'manifest':provider.manifest,'prompt':prompt,'timeout':budget,'chunks':True,
+    payload=json.dumps({'manifest':provider.manifest,'prompt':prompt,'timeout':budget,'chunks':bool(chunks),
                         'allowed':sorted(_PROVIDER_ERRORS)},
                        ensure_ascii=True,separators=(',',':'))
     child=subprocess.Popen(query_embed_child_argv(),
@@ -172,7 +173,9 @@ def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline
     remaining=min(2,deadline-time.monotonic())
     if remaining<=0:raise ValueError('reader_snapshot_deadline')
     try:
-        vectors,requested=_provider_vector(provider,prompt,remaining)
+        # An edit recall asks its query whole, as before: its pool is a learning case.
+        from memvane.recall.recall_scope import edit_recall
+        vectors,requested=_provider_vector(provider,prompt,remaining,chunks=edit_recall() is None)
     except IndexContractError as exc:
         if str(exc) not in ('provider_unavailable','provider_identity_mismatch',
                             'provider_result_invalid','provider_socket_invalid','provider_socket_changed'):
@@ -329,6 +332,29 @@ def _lexical_signals(timings, queries, lexical):
         pass
 
 
+def _atom_fallback(store, pin, queries, lexical, shaped, excluded, query_vector, timings, deadline):
+    """The lexical lists, or single-term lists when a cold provider left the conjunctive query empty.
+
+    A query the session exclusions emptied is not widened: its answer is the
+    cards the session already holds, and a card matching one term only is not
+    what was asked for. The count of those cards is kept for the empty reason.
+    """
+    from memvane.recall.types import HYBRID_LIST_LIMIT
+    if query_vector is not None or any(lexical):
+        return lexical
+    if excluded:
+        hits = _excluded_hits(store, pin, queries, excluded, 'provider_absent', {}, deadline)
+        if hits:
+            if timings is not None:
+                timings['sessionExcludedHits'] = hits
+            return lexical
+    atoms = list(dict.fromkeys(atom for query in queries for atom in query.split(' AND ') if atom))[:3]
+    if len(atoms) > 1:
+        return [shaped(store.search(pin, atom, HYBRID_LIST_LIMIT, deadline_seconds=_reader_remaining(deadline),
+                                    excluded_cards=excluded)) for atom in atoms]
+    return lexical
+
+
 def _excluded_hits(store, pin, queries, excluded, status, timings, deadline):
     """How many candidates of an empty recall the session exclusions removed.
 
@@ -442,12 +468,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                          for query in queries]
                 if timings is not None:
                     _lexical_signals(timings, queries, lexical)
-                if query_vector is None and not any(lexical):
-                    # A cold provider can leave the conjunctive query empty.
-                    atoms = list(dict.fromkeys(atom for query in queries for atom in query.split(' AND ') if atom))[:3]
-                    if len(atoms)>1:
-                        lexical=[shaped(store.search(pin, atom, HYBRID_LIST_LIMIT, deadline_seconds=_reader_remaining(deadline), excluded_cards=excluded))
-                                 for atom in atoms]
+                lexical=_atom_fallback(store,pin,queries,lexical,shaped,excluded,query_vector,timings,deadline)
             finally:
                 if timings is not None:
                     timings['lexicalMs'] = round((time.monotonic() - started) * 1000, 3)
