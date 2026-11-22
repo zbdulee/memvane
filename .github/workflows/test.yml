@@ -12,6 +12,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # One test file at a time on a runner; the suite is split by shard instead.
+  MEMVANE_TEST_CONCURRENCY: 1
   # Module results of the run (tests/support/runner.mjs), for scripts/test_flaky_report.py.
   # A pull request run names its head commit, not the merge commit.
   MEMVANE_TEST_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}

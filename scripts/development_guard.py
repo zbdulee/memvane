@@ -292,17 +292,30 @@ def signal_owned(tree,rows,sig,send=os.kill):
             except ProcessLookupError:pass
 
 
-def command_for(kind,argv):
+def command_for(kind,argv,full=False,apply=None):
+    """The command to run. A test runs one file at a time; only the full suite
+    (``full``) may ask for 2 or 3. ``apply`` rewrites the requested value."""
     if not argv:raise GuardError('missing_command')
     if kind not in ('test','model-test'):return argv
     if Path(argv[0]).name!='node' or '--test' not in argv:raise GuardError('test_requires_direct_node_test')
-    result=list(argv)
+    result=list(argv);allowed=('1','2','3') if full else ('1',)
     for i,arg in enumerate(result):
-        if arg.startswith('--test-concurrency=') and arg!='--test-concurrency=1':raise GuardError('test_concurrency_must_be_one')
+        if arg.startswith('--test-concurrency='):
+            if arg.split('=',1)[1] not in allowed:raise GuardError('test_concurrency_must_be_one')
+            if apply is not None:result[i]=f'--test-concurrency={apply}'
         if arg=='--test-concurrency':
-            if i+1>=len(result) or result[i+1]!='1':raise GuardError('test_concurrency_must_be_one')
+            if i+1>=len(result) or result[i+1] not in allowed:raise GuardError('test_concurrency_must_be_one')
+            if apply is not None:result[i+1]=str(apply)
     if not any(arg.startswith('--test-concurrency') for arg in result):result.insert(result.index('--test')+1,'--test-concurrency=1')
     return result
+
+
+def test_concurrency(command):
+    """The file concurrency a test command carries (``command_for`` output)."""
+    for i,arg in enumerate(command):
+        if arg.startswith('--test-concurrency='):return int(arg.split('=',1)[1])
+        if arg=='--test-concurrency':return int(command[i+1])
+    return 1
 
 
 def observe_log(run,system,owned,elapsed,slept=None):
@@ -371,7 +384,8 @@ def state_root():
 
 def run_job(args,root):
     global PROBE_DEADLINE
-    command=command_for(args.kind,args.command)
+    full=args.kind=='test' and getattr(args,'exclusive',False)
+    command=command_for(args.kind,args.command,full)
     if execution_hold():raise GuardError('work_remains_on_hold')
     with Lease(root,shared=shared_test(args)) as lease:
         calibration=None;calibration_policy=None
@@ -439,6 +453,14 @@ def run_job(args,root):
                 if report['ready'] is not True:reason=reason or 'calibration_admission_budget'
             observe_log(run,baseline,{},0)
             if reason:raise GuardError(reason)
+            if args.kind in ('test','model-test'):
+                # More than one file at a time only under normal memory pressure;
+                # otherwise the run goes on one at a time instead of being refused.
+                requested=test_concurrency(command)
+                applied=requested if baseline['pressure']=='normal' else 1
+                if applied!=requested:command=command_for(args.kind,command,full,applied)
+                state.update(testConcurrencyRequested=requested,testConcurrency=applied,
+                             pressure=baseline['pressure']);save()
             environment=cpu_environment()
             if args.kind in ('test','model-test'):
                 # Every test process resolves the per-user runtime root (wake
@@ -457,22 +479,33 @@ def run_job(args,root):
             if time.monotonic()>=PROBE_DEADLINE:raise GuardError('wall_time_budget')
             child=subprocess.Popen(command,start_new_session=True,env=environment,pass_fds=tuple(lease.fds))
             tree=OwnedTree(child.pid);state.update(status='running',pid=child.pid);save()
-            failures=0
+            failures=0;recent=[]
             while True:
+                owned=None
                 try:
                     owned=tree.observe(processes());sample=system_sample();elapsed=time.monotonic()-began
                     report=scoped_report()
                     if report is not None:sample['calibration_available_mib']=report['available_mib']
                     reason=violation(policy,sample,list(owned.values()),baseline['swap_bytes'],calibration_policy=calibration_policy,report=report)
                     if reason in MONITOR_REASONS:raise GuardError(reason)
-                    failures=0
+                    failures=0;recent=(recent+[False])[-10:]
                 except GuardError as exc:
                     if str(exc) not in MONITOR_REASONS:raise
                     # An unreadable sample: the budget and a stop request still count.
                     failures+=1;state['monitorFailures']=state.get('monitorFailures',0)+1
+                    recent=(recent+[True])[-10:]
+                    # The round is recorded too: a run of failures is visible in the samples.
+                    with (run/'samples.jsonl').open('a') as stream:
+                        stream.write(json.dumps({'elapsed_seconds':round(time.monotonic()-began,2),
+                            'monitor_failed':True,'reason':str(exc),
+                            'owned_count':None if owned is None else len(owned)},sort_keys=True)+'\n')
+                    (run/'samples.jsonl').chmod(0o600)
                     reason=('interrupted' if interrupted else
                             'wall_time_budget' if time.monotonic()-began>=args.max_seconds else
-                            str(exc) if failures>=MONITOR_FAILURE_LIMIT else None)
+                            # The process list was read: its count is judged without the system sample.
+                            'tree_process_count' if owned is not None and len(owned)>policy.max_processes else
+                            # Three in a row, or five of the last ten samples.
+                            str(exc) if failures>=MONITOR_FAILURE_LIMIT or sum(recent)>=5 else None)
                     if reason:
                         finish(status='stopped',reason=reason,settled=cleanup(tree,child));return 75
                     time.sleep(sleep_budget(args.sample_seconds,PROBE_DEADLINE-time.monotonic()))

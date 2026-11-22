@@ -24,11 +24,11 @@ MemVane 색인 기반 자동 컨텍스트 주입 훅을 **Claude Code · Codex �
 
 로컬 `.development-hold.json`이 true인 동안 일반 검사·백업/해시·모델 작업·운영 활성화를 재개하지 않는다. 해당 보류를 해제하는 사용자 지시가 있어야 재개하며, 실행 허가는 자원 기준이나 소유 프로세스 정리 가드를 우회하는 권한이 아니다. 세션별 승인 기록과 기계 상태는 이 공개 문서 대신 로컬 작업 기록에 남긴다.
 
-테스트·백업·해시 같은 무거운 개발 작업은 사용자 전역 `scripts/development_guard.py` 잠금을 거친다. 일반 focused 검사(`npm run test:focused`, `--kind test`)는 worktree/에이전트를 합쳐 최대 3개까지 동시에 돈다. 전체 검사(`npm test`, `--exclusive`)·백업·해시·실제 모델 검사·리뷰·calibration은 단독으로 돌고, 이들이 도는 동안 일반 검사도 시작하지 않는다. 자리가 없으면 exit 75로 거절되며 기다렸다 다시 시도한다. 각 검사의 파일 병렬도는 1이며, 내부 자식 프로세스까지 합산한다. 독립 리뷰도 모든 검사 종료 후 순서대로 진행한다. 보호 장치 자체의 작은 합성 단위 검사(`test:guard-unit`)만 bootstrap 예외다. 실제 프로세스·모델 검증은 OS 관측이 가능한 승인된 일반 호스트에서 가드를 통해 실행한다. 샌드박스의 관측 거부는 명시적으로 보고하고 가드를 끄지 않는다. 런타임 조율은 `docs/runtime-resource-coordination.md`, 보호 장치 기준·체크포인트·샘플링 한계는 `docs/development-resource-safety.md`를 읽는다.
+테스트·백업·해시 같은 무거운 개발 작업은 사용자 전역 `scripts/development_guard.py` 잠금을 거친다. 일반 focused 검사(`npm run test:focused`, `--kind test`)는 worktree/에이전트를 합쳐 최대 3개까지 동시에 돈다. 전체 검사(`npm test`, `--exclusive`)·백업·해시·실제 모델 검사·리뷰·calibration은 단독으로 돌고, 이들이 도는 동안 일반 검사도 시작하지 않는다. 자리가 없으면 exit 75로 거절되며 기다렸다 다시 시도한다. focused 검사의 파일 병렬도는 1이다. 전체 검사는 3을 요청하고, guard가 시작 표본의 메모리 압력이 `normal`일 때 3, 아니면 1로 돌린다(거절하지 않는다). 프로세스 수는 내부 자식 프로세스까지 합산한다. 독립 리뷰도 모든 검사 종료 후 순서대로 진행한다. 보호 장치 자체의 작은 합성 단위 검사(`test:guard-unit`)만 bootstrap 예외다. 실제 프로세스·모델 검증은 OS 관측이 가능한 승인된 일반 호스트에서 가드를 통해 실행한다. 샌드박스의 관측 거부는 명시적으로 보고하고 가드를 끄지 않는다. 런타임 조율은 `docs/runtime-resource-coordination.md`, 보호 장치 기준·체크포인트·샘플링 한계는 `docs/development-resource-safety.md`를 읽는다.
 
 ```bash
 npm run test:guard-unit                    # 작은 합성 보호 장치 단위 검사만 순차 실행
-npm test                                   # guard 단독(--exclusive) 세 부분 test:part1~3, 각 1,800초, 파일 병렬 1
+npm test                                   # guard 단독(--exclusive) 세 부분 test:part1~3, 각 1,800초, 파일 병렬 3(압력 normal) 또는 1
 npm run test:focused -- memvane/runtime/tests/run.test.mjs # 같은 guard, 최대 3개 동시, 병렬 1, 900초
 npm run dev:guard -- --kind backup -- <명령> # 같은 잠금을 단독으로
 npm run dev:guard -- --kind hash -- <명령>   # 단독
@@ -45,7 +45,7 @@ python3 -B "$ROOT/entry/setup.py" gc-index-runtime [--approve-index-runtime-gc] 
 ```
 
 개발 중에는 변경한 로직과 영향 범위의 focused 검사를 우선 실행한다. 전체 검사는 변경과 focused 검사가 준비된 뒤 머지 직전 최종 커밋을 대상으로 한 번 실행한다. 검사는 해당 커밋의 별도 worktree에서 비동기로 시작할 수 있으며, 실행 중에는 그 worktree를 수정하지 않고 다른 독립 작업을 진행할 수 있다. 단독 가드를 쓰는 전체 검사 중에는 다른 검사·리뷰를 시작하지 않는다. 검사 결과를 확인하고 필요한 독립 리뷰와 후속 조치가 끝나기 전에는 머지하지 않는다. 실패를 고치는 등 제품 코드나 검사에 영향을 주는 변경으로 최종 커밋이 달라지면 새 커밋에 필요한 전체 검증을 다시 실행한다. 동일 커밋에서 필수 Python 버전과 허용된 분할 검사 각각의 결과를 확인한다.
-일반 모의·회귀·통합 검사(`--kind test`, CI 포함), 원격 리뷰(`--kind review`), 해시·스테이징(`--kind hash`)은 학습용 OS 압력·CPU/RSS·headroom·swap·load 제한을 적용하지 않는다. 전역 단독 실행, 파일 병렬도 1, 유한 timeout, 프로세스 수와 소유 식별·정리는 유지한다. 실제 모델을 로딩/학습하는 개발 검사(`--kind model-test`)와 백업(`--kind backup`)은 자원 제한을 유지한다. 명시적 calibration envelope도 항상 자원 검사를 유지한다. 제품 런타임의 학습 admission은 이 구분과 무관하게 그대로 적용된다.
+일반 모의·회귀·통합 검사(`--kind test`, CI 포함), 원격 리뷰(`--kind review`), 해시·스테이징(`--kind hash`)은 학습용 OS 압력·CPU/RSS·headroom·swap·load 제한을 적용하지 않는다. 전역 단독 실행, 위의 파일 병렬도, 유한 timeout, 프로세스 수와 소유 식별·정리는 유지한다. 실제 모델을 로딩/학습하는 개발 검사(`--kind model-test`)와 백업(`--kind backup`)은 자원 제한을 유지한다. 명시적 calibration envelope도 항상 자원 검사를 유지한다. 제품 런타임의 학습 admission은 이 구분과 무관하게 그대로 적용된다.
 테스트/설치를 격리 검증할 때 쓰는 env 가드 (테스트 코드가 이걸로 부작용을 막는다):
 - `QMD_SETUP_GUARD_FIXTURE=1` — `npm test`가 켜는 테스트 전용 스위치(`QMD_SANDBOX`와 같은 자리에서 읽힌다). 켜져 있으면 runtime wake를 시작하지 않고, 실제 계정 홈의 Laya embed runtime을 읽거나 쓰지 않는다. 운영 hook에서는 설정하지 말 것.
 - `QMD_FORCE_DEAD_PIDS=<pid>[,<pid>…]` — 고아 `*.claimed.*` 회수 테스트 전용. `_is_pid_alive`가 **목록에 정확히 일치하는 pid만** 죽은 것으로 취급한다(전체 무력화가 아니다 — 그래야 실환경에 새도 피해가 그 pid로 한정된다). 테스트가 "확실히 죽은 pid"를 구하려고 방금 종료한 자식의 pid를 쓰면 바쁜 머신에서 재할당되어 flaky해지므로, 가정 대신 이 주입을 쓴다. **실환경에서 절대 설정하지 말 것** — 살아 있는 워커를 죽은 것으로 판정해 진행 중인 배치를 회수하면 같은 잡이 두 번 처리되어 유료 호출이 이중 과금된다
