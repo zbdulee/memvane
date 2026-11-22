@@ -7,17 +7,23 @@ archived when a later candidate formed its intent) while that journal is
 
 The owner's decision is written first: the journal becomes ``rejected`` with
 reason ``rolled_back`` (an existing phase, so the candidate is never applied
-again and no worker pass resumes its application). Then, under the
-application's two locks, the receipt for the previous pointer, its binding
-and the previous pointer are written. No record of its own: a run that
+again and no worker pass resumes its application). A journal that a later
+candidate's application archived while it stayed live exists twice: both
+copies are closed, the archived one first, so the next candidate's archiving
+finds the same bytes. Then, under the application's two locks, the receipt
+for the previous pointer, its binding and the previous pointer are written. No record of its own: a run that
 stopped after the journal is recognised by that journal (``rolled_back``
 while the pointer is still its ``new_pointer``) and finished by the same
 request or by the next worker pass (``resume``). Until then the receipt,
 binding and pointer may disagree and selector inference refuses (fail closed).
 
 A later candidate's journal that committed nothing (``intent``, ``prepared``)
-was formed against the pointer that is going away: it is removed, and that
-candidate is evaluated again against the restored model.
+was formed against the pointer that is going away: it is removed right after
+the decision, before the pointer changes, and that candidate is evaluated
+again against the restored model.
+
+One request undoes one application. When the restored model is itself an
+applied one, the same request sent again undoes that one too.
 
 The resident is not asked to prepare and activate: it loads the generation
 the pointer names on its next ordinary request, as after any change of the
@@ -138,6 +144,37 @@ def plan(root):
         return {'status': 'rollback_blocked', 'reason': str(exc)[:80], 'changesApplied': 0}
 
 
+def _copies(root, row):
+    """Every file that holds the journal of ``row``: the archived copy first, then the live one."""
+    found = []
+    archived = root / application.ARCHIVE / (row['apply_id'] + '.json')
+    if archived.exists() or archived.is_symlink():
+        found.append(archived)
+    live = root / application.JOURNAL
+    if (live.exists() or live.is_symlink()) and application.read_journal(root).get('apply_id') == row['apply_id']:
+        found.append(live)
+    return found
+
+
+def _close(root, row, written):
+    """Write the owner's decision to every copy that does not carry it yet; each write is noted in ``written``."""
+    closed = {**row, 'phase': 'rejected', 'reason': REASON}
+    for path in _copies(root, row):
+        if read_private_json(path) != closed:
+            application.put(path, closed)
+            written.append(path)
+
+
+def _drop_uncommitted(root, row):
+    stale = _newer_uncommitted(root, row)
+    if stale is not None:
+        # Ignored when it fails: the next request for this restore removes it (``already_restored``).
+        try:
+            os.unlink(stale)
+        except OSError:
+            pass
+
+
 def _newer_uncommitted(root, row):
     """The live journal of a later candidate that committed nothing under the pointer going away."""
     live = root / application.JOURNAL
@@ -158,7 +195,7 @@ def restore(root, *, fault=lambda _point: None, resume_only=False):
     root = resident._private_state(Path(root))
     fd = _lock(root / 'candidate-apply.lock')
     pointer_fd = None
-    written = 0
+    written = []
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -170,36 +207,32 @@ def restore(root, *, fault=lambda _point: None, resume_only=False):
         if row is None:
             return {'status': status, 'changesApplied': 0}
         if status == 'already_restored':
+            # What an interrupted run left: a copy without the decision, a later candidate's journal.
+            _close(root, row, written)
+            _drop_uncommitted(root, row)
             _history(root, row['old_pointer'])
             return {**_summary(row, status), 'changesApplied': 0}
         if resume_only and status != 'rollback_resumed':
             return {'status': 'nothing_to_resume', 'changesApplied': 0}
         receipt = _check(root, row)
-        stale = _newer_uncommitted(root, row)
         summary = _summary(row, 'restored')
         # Each write is the only durable effect of its step and raises on failure, so a
         # step that did not happen ends the command before the next one.
-        if status == 'rollback_planned':
-            # The owner's decision first: from here no worker pass resumes this application.
-            row['phase'] = 'rejected'
-            row['reason'] = REASON
-            application.put(path, row)
-            written += 1
+        # The owner's decision first: from here no worker pass resumes this application.
+        # A resumed run writes it to the copy an interrupted one did not reach.
+        _close(root, row, written)
         fault('journal_closed')
+        # Before the pointer changes: removed here, the later candidate forms a new intent or
+        # is evaluated again; left behind under the restored pointer it would block every other.
+        _drop_uncommitted(root, row)
+        fault('uncommitted_dropped')
         application.put(root / identity.RECEIPT, receipt)
-        written += 1
+        written.append(identity.RECEIPT)
         fault('receipt_restored')
         application.put(root / identity.BINDING, _binding(receipt))
         fault('binding_restored')
         application.put(root / POINTER, row['old_pointer'])
         fault('pointer_restored')
-        if stale is not None:
-            # Ignored when it fails: the journal names a pointer that is no longer active and
-            # commits nothing; the next restore or a newer candidate's intent replaces it.
-            try:
-                os.unlink(stale)
-            except OSError:
-                pass
         _history(root, row['old_pointer'])
         return {**summary, 'changesApplied': 1}
     except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -213,14 +246,46 @@ def restore(root, *, fault=lambda _point: None, resume_only=False):
 
 
 def resume(root):
-    """The worker pass's part: finish a restore that stopped after its decision; never raises."""
+    """The worker pass's part: finish a restore that stopped after its decision; never raises.
+
+    A finished one is announced like the owner's own request. One that still
+    cannot be finished leaves a ``learning.promotion`` row (``rollback_pending``
+    and the reason) per pass: the selection stays closed until it is finished.
+    """
+    result = None
     try:
         root = Path(root)
-        if _state(root)[0] == 'rollback_resumed':
-            return restore(root, resume_only=True)
-    except Exception:  # noqa: BLE001 - the pass goes on; the journal still says what is left
+        if _state(root)[0] != 'rollback_resumed':
+            return None
+        result = restore(root, resume_only=True)
+    except Exception as exc:  # noqa: BLE001 - the pass goes on; the journal still says what is left
+        result = {'status': 'rollback_interrupted', 'reason': str(exc)[:80], 'changesApplied': 0}
+    try:
+        from . import prequential
+        from .candidate_close import _project_of
+        project = _project_of(root)
+        if result.get('status') == 'restored':
+            _announce(project, result)
+        elif result.get('status') in ('rollback_interrupted', 'rollback_blocked'):
+            prequential._emit(project, 'learning.promotion', outcome='rollback_pending', reason=result.get('reason'))
+    except Exception:  # noqa: BLE001 - diagnostic only
         pass
-    return None
+    return result
+
+
+def _announce(project, result):
+    """The ``rolled_back`` row and a request for the resident's upkeep."""
+    from memvane.learning import selector_maintenance
+    from . import prequential
+    prequential._emit(project, 'learning.promotion', outcome=REASON, cycle=result['cycle_id'],
+                      previousCycle=result['previousCycle'])
+    try:
+        # The resident loads the previous head on its next request; this asks for that now.
+        decision = selector_maintenance._selected_route(project)
+        if decision is not None:
+            selector_maintenance.request(decision, force=True)
+    except Exception:
+        pass  # A recall or the next session asks again; the files already name the previous model.
 
 
 def _history(root, pointer):
@@ -249,16 +314,7 @@ def restore_project(project, *, plan_only=False):
         return plan(root)
     result = restore(root)
     if result.get('status') == 'restored':
-        from . import prequential
-        prequential._emit(project, 'learning.promotion', outcome=REASON, cycle=result['cycle_id'],
-                          previousCycle=result['previousCycle'])
-        try:
-            # The resident loads the previous head on its next request; this asks for that now.
-            decision = selector_maintenance._selected_route(project)
-            if decision is not None:
-                selector_maintenance.request(decision, force=True)
-        except Exception:
-            pass  # A recall or the next session asks again; the files already name the previous model.
+        _announce(project, result)
     return result
 
 

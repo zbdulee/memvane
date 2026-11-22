@@ -223,7 +223,12 @@ def unapplied(root, cycle, answer, queue, job):
     queue.finish(job['id'], 'blocked', reason)
     # Counted beside the evaluation, not on it: a re-evaluation (new gold) starts the
     # evaluation's own count again and must not forget how often the application failed.
-    if _count_failure(root, cycle, reason) >= FAILURE_LIMIT:
+    count = _count_failure(root, cycle, reason)
+    if count is None:
+        # The count could not be kept beside the evaluation: counted on its row, so that
+        # the limit is still reached (a re-evaluation starts this count again).
+        queue.apply_failed(job['id'], reason, FAILURE_LIMIT)
+    elif count >= FAILURE_LIMIT:
         queue.apply_failed(job['id'], reason, 1)
 
 
@@ -255,8 +260,8 @@ def _count_failure(root, cycle, reason):
 
     ``apply-failures.json`` (0600) is a cache: missing or unreadable counts from
     zero and the write replaces it whole. Only cycles still open as candidates
-    are kept, so it never outgrows them. A count that could not be written is
-    lost (the next pass counts again): ignored, the failure itself is reported.
+    are kept, so it never outgrows them. None when the count could not be
+    written: the caller counts that failure on the evaluation row instead.
     """
     from .dataset import read_private_json
     from .local_cycle import _atomic_json
@@ -280,5 +285,5 @@ def _count_failure(root, cycle, reason):
     try:
         _atomic_json(path, {'schema': APPLY_FAILURES_SCHEMA, 'cycles': kept})
     except OSError:
-        pass
+        return None
     return count

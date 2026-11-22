@@ -382,6 +382,30 @@ class FailuresBeforeAJournal(Case):
         self.assertEqual(seen[-1], ('blocked', 'apply_prepared_inference_required'))
         self.assertEqual(seen[:-1], [('completed', None)] * (A.FAILURE_LIMIT - 1))
 
+    def test_a_count_that_cannot_be_written_is_kept_on_the_evaluation_and_still_ends(self):
+        # W13 r4 review F-16: something else sits where the file belongs.
+        case = self.fixture()
+        queue, _job = self.queue(case)
+        (case.root / candidate_close.APPLY_FAILURES).mkdir()
+        seen = [self.fail(case, queue) for _ in range(A.FAILURE_LIMIT)]
+        self.assertEqual(seen, [('completed', None)] * (A.FAILURE_LIMIT - 1)
+                         + [('blocked', 'apply_prepared_inference_required')])
+
+    def test_changed_bytes_of_the_incumbent_artifact_are_counted_not_compared_again(self):
+        # W13 r4 review F-17: a re-evaluation cannot change them.
+        case = self.fixture()
+        queue, _job = self.queue(case)
+        # The active model is a copy beside the policy's base file, with the same bytes when it was evaluated.
+        active = case.root / 'active.artifact'
+        case.write(active, (case.root / 'base.artifact').read_bytes())
+        case.json(case.root / 'active-checkpoint.json', {**case.old, 'artifact_path': str(active)})
+        active.write_bytes(b'damaged')
+        answer = case.run_apply()
+        if (answer['status'], answer['reason']) != ('apply_blocked', 'apply_incumbent_artifact_changed'):
+            raise AssertionError(answer)
+        self.assertEqual(self.fail(case, queue, answer['reason']), ('completed', None))
+        self.assertEqual(self.counts(case), {case.cycle: 1})
+
     def test_only_open_candidates_are_kept(self):
         case = self.fixture()
         queue, _job = self.queue(case)

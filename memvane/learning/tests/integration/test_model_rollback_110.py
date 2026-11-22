@@ -143,7 +143,7 @@ class Restore(Case):
                          {'schema': inference_identity.SCHEMA, 'receipt_sha256': learning_profile.digest(receipt)})
         A.readable(case.root)
 
-    POINTS = ('journal_closed', 'receipt_restored', 'binding_restored', 'pointer_restored')
+    POINTS = ('journal_closed', 'uncommitted_dropped', 'receipt_restored', 'binding_restored', 'pointer_restored')
 
     def stopped(self, point, stop=None):
         case = self.applied(stop=stop)
@@ -281,9 +281,8 @@ class Restore(Case):
         self.assertEqual((result['status'], result['reason']), ('rollback_blocked', 'rollback_previous_artifact_changed'))
         self.assertEqual((self.files(case), A.read_journal(case.root)['phase']), (after, 'activated'))
 
-    def test_two_applications_are_undone_one_at_a_time_through_the_archived_journal(self):
-        # W13b review F-7: after the newer one is undone the pointer's marker names an archived journal.
-        case = self.applied()
+    def second_applied(self, case):
+        """A second application on top of the fixture's: its journal live, the first one's archived."""
         applied, later = self.later_candidate(case, 'activated')
         receipt = {**applied['new_receipt'], 'checkpoint_sha256': learning_profile.digest(later['new_pointer'])}
         later.update(old_receipt=applied['new_receipt'], new_receipt=receipt)
@@ -293,6 +292,110 @@ class Restore(Case):
                   {'schema': inference_identity.SCHEMA, 'receipt_sha256': learning_profile.digest(receipt)})
         case.json(case.root / 'active-checkpoint.json', later['new_pointer'])
         A.readable(case.root)
+        return applied, later
+
+    def third_uncommitted(self, case, second, phase):
+        A._archive(case.root, second)
+        third = {**second, 'apply_id': 'e' * 32, 'cycle_id': 'cohort-' + 'c' * 20, 'phase': phase,
+                 'old_pointer': second['new_pointer'], 'old_receipt': second['new_receipt'],
+                 'new_pointer': {**second['new_pointer'], 'cycle_id': 'cohort-' + 'c' * 20,
+                                 'application': {'schema': A.SCHEMA, 'id': 'e' * 32}}}
+        A.put(case.root / A.JOURNAL, third)
+        return third
+
+    def archived(self, case, row):
+        return self.read(case, A.ARCHIVE + '/' + row['apply_id'] + '.json')
+
+    def test_a_journal_that_was_also_archived_is_closed_in_both_places(self):
+        # W13b r2 review F-9: a later candidate that was judged without an intent archived the
+        # applied journal and left it live. Its next archiving compares the two copies.
+        case = self.applied()
+        applied = A.read_journal(case.root)
+        A._archive(case.root, applied)
+        self.restored(case, R.restore(case.root))
+        closed = A.read_journal(case.root)
+        self.assertEqual(self.archived(case, applied), closed)
+        A._archive(case.root, closed)  # What the next candidate's application does first.
+        self.assertEqual(R.restore(case.root)['status'], 'already_restored')
+
+    def test_a_decision_that_reached_one_copy_only_is_completed(self):
+        for finish in ('request', 'worker'):
+            with self.subTest(finished_by=finish):
+                case = self.applied()
+                applied = A.read_journal(case.root)
+                A._archive(case.root, applied)
+                real, puts = A.put, []
+
+                def put(path, row):
+                    puts.append(path)
+                    if len(puts) == 2:
+                        raise OSError('synthetic')
+                    return real(path, row)
+                with mock.patch.object(A, 'put', side_effect=put):
+                    result = R.restore(case.root)
+                self.assertEqual(result['status'], 'rollback_interrupted', result)
+                self.assertEqual((self.archived(case, applied)['phase'], A.read_journal(case.root)['phase']),
+                                 ('rejected', 'activated'))
+                # Nothing applies the candidate again from the copy that was not reached.
+                self.assertEqual(R.plan(case.root)['phase'], 'rolling_back')
+                result = R.restore(case.root) if finish == 'request' else R.resume(case.root)
+                self.restored(case, result)
+                self.assertEqual(self.archived(case, applied), A.read_journal(case.root))
+
+    def test_a_restored_state_whose_archived_copy_missed_the_decision_is_repaired(self):
+        case = self.applied()
+        applied = A.read_journal(case.root)
+        self.restored(case, R.restore(case.root))
+        A._archive(case.root, applied)  # The state an earlier build left: the archived copy still ``activated``.
+        with self.assertRaisesRegex(ValueError, 'apply_archive_changed'):
+            A._archive(case.root, A.read_journal(case.root))
+        self.assertEqual(R.restore(case.root)['status'], 'already_restored')
+        A._archive(case.root, A.read_journal(case.root))
+
+    def test_the_restored_model_of_an_earlier_application_is_read_without_a_live_journal(self):
+        # W13b r2 review F-10: the later candidate's uncommitted journal is removed and none is live.
+        for phase in ('intent', 'prepared'):
+            with self.subTest(later=phase):
+                case = self.applied()
+                first, second = self.second_applied(case)
+                self.third_uncommitted(case, second, phase)
+                result = R.restore(case.root)
+                self.assertEqual((result['status'], result['cycle_id']), ('restored', second['cycle_id']), result)
+                self.assertEqual(self.read(case, 'active-checkpoint.json'), first['new_pointer'])
+                self.assertFalse((case.root / A.JOURNAL).exists())
+                A.readable(case.root)
+                self.assertEqual(self.archived(case, second)['reason'], R.REASON)
+                # A marker whose journal is nowhere is refused as an unfinished application.
+                (case.root / A.ARCHIVE / (first['apply_id'] + '.json')).unlink()
+                with self.assertRaisesRegex(ValueError, 'apply_activation_pending'):
+                    A.readable(case.root)
+
+    def test_the_later_journal_is_gone_before_the_pointer_changes(self):
+        # W13b r2 review F-11: no stop leaves it under the restored pointer.
+        for point, left in (('journal_closed', True), ('uncommitted_dropped', False), ('pointer_restored', False)):
+            with self.subTest(point=point):
+                case = self.applied()
+                applied, later = self.later_candidate(case, 'intent')
+
+                def fault(at):
+                    if at == point:
+                        raise Stopped()
+                with self.assertRaises(Stopped):
+                    R.restore(case.root, fault=fault)
+                self.assertEqual((case.root / A.JOURNAL).exists(), left)
+                self.assertEqual(self.read(case, 'active-checkpoint.json') == case.old, point == 'pointer_restored')
+                R.restore(case.root)
+                self.assertEqual(self.files(case), self.before)
+                self.assertFalse((case.root / A.JOURNAL).exists())
+                # One that an earlier build left under the restored pointer goes with the next request.
+                A.put(case.root / A.JOURNAL, later)
+                self.assertEqual(R.restore(case.root)['status'], 'already_restored')
+                self.assertFalse((case.root / A.JOURNAL).exists())
+
+    def test_two_applications_are_undone_one_at_a_time_through_the_archived_journal(self):
+        # W13b review F-7: after the newer one is undone the pointer's marker names an archived journal.
+        case = self.applied()
+        applied, later = self.second_applied(case)
         first = R.restore(case.root)
         self.assertEqual((first['status'], first['cycle_id'], first['previousCycle']),
                          ('restored', later['cycle_id'], case.cycle), first)
@@ -395,6 +498,42 @@ class Project(Restore):
                                   side_effect=lambda _project, event, **fields: events.append((event, fields))):
             result = R.restore_project(case.project, **kwargs)
         return result, events, requests
+
+    def resumed(self, case):
+        from memvane.learning import selector_maintenance
+        from memvane.learning.context_learning import candidate_close
+        events, requests = [], []
+        with mock.patch.object(candidate_close, '_project_of', return_value=str(case.project)), \
+                mock.patch.object(selector_maintenance, '_selected_route', return_value={'installId': 'i'}), \
+                mock.patch.object(selector_maintenance, 'request',
+                                  side_effect=lambda decision, **kw: requests.append(kw)), \
+                mock.patch.object(prequential, '_emit',
+                                  side_effect=lambda _project, event, **fields: events.append((event, fields))):
+            result = R.resume(case.root)
+        return result, events, requests
+
+    def test_a_restore_the_worker_finished_is_announced_like_the_owners_request(self):
+        # W13b r2 review F-12.
+        case = self.stopped('receipt_restored')
+        result, events, requests = self.resumed(case)
+        self.restored(case, result)
+        self.assertEqual(events, [('learning.promotion', {'outcome': 'rolled_back', 'cycle': case.cycle,
+                                                          'previousCycle': 'base'})])
+        self.assertEqual(requests, [{'force': True}])
+        self.assertEqual(self.resumed(case), (None, [], []))
+
+    def test_a_restore_the_worker_cannot_finish_leaves_a_row_each_pass(self):
+        case = self.stopped('journal_closed')
+        artifact = case.root / 'base.artifact'
+        original = artifact.read_bytes()
+        artifact.write_bytes(b'changed since the decision')
+        for _ in range(2):
+            result, events, requests = self.resumed(case)
+            self.assertEqual((result['status'], requests), ('rollback_blocked', []))
+            self.assertEqual(events, [('learning.promotion', {'outcome': 'rollback_pending',
+                                                              'reason': 'rollback_previous_artifact_changed'})])
+        artifact.write_bytes(original)
+        self.restored(case, self.resumed(case)[0])
 
     def test_the_plan_reports_and_asks_for_nothing(self):
         case = self.applied()

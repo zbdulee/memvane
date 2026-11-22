@@ -60,9 +60,12 @@ def readable(root):
     if marker is None:return
     if (not isinstance(marker,dict) or set(marker)!={'schema','id'} or marker['schema']!=SCHEMA
             or not re.fullmatch(r'[a-f0-9]{32}',marker['id'])):raise ValueError('apply_pointer_invalid')
-    row=read_journal(root)
-    if row['apply_id']!=marker['id']:
-        row=read_private_json(root/ARCHIVE/(marker['id']+'.json'))
+    live=root/JOURNAL
+    row=read_journal(root) if live.exists() or live.is_symlink() else None
+    if row is None or row['apply_id']!=marker['id']:
+        # No live journal: an owner's restore removed a later candidate's uncommitted one.
+        try:row=read_private_json(root/ARCHIVE/(marker['id']+'.json'))
+        except FileNotFoundError:raise ValueError('apply_activation_pending') from None
     # The receipt is the one bound now and it names this pointer. Its bytes need not be the
     # journal's: inference preparation writes a new receipt for the same pointer after a plugin
     # update, and ``inference_identity.admit`` is what judges the receipt itself.
@@ -158,7 +161,8 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
                 or type(stamp)not in(int,float) or not math.isfinite(stamp) or not 0<stamp<=time.time()+1
                 or expected['new_receipt']!={**expected['old_receipt'],'checkpoint_sha256':digest(pointer),'createdAt':stamp}):
             raise ValueError('apply_journal_binding_changed')
-    if _hash(incumbent['artifact_path'])!=incumbent['artifact_sha256']:raise ValueError('apply_incumbent_changed')
+    # Its own reason: a re-evaluation cannot change these bytes, so this failure is counted.
+    if _hash(incumbent['artifact_path'])!=incumbent['artifact_sha256']:raise ValueError('apply_incumbent_artifact_changed')
     return profile,stage,incumbent
 
 def _stable(profile):
