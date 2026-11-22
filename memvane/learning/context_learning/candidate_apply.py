@@ -136,10 +136,20 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
     incumbent=expected['old_pointer'] if expected else current
     if metrics.get('incumbentArtifactSha256')!=incumbent['artifact_sha256']:
         raise ValueError('apply_incumbent_changed')
-    if expected and (current not in (expected['old_pointer'],expected['new_pointer'])
-            or digest(profile)!=expected['profile_sha256'] or digest(stage)!=expected['stage_sha256']):
-        raise ValueError('apply_intent_changed')
     if expected:
+        # After the pointer a plugin update may have rewritten the profile's derived fields
+        # (approval, code and policy hashes, trainer argv): what the owner chose is compared
+        # without them. A journal of an earlier bundle has no such digest and compares whole.
+        same=(_stable(profile)==expected['profile_stable_sha256'] if decided and 'profile_stable_sha256' in expected
+              else digest(profile)==expected['profile_sha256'])
+        if (current not in (expected['old_pointer'],expected['new_pointer']) or not same
+                or digest(stage)!=expected['stage_sha256']):
+            raise ValueError('apply_intent_changed')
+    if expected and decided:
+        if (expected['namespace_root']!=str(root) or expected['cycle_id']!=cycle_id
+                or expected['old_receipt']['checkpoint_sha256']!=digest(incumbent)):
+            raise ValueError('apply_journal_binding_changed')
+    elif expected:
         apply_id=digest([str(root),cycle_id,digest(profile),digest(stage),incumbent])[:32]
         pointer=_new_pointer(stage,profile,cycle_id,apply_id)
         stamp=expected['new_receipt'].get('createdAt')
@@ -150,6 +160,11 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
             raise ValueError('apply_journal_binding_changed')
     if _hash(incumbent['artifact_path'])!=incumbent['artifact_sha256']:raise ValueError('apply_incumbent_changed')
     return profile,stage,incumbent
+
+def _stable(profile):
+    """The profile's digest without the fields a plugin update derives again."""
+    from memvane.learning.default_renewal_plan import PROFILE_DERIVED
+    return digest({key:value for key,value in profile.items() if key not in PROFILE_DERIVED})
 
 def _new_pointer(stage,profile,cycle_id,apply_id):
     return {'schema_version':1,'artifact_path':stage['artifactPath'],'artifact_sha256':stage['artifactSha256'],
@@ -167,12 +182,21 @@ def _intent(root,policy,cycle_id):
     new=_new_pointer(stage,profile,cycle_id,apply_id)
     new_receipt={**deepcopy(receipt),'checkpoint_sha256':digest(new),'createdAt':time.time()}
     return {'schema':SCHEMA,'apply_id':apply_id,'cycle_id':cycle_id,'namespace_root':str(root),
-        'profile_sha256':digest(profile),'stage_sha256':digest(stage),'old_pointer':old,'new_pointer':new,
+        'profile_sha256':digest(profile),'profile_stable_sha256':_stable(profile),
+        'stage_sha256':digest(stage),'old_pointer':old,'new_pointer':new,
         'old_receipt':receipt,'new_receipt':new_receipt,'phase':'intent','token':None,'attempts':0,'retry_at':0}
+
+def _bound_to_new(root,row):
+    """Whether the receipt bound now names the journal's new pointer (its own, or one prepared again since)."""
+    receipt=read_private_json(root/identity.RECEIPT)
+    return (isinstance(receipt,dict) and receipt.get('checkpoint_sha256')==digest(row['new_pointer'])
+            and read_private_json(root/identity.BINDING)=={'schema':identity.SCHEMA,'receipt_sha256':digest(receipt)})
 
 def _check_receipts(root,row):
     receipt=read_private_json(root/identity.RECEIPT)
     binding=read_private_json(root/identity.BINDING)
+    # Under the candidate's pointer, evidence prepared again for that pointer (a plugin update) is the journal's too.
+    if read_private_json(root/'active-checkpoint.json')==row['new_pointer'] and _bound_to_new(root,row):return
     if receipt not in (row['old_receipt'],row['new_receipt']) or binding not in (
             {'schema':identity.SCHEMA,'receipt_sha256':digest(row['old_receipt'])},
             {'schema':identity.SCHEMA,'receipt_sha256':digest(row['new_receipt'])}):raise ValueError('apply_inference_evidence_changed')
@@ -233,8 +257,12 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
         elif current!=row['new_pointer']:raise ValueError('apply_pointer_cas_conflict')
         # Interrupted cross-file commit: only these exact old/new bytes reconcile.
         validate_candidate(root,policy,cycle_id,expected=row);_check_receipts(root,row)
-        put(root/identity.RECEIPT,row['new_receipt']);fault('receipt_written')
-        put(root/identity.BINDING,{'schema':identity.SCHEMA,'receipt_sha256':digest(row['new_receipt'])});fault('binding_written')
+        # Evidence already bound to the new pointer is kept: a receipt prepared again is the current one.
+        bound=_bound_to_new(root,row)
+        if not bound:put(root/identity.RECEIPT,row['new_receipt'])
+        fault('receipt_written')
+        if not bound:put(root/identity.BINDING,{'schema':identity.SCHEMA,'receipt_sha256':digest(row['new_receipt'])})
+        fault('binding_written')
         if row['phase']!='pointer_committed':row['failures']=0
         row['phase']='pointer_committed';put(path,row);fault('pointer_committed')
         # Reconstruct preparation if the worker restarted or its bounded slot expired.

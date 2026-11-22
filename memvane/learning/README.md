@@ -249,14 +249,21 @@ default-teacher는 gold가 `minQualityTrainCases`(100건) 전이면 job을 계�
 다섯 번째부터 답에 `activationPending`이 실리며, 다섯 번째에 `learning.promotion` 행(outcome `activation_pending`)이
 한 번 남는다. journal의 `failures`는 `pointer_committed`에서만 0으로 돌아간다(`prepared`에서는 유지). resident가 자기
 검증에서 평가가 낡았다고 본 prepare는 응답 코드 `apply_quality_stale`로 돌아오고 worker는 아무것도 정하지 않는다(재평가).
-평가 행의 `failures`는 평가가 `completed`가 되거나 재평가(`refresh`)로 돌아갈 때 0이 되어, 평가 실패와 적용 실패가
-한 칸에서 더해지지 않는다. 적용된 모델을 그 앞의 것으로 되돌리는 것은 소유자가 요청하는
-유지보수 명령 하나뿐이다(`candidate_rollback.restore`, setup action `restore-previous-model`): 살아 있는 journal이
-`activated`이거나 `pointer_committed`에서 멈췄고 포인터가 그 `new_pointer`일 때, 적용의 두 잠금 아래에서 receipt →
-binding → 포인터를 적용의 반대 순서로 이전 값으로 쓰고 journal을 `rejected`(`reason` `rolled_back`)로 닫는다. 그
-후보는 다시 적용되지 않고 cycle 행은 `applied`로 남는다. 따로 기록을 두지 않으므로 중단된 되돌리기는 같은 요청이
-이어서 끝내며(journal은 그대로인데 포인터가 `old_pointer`인 상태), 그 사이 selector 추론은 거절된다. resident는 다음
-요청에서 포인터가 가리키는 세대를 올린다. `candidate_apply.readable`은 적용된 포인터에서 journal이 `activated`이고
+평가 행의 `failures`는 평가 자신의 실패만 센다(`completed`와 `refresh`에서 0). journal이 생기기 전의 적용 실패는
+namespace의 `apply-failures.json`(cycle별 연속 횟수와 마지막 사유)에 세어 재평가를 넘겨 유지하고, 다섯 번째에 평가를 그
+사유로 닫는다. 이 파일은 캐시다: 없거나 읽히지 않으면 0부터 세고, 쓸 때 열린 후보의 항목만 남기며, 1.x 영속 계약에 들지 않는다.
+포인터 뒤의 profile 대조는 플러그인 갱신이 다시 쓰는 파생 필드(`default_renewal_plan.PROFILE_DERIVED`)를 뺀 digest
+(journal의 `profile_stable_sha256`. 이 값이 없는 옛 journal은 전체 digest)로 하고, 그 포인터에 다시 준비된 receipt는 journal의
+것으로 받아 덮어쓰지 않는다. 그래서 `pointer_committed`에서 멈춘 적용이 갱신을 넘겨도 끝난다. 적용된 모델을 그 앞의 것으로 되돌리는 것은 소유자가 요청하는
+유지보수 명령 하나뿐이다(`candidate_rollback.restore`, setup action `restore-previous-model`). 대상은 포인터의 적용 표식이
+가리키는 journal이다(살아 있는 것, 또는 뒤 후보의 intent가 서면서 `candidate-applications/`로 옮겨진 것). 그 journal이
+`activated`이거나 `pointer_committed`에서 멈췄고 포인터가 그 `new_pointer`일 때, 적용의 두 잠금 아래에서 먼저 journal을
+`rejected`(`reason` `rolled_back`)로 닫고 receipt → binding → 포인터를 이전 값으로 쓴다. 닫힌 journal의 후보는 다시 적용되지
+않고 worker pass도 그 적용을 재개하지 않으며, cycle 행은 `applied`로 남는다. 따로 기록을 두지 않는다: 중단된 되돌리기는
+`rolled_back` journal인데 포인터가 아직 그 `new_pointer`인 상태로 알아보고, 같은 요청이나 다음 worker pass
+(`candidate_rollback.resume`)가 이어서 끝낸다. 그 사이 selector 추론은 거절된다. 뒤 후보의 미커밋 journal(`intent`·`prepared`)은
+사라지는 포인터를 전제로 한 것이라 지우고, 그 후보는 `apply_incumbent_changed`로 재평가에 돌아가 복원된 모델과 다시
+비교된다. resident는 다음 요청에서 포인터가 가리키는 세대를 올린다. `candidate_apply.readable`은 적용된 포인터에서 journal이 `activated`이고
 지금 묶인 receipt가 그 포인터를 가리키는지를 본다(플러그인 갱신 뒤 다시 준비된 receipt도 같은 포인터의 것이면 읽힌다). journal이 생기기 전의 실패는 그 후보의 `completed` 평가에
 세어 다섯 번째에 사유와 함께 닫는다. 평가는 사유가 있을 때만 `blocked`가 된다. 학습 전에 구성원 행이 사라진
 열린 job과 재무장을 기다리는 job은 `source_revoked`로 닫고 다음 계획이 남은 구성원을 고정한다.

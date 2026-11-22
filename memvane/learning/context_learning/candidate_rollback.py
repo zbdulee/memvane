@@ -1,18 +1,23 @@
 """Go back to the model an application replaced: the application's commit, in reverse.
 
-A maintenance command the owner asks for; nothing runs it on its own. It
-undoes the newest application only: the journal that is ``activated`` (or
-stuck at ``pointer_committed``) while the pointer is that journal's
-``new_pointer``. Under the application's two locks it writes, in the reverse
-order of ``candidate_apply.apply_candidate``: the receipt for the previous
-pointer, its binding, the previous pointer, then the journal as ``rejected``
-with reason ``rolled_back`` so the same candidate is never applied again.
+A maintenance command the owner asks for. It undoes the newest application:
+the journal the active pointer's marker names (the live journal, or the one
+archived when a later candidate formed its intent) while that journal is
+``activated`` or stuck at ``pointer_committed``.
 
-No record of its own: an interrupted run is recognised by the journal still
-being ``activated`` or ``pointer_committed`` while the pointer is already the
-``old_pointer`` (an application never leaves that), and the same command
-finishes it. Between an interruption and that rerun the receipt, binding and
-pointer may disagree, and selector inference refuses (fail closed).
+The owner's decision is written first: the journal becomes ``rejected`` with
+reason ``rolled_back`` (an existing phase, so the candidate is never applied
+again and no worker pass resumes its application). Then, under the
+application's two locks, the receipt for the previous pointer, its binding
+and the previous pointer are written. No record of its own: a run that
+stopped after the journal is recognised by that journal (``rolled_back``
+while the pointer is still its ``new_pointer``) and finished by the same
+request or by the next worker pass (``resume``). Until then the receipt,
+binding and pointer may disagree and selector inference refuses (fail closed).
+
+A later candidate's journal that committed nothing (``intent``, ``prepared``)
+was formed against the pointer that is going away: it is removed, and that
+candidate is evaluated again against the restored model.
 
 The resident is not asked to prepare and activate: it loads the generation
 the pointer names on its next ordinary request, as after any change of the
@@ -41,18 +46,49 @@ def _binding(receipt):
     return {'schema': identity.SCHEMA, 'receipt_sha256': digest(receipt)}
 
 
+def _journals(root):
+    """``[(path, row)]``: the live journal first, then every archived one that can be read."""
+    found = []
+    live = root / application.JOURNAL
+    if live.exists() or live.is_symlink():
+        found.append((live, application.read_journal(root)))
+    folder = root / application.ARCHIVE
+    if folder.is_dir() and not folder.is_symlink():
+        for path in sorted(folder.glob('*.json')):
+            try:
+                row = read_private_json(path)
+            except (OSError, ValueError):
+                continue
+            if (isinstance(row, dict) and row.get('schema') == application.SCHEMA
+                    and path.name == str(row.get('apply_id')) + '.json'):
+                found.append((path, row))
+    return found
+
+
+def _rolled_back(row):
+    return row.get('phase') == 'rejected' and row.get('reason') == REASON
+
+
 def _state(root):
-    """``(status, journal row or None)`` of what a restore would do; reads only."""
-    path = root / application.JOURNAL
-    if not path.exists() and not path.is_symlink():
-        return 'nothing_to_restore', None
-    row = application.read_journal(root)
+    """``(status, path, row)`` of what a restore would do; reads only.
+
+    ``rollback_resumed``: a restore already wrote its decision and stopped before the pointer.
+    """
     pointer = read_private_json(root / POINTER)
-    if row['phase'] == 'rejected' and row.get('reason') == REASON and pointer == row['old_pointer']:
-        return 'already_restored', row
-    if row['phase'] not in PHASES or pointer not in (row['new_pointer'], row['old_pointer']):
-        return 'nothing_to_restore', None
-    return 'rollback_planned', row
+    journals = _journals(root)
+    for path, row in journals:
+        if _rolled_back(row) and row.get('new_pointer') == pointer:
+            return 'rollback_resumed', path, row
+    marker = pointer.get('application') if isinstance(pointer, dict) else None
+    if isinstance(marker, dict):
+        for path, row in journals:
+            if (row.get('apply_id') == marker.get('id') and row.get('phase') in PHASES
+                    and row.get('new_pointer') == pointer):
+                return 'rollback_planned', path, row
+    for path, row in journals:
+        if _rolled_back(row) and row.get('old_pointer') == pointer:
+            return 'already_restored', path, row
+    return 'nothing_to_restore', None, None
 
 
 def _target_receipt(root, row):
@@ -80,7 +116,7 @@ def _check(root, row):
 
 
 def _summary(row, status):
-    return {'status': status, 'cycle_id': row['cycle_id'], 'phase': row['phase'],
+    return {'status': status, 'cycle_id': row['cycle_id'],
             'appliedArtifactSha256': row['new_pointer']['artifact_sha256'],
             'previousArtifactSha256': row['old_pointer']['artifact_sha256'],
             'previousCycle': row['old_pointer'].get('cycle_id'),
@@ -91,18 +127,34 @@ def plan(root):
     """What ``restore`` would do; writes nothing."""
     root = Path(root)
     try:
-        status, row = _state(root)
+        status, _path, row = _state(root)
         if row is None:
             return {'status': status, 'changesApplied': 0}
-        if status == 'rollback_planned':
+        if status != 'already_restored':
             _check(root, row)
-        return {**_summary(row, status), 'changesApplied': 0}
+        return {**_summary(row, 'rollback_planned' if status == 'rollback_resumed' else status),
+                'phase': 'rolling_back' if status == 'rollback_resumed' else row['phase'], 'changesApplied': 0}
     except (OSError, ValueError, KeyError, TypeError) as exc:
         return {'status': 'rollback_blocked', 'reason': str(exc)[:80], 'changesApplied': 0}
 
 
-def restore(root, *, fault=lambda _point: None):
-    """Put the previous pointer, receipt and binding back and close the journal."""
+def _newer_uncommitted(root, row):
+    """The live journal of a later candidate that committed nothing under the pointer going away."""
+    live = root / application.JOURNAL
+    if not (live.exists() or live.is_symlink()):
+        return None
+    other = application.read_journal(root)
+    if (other['apply_id'] != row['apply_id'] and other['phase'] in ('intent', 'prepared')
+            and other.get('old_pointer') == row['new_pointer']):
+        return live
+    return None
+
+
+def restore(root, *, fault=lambda _point: None, resume_only=False):
+    """Close the journal as rolled back, then put the previous receipt, binding and pointer back.
+
+    ``resume_only``: finish a restore that already wrote its decision, start none.
+    """
     root = resident._private_state(Path(root))
     fd = _lock(root / 'candidate-apply.lock')
     pointer_fd = None
@@ -114,36 +166,61 @@ def restore(root, *, fault=lambda _point: None):
             fcntl.flock(pointer_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {'status': 'rollback_deferred', 'reason': 'apply_busy', 'changesApplied': 0}
-        status, row = _state(root)
-        if row is None or status == 'already_restored':
-            return {**(_summary(row, status) if row else {'status': status}), 'changesApplied': 0}
+        status, path, row = _state(root)
+        if row is None:
+            return {'status': status, 'changesApplied': 0}
+        if status == 'already_restored':
+            _history(root, row['old_pointer'])
+            return {**_summary(row, status), 'changesApplied': 0}
+        if resume_only and status != 'rollback_resumed':
+            return {'status': 'nothing_to_resume', 'changesApplied': 0}
         receipt = _check(root, row)
+        stale = _newer_uncommitted(root, row)
         summary = _summary(row, 'restored')
         # Each write is the only durable effect of its step and raises on failure, so a
         # step that did not happen ends the command before the next one.
+        if status == 'rollback_planned':
+            # The owner's decision first: from here no worker pass resumes this application.
+            row['phase'] = 'rejected'
+            row['reason'] = REASON
+            application.put(path, row)
+            written += 1
+        fault('journal_closed')
         application.put(root / identity.RECEIPT, receipt)
         written += 1
         fault('receipt_restored')
         application.put(root / identity.BINDING, _binding(receipt))
-        written += 1
         fault('binding_restored')
         application.put(root / POINTER, row['old_pointer'])
-        written += 1
         fault('pointer_restored')
-        row['phase'] = 'rejected'
-        row['reason'] = REASON
-        application.put(root / application.JOURNAL, row)
-        fault('journal_closed')
+        if stale is not None:
+            # Ignored when it fails: the journal names a pointer that is no longer active and
+            # commits nothing; the next restore or a newer candidate's intent replaces it.
+            try:
+                os.unlink(stale)
+            except OSError:
+                pass
         _history(root, row['old_pointer'])
         return {**summary, 'changesApplied': 1}
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        # Stopped between its writes: the same request finishes it; nothing is reported as done.
+        # Stopped between its writes: the same request or the next worker pass finishes it.
         return {'status': 'rollback_interrupted' if written else 'rollback_blocked', 'reason': str(exc)[:80],
                 'changesApplied': 0}
     finally:
         if pointer_fd is not None:
             os.close(pointer_fd)
         os.close(fd)
+
+
+def resume(root):
+    """The worker pass's part: finish a restore that stopped after its decision; never raises."""
+    try:
+        root = Path(root)
+        if _state(root)[0] == 'rollback_resumed':
+            return restore(root, resume_only=True)
+    except Exception:  # noqa: BLE001 - the pass goes on; the journal still says what is left
+        pass
+    return None
 
 
 def _history(root, pointer):

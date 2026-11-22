@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest import mock
 
 from memvane.learning.context_learning import candidate_apply as A
 from memvane.learning.context_learning import candidate_rollback as R
@@ -140,24 +141,112 @@ class Restore(Case):
                          {'schema': inference_identity.SCHEMA, 'receipt_sha256': learning_profile.digest(receipt)})
         A.readable(case.root)
 
-    def test_a_restore_stopped_at_any_step_is_finished_by_the_same_request(self):
-        points = ('receipt_restored', 'binding_restored', 'pointer_restored', 'journal_closed')
-        for point in points:
-            with self.subTest(point=point):
-                case = self.applied()
+    POINTS = ('journal_closed', 'receipt_restored', 'binding_restored', 'pointer_restored')
 
-                def fault(at, point=point):
-                    if at == point:
-                        raise Stopped()
-                with self.assertRaises(Stopped):
-                    R.restore(case.root, fault=fault)
+    def stopped(self, point, stop=None):
+        case = self.applied(stop=stop)
+
+        def fault(at):
+            if at == point:
+                raise Stopped()
+        with self.assertRaises(Stopped):
+            R.restore(case.root, fault=fault)
+        return case
+
+    def test_a_restore_stopped_at_any_step_is_finished_by_the_same_request(self):
+        for point in self.POINTS:
+            with self.subTest(point=point):
+                case = self.stopped(point)
+                # The decision is the first write: the journal already says so.
+                row = A.read_journal(case.root)
+                self.assertEqual((row['phase'], row['reason']), ('rejected', R.REASON))
                 result = R.restore(case.root)
-                if point == 'journal_closed':
+                if point == 'pointer_restored':
                     self.assertEqual((result['status'], result['changesApplied']), ('already_restored', 0))
                     self.assertEqual(self.files(case), self.before)
                 else:
                     self.restored(case, result)
                 self.assertEqual(R.restore(case.root)['status'], 'already_restored')
+
+    def test_a_worker_pass_never_finishes_a_stopped_restore_the_other_way(self):
+        # W13b review F-2: whatever the journal was, and wherever the restore stopped.
+        for phase_stop in (None, 'pointer_committed'):
+            for point in self.POINTS:
+                with self.subTest(journal=phase_stop or 'activated', point=point):
+                    case = self.stopped(point, stop=phase_stop)
+                    events = list(case.events)
+                    if point != 'pointer_restored':
+                        with self.assertRaisesRegex(ValueError, 'apply_activation_pending'):
+                            A.readable(case.root)  # Closed until someone finishes it.
+                    answer = case.run_apply()
+                    self.assertEqual((answer['status'], answer['reason'], case.events),
+                                     ('apply_blocked', 'candidate_rejected', events))
+                    # The worker pass's own part finishes the restore; nothing is applied.
+                    resumed = R.resume(case.root)
+                    self.assertEqual(None if resumed is None else resumed['status'],
+                                     None if point == 'pointer_restored' else 'restored')
+                    self.assertEqual(self.files(case), self.before)
+                    A.readable(case.root)
+                    self.assertEqual(R.restore(case.root)['status'], 'already_restored')
+
+    def test_a_worker_pass_starts_no_restore_of_its_own(self):
+        case = self.applied()
+        after = self.files(case)
+        self.assertIsNone(R.resume(case.root))
+        self.assertEqual((self.files(case), A.read_journal(case.root)['phase']), (after, 'activated'))
+        self.assertEqual(R.restore(case.root, resume_only=True)['status'], 'nothing_to_resume')
+        self.assertEqual(self.files(case), after)
+
+    def later_candidate(self, case, phase):
+        """What a later candidate's intent leaves: the applied journal archived, its own journal live."""
+        applied = A.read_journal(case.root)
+        A._archive(case.root, applied)
+        later = {**applied, 'apply_id': 'f' * 32, 'cycle_id': 'cohort-' + 'b' * 20, 'phase': phase,
+                 'old_pointer': applied['new_pointer'],
+                 'new_pointer': {**applied['new_pointer'], 'cycle_id': 'cohort-' + 'b' * 20,
+                                 'application': {'schema': A.SCHEMA, 'id': 'f' * 32}}}
+        A.put(case.root / A.JOURNAL, later)
+        return applied, later
+
+    def test_an_application_archived_behind_a_later_candidate_is_still_restored(self):
+        # W13b review F-1: the pointer is the applied candidate's whatever the live journal says.
+        for phase in ('intent', 'prepared', 'rejected'):
+            with self.subTest(later=phase):
+                case = self.applied()
+                applied, later = self.later_candidate(case, phase)
+                A.readable(case.root)
+                plan = R.plan(case.root)
+                self.assertEqual((plan['status'], plan['cycle_id'], plan['phase']),
+                                 ('rollback_planned', case.cycle, 'activated'))
+                result = R.restore(case.root)
+                self.assertEqual((result['status'], result['cycle_id']), ('restored', case.cycle), result)
+                self.assertEqual(self.files(case), self.before)
+                archived = self.read(case, A.ARCHIVE + '/' + applied['apply_id'] + '.json')
+                self.assertEqual((archived['phase'], archived['reason']), ('rejected', R.REASON))
+                self.assertIn(case.cycle, prequential.rejected_cycles(case.root))
+                live = case.root / A.JOURNAL
+                if phase == 'rejected':
+                    # A finished journal of the later candidate is its own record: kept.
+                    self.assertEqual(A.read_journal(case.root), later)
+                else:
+                    # It committed nothing and names a pointer that is no longer active: gone.
+                    self.assertFalse(live.exists())
+                A.readable(case.root)
+                self.assertEqual(R.restore(case.root)['status'], 'already_restored')
+
+    def test_a_restore_that_stopped_before_its_history_entry_adds_it_on_the_next_request(self):
+        # W13b review F-3.
+        case = self.applied()
+        self.assertTrue(prequential.sync_history(case.root))
+        with mock.patch.object(R, '_history', side_effect=Stopped()):
+            with self.assertRaises(Stopped):
+                R.restore(case.root)
+        self.assertEqual([entry['cycle_id'] for entry in prequential.read_history(case.root)], [case.cycle])
+        self.assertEqual(R.restore(case.root)['status'], 'already_restored')
+        self.assertEqual([entry['cycle_id'] for entry in prequential.read_history(case.root)],
+                         [case.cycle, prequential.BASE])
+        R.restore(case.root)
+        self.assertEqual(len(prequential.read_history(case.root)), 2)
 
     def test_a_held_lock_defers_and_writes_nothing(self):
         import fcntl

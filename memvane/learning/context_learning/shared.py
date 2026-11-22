@@ -2170,7 +2170,7 @@ def run_training_pending(root,project):
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return {'status':'busy'}
         if selected_profile:
-            from . import candidate_apply
+            from . import candidate_apply,candidate_rollback;candidate_rollback.resume(root)  # An owner's restore that stopped.
             path=root/candidate_apply.JOURNAL
             if path.exists() or path.is_symlink():
                 intent=candidate_apply.read_journal(root)
