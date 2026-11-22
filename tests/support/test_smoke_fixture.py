@@ -36,6 +36,9 @@ class SmokeFixture(FixtureCase):
         self.assertEqual(len(set(plan['roles'].values())), len(smoke_fixture.ROLES))
         self.assertGreater(plan['prompts']['P2']['chars'], smoke_fixture.LONG_PROMPT_CHARS)
         self.assertNotIn(plan['roles']['short'], plan['prompts']['P2']['text'])
+        # One line each: what a multiplexer pastes is what the event row hashes.
+        for prompt in plan['prompts'].values():
+            self.assertNotRegex(prompt['text'], r'[\r\n]')
 
     def test_a_recall_event_records_the_plan_card_and_prompt_hash(self):
         from tests.support.install_builder import build_install

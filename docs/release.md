@@ -74,6 +74,16 @@ Sessions are interactive host CLIs inside a terminal multiplexer on the smoke
 account, started from a login shell. Headless runs are not used: hooks end
 silently there and it is not how the product is used.
 
+The operator starts one `screen` session per host in the project directory,
+named `smoke-claude` and `smoke-codex`, in UTF-8 mode and detached, with the
+host CLI as the command of a login shell. The tool addresses window 0 of that
+session by name. It pastes a prompt, waits until the window shows the paste
+and stops changing, then sends Enter on its own, and reports success only
+when it observed the paste and, for a prompt a hook can see, the event row of
+the prompt's hash. Without that it exits non-zero and the item is `BLOCKED`.
+Prompts are one line each, so the text a multiplexer pastes is the text whose
+hash the event row records.
+
 | Step | What happens | Item |
 |---|---|---|
 | prepare | The tool checks that the account's shell carries no sandbox or test variable, builds the synthetic project (raw documents, each with one verified card, so onboarding indexes them without a wiki compile) and ships it. | a forbidden variable voids the run |

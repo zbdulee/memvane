@@ -80,7 +80,7 @@ def _long_prompt(token):
     """About 12,000 characters of invented filler, then the question."""
     line = '이 문단은 길이를 채우기 위한 가상의 회의록 한 줄이고 어떤 문서의 내용과도 관련이 없다. '
     filler = line * (LONG_PROMPT_CHARS // len(line) + 1)
-    return filler[:LONG_PROMPT_CHARS] + '\n\n' + _question(token)
+    return filler[:LONG_PROMPT_CHARS] + ' ' + _question(token)
 
 
 def _prompts(roles):
@@ -90,9 +90,13 @@ def _prompts(roles):
         'P0': '이 프로젝트 MemVane 온보딩해 줘. 계획을 검토한 뒤 그대로 적용하고 활성화까지 해 줘.',
         'P1': _question(roles['short']['token']),
         'P2': _long_prompt(roles['long']['token']),
-        'P3': 'Edit 도구로 %s 파일 맨 끝에 다음 문단을 그대로 추가해 줘. 다른 파일은 건드리지 마.\n\n%s'
+        'P3': 'Edit 도구로 %s 파일 맨 끝에 다음 문단을 그대로 추가해 줘. 다른 파일은 건드리지 마. 문단: %s'
               % (edit['source'], paragraph),
     }
+    # One line each: a multiplexer paste may turn a line feed into a carriage
+    # return, and the event row must record the hash of exactly this text.
+    if any('\n' in text or '\r' in text for text in texts.values()):
+        raise ValueError('a smoke prompt is one line')
     return {name: {'text': text, 'sha256': prompt_sha(text), 'chars': len(text)}
             for name, text in texts.items()}
 
@@ -137,6 +141,8 @@ def delta(out, plan):
     for name in (deleted['source'], deleted['file']):
         (out / name).unlink()
     text = _question(added['token'], after['token'], deleted['token'])
+    if '\n' in text or '\r' in text:
+        raise ValueError('a smoke prompt is one line')
     plan = dict(plan)
     plan['delta'] = {'added': added, 'changed': {'before': changed, 'after': after},
                      'deleted': deleted}

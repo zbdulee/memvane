@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -9,6 +10,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from unittest import mock
 
 from tests.support.case import FixtureCase, scaled
 from tests.support import smoke_fixture
@@ -17,6 +19,42 @@ ROOT = Path(__file__).resolve().parents[2]
 _spec = importlib.util.spec_from_file_location('release_smoke', ROOT / 'scripts' / 'release_smoke.py')
 smoke = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(smoke)
+
+FAKE_SCREEN = r'''#!__PYTHON__
+import hashlib, json, os, sys, time
+from pathlib import Path
+STATE = Path('__STATE__')
+args = sys.argv[1:]
+session = args[args.index('-S') + 1]
+window = args[args.index('-p') + 1] if '-p' in args else None
+command, rest = args[args.index('-X') + 1], args[args.index('-X') + 2:]
+mode = (STATE / 'mode').read_text()
+if window is None:
+    sys.exit(0)  # 4.00.03: a windowless -X is ignored and still exits 0
+with open(STATE / 'calls.jsonl', 'a') as out:
+    out.write(json.dumps({'session': session, 'window': window, 'command': command}) + '\n')
+typed = STATE / 'input'
+if command == 'readbuf':
+    (STATE / 'buffer').write_bytes(Path(os.path.expanduser(rest[0])).read_bytes())
+elif command == 'paste' and mode != 'deaf':
+    typed.write_bytes((STATE / 'buffer').read_bytes())
+    (STATE / 'settling').write_text('2')  # the screen keeps redrawing for two more reads
+elif command == 'hardcopy':
+    left = int((STATE / 'settling').read_text()) if (STATE / 'settling').exists() else 0
+    (STATE / 'settling').write_text(str(max(0, left - 1)))
+    size = typed.stat().st_size if typed.exists() else 0
+    Path(os.path.expanduser(rest[0])).write_text('window %d %d\n' % (size, left))
+elif command == 'stuff' and typed.exists():
+    text = typed.read_bytes()
+    typed.replace(STATE / 'submitted')
+    if mode != 'no_row':
+        log = Path.home() / '.local/state/memvane/v1/installs/fake/events.jsonl'
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, 'a') as out:
+            out.write(json.dumps({'event': 'recall', 'session': 'fake', 'ts': '2026-11-22T00:00:00Z',
+                                  'prompt': {'sha256': hashlib.sha256(text).hexdigest(),
+                                             'chars': len(text.decode())}}) + '\n')
+'''
 
 SESSIONS = {'claude': 'session-claude', 'codex': 'session-codex'}
 
@@ -35,7 +73,8 @@ class Local:
         return done.returncode, done.stdout, done.stderr
 
     def put(self, local, remote, *, timeout=300):
-        target = Path(os.path.expanduser(remote).replace('~', str(self.home)))
+        # As scp: a leading ``~/`` is the account's home.
+        target = self.home / remote[2:] if remote.startswith('~/') else Path(remote)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(str(local), str(target))
 
@@ -289,18 +328,113 @@ class RoundTrip(FixtureCase):
         gate = smoke.verdict(remote, record, SESSIONS)
         self.assertFalse(gate['valid'])
 
-    def test_send_pastes_the_prompt_and_presses_enter_only(self):
+    def fake_screen(self, account, mode='ok'):
+        """A ``screen`` like 4.00.03 on the account's PATH: a ``-X`` without ``-p`` is ignored with exit 0."""
+        tools = account / 'bin'
+        tools.mkdir(exist_ok=True)
+        state = account / 'screen-state'
+        state.mkdir(exist_ok=True)
+        (state / 'mode').write_text(mode)
+        script = tools / 'screen'
+        script.write_text(FAKE_SCREEN.replace('__PYTHON__', sys.executable).replace('__STATE__', str(state)))
+        script.chmod(0o700)
+        return state
+
+    def prepared(self, mode='ok'):
+        account = self.home / 'account'
+        account.mkdir()
+        remote = Local(account, {'PATH': '%s:%s' % (account / 'bin', os.environ['PATH'])})
+        state = self.fake_screen(account, mode)
+        record = self.home / 'record'
+        plan = smoke.prepare(remote, record, 'c' * 40,
+                             build=lambda out, learning: smoke_fixture.build(out, cards=6, run_id='feed04'))
+        return remote, account, state, record, plan
+
+    def calls(self, state):
+        path = state / 'calls.jsonl'
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.is_file() else []
+
+    def test_the_default_remote_path_is_under_the_account_home(self):
+        remote, account, _state, _record, plan = self.prepared()
+        self.assertEqual(plan['remoteFixture'], '~/memvane-smoke/feed04/fixture')
+        self.assertTrue((account / 'memvane-smoke/feed04/fixture/.git').is_dir())
+        self.assertFalse((account / '~').exists())
+        self.assertEqual(smoke.rpath('~/a b/c'), '"$HOME"/\'a b/c\'')
+        self.assertEqual(smoke.rpath('/tmp/a b'), "'/tmp/a b'")
+
+    def test_a_failed_prepare_is_run_again_with_the_same_record_directory(self):
         remote, account = self.remote()
         record = self.home / 'record'
-        smoke.prepare(remote, record, 'c' * 40, target=str(account / 'smoke' / 'fixture'),
-                      build=lambda out, learning: smoke_fixture.build(out, cards=6, run_id='feed04'))
-        calls = []
-        remote.run = lambda command, **options: calls.append(command) or (0, '', '')
-        sent = smoke.send(remote, record, 'codex', 'P1')
-        self.assertEqual(sent['sha256'], json.loads((record / 'plan.json').read_text())['prompts']['P1']['sha256'])
-        [command] = calls
-        self.assertEqual(command.count('screen -S smoke-codex -X'), 3)
-        self.assertRegex(command, r"readbuf .*prompt-P1\.txt && .* -X paste \. && .* -X stuff \$'\\r'$")
+        build = lambda out, learning: smoke_fixture.build(out, cards=6, run_id='feed05')
+        put, remote.put = remote.put, mock.Mock(side_effect=RuntimeError('upload failed'))
+        with self.assertRaisesRegex(RuntimeError, 'upload failed'):
+            smoke.prepare(remote, record, 'c' * 40, build=build)
+        first = json.loads((record / 'plan.json').read_text())
+        self.assertFalse(first['shipped'])
+        remote.put = put
+        again = smoke.prepare(remote, record, 'c' * 40,
+                              build=mock.Mock(side_effect=AssertionError('built twice')))
+        self.assertEqual((again['cards'], again['shipped']), (first['cards'], True))
+        self.assertTrue((account / 'memvane-smoke/feed05/fixture/.git').is_dir())
+        with self.assertRaisesRegex(RuntimeError, 'already holds a shipped fixture'):
+            smoke.prepare(remote, record, 'c' * 40, build=build)
+        # A build that stopped before its plan was written is built again.
+        (record / 'plan.json').unlink()
+        rebuilt = smoke.prepare(remote, record, 'c' * 40, target=str(account / 'second/fixture'), build=build)
+        self.assertTrue(rebuilt['shipped'])
+
+    def test_send_pastes_waits_for_the_paste_then_presses_enter_and_finds_the_row(self):
+        remote, account, state, record, plan = self.prepared()
+        result = smoke.send(remote, record, 'claude', 'P2', pause=lambda _seconds: None)
+        self.assertEqual((result['pasted'], result['submitted'], result['row']), (True, True, True))
+        self.assertTrue(smoke.sent(result))
+        calls = self.calls(state)
+        # Every command names window 0, and Enter comes after the last hardcopy.
+        self.assertTrue(all(call['window'] == '0' and call['session'] == 'smoke-claude' for call in calls))
+        kinds = [call['command'] for call in calls]
+        self.assertEqual(kinds[:3], ['hardcopy', 'readbuf', 'paste'])
+        self.assertEqual((kinds.count('stuff'), kinds[-1]), (1, 'stuff'))
+        self.assertGreaterEqual(kinds.count('hardcopy'), 3)
+        # The session received exactly the planned text: its hash is the plan's.
+        submitted = (state / 'submitted').read_bytes()
+        self.assertEqual(hashlib.sha256(submitted).hexdigest(), plan['prompts']['P2']['sha256'])
+        self.assertNotIn(b'\n', submitted)
+
+    def test_send_reports_failure_when_the_session_shows_nothing(self):
+        remote, _account, state, record, _plan = self.prepared('deaf')
+        result = smoke.send(remote, record, 'claude', 'P1', pause=lambda _seconds: None, paste_reads=4)
+        self.assertEqual((result['pasted'], result['submitted']), (False, False))
+        self.assertFalse(smoke.sent(result))
+        self.assertNotIn('stuff', [call['command'] for call in self.calls(state)])
+
+    def test_send_fails_without_the_hook_row_except_for_the_onboarding_prompt(self):
+        remote, _account, _state, record, _plan = self.prepared('no_row')
+        quiet = lambda _seconds: None
+        result = smoke.send(remote, record, 'claude', 'P1', pause=quiet, row_reads=3)
+        self.assertEqual((result['pasted'], result['submitted'], result['row']), (True, True, False))
+        self.assertFalse(smoke.sent(result))
+        first = smoke.send(remote, record, 'claude', 'P0', pause=quiet, row_reads=3)
+        self.assertEqual((first['pasted'], first['submitted'], first['row']), (True, True, None))
+        self.assertTrue(smoke.sent(first))
+
+    def test_account_prep_records_versions_and_only_the_result_of_a_login_check(self):
+        remote, account = self.remote()
+        tools = account / 'bin'
+        tools.mkdir()
+        remote.env['PATH'] = '%s:/usr/bin:/bin' % tools
+        fake = tools / 'claude'
+        fake.write_text('#!/bin/sh\nif [ "$1" = auth ]; then echo "logged in as person@example.invalid"; else echo "9.9.9 (fake)"; fi\n')
+        fake.chmod(0o700)
+        version = tools / 'screen'
+        version.write_text('#!/bin/sh\necho "Screen version 4.00.03 (FAU) 23-Oct-06"; exit 1\n')
+        version.chmod(0o700)
+        lines = smoke.account_prep(remote)
+        self.assertIn('A2 claude: ok 9.9.9 (fake)', lines)
+        self.assertIn('A2 claude login: ok', lines)
+        self.assertIn('A2 codex: failed', lines)
+        self.assertIn('A2 codex login: failed', lines)
+        self.assertIn('A3 screen version: ok Screen version 4.00.03 (FAU) 23-Oct-06', lines)
+        self.assertNotIn('example.invalid', '\n'.join(lines))
 
     def test_installed_files_are_compared_with_the_commit(self):
         remote, account = self.remote()

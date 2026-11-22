@@ -27,11 +27,13 @@ import json
 from pathlib import Path
 import re
 import shlex
+import shutil
 import statistics
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 PASS, FAIL, BLOCKED, NOT_RUN = 'PASS', 'FAIL', 'BLOCKED', 'NOT RUN'
@@ -401,16 +403,30 @@ def _save(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=1) + '\n', encoding='utf-8')
 
 
+def rpath(path):
+    """``path`` quoted for the account's shell; a leading ``~/`` still means its home."""
+    if path == '~':
+        return '"$HOME"'
+    if path.startswith('~/'):
+        return '"$HOME"/' + shlex.quote(path[2:])
+    return shlex.quote(path)
+
+
 def _ship(remote, tree, target):
     """Pack ``tree`` and unpack it as ``target`` on the smoke account."""
+    target = target.rstrip('/')
+    staged = target + '.tar'
+    # The directory first: a new run has no parent for the upload yet.
+    code, _out, err = remote.run('mkdir -p %s' % rpath(target))
+    if code:
+        raise RuntimeError('remote directory failed: ' + err.strip()[:200])
     with tempfile.TemporaryDirectory() as scratch:
         archive = Path(scratch) / 'fixture.tar'
         with tarfile.open(archive, 'w') as packed:
             packed.add(str(tree), arcname='.')
-        staged = target.rstrip('/') + '.tar'
         remote.put(archive, staged)
-    code, _out, err = remote.run('mkdir -p %s && tar -xf %s -C %s && rm -f %s' % (
-        shlex.quote(target), shlex.quote(staged), shlex.quote(target), shlex.quote(staged)))
+    code, _out, err = remote.run('tar -xf %s -C %s && rm -f %s' % (
+        rpath(staged), rpath(target), rpath(staged)))
     if code:
         raise RuntimeError('unpack failed: ' + err.strip()[:200])
 
@@ -428,19 +444,29 @@ def prepare(remote, out, commit, *, learning=False, target=None, build=None):
     found = forbidden_env(remote)
     # The tree stays in the record directory: the change is applied to these bytes.
     tree = out / TREE
-    plan = (build or smoke_fixture.build)(tree, learning=learning)
-    target = target or '~/memvane-smoke/%s/fixture' % plan['runId']
-    plan.update(commit=commit, remoteFixture=target, forbiddenEnv=found)
+    if _plan_path(out).is_file() and tree.is_dir():
+        # A second run with the same record directory ships the same fixture again.
+        plan = _load_plan(out)
+        if plan.get('shipped'):
+            raise RuntimeError('this record directory already holds a shipped fixture')
+    else:
+        if tree.exists():
+            shutil.rmtree(str(tree))  # A build that stopped before its plan was written.
+        plan = (build or smoke_fixture.build)(tree, learning=learning)
+    target = target or plan.get('remoteFixture') or '~/memvane-smoke/%s/fixture' % plan['runId']
+    plan.update(commit=commit, remoteFixture=target, forbiddenEnv=found, shipped=False)
+    _save(_plan_path(out), plan)
+    for name, prompt in plan['prompts'].items():
+        (out / ('prompt-%s.txt' % name)).write_text(prompt['text'], encoding='utf-8')
     if not found:
         _ship(remote, tree, target)
         code, _out, err = remote.run(
             'cd %s && %s init -q -b main && %s add -A && %s commit -qm fixture'
-            % (target, _GIT, _GIT, _GIT))
+            % (rpath(target), _GIT, _GIT, _GIT))
         if code:
             raise RuntimeError('git init failed: ' + err.strip()[:200])
-    _save(_plan_path(out), plan)
-    for name, prompt in plan['prompts'].items():
-        (out / ('prompt-%s.txt' % name)).write_text(prompt['text'], encoding='utf-8')
+        plan['shipped'] = True
+        _save(_plan_path(out), plan)
     return plan
 
 
@@ -456,7 +482,7 @@ def apply_delta(remote, out, *, last_ts=None):
     removed = ' '.join(shlex.quote(name) for name in (change['deleted']['source'],
                                                         change['deleted']['file']))
     code, _out, err = remote.run('cd %s && rm -f %s && %s add -A && %s commit -qm change'
-                                 % (plan['remoteFixture'], removed, _GIT, _GIT))
+                                 % (rpath(plan['remoteFixture']), removed, _GIT, _GIT))
     if code:
         raise RuntimeError('change commit failed: ' + err.strip()[:200])
     change['afterTs'] = last_ts
@@ -465,23 +491,91 @@ def apply_delta(remote, out, *, last_ts=None):
     return after
 
 
-def send(remote, out, host, name, *, screen=None):
-    """Paste one prompt into the host's interactive session and press Enter.
+# Counts the event rows of a prompt hash on the smoke account.
+_COUNT_PROMPT = r'''
+import glob, json, os, sys
+wanted, count = sys.argv[1], 0
+for path in glob.glob(os.path.expanduser('~/.local/state/memvane/v1/installs/*/events.jsonl')):
+    for line in open(path, errors='replace'):
+        if wanted not in line: continue
+        try: row = json.loads(line)
+        except ValueError: continue
+        if isinstance(row, dict) and isinstance(row.get('prompt'), dict) and row['prompt'].get('sha256') == wanted:
+            count += 1
+print(count)
+'''
+# The prompts no hook row can confirm: the project is not onboarded when P0 is sent.
+UNCONFIRMED_BY_ROW = ('P0',)
 
-    Only the prompt is typed. A permission or trust screen is left for the
-    operator (and the Codex hook trust for the user).
+
+def session_name(host):
+    """The multiplexer session of a host: the operator starts it under this name."""
+    return 'smoke-' + host
+
+
+def send(remote, out, host, name, *, screen=None, pause=time.sleep, paste_reads=30, row_reads=45):
+    """Paste one prompt into the host's interactive session, then press Enter.
+
+    Every multiplexer command names window 0 (``-p 0``): an old ``screen``
+    ignores a windowless ``-X`` and still exits 0. The paste counts as arrived
+    only when the window's hardcopy changed and then stopped changing; only
+    then is Enter sent, on its own. For a prompt a hook can see, the turn is
+    confirmed by the event row of its hash. Returns what was observed:
+    ``pasted``, ``submitted`` and ``row`` (None when no row can confirm it).
+    Only the prompt is typed: a permission or trust screen is the operator's.
     """
     plan = _load_plan(out)
     prompt = plan['prompts'][name]
-    screen = screen or 'smoke-' + host
-    staged = '%s/../prompt-%s.txt' % (plan['remoteFixture'], name)
+    session = shlex.quote(screen or session_name(host))
+    base = plan['remoteFixture'].rstrip('/').rsplit('/', 1)[0]
+    staged, shot = '%s/prompt-%s.txt' % (base, name), '%s/hardcopy-%s.txt' % (base, host)
     remote.put(Path(out) / ('prompt-%s.txt' % name), staged)
-    code, _out, err = remote.run(
-        'screen -S %s -X readbuf %s && screen -S %s -X paste . && screen -S %s -X stuff $\'\\r\''
-        % (shlex.quote(screen), staged, shlex.quote(screen), shlex.quote(screen)))
-    if code:
-        raise RuntimeError('the session did not take the prompt: ' + err.strip()[:200])
-    return {'host': host, 'prompt': name, 'sha256': prompt['sha256']}
+    control = 'screen -S %s -p 0 -X ' % session
+
+    def hardcopy():
+        code, text, _err = remote.run('rm -f %s; %shardcopy %s && cksum < %s' % (
+            rpath(shot), control, rpath(shot), rpath(shot)))
+        return text.strip() if code == 0 else ''
+    result = {'host': host, 'prompt': name, 'sha256': prompt['sha256'], 'pasted': False,
+              'submitted': False, 'row': None}
+    before = hardcopy()
+    if not before:
+        return result
+    # Rows of this prompt before it is sent: the turn is confirmed by one more.
+    count = 'python3 -B - %s' % shlex.quote(prompt['sha256'])
+
+    def rows():
+        code, text, _err = remote.run(count, stdin=_COUNT_PROMPT)
+        return int(text.strip()) if code == 0 and text.strip().isdigit() else None
+    start = rows() or 0
+    remote.run('%sreadbuf %s && %spaste .' % (control, rpath(staged), control))
+    last = None
+    for _ in range(paste_reads):
+        pause(1)
+        now = hardcopy()
+        if now and now != before and now == last:
+            result['pasted'] = True
+            break
+        last = now
+    if not result['pasted']:
+        return result
+    code, _text, _err = remote.run("%sstuff $'\\r'" % control)
+    result['submitted'] = code == 0
+    if not result['submitted'] or name in UNCONFIRMED_BY_ROW:
+        return result
+    result['row'] = False
+    for _ in range(row_reads):
+        seen = rows()
+        if seen is not None and seen > start:
+            result['row'] = True
+            break
+        pause(2)
+    return result
+
+
+def sent(result):
+    """A send succeeded: the paste arrived, Enter was sent, and no expected row is missing."""
+    return bool(result['pasted'] and result['submitted'] and result['row'] is not False)
 
 
 def _model_constants():
@@ -556,14 +650,22 @@ def installed_identity(remote, commit, installed, *, tree=None):
 def account_prep(remote):
     """Read-only checks of the smoke account (A1 to A3, A5); the rest is the user's to confirm."""
     lines = []
-    for label, command in (('A1 ssh', 'true'), ('A2 claude', 'claude --version'),
-                           ('A2 codex', 'codex --version'), ('A3 screen', 'command -v screen'),
-                           ('A5 node', 'node --version')):
+    # (label, command, keep the output). A login status may name the account: only its result is kept.
+    for label, command, shown in (('A1 ssh', 'true', True), ('A2 claude', 'claude --version', True),
+                                  ('A2 claude login', 'claude auth status', False),
+                                  ('A2 codex', 'codex --version', True),
+                                  ('A2 codex login', 'codex login status', False),
+                                  ('A3 screen', 'command -v screen', True),
+                                  ('A3 screen version', 'screen -v', True),
+                                  ('A5 node', 'node --version', True)):
         try:
             code, out, _err = remote.run(command, timeout=60)
         except (OSError, subprocess.TimeoutExpired):
             code, out = 255, ''
-        lines.append('%s: %s %s' % (label, 'ok' if code == 0 else 'failed', out.strip()[:80]))
+        if label == 'A3 screen version':
+            code = 0 if out.strip() else code  # ``screen -v`` prints its version and exits 1.
+        text = out.strip().splitlines()[0][:80] if shown and out.strip() else ''
+        lines.append(('%s: %s %s' % (label, 'ok' if code == 0 else 'failed', text)).rstrip())
     lines += ['A4 codex hook trust: the user confirms in the account', 'A6 teacher calls: the user confirms',
               'A7 reboot: the user confirms']
     return lines
@@ -634,7 +736,11 @@ def main(argv=None):
         apply_delta(remote, args.out, last_ts=args.last_ts)
         return 0
     if args.command == 'send':
-        print(json.dumps(send(remote, args.out, args.host, args.prompt)))
+        result = send(remote, args.out, args.host, args.prompt)
+        print(json.dumps(result))
+        if not sent(result):
+            print('BLOCKED (host_env): the prompt was not observed in the session', file=sys.stderr)
+            return 1
         return 0
     if args.command == 'model-url':
         record = model_url(remote)
