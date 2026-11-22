@@ -200,6 +200,39 @@ class Reoffer(FixtureCase):
                    for index in range(linked_reoffer.CAP + 2)]
         self.assertEqual(answers[-1], 'capped')
 
+    def test_new_work_beside_a_view_that_keeps_waiting_is_never_capped_while_it_shrinks(self):
+        # One view waits for a reason no pass clears; another worktree gets 200 cards again and again.
+        answers = []
+        for _job in range(30):
+            for left in (136, 72, 8):
+                answers.append(self.decide(views=2, b=left))
+            answers.append(self.decide(views=1))  # The job is done; the other view still waits.
+        self.assertEqual(answers, ['offer', 'offer', 'offer', 'none'] * 30)
+        self.assertLessEqual(json.loads(self.path.read_text())['streak'], 1)
+        # The same view asked again and again with as much left is still cut off.
+        self.decide(views=2, b=136)
+        stuck = [self.decide(views=2, unreached=1, b=136) for _ in range(linked_reoffer.CAP + 2)]
+        self.assertEqual(stuck[-1], 'capped')
+
+    def test_a_count_that_rises_is_no_reason_and_only_moves_the_low(self):
+        self.assertEqual(self.decide(a=10), 'offer')
+        self.assertEqual(self.decide(a=30), 'none')
+        self.assertEqual(json.loads(self.path.read_text())['floors'], {'/a': 30})
+        self.assertEqual(self.decide(a=20), 'offer')
+        self.assertEqual(json.loads(self.path.read_text())['streak'], 0)
+
+    def test_more_views_than_are_followed_do_not_read_as_new_ones(self):
+        # Seventy views wait; each pass counts a different half of them and none gets smaller.
+        names = ['v%02d' % index for index in range(70)]
+        answers = []
+        for index in range(linked_reoffer.CAP + 6):
+            counted = names[index % 2::2]
+            answers.append(self.decide(views=70, unreached=35, **{name: 50 for name in counted}))
+        self.assertEqual(answers[-1], 'capped')
+        saved = json.loads(self.path.read_text())
+        self.assertLessEqual(len(saved['remaining']), 64)
+        self.assertLessEqual(len(saved['floors']), 256)
+
     def test_a_linked_views_vector_targets_left_count_like_its_cards(self):
         self.assertEqual(self.decide(**{'a#vector': 40}), 'offer')
         self.assertEqual(self.decide(**{'a#vector': 31}), 'offer')
@@ -283,6 +316,20 @@ class SettleVectors(unittest.TestCase):
         for index, (value, linked, fails, expected) in enumerate(cases):
             with self.subTest(case=index):
                 self.assertEqual(self.settle(value, linked, fails), expected)
+
+    def test_an_arena_that_is_catching_up_offers_the_wake_and_defers_a_capped_linked_wait(self):
+        calls = []
+        result = {'state': 'unchanged', 'vector': {'state': 'current'},
+                  'worktrees': [{'root': '/w0', 'state': 'pending', 'reason': 'schema3_pass_budget'}]}
+        # While the arena's catch-up moves, the pass is acknowledged and offered again: the capped
+        # wait is not recorded as a failure in that pass.
+        settled = worker._settle_vectors(result, lambda: calls.append(1), 'capped', True)
+        self.assertEqual((settled['state'], settled.get('reason'), settled.get('vectorReoffer'), len(calls)),
+                         ('unchanged', None, True, 1))
+        # Once it has caught up the capped wait fails the pass as before.
+        settled = worker._settle_vectors(result, lambda: calls.append(1), 'capped', False)
+        self.assertEqual((settled['state'], settled['reason'], settled.get('vectorReoffer'), len(calls)),
+                         ('pending', 'schema3_linked_pending', None, 1))
 
     def test_a_pass_that_did_not_publish_is_left_as_it_is(self):
         for linked in ('none', 'offer', 'capped'):
