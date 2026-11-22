@@ -107,6 +107,25 @@ class CleanupSetupEntry(unittest.TestCase):
             code, row, _ = self.run_cli(fakes, '--approve-state-cleanup', digest)
             self.assertEqual((code, row['status']), (1, 'partial'))
 
+    def test_a_runtime_collection_that_fails_after_the_installs_were_removed_keeps_their_result(self):
+        # W17 r2 review F-10: the runtime lock was taken between the preview and the removal.
+        fakes = Fakes()
+        digest = self.run_cli(fakes)[1]['previewSha256']
+        collect = fakes.collect
+
+        def busy(home=None, *, approve=False):
+            if approve:
+                raise ValueError('laya_embed_runtime_busy')
+            return collect(home, approve=approve)
+        fakes.collect = busy
+        fakes.calls.clear()
+        code, row, _ = self.run_cli(fakes, '--approve-state-cleanup', digest)
+        self.assertEqual((code, row['status'], row['changesApplied']), (1, 'partial', 1))
+        self.assertEqual(row['indexRuntime'], {'status': 'blocked', 'reason': 'laya_embed_runtime_busy',
+                                               'changesApplied': 0})
+        self.assertEqual([item['action'] for item in row['installs'] if item['install'] == 'a' * 32], ['remove'])
+        self.assertIn(('cleanup', True, ['a' * 32], False), fakes.calls)
+
     def test_a_machine_without_an_embedding_runtime_still_cleans_installs(self):
         fakes = Fakes()
         fakes.collect = mock.Mock(side_effect=ValueError('laya_embed_runtime_missing'))

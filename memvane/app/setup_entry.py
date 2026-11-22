@@ -140,10 +140,15 @@ def _state_cleanup(argv):
                 result = product.state_cleanup(approve=True, everything=True, only=set(names['roots']))
             else:
                 result = product.state_cleanup(approve=True, only=set(names['installs']))
-                from memvane.provider import api as laya_embed_runtime
-                runtime = (laya_embed_runtime.collect(approve=True) if names['generations']
-                           else {'status': 'collected', 'changesApplied': 0})
-                runtime.pop('dependencyClosure', None)
+                try:
+                    from memvane.provider import api as laya_embed_runtime
+                    runtime = (laya_embed_runtime.collect(approve=True) if names['generations']
+                               else {'status': 'collected', 'changesApplied': 0})
+                    runtime.pop('dependencyClosure', None)
+                except Exception as exc:
+                    # The installs above are already removed: their result stands, and the
+                    # runtime half that did not run is reported beside it (never a silent zero).
+                    runtime = {'status': 'blocked', 'reason': str(exc), 'changesApplied': 0}
                 result['indexRuntime'] = runtime
                 result['changesApplied'] += runtime.get('changesApplied', 0)
                 # Either half left something behind: the whole command says so.
