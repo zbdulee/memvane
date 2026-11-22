@@ -447,6 +447,9 @@ def _run_target(kind, value, target, owner_fd):
         failure.member_path = _member_path(result.get('path'))
         failure.member_cause = (_code(result.get('cause'))
                                 if failure.member_path is not None else None)
+        backlog = result.get('backlog')
+        # What a compile pass left to work off (``compile_progress``), for the queue's streak.
+        failure.backlog = backlog if type(backlog) is int and backlog >= 0 else None
         raise failure
     current = resolve(kind, value)
     if (current['terminal'] or any(current[field] != target[field]

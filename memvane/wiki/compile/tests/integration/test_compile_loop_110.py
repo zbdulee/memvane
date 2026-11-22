@@ -218,6 +218,27 @@ class CompileLoop(FixtureCase):
         self.assertEqual(self.selected_pass()['state'], 'drained')
         self.assert_attempted_once(event, calls=1, reason='not_refreshed')
 
+    def test_a_settled_source_beside_a_kept_one_gives_counted_passes_and_no_repeated_calls(self):
+        # One source ends for good without a card; another fails and is kept for its cooldown.
+        other = 'docs/other.md'
+        self.project.write_note(other, 'A second synthetic source.\n')
+        settled, kept = self.edit(), wiki_freshness.record_pending_refresh(self.root, other, 'claude')
+
+        def extract(argv, payload, timeout, root):
+            self.calls.append(payload['source']['path'])
+            if payload['source']['path'] == other:
+                return None, 'extractor_crashed', 1
+            return {'candidates': []}, None, 0
+        with patch.object(self, 'extract', side_effect=extract):
+            results = [self.selected_pass() for _ in range(PASSES)]
+        # The first pass settles one of the two (a smaller backlog); none after it is progress.
+        self.assertEqual([(r['state'], r.get('reason')) for r in results[1:]], [('pending', None)] * (PASSES - 1))
+        self.assertEqual(sorted(self.calls), sorted([SOURCE, other]))
+        self.assertEqual(list(self.settled()), [settled['eventId']])
+        self.assertEqual(len(self.queued()), 1)
+        self.assertIn(kept['eventId'], [item['eventId'] for item in
+                                        refresh_settlement.unsettled(self.root, [settled, kept])])
+
     # -- without the settlement -------------------------------------------------------
     def test_without_the_settlement_every_pass_pays_again_and_reports_no_progress(self):
         """The defect, kept reproducible: ``process_job`` alone leaves the loop open."""
@@ -360,6 +381,30 @@ class Settlement(FixtureCase):
         self.assertEqual(self.open_ids([b]), [b['eventId']])
         (self.root / 'docs/b.md').unlink()
         self.assertEqual(self.open_ids([b]), [])
+
+    def test_an_outage_settlement_holds_for_a_day_and_a_content_one_until_the_bytes_change(self):
+        from datetime import datetime, timedelta, timezone
+        a, b = self.event('a'), self.event('b')
+        self.assertTrue(refresh_settlement.settle(self.root, a, self.sha('a'), 'unknown_host_exhausted'))
+        self.assertTrue(refresh_settlement.settle(self.root, b, self.sha('b'), 'not_refreshed'))
+        self.assertEqual(self.open_ids([a, b]), [])
+        stored = json.loads(self.path.read_text(encoding='utf-8'))
+
+        def aged(seconds=None, ts=None):
+            when = datetime.now(timezone.utc) - timedelta(seconds=seconds or 0)
+            stamp = ts if ts is not None else when.isoformat().replace('+00:00', 'Z')
+            self.path.write_text(json.dumps({key: dict(value, ts=stamp) for key, value in stored.items()}),
+                                 encoding='utf-8')
+            return self.open_ids([a, b])
+        day = refresh_settlement.EXPIRY_SECONDS
+        self.assertEqual(aged(day - 600), [])
+        self.assertEqual(aged(day + 600), [a['eventId']])
+        # A time that cannot be read, or one in the future, does not hold an outage settlement.
+        self.assertEqual(aged(ts='yesterday'), [a['eventId']])
+        self.assertEqual(aged(-3600), [a['eventId']])
+        # The retry that fails again settles it for another day.
+        self.assertTrue(refresh_settlement.settle(self.root, a, self.sha('a'), 'unknown_host_exhausted'))
+        self.assertEqual(self.open_ids([a, b]), [])
 
     def test_refused_and_unreadable_records_mean_not_settled(self):
         a = self.event('a')

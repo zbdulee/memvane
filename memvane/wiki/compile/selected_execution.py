@@ -111,8 +111,10 @@ def _run(project: Path):
         # pass. Progress is a smaller backlog than the pass started with.
         after = _backlog(project, source, bound)
         progressed = before is not None and after is not None and after < before
+        # ``backlog`` lets the wake queue tell a backlog that keeps shrinking from
+        # one that is worked off and put back.
         return {'state': 'pending', 'processed': answer['processed'],
-                **({'reason': 'compile_progress'} if progressed else {})}
+                **({'reason': 'compile_progress', 'backlog': after} if progressed else {})}
     return {'state': 'drained', 'processed': answer['processed']}
 
 

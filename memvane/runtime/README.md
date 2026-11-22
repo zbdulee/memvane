@@ -9,12 +9,16 @@ target을 사용한다. `laya-sync` 행의 due는 학습 backoff로 미루지 �
 
 `laya-compile`의 `deferred:pending:compile_progress`는 backlog(source 큐 행과
 시도할 refresh 이벤트)가 pass 앞보다 줄어든 pass다. 남은 작업은 30초 뒤
-재시도하고 기존 실패 횟수를 늘리지 않는다. 같은 wake에서 이 재시도가 연속
-120회(`COMPILE_PROGRESS_STREAK_CAP`)를 넘으면 그 뒤는 집계되는 재시도다.
-연속 수는 큐 옆 `runtime-wake-progress.json`에 두고 다른 결과가 나오면
-지운다. 무진척 pending과 실제 실패는 기존 retry cap을 따른다. wake kind·저장
-형식은 그대로이며, 이 detail을 모르는 구 worker는 기존 실패 집계 규칙으로
-처리한다.
+재시도하고 기존 실패 횟수를 늘리지 않는다. 선택 실행은 pass 뒤의 backlog를
+결과에 싣고, 큐는 wake별 최저치(`floor`)와 "최저치를 갱신하지 못한 연속
+pass 수"를 큐 옆 `runtime-wake-progress.json`에 둔다. 최저치를 갱신한 pass는
+그 수를 0으로 되돌리므로 계속 줄어드는 backlog는 크기와 무관하게 무집계로
+이어진다. 줄었다가 되돌아오는 backlog가 연속 120회
+(`COMPILE_PROGRESS_STREAK_CAP`)를 넘으면 그 뒤는 집계되는 재시도이고 기존
+retry cap을 따른다. backlog를 싣지 않는 worker의 답은 매 pass를 센다. 다른
+결과가 나오면 기록을 지운다. 무진척 pending과 실제 실패는 기존 retry cap을
+따른다. wake kind·저장 형식은 그대로이며, 이 detail을 모르는 구 worker는
+기존 실패 집계 규칙으로 처리한다.
 
 wake 이벤트의 `outcome`은 dispatcher(`memvane/app/runtime_dispatch.py`)가 정한다.
 다음 pass로 일을 넘긴 정상 handoff는 `progress`다: `laya-sync`의

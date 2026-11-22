@@ -353,7 +353,7 @@ def drain(queue,*,execute,on_drop=None,on_stall=None,ready=None,clock=time.monot
                        and error.code in wake_policy.UNCOUNTED_DISPATCH_REASONS)
             waiting=_observe_preparing(queue.root,row,wall()) if preparing else None
             progressing=wake_policy.compile_progress(row['kind'],error)
-            passes=_observe_missing(queue.root,row,wall(),PROGRESS_FILE)[1] if progressing else None
+            passes=_observe_progress(queue.root,row,wall(),getattr(error,'backlog',None)) if progressing else None
             with queue.connect() as db:
                 step=wake_policy.settle(row['attempts'],done=done,error=error,now=wall(),kind=row['kind'],
                                         missing=streak,preparing=waiting and waiting[:2],
@@ -424,6 +424,30 @@ def _observe_missing(root,row,now,name=MISSING_FILE):
     _record_tail(root/name,row['id'],{'at':first,'seen':seen,'target':row['target']},
                  limit=MAX_WAKES)
     return first,seen
+
+
+def _observe_progress(root,row,now,backlog):
+    """Consecutive ``compile_progress`` passes of this wake that did not lower its backlog floor.
+
+    ``backlog`` is what the pass left to work off (None from a worker that
+    does not report it: every such pass counts). A pass that leaves less than
+    any pass of the streak before it sets the floor and starts the count
+    over, so a backlog that keeps shrinking never reaches the cap, whatever
+    its size; one that is worked off and put back does.
+    """
+    entry=_read_map(root/PROGRESS_FILE).get(row['id'])
+    first,seen,floor=now,0,None
+    if (isinstance(entry,dict) and entry.get('target')==row['target']
+            and type(entry.get('at')) in (int,float) and math.isfinite(entry['at'])
+            and entry['at']<=now and type(entry.get('seen')) is int and entry['seen']>=0):
+        first,seen=entry['at'],entry['seen']
+        floor=entry['floor'] if type(entry.get('floor')) is int and entry['floor']>=0 else None
+    known=type(backlog) is int and backlog>=0
+    if known and (floor is None or backlog<floor):seen,floor=0,backlog
+    else:seen+=1
+    _record_tail(root/PROGRESS_FILE,row['id'],{'at':first,'seen':seen,'target':row['target'],
+                 **({'floor':floor} if floor is not None else {})},limit=MAX_WAKES)
+    return seen
 
 
 def _observe_preparing(root,row,now):

@@ -15,7 +15,8 @@ keeps reading the event as unresolved.
 The record is one small JSON map beside the ledger. An entry counts only while
 its event id is the source's latest unresolved one and the source content is
 still the settled one, so a new edit (a new event) and a change of bytes
-without an event are both attempted again. A missing or unreadable file means
+without an event are both attempted again. An attempt that ended on an outage
+(``EXPIRING_REASONS``) is settled for a day only. A missing or unreadable file means
 "nothing settled": the cost is one more attempt, never a skipped one.
 """
 from __future__ import annotations
@@ -34,6 +35,11 @@ SETTLED_NAME = 'source-refresh-settled.json'
 _SHA = re.compile(r'[0-9a-f]{64}\Z')
 _MAX_BYTES = 4 * 1024 * 1024
 _REASON_BYTES = 80
+# Attempts that ended on an outage, not on the content: every CLI of a job with
+# no known engine failed (not installed, could not run, timed out). Such a
+# settlement holds for a day; then the event is attempted once more.
+EXPIRING_REASONS = frozenset(('unknown_host_exhausted',))
+EXPIRY_SECONDS = 24 * 3600
 
 
 def _path(root):
@@ -78,8 +84,21 @@ def _current_sha(root, source_path):
     return snapshot.get('sha256') if isinstance(snapshot, dict) else None
 
 
-def _holds(root, pending, entry):
+def _expired(entry, now):
+    """An outage settlement older than a day (or with no readable time) no longer holds."""
+    if entry.get('reason') not in EXPIRING_REASONS:
+        return False
+    try:
+        settled = datetime.fromisoformat(str(entry.get('ts')).replace('Z', '+00:00'))
+        age = (now - settled).total_seconds()
+    except (ValueError, TypeError):
+        return True
+    return not 0 <= age < EXPIRY_SECONDS
+
+
+def _holds(root, pending, entry, now):
     return (isinstance(entry, dict) and entry.get('sourcePath') == pending.get('sourcePath')
+            and not _expired(entry, now)
             and entry.get('sourceSha256') == _current_sha(root, pending['sourcePath']))
 
 
@@ -92,8 +111,9 @@ def unsettled(root, pendings):
     stored = _read(path) if path is not None else {}
     if not stored:
         return pendings
+    now = datetime.now(timezone.utc)
     return [pending for pending in pendings
-            if not _holds(root, pending, stored.get(pending.get('eventId')))]
+            if not _holds(root, pending, stored.get(pending.get('eventId')), now)]
 
 
 def settle(root, pending, source_sha256, reason) -> bool:

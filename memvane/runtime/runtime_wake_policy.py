@@ -46,9 +46,11 @@ RETRY_CAPPED_KINDS = frozenset(('laya-sync', 'laya-compile'))
 MISSING_DROP_SECS = 86400
 MISSING_DROP_MIN_OBSERVATIONS = 3
 # A compile pass that worked part of its backlog off comes back in 30 s without
-# counting an attempt. That many such passes in a row (about an hour) is either
-# a backlog of more than a thousand jobs or work that keeps being put back; from
-# then on the retries count, so the backoff and RETRY_CAP_ATTEMPTS bound it.
+# counting an attempt. A pass that left less than any pass before it starts
+# the streak over (``runtime_work._observe_progress``), so a backlog that keeps
+# shrinking never gets here. That many passes in a row without a new low is
+# work that keeps being put back; from then on the retries count, so the
+# backoff and RETRY_CAP_ATTEMPTS bound it.
 COMPILE_PROGRESS_STREAK_CAP = 120
 # Reason recorded when a handler returns falsy without raising.
 NOT_DONE_REASON = 'pending'
@@ -165,8 +167,8 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
     preparing streak. Once it spans ``PREPARING_STALL_SECS`` the wait retries
     at ``RETRY_MAX_SECS`` and, unless ``reported``, the step carries
     ``stalled`` so the caller reports the streak once. It is never dropped.
-    ``progress`` is the number of consecutive compile passes of this wake that
-    answered ``compile_progress``, this one included. Past
+    ``progress`` is the number of consecutive ``compile_progress`` passes of
+    this wake that did not lower its backlog floor, this one included. Past
     ``COMPILE_PROGRESS_STREAK_CAP`` the retry is counted like any failure.
     """
     if done and error is None:

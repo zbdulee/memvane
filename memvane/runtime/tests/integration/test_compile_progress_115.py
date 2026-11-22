@@ -126,3 +126,49 @@ class ProductiveCompileWake(FixtureCase):
                 error = policy.DispatchFailure('target_deferred', detail=detail)
                 step = policy.settle(143, done=False, now=1000, kind=kind, error=error)
                 self.assertEqual(step.get('drop'), 'retry_cap')
+
+
+class ShrinkingBacklog(ProductiveCompileWake):
+    """The streak counts only passes that did not leave less than any pass before them."""
+
+    def passes(self, backlogs, wall=1000):
+        """Run one pass per backlog value; the rows after each and the drops."""
+        drops, rows = [], []
+        for backlog in backlogs:
+            def execute(row, backlog=backlog):
+                error = policy.DispatchFailure('target_deferred', detail='deferred:pending:compile_progress')
+                error.backlog = backlog
+                raise error
+            self.run_once(execute, wall, drops)
+            row = self.queue.pending()[0]
+            rows.append((row['attempts'], row['due'] - wall))
+            wall = row['due']
+        return rows, drops
+
+    def test_a_backlog_of_three_thousand_rows_that_keeps_shrinking_is_never_counted(self):
+        self.queue.put('laya-compile', self.target, now=0)
+        rows, drops = self.passes(range(2990, -1, -10))
+        self.assertEqual(len(rows), 300)
+        self.assertEqual(set(rows), {(0, 30)})
+        self.assertEqual((drops, self.streak()), ([], [0]))
+
+    def test_a_backlog_that_is_put_back_reaches_the_cap(self):
+        self.queue.put('laya-compile', self.target, now=0)
+        cap = policy.COMPILE_PROGRESS_STREAK_CAP
+        # One new low, then the same amount comes back every pass.
+        rows, _drops = self.passes([50] + [60, 55] * (cap // 2))
+        self.assertEqual(set(rows), {(0, 30)})
+        self.assertEqual(self.streak(), [cap])
+        rows, _drops = self.passes([60], wall=10 ** 6)
+        self.assertEqual(rows, [(1, policy.retry_delay(0))])
+        # A new low after that starts the free streak over; the counted attempt stays.
+        rows, _drops = self.passes([49], wall=2 * 10 ** 6)
+        self.assertEqual((rows, self.streak()), ([(1, 30)], [0]))
+
+    def test_a_pass_without_a_backlog_or_with_an_odd_one_counts(self):
+        self.queue.put('laya-compile', self.target, now=0)
+        rows, _drops = self.passes([40, None, 'many', -1, True, 40, 41])
+        self.assertEqual(set(rows), {(0, 30)})
+        self.assertEqual(self.streak(), [6])
+        self.passes([39], wall=10 ** 6)
+        self.assertEqual(self.streak(), [0])
