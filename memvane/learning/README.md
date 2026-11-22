@@ -195,7 +195,12 @@ teacher는 학습 worker에서만 돈다(`general_teacher.process_pending_defaul
 전송 전 guard의 `ResourceDeferred`와 전송 전 시스템 압박(`gold_system_pressure`)은 본문 없이
 `deferred`로 끝내며 `deferred`·`host` 대기는 시도 횟수를 올리지 않는다. 동의 파일을 끝까지
 읽지 못한 I/O 오류(파일 없음·link·권한 오류 밖)는 철회가 아니라
-`ResourceDeferred`(`teacher_consent_unreadable`)이므로 보관 답을 닫지 않는다.
+`ResourceDeferred`(`teacher_consent_unreadable`)이므로 보관 답을 닫지 않는다. 그런 pass마다
+`teacher-host-state.json`의 `consent.unreadable`이 1씩 늘고(`learning.teacher` `deferred`의
+`consentUnreadable`) 파일을 읽은 pass가 0으로 되돌린다. 연속 5회부터 SessionStart가 7일에 한 번
+라벨링이 멈췄다고 알린다. pass 이벤트는 `preparedHosts`(이 pass가 CLI를 띄운 host 수)와
+`preCallMs`(pass 시작부터 첫 전송 전 자원 판정까지)를 싣고, worker 종료로 끊긴 호출의 사례를 닫은
+pass는 `pending_review` `interrupted_external_attempt`와 그 `count`를 남긴다.
 응답 뒤 guard의 `ResourceDeferred`는 사례를 `first_done`, ledger를
 `answer_parked`로 보관하고(`learning.teacher` `parked`), 다음 pass 맨 앞(빈 큐 조기 반환 전)에서
 현재 동의·활성·불변·payload 해시·`admitted_one`·보관 답 해시가 맞으면 호출 없이 gold로

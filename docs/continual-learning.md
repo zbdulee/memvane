@@ -454,7 +454,15 @@ checks do not count.
   to `queued`) without consuming a retry attempt. A consent file read that an
   I/O error cut short (anything but a missing file, a link or a permission
   error) is such a `ResourceDeferred` (`teacher_consent_unreadable`), not a
-  withdrawal, so kept answers stay. A post-send `ResourceDeferred`
+  withdrawal, so kept answers stay. Each such pass adds one to
+  `consent.unreadable` in `teacher-host-state.json` (`learning.teacher`
+  `deferred` with `consentUnreadable`) and a pass that reads the file clears
+  it; at five in a row a SessionStart says once in seven days that labelling
+  is stopped. A pass event carries `preparedHosts` (hosts whose CLI the pass
+  started) and `preCallMs` (how long after the pass began the first pre-send
+  resource check ran), and a pass that finds a call cut short by a worker exit
+  reports the closed cases as `pending_review` `interrupted_external_attempt`
+  with their `count`. A post-send `ResourceDeferred`
   during the commit scope check keeps the case as `first_done` with the ledger
   at `answer_parked` (`learning.teacher` `parked` with usage). The next pass
   commits kept answers at the start (before the empty-queue exit) without a
