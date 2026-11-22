@@ -546,6 +546,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/learning/context_learning/state_model.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/learning/context_learning/general_teacher.py": {
       "context": "learning",
       "layer": "adapter",
