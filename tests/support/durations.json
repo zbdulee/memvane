@@ -148,7 +148,7 @@
  "memvane/provider/tests/integration/test_local_provider.py": 1.1,
  "memvane/provider/tests/integration/test_new_machine.py": 0.2,
  "memvane/provider/tests/integration/test_node_discovery.py": 0.1,
- "memvane/provider/tests/integration/test_query_embed_child.py": 0.2,
+ "memvane/provider/tests/integration/test_query_vectors.py": 0.2,
  "memvane/provider/tests/integration/test_runtime_durability.py": 0.2,
  "memvane/provider/tests/integration/test_runtime_fixture_safety.py": 0.1,
  "memvane/provider/tests/integration/test_runtime_generation_review.py": 0.6,

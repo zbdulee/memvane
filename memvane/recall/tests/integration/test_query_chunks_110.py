@@ -29,17 +29,15 @@ class LongPromptRecall(RecallInstallCase):
         self.provider.admit_queries()
 
     def recall_counted(self, prompt):
-        """``(context, event, embedding children, provider wakes)`` of one recall."""
-        from memvane.provider.api import query_embed_child_argv
-        real, child = reader_dispatch.subprocess.Popen, query_embed_child_argv()
-        # ``subprocess`` is one module: the stand-in sees every child of the recall (git too).
-        with mock.patch.object(reader_dispatch.subprocess, 'Popen', side_effect=real) as popen, \
+        """``(context, event, round trips of the query path, provider wakes)`` of one recall."""
+        from memvane.provider import api as provider_api
+        real = provider_api.query_vectors
+        with mock.patch.object(provider_api, 'query_vectors', side_effect=real) as asked, \
                 mock.patch('memvane.recall.recall_scope._wake_provider') as wake:
             context, _err, event = self.recall(prompt)
-        children = sum(call.args[0] == child for call in popen.call_args_list)
-        return context, event, children, wake.call_count
+        return context, event, asked.call_count, wake.call_count
 
-    def test_a_twelve_thousand_character_prompt_asks_four_windows_in_one_child(self):
+    def test_a_twelve_thousand_character_prompt_asks_four_windows_in_one_request_of_the_query_path(self):
         self.provider.bound_queries(1500)
         context, event, children, wakes = self.recall_counted(long_prompt(12000))
         self.assertEqual(self.provider.query_lengths(), [1200, 1200, 1200, 1200])
@@ -55,6 +53,24 @@ class LongPromptRecall(RecallInstallCase):
         self.assertTrue(all(value is None or -1.0 <= value <= 1.0001 for value in event['injectedCosine']))
         self.assertTrue(any(value is not None for value in event['injectedCosine']))
         self.assertNotIn('semanticCosine', event)
+
+    def test_every_window_vector_reaches_the_search_and_a_card_keeps_its_best(self):
+        # The three windows asked first get a vector orthogonal to every card; only the last one
+        # asked (the prompt's first window) gets the cards' own vector.
+        self.provider.bound_queries(None)
+        self.provider.vectors_by_prefix({'y': [0.0, 1.0]})
+        text = list(long_prompt(12000))
+        for start in (10800, 9600, 8400):
+            text[start] = 'y'
+        context, event, asked, _wakes = self.recall_counted(''.join(text))
+        self.assertEqual((asked, event['semantic'], event['queryChunks']), (1, 'complete', 4), event)
+        scored = [value for value in event['injectedCosine'] if value is not None]
+        self.assertTrue(scored and all(value > 0.999 for value in scored), event['injectedCosine'])
+        # Asked with the orthogonal vector alone, the same cards score nothing.
+        self.provider.vectors_by_prefix({'y': [0.0, 1.0], 'w': [0.0, 1.0]})
+        _context, alone, _asked, _wakes = self.recall_counted('w' + PROMPT)
+        self.assertTrue(all(value is None or value < 0.001 for value in alone.get('injectedCosine', [])), alone)
+        self.assertEqual(alone['queryChunks'], 1)
 
     def test_a_five_thousand_character_prompt_that_fails_whole_goes_on_as_windows(self):
         self.provider.bound_queries(1500)

@@ -167,20 +167,22 @@ class Provider(FixtureCase):
             self.assertEqual(provider.current().query_admission, 'admit' if admitted else 'refuse')
         self.assertEqual(refused, ['fixture_lexical_recall', None, 'fixture_lexical_recall'])
 
-    def test_the_query_child_answers_the_published_query_embedding(self):
-        from memvane.provider.api import is_reviewed_provider, query_embed_child_argv
+    def test_the_query_path_answers_the_published_query_embedding(self):
+        from memvane.kernel.errors import IndexContractError
+        from memvane.provider.api import is_reviewed_provider, query_vectors
         from tests.support.fake_provider import FixtureProvider
         provider = FixtureProvider(query_embedding='provider_unavailable').install(self)
         manifest = {'approvedProviderId': 'synthetic-provider', 'dimension': 2}
-        self.assertTrue(is_reviewed_provider(provider.reviewed_provider(manifest)))
+        handle = provider.reviewed_provider(manifest)
+        self.assertTrue(is_reviewed_provider(handle))
         answers = []
         for embedding in ('provider_unavailable', 'vector'):
             provider.answer_queries(embedding)
-            result = subprocess.run(query_embed_child_argv(), text=True, capture_output=True, timeout=60,
-                                    input=json.dumps({'manifest': manifest, 'prompt': 'q', 'timeout': 1,
-                                                      'allowed': ['provider_unavailable']}))
-            answers.append((result.returncode, json.loads(result.stdout)))
-        self.assertEqual(answers, [(0, {'error': 'provider_unavailable'}), (0, {'vector': [1.0, 0.0]})])
+            try:
+                answers.append(query_vectors(handle, 'q', 1, chunks=False, allowed=frozenset(('provider_unavailable',))))
+            except IndexContractError as exc:
+                answers.append(str(exc))
+        self.assertEqual(answers, ['provider_unavailable', ([[1.0, 0.0]], 1)])
 
 
 class Builders(FixtureCase):

@@ -1,7 +1,7 @@
 """The window rule of a long query: ``embed_chunks`` with a recording ``embed``."""
 import unittest
 
-from memvane.provider import query_embed_child as child
+from memvane.provider import query_vectors as child
 
 
 class Windows(unittest.TestCase):

@@ -3,9 +3,7 @@ import copy
 from contextlib import contextmanager
 from contextvars import ContextVar
 import math
-import json
 from pathlib import Path
-import subprocess
 import time
 
 from memvane.journal import api as journal
@@ -111,48 +109,22 @@ def _vector_proof(authority,snapshot,decision,provider,deadline):
 
 
 def _provider_vector(provider,prompt,budget,chunks=True):
-    """``(vectors, requested)`` from the existing provider in a child with an absolute completion bound.
+    """``(vectors, requested)`` from the existing provider, asked in this process with an absolute bound.
 
-    A long prompt comes back as up to four window vectors (``query_embed_child.embed_chunks``).
+    A long prompt comes back as up to four window vectors (``provider.api.query_vectors``).
     """
     from memvane.kernel.errors import IndexContractError
-    from memvane.provider.api import query_embed_child_argv
-    deadline=time.monotonic()+budget
-    payload=json.dumps({'manifest':provider.manifest,'prompt':prompt,'timeout':budget,'chunks':bool(chunks),
-                        'allowed':sorted(_PROVIDER_ERRORS)},
-                       ensure_ascii=True,separators=(',',':'))
-    child=subprocess.Popen(query_embed_child_argv(),
-                           stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    from memvane.provider.api import query_vectors
     try:
-        remaining=deadline-time.monotonic()
-        if remaining<=0:raise subprocess.TimeoutExpired(child.args,budget)
-        out,_err=child.communicate(payload,timeout=remaining)
-    except BaseException as exc:
-        if child.poll() is None:
-            try:child.kill()
-            except ProcessLookupError:pass
-        child.communicate()
-        if isinstance(exc,subprocess.TimeoutExpired):
-            raise IndexContractError('provider_unavailable') from exc
+        vectors,requested=query_vectors(provider,prompt,budget,chunks=bool(chunks),allowed=_PROVIDER_ERRORS)
+    except IndexContractError:
         raise
-    if child.returncode!=0:
-        raise IndexContractError('provider_process_failed')
-    if len(out)>1000000:
+    except Exception as exc:  # noqa: BLE001 - whatever the round trip raised, the recall goes on without a vector
+        raise IndexContractError('provider_process_failed') from exc
+    if (type(vectors) is not list or not 1<=len(vectors)<=4 or type(requested) is not int
+            or not len(vectors)<=requested<=64):
         raise IndexContractError('provider_result_invalid')
-    try:
-        result=json.loads(out)
-        if isinstance(result,dict) and set(result)=={'vector'}:
-            return [result['vector']],1
-        if (isinstance(result,dict) and set(result)=={'vectors','requested'} and type(result['vectors']) is list
-                and 1<=len(result['vectors'])<=4 and type(result['requested']) is int
-                and len(result['vectors'])<=result['requested']<=64):
-            return result['vectors'],result['requested']
-        if isinstance(result,dict) and set(result)=={'error'} and result['error'] in _PROVIDER_ERRORS:
-            raise IndexContractError(result['error'])
-    except (TypeError,ValueError) as exc:
-        if isinstance(exc,IndexContractError):raise
-        raise IndexContractError('provider_result_invalid') from exc
-    raise IndexContractError('provider_result_invalid')
+    return vectors,requested
 
 
 def _vector_key(vector):

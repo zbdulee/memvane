@@ -912,7 +912,7 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/provider/query_embed_child.py": {
+    "memvane/provider/query_vectors.py": {
       "context": "provider",
       "layer": "adapter",
       "pinned": false

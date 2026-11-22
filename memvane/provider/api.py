@@ -116,11 +116,14 @@ def is_reviewed_provider(value):
     return port is not None and port.is_handle(value)
 
 
-def query_embed_child_argv():
-    """argv of the child embedding one query: ``{manifest, prompt, timeout, allowed}`` JSON on
-    stdin, ``{"vector": [...]}`` or ``{"error": code}`` JSON on stdout."""
-    from memvane.provider.query_embed_child import child_argv as implementation
-    return implementation()
+def query_vectors(provider, prompt, budget, *, chunks, allowed):
+    """``(vectors, requested)`` of one recall's prompt from the reviewed ``provider`` within ``budget`` seconds.
+
+    Asked from the calling process, with no child; a long prompt comes back as
+    up to four window vectors when ``chunks``. Raises ``IndexContractError``.
+    """
+    from memvane.provider.query_vectors import query_vectors as implementation
+    return implementation(provider, prompt, budget, chunks=chunks, allowed=allowed)
 
 
 def default_embed_model_uri():
