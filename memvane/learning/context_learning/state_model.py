@@ -364,7 +364,137 @@ M8 = Machine(
     where={'launch': _SHARED + 'launch', 'third_start': _SHARED + '_full_step', 'step': _SHARED + '_full_step',
            'child_result': _SHARED + '_settle_owned', 'child_retry_result': _SHARED + '_settle_owned'})
 
-MACHINES = (M1, M1U, M1T, M2, M3, M4, M5, M6, M7, M8, M15)
+# M9: the ``learning`` wake row. A request while the row runs raises its revision, and
+# the acknowledgement of the older revision leaves it pending. A pass that was not done
+# counts an attempt and backs off (5 s doubling to 300 s); the 288th in a row drops the
+# row with ``retry_cap``. A worker that starts finds a row its predecessor left running.
+_WAKES = 'memvane.runtime.runtime_work.'
+M9 = Machine(
+    'M9', 'learning wake', store='runtime-wakes.sqlite3 (kind learning)',
+    lock='runtime-worker.lock', owner='hook and worker requests (offer), runtime dispatcher (drain)',
+    states=(ABSENT, 'pending', 'running'),
+    terminal=(),
+    transitions={
+        (ABSENT, 'request'): 'pending',
+        ('pending', 'claim'): 'running',
+        ('running', 'done'): ABSENT,
+        ('running', 'not_done'): 'pending',
+        ('running', 'retry_cap'): ABSENT,
+        ('running', 'worker_restart'): 'pending',
+    },
+    where={'request': _WAKES + 'request', 'claim': _WAKES + 'drain', 'done': _WAKES + 'drain',
+           'not_done': _WAKES + 'drain', 'retry_cap': 'memvane.runtime.runtime_wake_policy.settle',
+           'worker_restart': _WAKES + 'drain'})
+
+# M10: the selector maintenance request of one install. The states are the shapes of the
+# file: ``requested`` (``retryAfterNs`` 0: an attempt without a result yet, or a completed
+# one), ``backoff`` (``retryAfterNs`` set) and ``busy_retry`` (a short retry after another
+# install held the prepare lease, at most 30 in a row). A request before the due time
+# and a second result of the same request change nothing; a completed run clears the
+# failure count and stays ``requested``.
+_MAINTENANCE = 'memvane.learning.selector_maintenance.'
+M10 = Machine(
+    'M10', 'selector request', store='selector-heal-request.json',
+    lock='sync owner lock', owner='session, sync and wake requests; the maintenance child (result)',
+    states=(ABSENT, 'requested', 'backoff', 'busy_retry'),
+    terminal=(),
+    transitions={
+        **{(state, 'request_due'): 'requested' for state in (ABSENT, 'backoff', 'busy_retry')},
+        **{(state, 'spawn_failed'): 'backoff' for state in (ABSENT, 'requested', 'busy_retry')},
+        ('requested', 'failed'): 'backoff',
+        ('requested', 'busy'): 'busy_retry',
+    },
+    where={'request_due': _MAINTENANCE + '_request_owned', 'spawn_failed': _MAINTENANCE + '_request_owned',
+           'failed': _MAINTENANCE + '_record_request_result', 'busy': _MAINTENANCE + '_record_request_result'})
+
+# M12: the setup journal of an enrollment. ``activate`` writes the configuration of a
+# namespace that has none (no journal, or a recovered one) and refuses any other state;
+# ``recover`` restores the bytes the backup holds and can be entered again at any point.
+# The default enrollment recovers an unfinished journal before it activates anew.
+_SETUP = 'memvane.learning.project_learning_setup.'
+_RECOVERY = 'memvane.learning.project_learning_recovery.'
+M12 = Machine(
+    'M12', 'enrollment setup', store='project-learning-setup.json (phase)',
+    lock='namespace lock, settings lock',
+    owner='default enrollment and the setup request (activate), recovery (recover)',
+    states=(ABSENT, 'prepared', 'installing', 'activated', 'recovering', 'recovered'),
+    terminal=(),
+    transitions={
+        **{(state, 'activate'): 'activated' for state in (ABSENT, 'recovered')},
+        **{(state, 'activate_stops_prepared'): 'prepared' for state in (ABSENT, 'recovered')},
+        **{(state, 'activate_stops_installing'): 'installing' for state in (ABSENT, 'recovered')},
+        **{(state, 'recover'): 'recovered' for state in ('prepared', 'installing', 'activated', 'recovering')},
+        **{(state, 'recover_stops'): 'recovering' for state in ('prepared', 'installing', 'activated')},
+    },
+    where={'activate': _SETUP + 'activate', 'activate_stops_prepared': _SETUP + 'activate',
+           'activate_stops_installing': _SETUP + 'activate', 'recover': _RECOVERY + 'recover',
+           'recover_stops': _RECOVERY + 'recover'})
+
+# M13: the renewal of a default enrollment's approval files to the installed bundle. The
+# intent holds the old and the new bytes of every target and fences the consumers
+# (``renewal_pending``) while it exists. A pass that finds an intent finishes it when the
+# target is still the recorded one and otherwise restores the old bytes, then plans anew.
+# A refusal (changed inputs, a mixed state, a newer owner) writes nothing.
+_RENEWAL = 'memvane.learning.default_renewal.'
+M13 = Machine(
+    'M13', 'approval renewal', store='project-learning-renewal.json',
+    lock='prepare lease, namespace lock, settings lock, learning-profile.lock',
+    owner='selector maintenance (renew)',
+    states=(ABSENT, 'intent', 'rolling_back'),
+    terminal=(),
+    transitions={
+        (ABSENT, 'publish_interrupted'): 'intent',
+        ('intent', 'rollback_interrupted'): 'rolling_back',
+        ('intent', 'renew'): ABSENT,
+        ('rolling_back', 'renew'): ABSENT,
+    },
+    where={'publish_interrupted': _RENEWAL + '_publish', 'rollback_interrupted': _RENEWAL + '_restore',
+           'renew': _RENEWAL + 'renew'})
+
+# M14: the switch of a default-local enrollment to the default teacher. Like M13 an intent
+# with both byte sets fences the consumers (``teacher_enable_pending``). A pass finishes
+# the intent when its inputs still hold and rolls it back otherwise; files that are
+# neither the old nor the new bytes stop every writer (``teacher_enable_mixed_state``)
+# until the explicit restore. Five failures with one reason on one version stop requests.
+_ENABLE = 'memvane.learning.default_teacher_enable.'
+M14 = Machine(
+    'M14', 'default teacher enable', store='project-teacher-enable.json',
+    lock='namespace lock, settings lock, learning-profile.lock, project-worker.lock',
+    owner='selector maintenance (run), the restore request',
+    states=(ABSENT, 'intent', 'rolling_back'),
+    terminal=(),
+    transitions={
+        (ABSENT, 'forward_interrupted'): 'intent',
+        ('intent', 'rollback_interrupted'): 'rolling_back',
+        ('intent', 'run'): ABSENT,
+        ('rolling_back', 'run'): ABSENT,
+        ('intent', 'restore'): ABSENT,
+        ('rolling_back', 'restore'): ABSENT,
+    },
+    where={'forward_interrupted': _ENABLE + '_forward', 'rollback_interrupted': _ENABLE + '_rollback',
+           'run': _ENABLE + 'run', 'restore': _ENABLE + 'restore'})
+
+# M16: the warm-up of one selector generation in the running inference service. The
+# marker records the key (checkpoint, input view, receipt and the running service) of
+# the last successful warm-up; a new checkpoint or receipt, or a restarted service, makes
+# it stale. A warm-up that is deferred, fails, or finds another worker holding the lock
+# writes nothing.
+_HEAL = 'memvane.learning.context_learning.selector_heal.'
+M16 = Machine(
+    'M16', 'selector warm-up', store='selector-warm.json',
+    lock='selector-warm.lock', owner='selector maintenance and the default enrollment (warm)',
+    states=(ABSENT, 'warm', 'stale'),
+    terminal=(),
+    transitions={
+        (ABSENT, 'warm'): 'warm',
+        ('stale', 'warm'): 'warm',
+        ('warm', 'new_checkpoint'): 'stale',
+        ('warm', 'service_restart'): 'stale',
+    },
+    where={'warm': _HEAL + 'warm', 'new_checkpoint': _APPLY,
+           'service_restart': 'memvane.learning.context_learning.inference_service'})
+
+MACHINES = (M1, M1U, M1T, M2, M3, M4, M5, M6, M7, M8, M9, M10, M12, M13, M14, M15, M16)
 
 # Every status a worker pass can end with (the cycle step's result is the pass result),
 # as (class, the event row that says so, what the pass leaves). The classes:
@@ -407,4 +537,29 @@ CYCLE_RESULTS = {
     'cohort_source_revoked': ('held', _CYCLE + ' held', 'more than 2,000 admitted rows'),
     'runtime_approval_required': ('held', _CYCLE + ' held', 'no valid runtime approval'),
     'synthetic_training_budget_exhausted': ('held', _CYCLE + ' held', 'the synthetic QA profile used its budget'),
+}
+
+# M11: one selector maintenance pass has no durable state of its own. Every way it ends,
+# as (what the request file gets, the ``learning.selector.maintenance`` outcome and
+# reason, the stage the event names). ``incomplete`` results carry their own name in the
+# event's ``incomplete`` field. A raised failure names the stage it was in. The request
+# settlements are M10's: ``completed`` clears the counts, ``failed`` and ``deferred`` back
+# off, ``busy`` is the short retry, and ``kept`` writes a backoff without a wake re-offer.
+_INCOMPLETE = ('deferred', 'deferred', 'maintenance_incomplete')
+MAINTENANCE_RESULTS = {
+    'completed': ('completed', 'completed', None, None),
+    'learning_runtime_pending': ('kept', 'deferred', 'learning_runtime_pending', None),
+    'version_invalid': (*_INCOMPLETE, 'proof'),
+    'prepare_status': (*_INCOMPLETE, 'prepare'),
+    'renewal_refused': (*_INCOMPLETE, 'profile'),
+    'teacher_enable_pending': (*_INCOMPLETE, 'profile'),
+    'selector_state_missing': (*_INCOMPLETE, 'profile'),
+    'heal_status': (*_INCOMPLETE, 'heal'),
+    'warm_status': (*_INCOMPLETE, 'warm'),
+    'publish_owner_busy': (*_INCOMPLETE, 'publish'),
+    'install_changed': (*_INCOMPLETE, 'publish'),
+    'learning_prepare_busy': ('busy', 'deferred', 'learning_prepare_busy', 'the stage it was in'),
+    'resource_deferred': ('deferred', 'deferred', 'the fixed code, else resource_deferred', 'the stage it was in'),
+    'maintenance_failed': ('failed', 'failed', 'the fixed code, else maintenance_failed', 'the stage it was in'),
+    'maintenance_timeout': ('failed', 'failed', 'maintenance_timeout', 'the stage it was in'),
 }

@@ -259,6 +259,93 @@ teacher)만 담는다.
 | `settled` | `step` | `acknowledged` | `shared._full_step` |
 | `acknowledged` | `launch` | `open` | `shared.launch` |
 
+## M9 learning wake
+
+- 저장 위치: runtime-wakes.sqlite3 (kind learning)
+- lock: runtime-worker.lock
+- 쓰는 주체: hook and worker requests (offer), runtime dispatcher (drain)
+- 상태: `(absent)`, `pending`, `running`
+
+| 상태 | 사건 | 다음 | 쓰는 곳 |
+|---|---|---|---|
+| `(absent)` | `request` | `pending` | `memvane.runtime.runtime_work.request` |
+| `pending` | `claim` | `running` | `memvane.runtime.runtime_work.drain` |
+| `running` | `done` | `(absent)` | `memvane.runtime.runtime_work.drain` |
+| `running` | `not_done` | `pending` | `memvane.runtime.runtime_work.drain` |
+| `running` | `retry_cap` | `(absent)` | `memvane.runtime.runtime_wake_policy.settle` |
+| `running` | `worker_restart` | `pending` | `memvane.runtime.runtime_work.drain` |
+
+## M10 selector request
+
+- 저장 위치: selector-heal-request.json
+- lock: sync owner lock
+- 쓰는 주체: session, sync and wake requests; the maintenance child (result)
+- 상태: `(absent)`, `requested`, `backoff`, `busy_retry`
+
+| 상태 | 사건 | 다음 | 쓰는 곳 |
+|---|---|---|---|
+| `(absent)` | `request_due` | `requested` | `memvane.learning.selector_maintenance._request_owned` |
+| `(absent)` | `spawn_failed` | `backoff` | `memvane.learning.selector_maintenance._request_owned` |
+| `requested` | `busy` | `busy_retry` | `memvane.learning.selector_maintenance._record_request_result` |
+| `requested` | `failed` | `backoff` | `memvane.learning.selector_maintenance._record_request_result` |
+| `requested` | `spawn_failed` | `backoff` | `memvane.learning.selector_maintenance._request_owned` |
+| `backoff` | `request_due` | `requested` | `memvane.learning.selector_maintenance._request_owned` |
+| `busy_retry` | `request_due` | `requested` | `memvane.learning.selector_maintenance._request_owned` |
+| `busy_retry` | `spawn_failed` | `backoff` | `memvane.learning.selector_maintenance._request_owned` |
+
+## M12 enrollment setup
+
+- 저장 위치: project-learning-setup.json (phase)
+- lock: namespace lock, settings lock
+- 쓰는 주체: default enrollment and the setup request (activate), recovery (recover)
+- 상태: `(absent)`, `prepared`, `installing`, `activated`, `recovering`, `recovered`
+
+| 상태 | 사건 | 다음 | 쓰는 곳 |
+|---|---|---|---|
+| `(absent)` | `activate` | `activated` | `memvane.learning.project_learning_setup.activate` |
+| `(absent)` | `activate_stops_installing` | `installing` | `memvane.learning.project_learning_setup.activate` |
+| `(absent)` | `activate_stops_prepared` | `prepared` | `memvane.learning.project_learning_setup.activate` |
+| `prepared` | `recover` | `recovered` | `memvane.learning.project_learning_recovery.recover` |
+| `prepared` | `recover_stops` | `recovering` | `memvane.learning.project_learning_recovery.recover` |
+| `installing` | `recover` | `recovered` | `memvane.learning.project_learning_recovery.recover` |
+| `installing` | `recover_stops` | `recovering` | `memvane.learning.project_learning_recovery.recover` |
+| `activated` | `recover` | `recovered` | `memvane.learning.project_learning_recovery.recover` |
+| `activated` | `recover_stops` | `recovering` | `memvane.learning.project_learning_recovery.recover` |
+| `recovering` | `recover` | `recovered` | `memvane.learning.project_learning_recovery.recover` |
+| `recovered` | `activate` | `activated` | `memvane.learning.project_learning_setup.activate` |
+| `recovered` | `activate_stops_installing` | `installing` | `memvane.learning.project_learning_setup.activate` |
+| `recovered` | `activate_stops_prepared` | `prepared` | `memvane.learning.project_learning_setup.activate` |
+
+## M13 approval renewal
+
+- 저장 위치: project-learning-renewal.json
+- lock: prepare lease, namespace lock, settings lock, learning-profile.lock
+- 쓰는 주체: selector maintenance (renew)
+- 상태: `(absent)`, `intent`, `rolling_back`
+
+| 상태 | 사건 | 다음 | 쓰는 곳 |
+|---|---|---|---|
+| `(absent)` | `publish_interrupted` | `intent` | `memvane.learning.default_renewal._publish` |
+| `intent` | `renew` | `(absent)` | `memvane.learning.default_renewal.renew` |
+| `intent` | `rollback_interrupted` | `rolling_back` | `memvane.learning.default_renewal._restore` |
+| `rolling_back` | `renew` | `(absent)` | `memvane.learning.default_renewal.renew` |
+
+## M14 default teacher enable
+
+- 저장 위치: project-teacher-enable.json
+- lock: namespace lock, settings lock, learning-profile.lock, project-worker.lock
+- 쓰는 주체: selector maintenance (run), the restore request
+- 상태: `(absent)`, `intent`, `rolling_back`
+
+| 상태 | 사건 | 다음 | 쓰는 곳 |
+|---|---|---|---|
+| `(absent)` | `forward_interrupted` | `intent` | `memvane.learning.default_teacher_enable._forward` |
+| `intent` | `restore` | `(absent)` | `memvane.learning.default_teacher_enable.restore` |
+| `intent` | `rollback_interrupted` | `rolling_back` | `memvane.learning.default_teacher_enable._rollback` |
+| `intent` | `run` | `(absent)` | `memvane.learning.default_teacher_enable.run` |
+| `rolling_back` | `restore` | `(absent)` | `memvane.learning.default_teacher_enable.restore` |
+| `rolling_back` | `run` | `(absent)` | `memvane.learning.default_teacher_enable.run` |
+
 ## M15 teacher host
 
 - 저장 위치: teacher-host-state.json hosts.<host>
@@ -274,6 +361,20 @@ teacher)만 담는다.
 | `resting` | `host_ready` | `ready` | `default_teacher._default_pass` |
 | `provider_waiting` | `wait_expired` | `ready` | `teacher_state.host_waiting` |
 | `failing` | `wait_expired` | `ready` | `teacher_state.host_waiting` |
+
+## M16 selector warm-up
+
+- 저장 위치: selector-warm.json
+- lock: selector-warm.lock
+- 쓰는 주체: selector maintenance and the default enrollment (warm)
+- 상태: `(absent)`, `warm`, `stale`
+
+| 상태 | 사건 | 다음 | 쓰는 곳 |
+|---|---|---|---|
+| `(absent)` | `warm` | `warm` | `selector_heal.warm` |
+| `warm` | `new_checkpoint` | `stale` | `candidate_apply.apply_candidate` |
+| `warm` | `service_restart` | `stale` | `inference_service` |
+| `stale` | `warm` | `warm` | `selector_heal.warm` |
 
 ## worker pass의 결과 상태
 
@@ -312,3 +413,26 @@ pass의 결과는 cycle 단계의 결과다. 모든 결과 상태는 아래 다�
 | `cohort_source_revoked` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | more than 2,000 admitted rows |
 | `runtime_approval_required` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | no valid runtime approval |
 | `synthetic_training_budget_exhausted` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | the synthetic QA profile used its budget |
+
+## M11 selector 유지보수 pass의 결과
+
+유지보수 pass는 자기 내구 상태가 없다. 끝나는 모든 방식은 요청 파일(M10)의 정산과
+`learning.selector.maintenance` 행 하나로 남는다. 미완 결과는 그 행의 `incomplete`에 자기 이름을 싣는다.
+
+| 끝난 방식 | 요청 정산 | outcome | reason | stage |
+|---|---|---|---|---|
+| `completed` | 완료(횟수 0) | `completed` | — | — |
+| `learning_runtime_pending` | backoff, wake 재제안 없음 | `deferred` | learning_runtime_pending | — |
+| `version_invalid` | backoff(미룸) | `deferred` | maintenance_incomplete | proof |
+| `prepare_status` | backoff(미룸) | `deferred` | maintenance_incomplete | prepare |
+| `renewal_refused` | backoff(미룸) | `deferred` | maintenance_incomplete | profile |
+| `teacher_enable_pending` | backoff(미룸) | `deferred` | maintenance_incomplete | profile |
+| `selector_state_missing` | backoff(미룸) | `deferred` | maintenance_incomplete | profile |
+| `heal_status` | backoff(미룸) | `deferred` | maintenance_incomplete | heal |
+| `warm_status` | backoff(미룸) | `deferred` | maintenance_incomplete | warm |
+| `publish_owner_busy` | backoff(미룸) | `deferred` | maintenance_incomplete | publish |
+| `install_changed` | backoff(미룸) | `deferred` | maintenance_incomplete | publish |
+| `learning_prepare_busy` | 짧은 재시도 | `deferred` | learning_prepare_busy | the stage it was in |
+| `resource_deferred` | backoff(미룸) | `deferred` | the fixed code, else resource_deferred | the stage it was in |
+| `maintenance_failed` | backoff(실패) | `failed` | the fixed code, else maintenance_failed | the stage it was in |
+| `maintenance_timeout` | backoff(실패) | `failed` | maintenance_timeout | the stage it was in |

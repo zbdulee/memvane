@@ -7,6 +7,12 @@ base checkpoint 포인터는 `schema_version: 1`을 기록한다. 해당 키만 
 다른 값이 달라진 포인터는 거절한다. selector 재시도는 최소 10분 간격이며
 지속 실패 시 최대 1시간까지 지수 backoff를 적용한다. 자원 부족과
 시작 경로·권한·IO 실패는 별도 고정 사유 코드로 기록한다.
+유지보수 한 번의 전체 시간은 `MAINTENANCE_SECONDS`(1,800초)다. 넘으면 그 run은
+`maintenance_timeout` 실패로 끝나 요청이 backoff하고 준비 잠금을 반납한다.
+`learning` wake는 미완으로 끝난 pass가 연속 288회(약 24시간)면 `retry_cap`으로
+버려지고(`wake.drop`), 다음 hook의 요청이나 selector 재제안이 새 행을 만든다.
+유지보수가 끝나는 모든 방식과 요청·등록·갱신·teacher 전환·warm의 전이는
+`docs/dev/learning-state.md`의 M9~M16 표다.
 
 사용자 단위 준비 lock(`learning-prepare.lock`)을 다른 설치가 쥐고 있으면
 (`learning_prepare_busy`) 실패로 세지 않는다. 요청 행에 `busyRetries`를 올리고

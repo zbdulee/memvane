@@ -55,6 +55,14 @@ def render():
     for status, (kind, event, leaves) in state_model.CYCLE_RESULTS.items():
         lines.append('| `%s` | %s(%s) | %s | %s |' % (
             status, kind, kinds[kind], '`%s`' % event if event else '—', leaves))
+    settled = {'completed': '완료(횟수 0)', 'kept': 'backoff, wake 재제안 없음', 'deferred': 'backoff(미룸)',
+               'failed': 'backoff(실패)', 'busy': '짧은 재시도'}
+    lines += ['', '## M11 selector 유지보수 pass의 결과', '',
+              '유지보수 pass는 자기 내구 상태가 없다. 끝나는 모든 방식은 요청 파일(M10)의 정산과',
+              '`learning.selector.maintenance` 행 하나로 남는다. 미완 결과는 그 행의 `incomplete`에 자기 이름을 싣는다.', '',
+              '| 끝난 방식 | 요청 정산 | outcome | reason | stage |', '|---|---|---|---|---|']
+    for name, (request, outcome, reason, stage) in state_model.MAINTENANCE_RESULTS.items():
+        lines.append('| `%s` | %s | `%s` | %s | %s |' % (name, settled[request], outcome, reason or '—', stage or '—'))
     lines.append('')
     return '\n'.join(lines)
 

@@ -37,6 +37,13 @@ IDLE_WAIT_SECS = 5
 # failing attempts; the next sync/compile request creates a fresh row.
 RETRY_CAP_ATTEMPTS = 144
 RETRY_CAPPED_KINDS = frozenset(('laya-sync', 'laya-compile'))
+# A learning wake that was not done this many counted times in a row (about 24
+# hours at the 300 s ceiling: resources never ready, a selector request that
+# keeps waiting) is dropped the same way. The next hook launch or selector
+# re-offer creates a fresh row.
+LEARNING_RETRY_CAP_ATTEMPTS = 288
+RETRY_CAPS = {**{kind: RETRY_CAP_ATTEMPTS for kind in RETRY_CAPPED_KINDS},
+              'learning': LEARNING_RETRY_CAP_ATTEMPTS}
 # A project directory that is missing only proves it is gone once it stayed
 # missing across this long, from the first missing observation, and over this
 # many consecutive missing observations (an unmounted volume or a checkout
@@ -155,8 +162,8 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
     An owner that is still preparing is retried after a fixed delay without
     counting; the prior count from real failures is kept unchanged.
     drop: an ACK that is recorded as a drop. A handler's ``Dropped`` answer
-    (target gone) and a Laya wake whose counted failures reach
-    ``RETRY_CAP_ATTEMPTS`` are dropped; the cap is checked only here, after a
+    (target gone) and a wake whose counted failures reach its kind's cap
+    (``RETRY_CAPS``: Laya and learning wakes) are dropped; the cap is checked only here, after a
     real attempt, so an explicit re-request still runs once. A ``TargetMissing``
     failure does not count an attempt: ``missing`` is ``(first_seen,
     observations)`` of the consecutive missing streak including this one. It
@@ -209,7 +216,7 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
                     'drop': 'target_missing'}
         return {'ack': False, 'due': now + retry_delay(max(0, seen - 1)),
                 'reason': failure_reason(error), 'count': 0}
-    if kind in RETRY_CAPPED_KINDS and attempts + 1 >= RETRY_CAP_ATTEMPTS:
+    if kind in RETRY_CAPS and attempts + 1 >= RETRY_CAPS[kind]:
         return {'ack': True, 'due': now, 'reason': failure_reason(error), 'count': 1,
                 'drop': 'retry_cap'}
     return {'ack': False, 'due': now + retry_delay(attempts), 'reason': failure_reason(error),

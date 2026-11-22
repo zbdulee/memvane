@@ -223,7 +223,10 @@ after at least 3 consecutive missing observations spanning 24 hours from the
 first; any other outcome restarts the streak. Missing retries never count
 toward the retry cap. A wake whose counted failures reach
 `RETRY_CAP_ATTEMPTS` (144, about 12 hours at the 300-second ceiling) is dropped
-instead of retried; the next sync or compile request creates a fresh row. Both
+instead of retried; the next sync or compile request creates a fresh row. A
+`learning` wake is dropped the same way after `LEARNING_RETRY_CAP_ATTEMPTS`
+(288, about 24 hours) counted passes in a row that were not done; the next
+hook launch or selector re-offer creates a fresh row. Both kinds of drop
 are recorded as `wake.drop` (`reason` `target_missing` or `retry_cap`) in the
 private `runtime-wake-drops.json` beside the queue (newest 64), and a
 `retry_cap` drop of a still-routed project also in its install `events.jsonl`.

@@ -407,7 +407,7 @@ def _record_drop(root,row,step,error,now,*,on_drop=None):
         'target':row['target'],'at':now,'reason':reason,'attempts':row['attempts']+step['count'],
         'lastFailure':wake_policy.failure_reason(error) if error is not None else None},
         limit=DROP_DETAIL_MAX_ROWS)
-    if on_drop is not None and row['kind'] in ('laya-sync','laya-compile'):
+    if on_drop is not None and row['kind'] in wake_policy.RETRY_CAPS:
         try:
             on_drop(row['kind'],row['target'],reason=reason,attempts=row['attempts']+step['count'])
         except Exception:

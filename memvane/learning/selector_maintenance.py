@@ -17,6 +17,36 @@ REQUEST_FILE = 'selector-heal-request.json'
 BUSY_RETRY_SECONDS = 60
 BUSY_RETRY_LIMIT = 30
 PREPARE_BUSY = 'learning_prepare_busy'
+# The whole run of one maintenance child. Past it the run ends as a failure
+# (``maintenance_timeout``): the request backs off and the prepare lease, which
+# every install of the user waits on, is released.
+MAINTENANCE_SECONDS = 1800
+MAINTENANCE_TIMEOUT = 'maintenance_timeout'
+# The deadline fires again this often until the run has unwound.
+_TIMEOUT_REPEAT_SECONDS = 30
+
+
+class MaintenanceTimeout(BaseException):
+    """Not an ``Exception``: no step's own ``except Exception`` keeps the run going."""
+
+
+def _bounded(work, seconds=None):
+    """``work()`` under the whole-run deadline (the main thread of the detached child)."""
+    import signal
+    import threading
+    seconds = MAINTENANCE_SECONDS if seconds is None else seconds
+    if threading.current_thread() is not threading.main_thread() or not hasattr(signal, 'setitimer'):
+        return work()
+
+    def expired(_signum, _frame):
+        raise MaintenanceTimeout(MAINTENANCE_TIMEOUT)
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, seconds, _TIMEOUT_REPEAT_SECONDS)
+    try:
+        return work()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def _selector_state(project):
@@ -366,7 +396,7 @@ _INCOMPLETE = {'version_invalid': 'proof', 'prepare_status': 'prepare', 'renewal
 def _run_recorded(project, *, force=False):
     try:
         incomplete = []
-        result = _run(project, force=force, incomplete=incomplete)
+        result = _bounded(lambda: _run(project, force=force, incomplete=incomplete))
         try:
             from memvane.journal.api import select_route
             from memvane.diagnostics import api as diagnostics
@@ -383,7 +413,7 @@ def _run_recorded(project, *, force=False):
         except Exception:
             pass
         return
-    except Exception as exc:
+    except (Exception, MaintenanceTimeout) as exc:
         from memvane.learning.context_learning.selector_heal import HealDeferred as _Deferred
         # Another install holds the prepare lease: recorded below, never a worker error.
         busy = isinstance(exc, _Deferred) and str(exc) == PREPARE_BUSY
@@ -408,7 +438,7 @@ def _run_recorded(project, *, force=False):
                      'learning_runtime_not_official', 'learning_runtime_changed', 'learning_profile_rebind_required',
                      'learning_prepare_lock_unsafe', 'selector_policy_invalid', 'selector_warm_lock_unsafe',
                      'adapter_not_official', 'inference_prepare_failed', 'inference_prepare_unverified',
-                     'host_inventory_unavailable')
+                     'host_inventory_unavailable', MAINTENANCE_TIMEOUT)
             fixed += ('start_refused', 'start_path_invalid', 'start_io_failed', 'start_failed', 'permission_denied')
             service_codes = ('starting', 'deadline_expired', 'resource_deferred', 'queue_full',
                              'replacement_deferred', 'model_family_mismatch', 'load_failed',
@@ -437,7 +467,7 @@ def _run_recorded(project, *, force=False):
                              **_failure_timing(exc))
         except Exception:
             pass
-        if busy:
+        if busy or isinstance(exc, MaintenanceTimeout):
             return
         raise
 
