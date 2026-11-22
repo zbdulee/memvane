@@ -117,6 +117,10 @@ class PromptExclusion(SessionCase):
         text, other = self.recall('s-fresh', prompt='which marker does zqnowherex keep?')
         self.assertEqual((other['outcome'], other['sessionExcluded']), ('served', 0), other)
         self.assertIn('zqheronx', text)
+        # Nor does holding cards stop it for a question none of them matched in the first place.
+        text, held = self.recall(prompt='which marker does zqnowherex keep?')
+        self.assertEqual((held['outcome'], held['sessionExcluded']), ('served', len(TOPICS)), held)
+        self.assertIn('zqheronx', text)
 
     def test_a_card_that_changed_comes_back(self):
         _events, injected = self.drain()
@@ -150,7 +154,7 @@ class Concurrency(SessionCase):
         fd = os.open(str(self.record_path('s-one')), os.O_RDWR)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
-            with mock.patch.object(session_cards.time, 'sleep') as waited:
+            with mock.patch.object(session_cards, '_sleep') as waited:
                 text, held = self.recall()
         finally:
             os.close(fd)

@@ -43,6 +43,8 @@ MARKER_TTL_SECONDS = 24 * 3600
 MAX_MARKERS = 16
 WRITE_ATTEMPTS = 3
 WRITE_RETRY_SECONDS = 0.05
+# The wait between write tries; a name of its own so a check can count these waits alone.
+_sleep = time.sleep
 _MARKER = re.compile(r'[0-9a-f]{64}\.json\.reset\.[0-9a-f]{16}')
 _SHA = re.compile(r'[0-9a-f]{64}')
 _BY = re.compile(r'p|e|e\?|e:[0-9a-f]{8}')
@@ -276,7 +278,7 @@ def remember(decision: dict, payload: dict, rows, by: str = PROMPT) -> str:
                 if str(exc) != 'session_busy':
                     return 'write_skipped'
             if attempt + 1 < WRITE_ATTEMPTS:
-                time.sleep(WRITE_RETRY_SECONDS)
+                _sleep(WRITE_RETRY_SECONDS)
         return 'write_skipped'
     except BaseException as exc:  # noqa: BLE001 - never alters the recall answer
         from memvane.kernel.hook_budget import HookDeadlineExceeded
