@@ -121,6 +121,32 @@ def _record_admission_deferral(project, policy, report, reason=None):
         pass  # Diagnostic only: the wake's own retry is the record.
 
 
+# Cycle results that every later pass repeats until something outside the pass changes
+# (an approval, a policy, a file). Nothing else in the log would say the cycle stands still.
+HELD = ('staged_artifact_changed', 'cohort_cycle_conflict', 'evaluation_stage_unavailable',
+        'experiment_paused', 'existing_trial_requires_review', 'multilingual_policy_required',
+        'cohort_source_revoked', 'runtime_approval_required', 'synthetic_training_budget_exhausted')
+
+
+def _record_held(root, project, cycle):
+    """One ``learning.cycle`` ``held`` row when a pass first ends with a held result; never raises."""
+    try:
+        from .dataset import read_private_json
+        try:
+            before = read_private_json(Path(root) / 'project-last-status.json').get('status')
+        except (OSError, ValueError, AttributeError):
+            before = None
+        if before == cycle['status']:
+            return  # Said once: the row of the pass that first ended so stands for the rest.
+        from memvane.journal.api import select_route
+        from memvane.diagnostics.api import emit
+        emit('learning.cycle', decision=select_route(str(project), action='update'), outcome='held',
+             reason=cycle['status'], cycle=cycle.get('cycle_id'),
+             detail=str(cycle['reason'])[:80] if cycle.get('reason') else None)
+    except Exception:
+        pass  # Diagnostic only: the result itself is returned and stored.
+
+
 def run(root, project, config=None):
     from . import shared
     from memvane.settings import api as qmd_config
@@ -195,6 +221,8 @@ def run(root, project, config=None):
         cycle=shared.run_training_pending(root,project)
         if cycle.get('status')=='deferred_resource':
             _record_deferral(root,project,policy,cycle,started)
+        elif cycle.get('status') in HELD:
+            _record_held(root,project,cycle)
         if kind=='default-teacher':
             from . import prequential
             prequential.record_pass(root,project,grant,cycle)

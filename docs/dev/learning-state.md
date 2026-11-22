@@ -251,3 +251,41 @@ teacher)만 담는다.
 | `resting` | `host_ready` | `ready` | `default_teacher._default_pass` |
 | `provider_waiting` | `wait_expired` | `ready` | `teacher_state.host_waiting` |
 | `failing` | `wait_expired` | `ready` | `teacher_state.host_waiting` |
+
+## worker pass의 결과 상태
+
+pass의 결과는 cycle 단계의 결과다. 모든 결과 상태는 아래 다섯 분류 중 하나다.
+`retry`는 worker가 다음 wake를 요청하는 상태이고, `held`는 pass 밖의 무엇이 바뀔 때까지
+매 pass 같은 답이 나오는 상태라 처음 그렇게 끝난 pass가 `learning.cycle` `held` 행을 남긴다.
+
+| 결과 | 분류 | 이벤트 | pass가 남기는 것 |
+|---|---|---|---|
+| `busy` | retry(다시 깨움 요청) | — | nothing: another worker holds the lock |
+| `setup_in_progress` | retry(다시 깨움 요청) | — | nothing: the setup has not finished |
+| `deferred_resource` | retry(다시 깨움 요청) | `learning.cycle deferred_resource` | the job and the evaluation deferred with a backoff |
+| `deferred_quota` | retry(다시 깨움 요청) | — | nothing (explicit profile only) |
+| `staged_evaluation_deferred` | retry(다시 깨움 요청) | — | the evaluation deferred with a backoff |
+| `apply_deferred` | retry(다시 깨움 요청) | — | the application journal with its retry time and failures |
+| `disabled` | waiting(입력 대기) | — | nothing: capture or the cycle is off in the settings |
+| `waiting_fresh_train` | waiting(입력 대기) | `learning.score` | gold cases below the training size |
+| `waiting_fresh_batch` | waiting(입력 대기) | `learning.score` | no new job: too few fresh gold cases |
+| `staged_waiting_quality_cohort` | waiting(입력 대기) | `learning.score` | a staged cycle waiting for evaluation cases |
+| `staged_evaluated` | waiting(입력 대기) | `learning.promotion evaluated` | an evaluated cycle (applied by the next step when the profile applies) |
+| `already_staged_evaluated` | waiting(입력 대기) | — | an evaluated cycle, unchanged |
+| `applied` | done(적용 완료) | `learning.promotion applied` | the active pointer is the candidate |
+| `already_applied` | done(적용 완료) | — | the applied cycle, unchanged |
+| `failed` | closed(사유와 함께 닫힘) | `learning.cycle failed` | the job deferred with one more failure (blocked at three) |
+| `learning_job_blocked` | closed(사유와 함께 닫힘) | `learning.cycle blocked` | the blocked job until its rearm time |
+| `staged_source_revoked` | closed(사유와 함께 닫힘) | `learning.cycle blocked` | the job or the candidate closed as source_revoked |
+| `apply_blocked` | closed(사유와 함께 닫힘) | `learning.promotion rejected` | a rejected journal or a counted failure on the evaluation |
+| `staged_cohort_changed` | closed(사유와 함께 닫힘) | — | the evaluation deferred: its rows moved under the attempt |
+| `staged_authorization_expired` | closed(사유와 함께 닫힘) | — | the evaluation deferred until renewal carries or closes it |
+| `staged_artifact_changed` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | a staged cycle whose artifact or evidence no longer matches |
+| `cohort_cycle_conflict` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | a cycle row in a state training cannot enter |
+| `evaluation_stage_unavailable` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | an evaluation whose cycle or job row is missing |
+| `experiment_paused` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | no cycle: the training authorization is refused |
+| `existing_trial_requires_review` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | an experimental checkpoint from an older flow |
+| `multilingual_policy_required` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | a policy with another model input view |
+| `cohort_source_revoked` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | more than 2,000 admitted rows |
+| `runtime_approval_required` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | no valid runtime approval |
+| `synthetic_training_budget_exhausted` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | the synthetic QA profile used its budget |

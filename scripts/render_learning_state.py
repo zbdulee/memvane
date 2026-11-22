@@ -45,6 +45,17 @@ def render():
                         state, event, machine.transitions[(state, event)],
                         machine.where[event].replace('memvane.learning.context_learning.', '')))
         lines.append('')
+    kinds = {'retry': '다시 깨움 요청', 'waiting': '입력 대기', 'done': '적용 완료',
+             'closed': '사유와 함께 닫힘', 'held': '멈춤(밖의 변화 필요)'}
+    lines += ['## worker pass의 결과 상태', '',
+              'pass의 결과는 cycle 단계의 결과다. 모든 결과 상태는 아래 다섯 분류 중 하나다.',
+              '`retry`는 worker가 다음 wake를 요청하는 상태이고, `held`는 pass 밖의 무엇이 바뀔 때까지',
+              '매 pass 같은 답이 나오는 상태라 처음 그렇게 끝난 pass가 `learning.cycle` `held` 행을 남긴다.', '',
+              '| 결과 | 분류 | 이벤트 | pass가 남기는 것 |', '|---|---|---|---|']
+    for status, (kind, event, leaves) in state_model.CYCLE_RESULTS.items():
+        lines.append('| `%s` | %s(%s) | %s | %s |' % (
+            status, kind, kinds[kind], '`%s`' % event if event else '—', leaves))
+    lines.append('')
     return '\n'.join(lines)
 
 

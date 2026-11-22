@@ -103,6 +103,7 @@
  "memvane/learning/tests/integration/test_learning_service_root.py": 0.1,
  "memvane/learning/tests/integration/test_learning_trainer_telemetry.py": 2.9,
  "memvane/learning/tests/integration/test_learning_training_watch.py": 0.2,
+ "memvane/learning/tests/integration/test_lp1_e2e.py": 225.0,
  "memvane/learning/tests/integration/test_old_bundle_121.py": 32.6,
  "memvane/learning/tests/integration/test_prequential_121.py": 0.2,
  "memvane/learning/tests/integration/test_prompt_retirement_118.py": 0.6,

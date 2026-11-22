@@ -573,8 +573,10 @@ Each pass writes an `outcome: pass` row with the host waits and queued counts,
 rows, and `learning.cycle` rows (`trained` on training completion, or
 `deferred_resource` with inner `reason`, `deferredBy`, `availableMib`,
 `requiredMib`, `loadPerCpu`, `loadLimit` and `latchPaused`, or `blocked` with the
-job's `reason` and `failures` when a pass meets a blocked job, and `rearmed` when a
-blocked job is queued again). A pass
+job's `reason` and `failures` when a pass meets a blocked job, `rearmed` when a
+blocked job is queued again, and `held` with the result as `reason` when a pass first
+ends with a result that every later pass repeats until something outside the pass
+changes; `docs/dev/learning-state.md` lists every result and its class). A pass
 the worker's own resource check puts off before the teacher and the cycle leaves a
 `deferred_resource` row with `deferredBy: worker_admission`. Rows never hold
 the edit text, card bodies, source paths or global instructions. The

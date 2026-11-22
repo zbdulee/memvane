@@ -339,3 +339,46 @@ M7 = Machine(
     where={'pointer_written': _APPLY})
 
 MACHINES = (M1, M1U, M1T, M2, M3, M4, M5, M6, M7, M15)
+
+# Every status a worker pass can end with (the cycle step's result is the pass result),
+# as (class, the event row that says so, what the pass leaves). The classes:
+# ``retry``   the worker asks for another wake (``memvane.runtime.types.RETRY``);
+# ``waiting`` more input is needed (gold, cases after the cutoff, a setting); the next
+#             wake a hook requests enters again;
+# ``done``    the candidate is applied;
+# ``closed``  a job, an attempt or a candidate ended with its reason, and later passes
+#             go on with what remains;
+# ``held``    every pass answers the same until something outside the pass changes; the
+#             worker writes one ``learning.cycle`` ``held`` row when a pass first ends so.
+_SCORE, _CYCLE, _PROMOTION = 'learning.score', 'learning.cycle', 'learning.promotion'
+CYCLE_RESULTS = {
+    'busy': ('retry', None, 'nothing: another worker holds the lock'),
+    'setup_in_progress': ('retry', None, 'nothing: the setup has not finished'),
+    'deferred_resource': ('retry', _CYCLE + ' deferred_resource', 'the job and the evaluation deferred with a backoff'),
+    'deferred_quota': ('retry', None, 'nothing (explicit profile only)'),
+    'staged_evaluation_deferred': ('retry', None, 'the evaluation deferred with a backoff'),
+    'apply_deferred': ('retry', None, 'the application journal with its retry time and failures'),
+    'disabled': ('waiting', None, 'nothing: capture or the cycle is off in the settings'),
+    'waiting_fresh_train': ('waiting', _SCORE, 'gold cases below the training size'),
+    'waiting_fresh_batch': ('waiting', _SCORE, 'no new job: too few fresh gold cases'),
+    'staged_waiting_quality_cohort': ('waiting', _SCORE, 'a staged cycle waiting for evaluation cases'),
+    'staged_evaluated': ('waiting', _PROMOTION + ' evaluated', 'an evaluated cycle (applied by the next step when the profile applies)'),
+    'already_staged_evaluated': ('waiting', None, 'an evaluated cycle, unchanged'),
+    'applied': ('done', _PROMOTION + ' applied', 'the active pointer is the candidate'),
+    'already_applied': ('done', None, 'the applied cycle, unchanged'),
+    'failed': ('closed', _CYCLE + ' failed', 'the job deferred with one more failure (blocked at three)'),
+    'learning_job_blocked': ('closed', _CYCLE + ' blocked', 'the blocked job until its rearm time'),
+    'staged_source_revoked': ('closed', _CYCLE + ' blocked', 'the job or the candidate closed as source_revoked'),
+    'apply_blocked': ('closed', _PROMOTION + ' rejected', 'a rejected journal or a counted failure on the evaluation'),
+    'staged_cohort_changed': ('closed', None, 'the evaluation deferred: its rows moved under the attempt'),
+    'staged_authorization_expired': ('closed', None, 'the evaluation deferred until renewal carries or closes it'),
+    'staged_artifact_changed': ('held', _CYCLE + ' held', 'a staged cycle whose artifact or evidence no longer matches'),
+    'cohort_cycle_conflict': ('held', _CYCLE + ' held', 'a cycle row in a state training cannot enter'),
+    'evaluation_stage_unavailable': ('held', _CYCLE + ' held', 'an evaluation whose cycle or job row is missing'),
+    'experiment_paused': ('held', _CYCLE + ' held', 'no cycle: the training authorization is refused'),
+    'existing_trial_requires_review': ('held', _CYCLE + ' held', 'an experimental checkpoint from an older flow'),
+    'multilingual_policy_required': ('held', _CYCLE + ' held', 'a policy with another model input view'),
+    'cohort_source_revoked': ('held', _CYCLE + ' held', 'more than 2,000 admitted rows'),
+    'runtime_approval_required': ('held', _CYCLE + ' held', 'no valid runtime approval'),
+    'synthetic_training_budget_exhausted': ('held', _CYCLE + ' held', 'the synthetic QA profile used its budget'),
+}
