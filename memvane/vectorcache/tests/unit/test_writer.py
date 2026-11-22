@@ -151,11 +151,45 @@ class SelfCheck(WriterCase):
         covered, missing, wrong = self.cover()
         self.assertEqual((len(covered), len(missing), wrong), (3, 1, 1))
         report = self.run_pass()
-        self.assertEqual((report['repaired'], report['catchupRows'], report['remaining'], report['deadRows']),
-                         (1, 0, 0, 2))
+        # The damaged rows do not stay between the sets: the pair is replaced in the same pass.
+        self.assertEqual((report['repaired'], report['catchupRows'], report['remaining'], report['deadRows'],
+                          report['compacted']), (1, 0, 0, 0, True))
         self.assertEqual(self.store.reads[-1:], missing)
         covered, missing, wrong = self.cover()
         self.assertEqual((len(covered), missing, wrong), (4, [], 0))
+        self.assertFalse(vec.exists())
+        self.assertEqual(self.pair()[0].stat().st_size, 4096 + 4 * 2 * 8)
+        self.assertFalse(self.run_pass()['compacted'])
+
+    def test_rows_zeroed_under_their_record_cost_a_recall_one_scan_after_the_repair(self):
+        from memvane.vectorcache import scan
+        vec, _idx = self.filled(count=50)
+        raw = bytearray(vec.read_bytes())
+        raw[4096 + 40 * 8:4096 + 42 * 8] = b'\0' * 16  # One set's rows, as a power cut leaves them.
+        vec.write_bytes(bytes(raw))
+
+        class Kernel:
+            calls = 0
+
+            def scores(self, buffer, dimension, query, deadline, stats):
+                Kernel.calls += 1
+                values = bytes(buffer)
+                if any(values[at:at + 8] == b'\0' * 8 for at in range(0, len(values), 8)):
+                    error = ValueError('embedding_values_invalid')
+                    error.reason = 'embedding_values_invalid'
+                    raise error
+                return [1.0] * (len(values) // 8)
+
+        def scanned():
+            Kernel.calls = 0
+            with arena.opened(self.directory, **SPEC) as found:
+                covered = found.cover(self.store.live)[0]
+                scores, unreadable = scan.scan(found, covered, dimension=2, queries=[[1.0, 0.0]], native=Kernel(),
+                                               deadline=None, stats={})
+            return Kernel.calls, len(scores), unreadable
+        self.assertEqual(scanned(), (50, 49, []))  # The whole span is refused, then every set on its own.
+        self.assertEqual(self.run_pass()['repaired'], 1)
+        self.assertEqual(scanned(), (1, 50, []))
 
     def test_a_set_whose_store_digest_changed_is_appended_again(self):
         self.filled()
@@ -185,6 +219,73 @@ class SelfCheck(WriterCase):
             self.assertEqual((len(covered), missing, wrong), (2, [], 0))
             for blob, (first, count) in covered.items():
                 self.assertEqual(bytes(found.span(first, count)), self.store.sets[blob][2])
+
+    def test_a_set_whose_bytes_change_between_the_check_and_the_copy_is_not_carried_over(self):
+        self.filled(count=6)
+        for index in range(2, 6):
+            del self.store.sets[sha(index)]
+        real, width = os.pread, 2 * 8
+        changed = []
+
+        def pread(fd, length, offset):
+            data = real(fd, length, offset)
+            if length == width and offset == 4096 + width and not changed:  # The copy's read of set 1.
+                changed.append(1)
+                return bytes(data[:-1]) + bytes([data[-1] ^ 0xFF])
+            return data
+        self.store.reads.clear()
+        with mock.patch.object(writer.os, 'pread', side_effect=pread):
+            report = self.run_pass()
+        self.assertEqual(changed, [1])
+        self.assertEqual((report['compacted'], report['repaired'], report['remaining']), (True, 1, 0))
+        self.assertEqual(self.store.reads, [sha(1)])
+        with arena.opened(self.directory, **SPEC) as found:
+            covered, missing, wrong = found.cover(self.store.live)
+            self.assertEqual((len(covered), missing, wrong), (2, [], 0))
+            self.assertEqual(bytes(found.span(*covered[sha(1)])), self.store.sets[sha(1)][2])
+
+    def descriptors(self):
+        return len(os.listdir('/dev/fd'))
+
+    def test_a_compaction_that_fails_leaves_no_file_and_no_descriptor_behind(self):
+        self.filled(count=6)
+        for index in range(2, 6):
+            del self.store.sets[sha(index)]
+        before = sorted(path.name for path in self.directory.iterdir())
+        open_before = self.descriptors()
+        with mock.patch.object(writer.os, 'fsync', side_effect=OSError(28, 'No space left on device')):
+            for _ in range(4):
+                report = self.run_pass()
+                self.assertEqual((report['skipped'], report['compacted']), ('write_unavailable', False))
+                self.assertEqual(sorted(path.name for path in self.directory.iterdir()), before)
+        self.assertEqual(self.descriptors(), open_before)
+        self.assertEqual(len(self.cover()[0]), 2)  # The old pair still answers.
+        self.assertTrue(self.run_pass()['compacted'])
+        self.assertEqual(len(list(self.directory.iterdir())), 3)
+
+    def test_a_compaction_asks_the_disk_and_the_quota_before_it_writes(self):
+        self.filled(count=6)
+        for index in range(2, 6):
+            del self.store.sets[sha(index)]
+        before = {path.name: path.read_bytes() for path in self.directory.iterdir()}
+        opened = []
+        real = os.open
+
+        def counting(path, flags, *args, **kwargs):
+            if flags & os.O_CREAT:
+                opened.append(path)
+            return real(path, flags, *args, **kwargs)
+        full = mock.Mock(f_bavail=0, f_frsize=4096)
+        with mock.patch.object(writer.os, 'open', side_effect=counting):
+            with mock.patch.object(writer.os, 'fstatvfs', return_value=full):
+                report = self.run_pass(add=True)
+            self.assertEqual((report['skipped'], report['compacted'], report['appendRows']),
+                             ('write_unavailable', False, 0))
+            with mock.patch.object(types, 'GLOBAL_BYTES', 0):
+                report = self.run_pass()
+            self.assertEqual((report['skipped'], report['compacted']), ('quota', False))
+        self.assertEqual(opened, [])
+        self.assertEqual({path.name: path.read_bytes() for path in self.directory.iterdir()}, before)
 
     def test_a_reader_that_mapped_the_old_pair_reads_it_to_its_end_across_a_compaction(self):
         self.filled(count=4)

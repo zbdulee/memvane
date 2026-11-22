@@ -104,7 +104,10 @@ class Upkeep(ArenaCase):
             self.assertEqual(self.run_pass()['state'], 'unchanged')
         self.assertEqual(self.cover(), (len(self.live()), [], 0))
         repair = self.events('vector.cache')[before:]
-        self.assertEqual([(event['outcome'], event.get('sets')) for event in repair], [('repair', 1)])
+        # The damaged rows are not left between the sets: the pair is replaced, then the set repaired.
+        self.assertEqual([(event['outcome'], event.get('sets')) for event in repair],
+                         [('compact', None), ('repair', 1)])
+        self.assertEqual({event['deadRows'] for event in repair}, {0})
         self.assertEqual(wakes, [])  # A repair is not catch-up progress.
 
 

@@ -21,6 +21,12 @@ next record boundary before the next append (the reader skips the record the
 padding completes). Vec rows that no record names (a torn append) are never
 appended after: the live sets are copied into a new pair. A vec file is never
 truncated or rewritten in place; a recall that mapped it reads it to its end.
+The same holds for rows whose bytes no longer match their record's crc: the
+set is read again from the store and the pair is replaced in that pass.
+
+A compaction first asks the quota and the disk for the bytes of the copy; a
+pair that does not become the active one is closed and removed, so a pass
+that fails leaves no file and no descriptor behind.
 
 The whole arena is replaced only when its identity is not this store's and
 vector spec's (or its format number is lower). A higher format number is
@@ -30,6 +36,7 @@ Every failure here is the arena's alone: the caller publishes regardless.
 """
 from __future__ import annotations
 
+import errno
 import json
 import mmap
 import os
@@ -49,6 +56,10 @@ _OWNED_FILE = re.compile(r'(current\.json(\.[0-9a-f]{32}\.tmp)?|arena-[0-9a-f]{3
 _NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
 _CLOEXEC = getattr(os, 'O_CLOEXEC', 0)
 _DIRECTORY = getattr(os, 'O_DIRECTORY', 0)
+
+
+class _Skipped(Exception):
+    """The pass stops here; its report already says why."""
 
 
 def _write(fd, data):
@@ -97,7 +108,9 @@ class Writer:
         self._wanted = set()
         self._suspect = set()
         self._quota = False
-        self._untracked = False  # Vec rows after the last record: a torn append left them.
+        # Rows that may hold anything: vec rows after the last record (a torn append), or the rows
+        # of a record whose bytes no longer match its crc. Nothing is appended beside them.
+        self._untracked = False
         self._others = None  # Bytes of the other installs' arenas, counted once per pass.
         self._add_rows, self._add_deadline = types.PASS_VECTORS, None
         self._report = dict(rebuilt=False, compacted=False, repaired=0, catchupRows=0, appendRows=0,
@@ -117,12 +130,15 @@ class Writer:
                 self._compact()
             self._append(live, read, types.PASS_VECTORS, self._clock() + types.PASS_SECONDS, 'catchupRows')
             os.utime(CURRENT, dir_fd=self._dfd)  # The install's last use, read by other installs' quota.
+        except _Skipped:
+            pass
         except OSError:
             self._report['skipped'] = 'write_unavailable'
 
     def add(self, live, read):
         """Append the live sets the arena does not hold yet, inside the pass's own bound."""
-        if self._vec is None or self._report['skipped'] in ('format_newer', 'write_unavailable'):
+        if (self._vec is None or self._untracked
+                or self._report['skipped'] in ('format_newer', 'write_unavailable')):
             return
         if self._add_deadline is None:
             self._add_deadline = self._clock() + types.PASS_SECONDS
@@ -163,7 +179,12 @@ class Writer:
                 and {key: value.get(key) for key in fmt.IDENTITY_KEYS} == fmt.identity(nonce=nonce, **self._spec)
                 and self._open_pair(nonce)):
             return True
-        self._vec, self._idx = self._activate(*self._new_pair())
+        nonce, vec, idx = self._new_pair()
+        try:
+            self._vec, self._idx = self._activate(nonce, vec, idx)
+        except OSError:
+            self._discard(nonce, vec, idx)
+            raise
         self._records, self._rows = {}, 0
         self._report['rebuilt'] = value is not None
         return True
@@ -218,12 +239,32 @@ class Writer:
     def _new_pair(self):
         nonce = os.urandom(16).hex()
         value, opened = fmt.identity(nonce=nonce, **self._spec), []
-        for name, header in zip(fmt.names(nonce), (fmt.vec_header(value), fmt.idx_header(value))):
-            fd = os.open(name, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC,
-                         0o600, dir_fd=self._dfd)
-            opened.append(fd)
-            _write(fd, header)
+        try:
+            for name, header in zip(fmt.names(nonce), (fmt.vec_header(value), fmt.idx_header(value))):
+                fd = os.open(name, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC,
+                             0o600, dir_fd=self._dfd)
+                opened.append(fd)
+                _write(fd, header)
+        except OSError:
+            self._discard(nonce, *opened)
+            raise
         return (nonce, *opened)
+
+    def _discard(self, nonce, *opened):
+        """Close and remove a pair that did not become the active one: a failed pass leaves nothing behind."""
+        for fd in opened:
+            try:
+                os.close(fd)
+            except OSError:
+                pass  # Unchecked: the descriptor is gone either way.
+        value = self._current()
+        if isinstance(value, dict) and value.get('nonce') == nonce:
+            return  # The rename happened: this pair is the arena, whatever failed after it.
+        for name in (*fmt.names(nonce), CURRENT + '.' + nonce + '.tmp'):
+            try:
+                os.unlink(name, dir_fd=self._dfd)
+            except OSError:
+                pass  # Unchecked: absent, or removed by the next activation.
 
     def _activate(self, nonce, vec, idx):
         """Make the pair ``nonce`` the active one and remove every other arena file."""
@@ -268,6 +309,10 @@ class Writer:
                     kept[blob] = (first, rows, digest, crc)
                 else:
                     self._suspect.add(blob)
+                    # Rows inside the file that are not what was written (zeros after a power cut):
+                    # left between member sets, every recall would scan its neighbours set by set.
+                    self._untracked = self._untracked or (rows >= 1 and first + rows <= self._rows
+                                                          and (rows, digest) == tuple(live[blob]))
             self._records = kept
         finally:
             if view is not None:
@@ -276,21 +321,34 @@ class Writer:
 
     def _compact(self):
         """Copy the sets that hold into a new pair; a set whose bytes changed since the check is left to catch-up."""
+        # The copy needs its bytes beside the old pair until the switch: asked of the quota and the disk first.
+        need = PAGE + fmt.IDX_HEADER + sum(count * self._width + fmt.RECORD_BYTES
+                                           for _first, count, _digest, _crc in self._records.values())
+        if not self._room(need):
+            self._report['skipped'] = 'quota'
+            raise _Skipped()
+        space = os.fstatvfs(self._dfd)
+        if space.f_bavail * space.f_frsize < need:
+            raise OSError(errno.ENOSPC, 'arena_compaction_space')
         nonce, vec, idx = self._new_pair()
         kept, rows, entries = {}, 0, []
-        for blob, (first, count, digest, crc) in sorted(self._records.items(), key=lambda item: item[1][0]):
-            data = os.pread(self._vec, count * self._width, PAGE + first * self._width)
-            if len(data) != count * self._width or zlib.crc32(data) != crc:
-                self._suspect.add(blob)
-                continue
-            _write(vec, data)
-            kept[blob] = (rows, count, digest, crc)
-            entries.append(fmt.record(blob, rows, count, digest, crc))
-            rows += count
-        os.fsync(vec)
-        _write(idx, b''.join(entries))
-        old = (self._vec, self._idx)
-        self._vec, self._idx = self._activate(nonce, vec, idx)
+        try:
+            for blob, (first, count, digest, crc) in sorted(self._records.items(), key=lambda item: item[1][0]):
+                data = os.pread(self._vec, count * self._width, PAGE + first * self._width)
+                if len(data) != count * self._width or zlib.crc32(data) != crc:
+                    self._suspect.add(blob)
+                    continue
+                _write(vec, data)
+                kept[blob] = (rows, count, digest, crc)
+                entries.append(fmt.record(blob, rows, count, digest, crc))
+                rows += count
+            os.fsync(vec)
+            _write(idx, b''.join(entries))
+            old = (self._vec, self._idx)
+            self._vec, self._idx = self._activate(nonce, vec, idx)
+        except OSError:
+            self._discard(nonce, vec, idx)
+            raise
         for fd in old:
             os.close(fd)
         self._records, self._rows, self._untracked = kept, rows, False
