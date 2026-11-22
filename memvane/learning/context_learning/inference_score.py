@@ -33,7 +33,11 @@ def infer(engine, coordinator, validate, envelope, deadline, queue_wait, *, canc
                 coordinator.inference_compute(deadline):
             began = time.perf_counter()
             try:
-                job = validate(envelope)
+                # Only this initial validation may stand on a recent runtime
+                # sweep; the revalidations below never do.
+                from .inference_identity import reuse_window
+                with reuse_window():
+                    job = validate(envelope)
             finally:
                 measured['initial_validation_seconds'] = round(time.perf_counter()-began, 6)
             result, timing = engine.run(job, cancelled=cancelled, revalidate=revalidate, timing=timing)

@@ -119,7 +119,11 @@ def child_patches(raw):
 class _Identity:
     last_timing = {'identity_seconds': 0.0}
 
-    def verify(self, _state, _argv, _view):
+    def __init__(self):
+        self.reuse = []
+
+    def verify(self, _state, _argv, _view, *, reuse=False):
+        self.reuse.append(reuse)
         return {'runtime_identity_sha256': 'r' * 64, 'base_model_sha256': 'b' * 64}
 
 
@@ -134,6 +138,7 @@ class Service:
         from memvane.learning.tests.unit.test_context_learning_chunked_pairing import (
             EDIT, FAKE_TORCH, TableModel)
         self.service = service
+        self.identity = _Identity()
         self.forwards = []
         self.closed_seen = 0
         self.entered = threading.Event()
@@ -185,7 +190,7 @@ class Service:
                 mock.patch.dict(os.environ),
                 mock.patch.object(service, '_signature', return_value=SIGNATURE),
                 mock.patch.object(service, 'has_evidence', return_value=True),
-                mock.patch.object(service, '_IDENTITY_CACHE', _Identity()),
+                mock.patch.object(service, '_IDENTITY_CACHE', self.identity),
                 mock.patch.object(adapter_binding, 'inference_argv',
                                   side_effect=lambda argv, *_a, **_k: list(argv)),
                 mock.patch.object(adapter_binding, 'attested_adapter', return_value='0' * 64),
@@ -331,7 +336,10 @@ class PromptLane(SelectorEntry):
                 self.assertEqual(chosen['reason'], 'selected')
                 self.assert_numeric_measures(row, chosen['resources'])
         self.assertEqual([(f['lane'], f['pair_budget'], f['prompt_chars']) for f in service.forwards],
-                         [('prompt', 24, 20000)] * 2)
+                         [('prompt', 12, 20000)] * 2)
+        # Every validation of a recall (lane) request asks for the reuse window.
+        self.assertTrue(service.identity.reuse)
+        self.assertEqual(set(service.identity.reuse), {True})
 
     def assert_numeric_measures(self, row, resources):
         from memvane.recall import verified_rows

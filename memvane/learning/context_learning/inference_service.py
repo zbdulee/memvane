@@ -719,7 +719,9 @@ def _validate_request(envelope):
     identity_started = time.perf_counter()
     identity_timing = {}
     if has_evidence(state):
-        verified = _IDENTITY_CACHE.verify(state, argv, view)
+        # Only a recall request names its lane; the synthetic warm-up request
+        # (no lane) and apply (_validate_apply) are swept every time.
+        verified = _IDENTITY_CACHE.verify(state, argv, view, reuse='query_lane' in request)
         identity_timing = dict(_IDENTITY_CACHE.last_timing)
     else:
         trainer = VerifiedLayaTrainer(argv, max_seconds=policy['timeoutSeconds'],

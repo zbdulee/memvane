@@ -129,7 +129,7 @@ chunks and the length beyond the chunk limits is counted.
 
 Recall sends the selector the ten best ranked cards of the verified pool; the
 capture keeps the whole pool (at most 15). A prompt recall gives the selector
-`min(queryTimeout, 3 s)`, kept one second inside the hook deadline, and 24 pairs; an edit recall gives it its own tail
+`min(queryTimeout, 3 s)`, kept one second inside the hook deadline, and 12 pairs; an edit recall gives it its own tail
 deadline (hook entry + 10 s, less one second) and 91 pairs. Past the budget a
 prompt recall serves the hybrid rank and an edit recall its first ranked card.
 A prompt over 64 KiB keeps its first 48 KiB and its last 16 KiB. The values
@@ -137,11 +137,17 @@ come from the 1.0.19 synthetic measurement on an Apple M5 Pro: about 62 ms per
 1,024-token pair whatever the batch size, and about 0.8 s of identity checks
 outside the forward before the per-process caches below. `pairs = (budget -
 0.8 s) / 0.063 s x 0.7`; the candidate count is the largest of 6, 8 and 10
-whose single-chunk forward fits 1.5 s with that fixed cost. Recall events
+whose single-chunk forward fits 1.5 s with that fixed cost. The prompt lane's
+12 pairs hold its forward near 0.9 s at the 95th percentile: live prompt
+recalls on the same machine measure about 0.23 s fixed and 0.051 s per pair.
+With ten candidates that is every card against the first query chunk and the
+two best ranked cards against the last one. Recall events
 record each part (`selectorCandidates`, `selectorLane`, `selectorBudgetMs`,
 `selectorQueryChunks`, `selectorDroppedPairs`, `selectorPairLenP95`,
 `selectorValidationSeconds`, `selectorRevalidationSeconds` and the rest of
-`recall/verified_rows._SELECTOR_MEASURES`).
+`recall/verified_rows._SELECTOR_MEASURES`). A recall the selector answered
+also records `rankedOverlap`: how many of the served cards are among the three
+best ranked rows.
 
 The inference service keeps per-process results it would otherwise repeat for
 every request, without changing what is proven. Code files are hashed again
@@ -150,10 +156,16 @@ the client's wire signature reuses those file hashes. Loaded modules already
 placed inside the runtime roots are not walked again. A request whose model
 was already loaded revalidates after its forward without a second runtime stat
 sweep and module walk: receipt, policy, attestation, pointer, artifact,
-adapter and code checks still run, every request's initial validation sweeps
-the runtime and model directory, and a request that loads a model sweeps again
-after the load and after its forward. A runtime change during a warm forward is
-therefore found by the next request's initial validation. `raw.py` is a separate raw-data adapter with an assumed 0.3.23
+adapter and code checks still run, and a request that loads a model sweeps
+again after the load and after its forward. The initial validation of a recall
+request (one that names its lane) stands on a sweep of the same generation
+that started at most 5 seconds earlier in the same process
+(`inference_identity.IDENTITY_REUSE_SECONDS`): it skips the stat sweep and the
+module walk only, a reused validation does not extend the 5 seconds, and a
+failed validation ends them. Warm-up and apply sweep at every validation.
+A change to the runtime or model directory is therefore found by the first
+sweeping validation after it, at most 5 seconds of recall requests later;
+`selectorIdentityReused` marks a recall whose initial validation was reused. `raw.py` is a separate raw-data adapter with an assumed 0.3.23
 candidate pin, not this verified 0.3.20 integration.
 
 ## One local cycle

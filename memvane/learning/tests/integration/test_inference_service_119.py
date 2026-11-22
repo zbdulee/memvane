@@ -5,6 +5,7 @@ and edit-view pair plan over a codepoint tokenizer, a stub ``laya.common`` and
 a fake model that records every forward; assertions count forwards, sweeps,
 hashes and reply fields, never wall-clock time.
 """
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -624,6 +625,111 @@ class IdentitySweepTests(unittest.TestCase):
         with identity.light_revalidation():
             with self.assertRaisesRegex(ValueError, 'inference_identity_changed'):
                 self.verify()
+
+    # 1.1.0 W6: a recall request's initial validation stands on a recent sweep.
+    def clocked(self):
+        now = [100.0]
+        self.cache.clock = lambda: now[0]
+        return now
+
+    def recall(self):
+        """(sweeps, module walks, reused) of one recall request's initial validation."""
+        self.sweeps.reset_mock()
+        self.scope.reset_mock()
+        with identity.reuse_window():
+            self.cache.verify(self.state, self.argv, self.VIEW, reuse=True)
+        return (self.sweeps.call_count, self.scope.call_count,
+                self.cache.last_timing['identity_reused'])
+
+    def test_recall_validation_inside_the_window_runs_no_sweep(self):
+        now = self.clocked()
+        self.assertEqual(self.recall(), (1, 1, 0))
+        now[0] += 4
+        self.assertEqual(self.recall(), (0, 0, 1))
+        # A reused validation does not extend the window (8 s after the sweep).
+        now[0] += 4
+        self.assertEqual(self.recall(), (1, 1, 0))
+        now[0] += identity.IDENTITY_REUSE_SECONDS
+        self.assertEqual(self.recall(), (0, 0, 1))
+        now[0] += .001
+        self.assertEqual(self.recall(), (1, 1, 0))
+
+    def test_apply_warm_and_revalidation_sweep_inside_the_window(self):
+        self.clocked()
+        self.recall()
+        self.sweeps.reset_mock()
+        # Apply and the lane-less warm-up request do not ask for reuse.
+        with identity.reuse_window():
+            self.verify()
+        self.assertEqual(self.sweeps.call_count, 1)
+        # A revalidation runs outside the initial validation's window.
+        self.cache.verify(self.state, self.argv, self.VIEW, reuse=True)
+        self.assertEqual(self.sweeps.call_count, 2)
+        self.assertEqual(self.cache.last_timing['identity_reused'], 0)
+
+    def test_reused_validation_still_checks_the_receipt_and_then_sweeps(self):
+        self.clocked()
+        self.recall()
+        (self.state / 'laya-synthetic-attestation.json').unlink()
+        with self.assertRaisesRegex(ValueError, 'inference_identity_changed'):
+            self.recall()
+        self.assertEqual(self.sweeps.call_count, 0)
+        # A failed validation ends the window: the next one sweeps.
+        self.write('laya-synthetic-attestation.json', self.proof)
+        self.assertEqual(self.recall(), (1, 1, 0))
+
+    def test_runtime_change_is_found_by_the_first_validation_after_the_window(self):
+        now = self.clocked()
+        self.recall()
+        self.library.write_text('version=2\n')
+        now[0] += 1
+        self.assertEqual(self.recall(), (0, 0, 1))
+        now[0] += identity.IDENTITY_REUSE_SECONDS
+        with self.assertRaisesRegex(ValueError, 'inference_identity_changed'):
+            self.recall()
+        self.assertEqual(self.sweeps.call_count, 1)
+
+    def infer(self, engine, *, lane=True):
+        """(sweeps, reused) of one request through the worker's ``infer``."""
+        job = {'family': ('runtime', 'base', 'view'), 'generation': ('runtime', 'base', 'view', 'a'),
+               'namespace': 'one', 'policy': {'maxRssMib': 1024}, 'request': {},
+               'deadline': time.monotonic() + 30}
+
+        def validate(_envelope):
+            # As _validate_request: only a lane request asks for reuse.
+            self.cache.verify(self.state, self.argv, self.VIEW, reuse=lane)
+            return {**job, 'identity_timing': dict(self.cache.last_timing)}
+
+        class Open:
+            def inference(self, *_a):
+                return contextlib.nullcontext()
+            inference_compute = inference
+        self.sweeps.reset_mock()
+        row = inference_score.infer(engine, Open(), validate, {'namespace': 'one'}, job['deadline'],
+                                    0.0, cancelled=lambda: False, failure=service._failure)
+        self.assertEqual(row['status'], 'ok', row)
+        return self.sweeps.call_count, row['timing']['identity_reused']
+
+    def engine(self):
+        return service.GenerationEngine(load=lambda job: 'loaded',
+                                        forward=lambda loaded, job, **kw: {'ok': True},
+                                        admission=admit, rss=lambda: 100)
+
+    def test_request_inside_the_window_sweeps_only_around_a_model_load(self):
+        now = self.clocked()
+        engine = self.engine()
+        # First request: initial validation, after the load, after the forward.
+        self.assertEqual(self.infer(engine), (3, 0))
+        now[0] += 1
+        # Loaded model, inside the window: no sweep at all.
+        self.assertEqual(self.infer(engine), (0, 1))
+        # The warm-up request shape (no lane) sweeps at its initial validation.
+        self.assertEqual(self.infer(engine, lane=False), (1, 0))
+        # A model load inside the window is swept after the load and the forward.
+        now[0] += 1
+        self.assertEqual(self.infer(self.engine()), (2, 1))
+        now[0] += identity.IDENTITY_REUSE_SECONDS + 1
+        self.assertEqual(self.infer(engine), (1, 0))
 
 
 if __name__ == '__main__':

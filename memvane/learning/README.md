@@ -28,6 +28,11 @@ warm은 client 검증 30초, resident 준비 대기 60초, 준비 뒤 추론 요
 닫힌 소켓 때문에 관측하지 못한 서버 구간은 생략한다. 시간 초과 후 같은
 세대 모델을 재사용하면 `cached_model_load_seconds`로 첫 로드 시간을 전달한다.
 
+추론 서비스는 lane을 적은 recall 요청의 초기 정체성 검증에서, 같은 프로세스가 같은 세대를
+5초 안에 sweep했으면 runtime·모델 디렉터리 stat sweep과 모듈 범위 확인만 건너뛴다
+(`inference_identity.reuse_window`). receipt·binding·policy·attestation·포인터·artifact·adapter·
+code 대조는 요청마다 한다. warm 요청과 후보 apply, 모델 로드 뒤 재검증은 매번 sweep한다.
+
 학습 승인과 갱신이 쓰는 host plugin 목록(`claude|codex plugin list --json`을 프로젝트에서
 실행한 것, Codex의 `--marketplace` 목록)은 host·종류·프로젝트마다 기록해 두고
 (`host_inventory.py`, learning state의 `host-inventory/`, 0600), CLI 실행 파일과 host 설치

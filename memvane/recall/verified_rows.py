@@ -17,7 +17,7 @@ def _fail(code: str):
 # Values and their measurement: docs/continual-learning.md "Selector budget".
 SELECTOR_CANDIDATES = 10
 PROMPT_SELECTOR_SECONDS = 3.0
-PROMPT_PAIR_BUDGET = 24
+PROMPT_PAIR_BUDGET = 12
 HOOK_RESERVE_SECONDS = 1.0
 EDIT_PAIR_BUDGET = 91
 # The live selector refuses a prompt over this many UTF-8 bytes.
@@ -38,6 +38,7 @@ _SELECTOR_MEASURES = (('pairs', 'selectorPairs'), ('planned_pairs', 'selectorPla
                       ('envelope_seconds', 'selectorEnvelopeSeconds'),
                       ('initial_validation_seconds', 'selectorValidationSeconds'),
                       ('identity_seconds', 'selectorIdentitySeconds'),
+                      ('identity_reused', 'selectorIdentityReused'),
                       ('revalidation_seconds', 'selectorRevalidationSeconds'),
                       ('model_load_seconds', 'selectorLoadSeconds'),
                       ('tokenize_seconds', 'selectorPrepareSeconds'),
@@ -208,6 +209,11 @@ def _serve_verified_rows(decision, settings, prompt, rows, *, top_n, title_only,
     trace.fields(selection=reason, candidates=len(rows), generation=generation)
     from memvane.recall.domain.rules import limit_selected, selection_action
     chosen, answer_limit = limit_selected(chosen, top_n)
+    if reason == 'selected':
+        # How far the selector's served choice departs from the hybrid rank:
+        # the chosen cards that are also among the three best ranked rows.
+        ranked = {row['path'] for row in rows[:3]}
+        trace.fields(rankedOverlap=sum(1 for row in chosen if row['path'] in ranked))
     # Capture sees the verified pool and what was served: the selector's
     # choice, or the ranked rows when no prepared selector answered.
     capture = (settings, rows[:15], chosen)
