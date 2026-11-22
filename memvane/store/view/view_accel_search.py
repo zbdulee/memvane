@@ -100,7 +100,7 @@ def _arena_scores(store, groups, heads, recipe_id, profile_id, dimension, query,
     from memvane.vectorcache import api as vectorcache
     if os.environ.get('MEMVANE_VECTOR_ACCEL', '').lower() == 'store':
         return {}, {}, list(groups), 'disabled'
-    started = time.perf_counter()
+    started, scanned = time.perf_counter(), 0.0
     try:
         directory = Path(store._path).parent / vectorcache.DIRECTORY
         with vectorcache.opened(directory, profile_id=profile_id, recipe_id=recipe_id, dimension=dimension,
@@ -109,8 +109,10 @@ def _arena_scores(store, groups, heads, recipe_id, profile_id, dimension, query,
                 return {}, {}, list(groups), 'absent'
             covered, missing, wrong = found.cover(
                 {blob: (heads[blob]['chunk_count'], heads[blob]['embedding_digest']) for blob in groups})
+            mark = time.perf_counter()
             scores, unreadable = vectorcache.scan(found, covered, dimension=dimension, queries=query, native=native,
                                                   deadline=deadline, stats=stats)
+            scanned = (time.perf_counter() - mark) * 1000
         for blob in unreadable:
             del covered[blob]
         missing = missing + unreadable
@@ -124,8 +126,10 @@ def _arena_scores(store, groups, heads, recipe_id, profile_id, dimension, query,
     except Exception:  # noqa: BLE001 - a derived file never fails the search; the store answers
         return {}, {}, list(groups), 'absent'
     finally:
-        elapsed = (time.perf_counter() - started) * 1000
-        stats['vectorLoadMs'] += elapsed
+        # Opening, mapping and the crc of the member sets are the load; the kernel scan is the scan.
+        stats['vectorLoadMs'] += (time.perf_counter() - started) * 1000 - scanned
+        stats['vectorScanMs'] += scanned
+        stats['vectorDotMs'] += scanned
 
 
 def search(store, db, groups, heads, recipe_id, profile_id, dimension, query,

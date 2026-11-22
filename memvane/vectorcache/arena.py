@@ -14,16 +14,16 @@ Files (directory 0700, files 0600, opened ``O_NOFOLLOW``):
 
 An idx record is ``(blob sha, first row, chunk count, set digest, vec crc,
 record crc)``. ``vec crc`` is the crc32 of that set's bytes in the vec file;
-``record crc`` is the crc32 of the record's other fields. A reader trusts the
-records up to the first one whose record crc fails (a torn append), and of
-several records of one blob the last.
+``record crc`` is the crc32 of the record's other fields. A reader skips a
+record whose record crc fails (a torn append, padded to the boundary by the
+writer before its next append), and of several records of one blob takes the last.
 
 A set is *covered* when its last valid record names the store's set digest,
 lies inside the vec file and its vec crc matches the mapped bytes. Anything
 else is missing and read from the store; a record that is present but wrong
 is also reported as inconsistent. The reader takes no lock and never writes.
 
-This module is the format and the reader. It imports neither the store nor
+This module is the format and the reader (``writer`` is the sync owner's side). It imports neither the store nor
 sync: the recall reader (store) and the sync owner's writer both use it.
 """
 from __future__ import annotations
@@ -89,12 +89,12 @@ def record(blob_sha, first_row, chunk_count, set_digest, vec_crc):
 
 
 def records(raw):
-    """``{blob sha: (first row, chunk count, set digest, vec crc)}`` of the valid record prefix of idx bytes."""
+    """``{blob sha: (first row, chunk count, set digest, vec crc)}`` of the valid records of idx bytes."""
     answer = {}
     for offset in range(0, len(raw) - RECORD_BYTES + 1, RECORD_BYTES):
         body = raw[offset:offset + _RECORD.size]
         if _CRC.unpack_from(raw, offset + _RECORD.size)[0] != zlib.crc32(body):
-            break  # A torn append: nothing after it is believed.
+            continue  # A torn append: this record alone is not believed.
         blob, first_row, chunk_count, digest, vec_crc = _RECORD.unpack(body)
         answer[blob.hex()] = (first_row, chunk_count, digest.hex(), vec_crc)
     return answer

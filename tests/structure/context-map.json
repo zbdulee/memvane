@@ -382,6 +382,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/vectorcache/writer.py": {
+      "context": "vectorcache",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/vectorcache/types.py": {
       "context": "vectorcache",
       "layer": "domain",
@@ -1358,6 +1363,11 @@
       "pinned": false
     },
     "memvane/sync/linked_reoffer.py": {
+      "context": "sync",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/sync/vector_cache.py": {
       "context": "sync",
       "layer": "application",
       "pinned": false

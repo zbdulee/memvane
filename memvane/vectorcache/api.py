@@ -43,3 +43,10 @@ def record(blob_sha, first_row, chunk_count, set_digest, vec_crc):
     """One idx record of a set whose rows start at ``first_row``."""
     from memvane.vectorcache.arena import record as implementation
     return implementation(blob_sha, first_row, chunk_count, set_digest, vec_crc)
+
+
+def writer(directory, *, profile_id, recipe_id, dimension, store_incarnation):
+    """One sync pass's writer of the arena in ``directory`` (``start``, ``add``, ``summary``, ``close``)."""
+    from memvane.vectorcache.writer import Writer
+    return Writer(directory, profile_id=profile_id, recipe_id=recipe_id, dimension=dimension,
+                  store_incarnation=store_incarnation)

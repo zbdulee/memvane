@@ -14,3 +14,18 @@ GAP_ROWS = 256
 CACHE_STATES = ('ok', 'building', 'absent', 'disabled', 'inconsistent')
 # Kernel refusals that name the scanned bytes, not the caller's budget.
 VALUE_REASONS = frozenset(('embedding_values_invalid', 'embedding_set_invalid'))
+
+# The writer's bounds (``writer`` reads them at each use).
+# One pass's catch-up, and one pass's appends ahead of its publications.
+PASS_VECTORS = 4096
+PASS_SECONDS = 2.0
+# Dead rows (replaced or no longer live sets) that start a compaction.
+COMPACT_SHARE = 0.5
+COMPACT_BYTES = 64 * 1024 * 1024
+# An install's arena may grow to twice its live vectors, and at least this.
+INSTALL_FLOOR_BYTES = 256 * 1024 * 1024
+# All installs' arenas together; over it, arenas unused this long are removed, oldest first.
+GLOBAL_BYTES = 2 * 1024 * 1024 * 1024
+IDLE_SECONDS = 14 * 24 * 3600
+# Why a pass's arena did not move although sets are left (``vector.cache`` ``skipped``).
+SKIP_REASONS = ('quota', 'format_newer', 'write_unavailable', 'set_unreadable')

@@ -64,12 +64,15 @@ class Format(ArenaCase):
         self.assertEqual(len(raw), 3 * arena.RECORD_BYTES)
         self.assertEqual(arena.records(raw), {sha(1): (3, 4, sha(13), 9), sha(2): (2, 1, sha(12), 8)})
 
-    def test_a_torn_tail_ends_the_trusted_prefix(self):
+    def test_a_torn_record_is_skipped_and_the_records_after_it_are_read(self):
         good = arena.record(sha(1), 0, 2, sha(11), 7)
         torn = bytearray(arena.record(sha(2), 2, 1, sha(12), 8))
         torn[5] ^= 1
         after = arena.record(sha(3), 3, 1, sha(13), 9)
-        self.assertEqual(list(arena.records(good + bytes(torn) + after)), [sha(1)])
+        self.assertEqual(list(arena.records(good + bytes(torn) + after)), [sha(1), sha(3)])
+        # What the writer leaves of a torn record: zeros up to the record boundary.
+        padded = after[:40] + b'\0' * (arena.RECORD_BYTES - 40)
+        self.assertEqual(list(arena.records(good + padded + after)), [sha(1), sha(3)])
         self.assertEqual(list(arena.records(good + after[:40])), [sha(1)])
         self.assertEqual(arena.records(b''), {})
 
@@ -171,6 +174,14 @@ class Reader(ArenaCase):
             self.write(vec_name, other + raw[arena.PAGE:])
             self.assertIsNone(self.open())
             self.write(vec_name, raw)
+        with self.subTest('idx header of another arena'):
+            raw = (self.directory / idx_name).read_bytes()
+            other = arena.idx_header(dict(self.identity, dimension=4))
+            self.assertNotEqual(other, raw[:arena.IDX_HEADER])
+            self.write(idx_name, other + raw[arena.IDX_HEADER:])
+            self.assertIsNone(self.open())
+            self.write(idx_name, raw)
+            self.assertIsNotNone(self.open())
         with self.subTest('current is not json'):
             self.write(arena.CURRENT, b'{"nonce"')
             self.assertIsNone(self.open())

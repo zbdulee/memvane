@@ -171,3 +171,25 @@ class FillMixin:
                                     write_fence=write_fence, expected_cursor=expected_cursor,
                                     max_files=max_files, max_bytes=max_bytes,
                                     deadline_seconds=deadline_seconds)
+
+    def arena_sets(self, recipe_id, profile_id, blobs=()):
+        """``(dimension, {blob: (chunk count, set digest)})`` of the embedding sets the vector arena mirrors.
+
+        The sets of eligible cards in any view's head or the generation it
+        replaced (what a recall of a current pin can ask for), and of ``blobs``
+        (the members of a generation about to be published).
+        """
+        import json
+        with self._session() as db:
+            self._recipe(recipe_id)
+            dimension = self._profile(profile_id)['dimension']
+            return dimension, {row[0]: (row[1], row[2]) for row in db.execute(
+                'SELECT e.blob_sha,e.chunk_count,e.set_digest FROM embedding_sets e WHERE e.recipe_id=? '
+                'AND e.profile_id=? AND e.blob_sha IN (SELECT c.blob_sha FROM s_cards c JOIN s_heads h '
+                'ON h.view_id=c.view_id WHERE c.eligible=1 AND (c.gen_to IS NULL OR c.gen_to>=h.ordinal) '
+                'UNION SELECT value FROM json_each(?))', (recipe_id, profile_id, json.dumps(sorted(set(blobs)))))}
+
+    def arena_set(self, blob, recipe_id, profile_id):
+        """The float32 bytes of one stored embedding set, validated like a recall's top candidates."""
+        with self._session():
+            return b''.join(row['embedding'] for row in self._vectors(blob, recipe_id, profile_id))

@@ -102,6 +102,17 @@ class ArenaSearch(VectorCase):
                 self.assertEqual(self.reported(timings), ('arena', 0, 'ok'))
                 self.assertEqual(self.reported(plain), ('store', None, 'disabled'))
 
+    def test_the_arena_scan_is_counted_as_scan_time_and_the_rest_as_load_time(self):
+        self.write_arena(self.whole())
+        ticks = iter(range(1000))
+        # One second a reading: open and crc take one, the kernel scan one, the close one;
+        # the candidate pass over the scores is one more of scan time.
+        with mock.patch.object(view_accel_search, 'time', mock.Mock(perf_counter=lambda: next(ticks))):
+            _rows, timings = self.search()
+        self.assertEqual(self.reported(timings), ('arena', 0, 'ok'))
+        self.assertEqual(timings['vectorScanMs'], 2000)
+        self.assertEqual(int(timings['vectorLoadMs']) // 1000, 2)
+
     def test_sets_the_arena_does_not_hold_come_from_the_store(self):
         blobs = list(self.vectors)
         self.write_arena([(blobs[0], self.vectors[blobs[0]]), (blobs[2], self.vectors[blobs[2]])])
@@ -227,3 +238,46 @@ class Heads(VectorCase):
             missing = cards + [{'blob_sha': 'd' * 64, 'eligible': 1}]
             self.assertEqual(self.refused(view_accel_search.heads, store, db, missing, spec, None).reason,
                              self.refused(store._rows_coverage, db, missing, spec, full=False).reason)
+
+    def test_a_set_whose_chunk_and_embedding_counts_differ_is_refused(self):
+        store, _, handle, manifest, recipe, profile = self.configured(2)
+        for member in manifest['members']:
+            self.put_vectors(store, member['blob_sha'], recipe, profile, [A])
+        self.publish(store, handle, manifest, recipe, profile)
+        cards = [{'blob_sha': member['blob_sha'], 'eligible': 1} for member in manifest['members']]
+        spec = {'recipe_id': recipe, 'profile_id': profile}
+        with store._session() as db:
+            real = db.execute
+
+            def skewed(sql, *args):
+                rows = list(real(sql, *args))
+                if 'FROM embedding_sets' in sql:
+                    rows = [(row[0], row[1] + 1, row[2]) for row in rows]
+                return rows
+            with mock.patch.object(view_accel_search.vectors, '_left'):
+                proxy = mock.Mock(execute=skewed)
+                self.assertEqual(self.refused(view_accel_search.heads, store, proxy, cards, spec, None).reason,
+                                 'embedding_set_invalid')
+
+
+class PythonLane(VectorCase):
+    def test_query_vectors_the_work_budget_does_not_pay_for_are_dropped_from_the_end(self):
+        store, _, handle, manifest, recipe, profile = self.configured(2)
+        first, second = [member['blob_sha'] for member in manifest['members']]
+        self.put_vectors(store, first, recipe, profile, [A])
+        self.put_vectors(store, second, recipe, profile, [B])
+        _, pin = self.publish(store, handle, manifest, recipe, profile)
+        self.addCleanup(store.release, pin)
+        paths = {member['blob_sha']: member['path'] for member in manifest['members']}
+        work = 2 * 2  # Two chunks of dimension 2.
+
+        def scores(budget):
+            rows = store.search_exact(pin, [A, B], 2, profile_id=profile, max_float_work=budget)
+            return {row['path']: round(row['score'], 6) for row in rows}
+        # Paid for both vectors: each card meets its own vector.
+        self.assertEqual(scores(2 * work), {paths[first]: 1.0, paths[second]: 1.0})
+        # Paid for one: only the first vector is scored, and the search still answers.
+        self.assertEqual(scores(2 * work - 1), {paths[first]: 1.0, paths[second]: 0.0})
+        self.assertEqual(scores(work), {paths[first]: 1.0, paths[second]: 0.0})
+        self.assertEqual(self.refused(store.search_exact, pin, [A, B], 2, profile_id=profile,
+                                      max_float_work=work - 1).reason, 'vector_work_exceeded')
