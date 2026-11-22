@@ -33,10 +33,12 @@ class EvaluationQueue:
                 db.execute("UPDATE learning_evaluations SET status='queued',retry_at=0,validation_sha=?,reason=NULL WHERE job_id=? AND namespace=?",(validation_sha,job_id,self.scope))
             return self.get(job_id,db=db)
 
-    def finish(self,job_id,status):
+    def finish(self,job_id,status,reason=None):
+        """End an attempt. A ``blocked`` evaluation always carries its reason."""
         if status not in ('completed','waiting_quality','blocked'):raise ValueError('evaluation_status_invalid')
+        if status=='blocked' and not (isinstance(reason,str) and reason):raise ValueError('evaluation_block_reason_required')
         with self.connect() as db:
-            self.schema(db);db.execute("UPDATE learning_evaluations SET status=?,retry_at=0,reason=NULL WHERE job_id=? AND namespace=? AND status NOT IN ('completed','blocked')",(status,job_id,self.scope))
+            self.schema(db);db.execute("UPDATE learning_evaluations SET status=?,retry_at=0,reason=? WHERE job_id=? AND namespace=? AND status NOT IN ('completed','blocked')",(status,reason if status=='blocked' else None,job_id,self.scope))
 
     def reject(self,cycle_id,reason):
         """Close a judged candidate's evaluation (``blocked``); created when missing.

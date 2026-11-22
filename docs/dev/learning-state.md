@@ -160,6 +160,78 @@ teacher)만 담는다.
 | `staged_evaluated` | `carried` | `staged` | `candidate_close.carry_candidate` |
 | `staged_evaluated` | `reevaluation_needed` | `staged` | `automatic_staging._prepare_evaluation` |
 
+## M5 evaluation
+
+- 저장 위치: learning DB learning_evaluations.status
+- lock: evaluation-claim.lock (one attempt), database transaction (each step)
+- 쓰는 주체: learning cycle of the project worker
+- 상태: `(absent)`, `queued`, `running`, `deferred`, `waiting_quality`, `completed`, `blocked` (종결)
+
+| 상태 | 사건 | 다음 | 쓰는 곳 |
+|---|---|---|---|
+| `(absent)` | `ensure` | `queued` | `evaluation_queue.EvaluationQueue` |
+| `(absent)` | `reject` | `blocked` | `evaluation_queue.EvaluationQueue` |
+| `queued` | `block` | `blocked` | `evaluation_queue.EvaluationQueue` |
+| `queued` | `carried` | `(absent)` | `candidate_close.carry_candidate` |
+| `queued` | `claim` | `running` | `evaluation_queue.EvaluationQueue` |
+| `queued` | `defer` | `deferred` | `evaluation_queue.EvaluationQueue` |
+| `queued` | `evaluated` | `completed` | `evaluation_queue.EvaluationQueue` |
+| `queued` | `fail_limit` | `blocked` | `evaluation_queue.EvaluationQueue` |
+| `queued` | `reject` | `blocked` | `evaluation_queue.EvaluationQueue` |
+| `queued` | `too_few_cases` | `waiting_quality` | `evaluation_queue.EvaluationQueue` |
+| `running` | `block` | `blocked` | `evaluation_queue.EvaluationQueue` |
+| `running` | `carried` | `(absent)` | `candidate_close.carry_candidate` |
+| `running` | `claim_released` | `deferred` | `evaluation_queue.EvaluationQueue` |
+| `running` | `defer` | `deferred` | `evaluation_queue.EvaluationQueue` |
+| `running` | `evaluated` | `completed` | `evaluation_queue.EvaluationQueue` |
+| `running` | `fail_limit` | `blocked` | `evaluation_queue.EvaluationQueue` |
+| `running` | `reject` | `blocked` | `evaluation_queue.EvaluationQueue` |
+| `running` | `too_few_cases` | `waiting_quality` | `evaluation_queue.EvaluationQueue` |
+| `deferred` | `block` | `blocked` | `evaluation_queue.EvaluationQueue` |
+| `deferred` | `carried` | `(absent)` | `candidate_close.carry_candidate` |
+| `deferred` | `claim` | `running` | `evaluation_queue.EvaluationQueue` |
+| `deferred` | `evaluated` | `completed` | `evaluation_queue.EvaluationQueue` |
+| `deferred` | `fail_limit` | `blocked` | `evaluation_queue.EvaluationQueue` |
+| `deferred` | `reject` | `blocked` | `evaluation_queue.EvaluationQueue` |
+| `deferred` | `too_few_cases` | `waiting_quality` | `evaluation_queue.EvaluationQueue` |
+| `waiting_quality` | `block` | `blocked` | `evaluation_queue.EvaluationQueue` |
+| `waiting_quality` | `carried` | `(absent)` | `candidate_close.carry_candidate` |
+| `waiting_quality` | `evaluated` | `completed` | `evaluation_queue.EvaluationQueue` |
+| `waiting_quality` | `refresh` | `queued` | `evaluation_queue.EvaluationQueue` |
+| `waiting_quality` | `reject` | `blocked` | `evaluation_queue.EvaluationQueue` |
+| `waiting_quality` | `validation_changed` | `queued` | `evaluation_queue.EvaluationQueue` |
+| `completed` | `carried` | `(absent)` | `candidate_close.carry_candidate` |
+| `completed` | `refresh` | `queued` | `evaluation_queue.EvaluationQueue` |
+| `completed` | `reject` | `blocked` | `evaluation_queue.EvaluationQueue` |
+| `blocked` | `carried` | `(absent)` | `candidate_close.carry_candidate` |
+
+## M6 application
+
+- 저장 위치: candidate-apply.json phase
+- lock: candidate-apply.lock, cycles/cycle.lock
+- 쓰는 주체: learning cycle of the project worker
+- 상태: `(absent)`, `intent`, `prepared`, `pointer_committed`, `activated` (종결), `rejected` (종결)
+
+| 상태 | 사건 | 다음 | 쓰는 곳 |
+|---|---|---|---|
+| `(absent)` | `intent_formed` | `intent` | `candidate_apply.apply_candidate` |
+| `intent` | `ended` | `rejected` | `candidate_apply.apply_candidate` |
+| `intent` | `prepared_by_service` | `prepared` | `candidate_apply.apply_candidate` |
+| `prepared` | `ended` | `rejected` | `candidate_apply.apply_candidate` |
+| `prepared` | `pointer_committed` | `pointer_committed` | `candidate_apply.apply_candidate` |
+| `pointer_committed` | `activated_by_service` | `activated` | `candidate_apply.apply_candidate` |
+
+## M7 active checkpoint
+
+- 저장 위치: active-checkpoint.json
+- lock: cycles/cycle.lock
+- 쓰는 주체: learning cycle of the project worker
+- 상태: `incumbent`, `candidate`
+
+| 상태 | 사건 | 다음 | 쓰는 곳 |
+|---|---|---|---|
+| `incumbent` | `pointer_written` | `candidate` | `candidate_apply.apply_candidate` |
+
 ## M15 teacher host
 
 - 저장 위치: teacher-host-state.json hosts.<host>

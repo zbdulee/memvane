@@ -16,7 +16,7 @@ def resolve(dotted):
 
 class StateModel(unittest.TestCase):
     def test_every_machine_is_closed_over_its_states_and_events(self):
-        self.assertEqual([machine.name for machine in state_model.MACHINES], ['M1', 'M1U', 'M1T', 'M2', 'M3', 'M4', 'M15'])
+        self.assertEqual([machine.name for machine in state_model.MACHINES], ['M1', 'M1U', 'M1T', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M15'])
         for machine in state_model.MACHINES:
             with self.subTest(machine=machine.name):
                 self.assertEqual(len(set(machine.states)), len(machine.states))
@@ -30,8 +30,8 @@ class StateModel(unittest.TestCase):
                            if state in machine.terminal}
                 self.assertTrue(all(after == state_model.ABSENT for after in leaving.values()), leaving)
                 # Every state is reached by some transition (a row starts absent).
-                # (A mark's first state is the column's default.)
-                reached = set(machine.transitions.values()) | {state_model.ABSENT, 'unmarked'}
+                # (A mark's first state is the column's default; the first pointer is enrollment's.)
+                reached = set(machine.transitions.values()) | {state_model.ABSENT, 'unmarked', 'incumbent'}
                 self.assertEqual(set(machine.states) - reached, set())
 
     def test_an_unlisted_pair_keeps_its_state(self):

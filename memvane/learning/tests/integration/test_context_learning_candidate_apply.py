@@ -38,7 +38,7 @@ class Checks(unittest.TestCase):
   folder.parent.chmod(0o700)
   self.write(folder/'candidate.artifact',b'candidate')
   score={'questions':50,'exact_rate':1.0,'necessary_recall':1.0,'irrelevant_injection_rate':0.0,'none_exact_rate':1.0}
-  self.stage={'authorizationSha256':job['approval'],'sourceActiveAtStage':True,'artifactPath':str(folder/'candidate.artifact'),'artifactSha256':shared._hash(folder/'candidate.artifact'),'baseArtifactSha256':shared._hash(self.policy['baseArtifact']),'trainEvidenceSha256':automatic_staging._case_evidence(self.train),'model_input_view':self.profile['view'],'trainCases':[{'projectRoot':r[7],'requestId':r[1],'inputSha256':r[2]} for r in self.train], 'validationCases':[{'projectRoot':r[7],'requestId':r[1],'inputSha256':r[2]} for r in self.validation], 'metrics':{'incumbent':score,'candidate':score,'validation_questions':50,'empty_validation':10,'evaluatedAt':time.time(),'validationEvidenceSha256':automatic_staging._case_evidence(self.validation),'incumbentArtifactSha256':self.old['artifact_sha256'],'applied':False}}
+  self.stage={'authorizationSha256':job['approval'],'sourceActiveAtStage':True,'artifactPath':str(folder/'candidate.artifact'),'artifactSha256':shared._hash(folder/'candidate.artifact'),'baseArtifactSha256':shared._hash(self.policy['baseArtifact']),'trainEvidenceSha256':automatic_staging._case_evidence(self.train),'model_input_view':self.profile['view'],'trainCases':[{'projectRoot':r[7],'requestId':r[1],'inputSha256':r[2]} for r in self.train], 'validationCases':[{'projectRoot':r[7],'requestId':r[1],'inputSha256':r[2]} for r in self.validation], 'metrics':{'incumbent':{**score,'exact_rate':.9},'candidate':score,'validation_questions':50,'empty_validation':10,'evaluatedAt':time.time(),'validationEvidenceSha256':automatic_staging._case_evidence(self.validation),'incumbentArtifactSha256':self.old['artifact_sha256'],'applied':False}}
   with db(None) as conn:conn.execute('INSERT INTO cycles VALUES (?,?,?,?,NULL)',(self.cycle,'staged_evaluated',canonical(self.stage),time.time()))
   self.events=[];self.low=False
  def row(self,i,kind):
@@ -66,7 +66,10 @@ class Checks(unittest.TestCase):
   self.low=True;answer=self.run_apply();self.assertEqual(answer['status'],'apply_deferred')
   self.assertEqual(json.loads((self.root/'active-checkpoint.json').read_text()),self.old)
   self.scope.side_effect=ValueError('revoked')
-  answer=self.run_apply();self.assertEqual(answer['status'],'apply_blocked')
+  # Under a journal a lost authority decides nothing about the candidate: asked again later.
+  with patch.object(A.time,'time',return_value=A.read_journal(self.root)['retry_at']+1):answer=self.run_apply()
+  self.assertEqual((answer['status'],answer['failures']),('apply_deferred',1))
+  self.assertEqual(A.read_journal(self.root)['phase'],'intent')
   self.assertEqual(json.loads((self.root/'active-checkpoint.json').read_text()),self.old)
  def test_failed_quality_or_stale_source_preserves_old(self):
   self.stage['metrics']['candidate']={**self.stage['metrics']['candidate'],'exact_rate':.5}
@@ -166,7 +169,7 @@ class Checks(unittest.TestCase):
   from memvane.learning.context_learning.evaluation_queue import EvaluationQueue
   from memvane.settings import api as config
   self.profile['localTrain']=True
-  evaluations=EvaluationQueue(self.root);job=evaluations.ensure(self.cycle,'pin','val');evaluations.finish(job['id'],'blocked')
+  evaluations=EvaluationQueue(self.root);job=evaluations.ensure(self.cycle,'pin','val');evaluations.finish(job['id'],'blocked','fixture_closed')
   cfg={'sharedLearning':{'enabled':True,'root':str(self.root),'profile':learning_profile.SCHEMA}}
   policy={**self.policy,'_runtime_authorization_v2':True}
   with patch.object(config,'find_project_config',return_value={'config':cfg}),patch.object(shared,'_safe_root',return_value=self.root),patch.object(shared,'_policy',return_value=policy),patch.object(learning_profile,'present',return_value=True),patch.object(shared,'train_due',return_value={'status':'waiting_fresh_batch'}) as train,patch.object(automatic_staging,'evaluate_pending',side_effect=AssertionError('blocked candidate retried')):

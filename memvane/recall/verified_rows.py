@@ -25,7 +25,8 @@ SELECTOR_PROMPT_BYTES = 65536
 
 # Selector work measured by the inference worker (``adapter.predict_loaded``),
 # the service and its client, renamed for the recall event (no field name may
-# contain "token": the event log drops it). Numbers and the device only.
+# contain "token": the event log drops it). Numbers, the device and the
+# checkpoint's hash prefix only.
 _SELECTOR_MEASURES = (('pairs', 'selectorPairs'), ('planned_pairs', 'selectorPlannedPairs'),
                       ('batches', 'selectorBatches'), ('truncated_pairs', 'selectorTruncatedPairs'),
                       ('max_batch_size', 'selectorBatchLimit'),
@@ -96,6 +97,11 @@ def _selector_measurement(trace, resources) -> None:
         device = resources.get('device')
         if isinstance(device, str) and device.split(':', 1)[0] in ('cpu', 'mps', 'cuda'):
             fields['selectorDevice'] = device.split(':', 1)[0]
+        # The artifact that scored this recall: twelve hex of its SHA-256.
+        checkpoint = resources.get('checkpoint')
+        if (isinstance(checkpoint, str) and len(checkpoint) == 12
+                and all(char in '0123456789abcdef' for char in checkpoint)):
+            fields['selectorCheckpoint'] = checkpoint
         if fields:
             trace.fields(**fields)
     except Exception:

@@ -330,6 +330,8 @@ class PromptLane(SelectorEntry):
                 self.assertEqual((row['selectorLane'], row['selectorCandidates']), ('prompt', 1))
                 # The worker's reuse mark reaches the recall event.
                 self.assertEqual(row['selectorIdentityReused'], 1)
+                # The artifact that scored the recall is named on its row.
+                self.assertEqual(row['selectorCheckpoint'], hashlib.sha256(b'fixture head').hexdigest()[:12])
                 self.assertLessEqual(row['selectorQueryChunks'], 4)
                 self.assertEqual(row['selectorQueryChunks'], 4)
                 self.assertGreater(row['selectorDroppedQuery'], 0)
@@ -366,7 +368,7 @@ class PromptLane(SelectorEntry):
                              name)
         selector = {key: value for key, value in row.items() if key.startswith('selector')}
         strings = {key for key, value in selector.items() if not type(value) in (int, float)}
-        self.assertLessEqual(strings, {'selectorLane', 'selectorDevice'}, selector)
+        self.assertLessEqual(strings, {'selectorLane', 'selectorDevice', 'selectorCheckpoint'}, selector)
 
     def test_a_stalled_prompt_selector_serves_the_ranked_rows(self):
         # Item 18: the service holds the request past the lane budget.
@@ -459,6 +461,7 @@ class EditLane(SelectorEntry):
                 self.assertEqual(code, 0, err)
                 [row] = self.rows('recall.edit', session)
                 self.assertEqual(row['selection'], 'selector', row)
+                self.assertEqual(row['selectorCheckpoint'], hashlib.sha256(b'fixture head').hexdigest()[:12])
                 [choose] = [r for r in self.child_log('choose') if r['lane'] == 'edit'][-1:]
                 self.assertEqual((choose['pair_budget'], choose['skip_busy']), (91, True))
                 self.assertGreater(choose['prompt_chars'], 2000)

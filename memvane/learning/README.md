@@ -222,7 +222,12 @@ default-teacher는 gold가 `minQualityTrainCases`(100건) 전이면 job을 계�
 도중의 `ResourceDeferred`는 아무것도 닫지 않고 그 pass를 `deferred_resource`로 끝낸다. 또한 후보 적용이 판정 사유(`candidate_apply.JUDGED`)로
 거절되거나 apply journal이 `rejected`로 끝나면 `candidate_close.close_judged`가 `EvaluationQueue.reject`로
 두 프로필 모두에서 해당 후보(및 완료된 채 열려 있는 선행 후보 `superseded_by_judged`)를 닫아 재적용을
-막는다.
+막는다. 적용 기준은 세 지표(`necessary_recall`·`none_exact_rate`·`irrelevant_injection_rate`) 무회귀와
+`exact_rate`가 incumbent보다 큰 것이다(같으면 `apply_quality_not_improved`). 정책 파일의 `targetExact`는
+파일에 남고 이 판정에 읽지 않는다. 포인터가 아직 incumbent일 때 적용을 끝내는(`rejected`와 `reason`) 것은
+판정 사유, resident가 prepare·activate 요청을 스스로 거절한 것, 쓸 수 없게 된 journal, 그 밖의 실패 연속
+5회뿐이다. 그 밖의 실패는 backoff 뒤 다시 시도하고(`apply_deferred`와 `failures`), `apply_quality_stale`은
+아무것도 정하지 않고 재평가로 간다. 평가는 사유가 있을 때만 `blocked`가 된다.
 
 hook은 teacher 전송·격리·tier·전환 모듈을 import하지 않는다. SessionStart 안내는
 `teacher_state.py`(stdlib와 kernel만 import)로 `teacher-host-state.json`과 전환 intent의

@@ -12,7 +12,27 @@ from . import inference_identity as identity,resident
 JOURNAL='candidate-apply.json'
 # Application refusals that judge the candidate itself (``validate_candidate`` and a
 # journal already ``rejected``). The candidate's evaluation is closed on them.
-JUDGED=('apply_quality_regression','apply_quality_below_target','apply_quality_invalid','candidate_rejected')
+# ``apply_quality_below_target`` is no longer raised: it stays for journals an older bundle wrote.
+JUDGED=('apply_quality_regression','apply_quality_not_improved','apply_quality_below_target',
+        'apply_quality_invalid','candidate_rejected')
+# The resident refused this candidate. Its momentary states (busy, starting, out of
+# time) reach here as ``ResourceDeferred``, so any other answer is about the candidate.
+REFUSED=('apply_prepare_failed','apply_activation_failed')
+# The journal no longer describes this application (changed bytes, or what it was formed
+# from changed after something was committed under it): no later attempt can use it.
+UNUSABLE=('apply_journal_binding_changed','apply_intent_changed')
+# The evaluation is too old or its cases changed: nothing is decided, it is evaluated again.
+STALE='apply_quality_stale'
+# Any other failure with a journal is tried again; this many in a row end the application.
+FAILURE_LIMIT=5
+
+class Refused(ValueError):
+    """The resident answered a request with a failure of its own (not a momentary state)."""
+
+def _ask(transport,command,row):
+    try:return transport(command,row)
+    except ResourceDeferred:raise
+    except ValueError as exc:raise Refused(str(exc)) from exc
 ARCHIVE='candidate-applications'
 SCHEMA='qmd-candidate-application-v1'
 
@@ -99,7 +119,9 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
             raise ValueError('apply_quality_invalid')
         if (after[metric]>before[metric] if metric=='irrelevant_injection_rate' else after[metric]<before[metric]):
             raise ValueError('apply_quality_regression')
-    if after['exact_rate']<policy['targetExact']:raise ValueError('apply_quality_below_target')
+    # Applied only when exact improves; equal is not an improvement. The policy file's
+    # ``targetExact`` stays in the file and is not read here.
+    if not after['exact_rate']>before['exact_rate']:raise ValueError('apply_quality_not_improved')
     current=read_private_json(root/'active-checkpoint.json')
     incumbent=expected['old_pointer'] if expected else current
     if metrics.get('incumbentArtifactSha256')!=incumbent['artifact_sha256']:
@@ -166,8 +188,14 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
         if row and row['cycle_id']!=cycle_id:
             if row['phase'] not in ('activated','rejected'):raise ValueError('apply_other_transaction_pending')
             _archive(root,row);row=None
-        if row is None:
-            row=_intent(root,policy,cycle_id);put(path,row);fault('intent')
+        if row is not None and row['phase']=='intent' and row.get('retry_at',0)>time.time():
+            return {'status':'apply_deferred','next_retry':row['retry_at'],'cycle_id':cycle_id}
+        if row is None or row['phase']=='intent':
+            # Nothing is committed under an intent: it is formed again from what is true now,
+            # so a re-evaluation never leaves an intent that can only fail. Its count is kept.
+            fresh=_intent(root,policy,cycle_id)
+            if row is not None:fresh['failures']=row.get('failures',0)
+            row=fresh;put(path,row);fault('intent')
         validate_candidate(root,policy,cycle_id,expected=row);_check_receipts(root,row)
         if row['phase']=='rejected':return {'status':'apply_blocked','reason':'candidate_rejected','cycle_id':cycle_id}
         if row['phase']=='activated':
@@ -177,7 +205,7 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
         row['attempts']=row.get('attempts',0)+1;row['retry_at']=0;put(path,row)
         current=read_private_json(root/'active-checkpoint.json')
         if current==row['old_pointer']:
-            answer=transport('prepare',row);fault('service_prepared')
+            answer=_ask(transport,'prepare',row);fault('service_prepared')
             if answer.get('status')!='prepared' or not isinstance(answer.get('token'),str):raise ValueError('apply_prepare_failed')
             row['token']=answer['token'];row['phase']='prepared';put(path,row);fault('prepared')
             validate_candidate(root,policy,cycle_id,expected=row);_check_receipts(root,row)
@@ -190,11 +218,11 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
         put(root/identity.BINDING,{'schema':identity.SCHEMA,'receipt_sha256':digest(row['new_receipt'])});fault('binding_written')
         row['phase']='pointer_committed';put(path,row);fault('pointer_committed')
         # Reconstruct preparation if the worker restarted or its bounded slot expired.
-        answer=transport('prepare',row)
+        answer=_ask(transport,'prepare',row)
         if answer.get('status')!='prepared' or (row['token'] is not None and answer.get('token')!=row['token']):raise ValueError('apply_generation_changed')
         row['token']=answer['token'];put(path,row)
         validate_candidate(root,policy,cycle_id,expected=row)
-        answer=transport('activate',row);fault('service_activated')
+        answer=_ask(transport,'activate',row);fault('service_activated')
         if answer.get('status')!='activated' or answer.get('token')!=row['token']:raise ValueError('apply_activation_failed')
         validate_candidate(root,policy,cycle_id,expected=row)
         row['phase']='activated';put(path,row);fault('activated')
@@ -205,10 +233,20 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
         if row is not None:row['retry_at']=retry;put(root/JOURNAL,row)
         return {'status':'apply_deferred','reason':str(exc)[:80],'cycle_id':cycle_id,'next_retry':retry}
     except (OSError,ValueError,KeyError,TypeError) as exc:
-        if (row is not None and row['cycle_id']==cycle_id and row['phase'] not in ('activated','rejected')
+        reason=str(exc)[:80]
+        if (reason!=STALE and row is not None and row['cycle_id']==cycle_id
+                and row['phase'] not in ('activated','rejected')
                 and read_private_json(root/'active-checkpoint.json')==row['old_pointer']):
-            row['phase']='rejected';put(root/JOURNAL,row)
-        return {'status':'apply_blocked','reason':str(exc)[:80],'cycle_id':cycle_id}
+            if not isinstance(exc,Refused) and reason not in JUDGED+REFUSED+UNUSABLE:
+                row['failures']=row.get('failures',0)+1
+                if row['failures']<FAILURE_LIMIT:
+                    retry=time.time()+min(300,30*2**min(row['failures']-1,4))
+                    row['retry_at']=retry;put(root/JOURNAL,row)
+                    return {'status':'apply_deferred','reason':reason,'cycle_id':cycle_id,
+                            'next_retry':retry,'failures':row['failures']}
+            # A judgment, the resident's refusal, an unusable journal, or the limit of other failures.
+            row['phase']='rejected';row['reason']=reason;put(root/JOURNAL,row)
+        return {'status':'apply_blocked','reason':reason,'cycle_id':cycle_id}
     finally:
         if pointer_fd is not None:os.close(pointer_fd)
         os.close(fd)

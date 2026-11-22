@@ -181,7 +181,7 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
         return selected, 'selected', {
             **resources, 'client_identity_seconds': round(client_identity_seconds, 6), 'argv_seconds': round(argv_seconds, 6),
             'model_version': active.get('cycle_id'), 'model_input_view': active.get('model_input_view'),
-            'selector_wall_seconds': round(time.perf_counter() - started, 6)}
+            'checkpoint': str(active.get('artifact_sha256'))[:12], 'selector_wall_seconds': round(time.perf_counter() - started, 6)}
     except (OSError, ValueError, KeyError, TypeError, IndexError, json.JSONDecodeError) as exc:
         reason = str(exc)
         if reason == 'trainer_timeout':

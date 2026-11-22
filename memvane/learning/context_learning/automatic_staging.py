@@ -417,7 +417,10 @@ def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*
         if status=='staged_evaluated':queue.finish(evaluation['id'],'completed')
         elif status=='staged_waiting_quality_cohort':queue.finish(evaluation['id'],'waiting_quality')
         elif status=='staged_evaluation_deferred':queue.defer(evaluation['id'],result.get('reason','resource'),failure=result.get('failure',False))
-        else:queue.finish(evaluation['id'],'blocked')
+        # The evaluated rows moved under the attempt, or the approval is being replaced:
+        # nothing about the candidate is decided. Asked again; renewal closes what it replaces.
+        elif status in ('staged_cohort_changed','staged_authorization_expired'):queue.defer(evaluation['id'],status)
+        else:queue.finish(evaluation['id'],'blocked',status)
         return result
 
 

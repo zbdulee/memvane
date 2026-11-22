@@ -2225,7 +2225,7 @@ def _profile_apply(root,policy,profile,result):
             if close_judged(root,result['cycle_id'],answer,queue) is None and job is not None:
                 if answer['status']=='apply_deferred':queue.defer(job['id'],'apply_resource')
                 elif answer['status'] in ('applied','already_applied'):queue.finish(job['id'],'completed')
-                elif answer['status']=='apply_blocked':queue.finish(job['id'],'blocked')
+                elif answer['status']=='apply_blocked':queue.finish(job['id'],'blocked',str(answer.get('reason') or 'apply_blocked')[:80])
         return answer
     return result
 

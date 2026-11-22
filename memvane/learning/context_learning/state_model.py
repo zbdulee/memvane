@@ -263,4 +263,75 @@ M4 = Machine(
         'applied': 'memvane.learning.context_learning.candidate_apply._finish_cycle',
     })
 
-MACHINES = (M1, M1U, M1T, M2, M3, M4, M15)
+# M5: the quality evaluation of one staged cycle (``learning_evaluations.status``).
+# ``completed`` is not final: a stale or changed evaluation is queued again, and a
+# judged candidate is closed. ``blocked`` always carries its reason. A candidate
+# carried to a renewed approval loses its row; the next pass makes a new one.
+_EVALUATIONS = 'memvane.learning.context_learning.evaluation_queue.EvaluationQueue'
+_OPEN_EVALUATION = ('queued', 'running', 'deferred')
+_UNJUDGED = (*_OPEN_EVALUATION, 'waiting_quality')
+M5 = Machine(
+    'M5', 'evaluation', store='learning DB learning_evaluations.status',
+    lock='evaluation-claim.lock (one attempt), database transaction (each step)',
+    owner='learning cycle of the project worker',
+    states=(ABSENT, *_OPEN_EVALUATION, 'waiting_quality', 'completed', 'blocked'),
+    terminal=('blocked',),
+    transitions={
+        (ABSENT, 'ensure'): 'queued',
+        ('waiting_quality', 'validation_changed'): 'queued',
+        ('queued', 'claim'): 'running',
+        ('deferred', 'claim'): 'running',
+        ('running', 'claim_released'): 'deferred',
+        **{(status, 'evaluated'): 'completed' for status in _UNJUDGED},
+        **{(status, 'too_few_cases'): 'waiting_quality' for status in _OPEN_EVALUATION},
+        ('queued', 'defer'): 'deferred',
+        ('running', 'defer'): 'deferred',
+        **{(status, 'fail_limit'): 'blocked' for status in _OPEN_EVALUATION},
+        ('completed', 'refresh'): 'queued',
+        ('waiting_quality', 'refresh'): 'queued',
+        **{(status, 'reject'): 'blocked' for status in (ABSENT, *_UNJUDGED, 'completed')},
+        **{(status, 'block'): 'blocked' for status in _UNJUDGED},
+        **{(status, 'carried'): ABSENT for status in (*_UNJUDGED, 'completed', 'blocked')},
+    },
+    where={
+        **{event: _EVALUATIONS for event in (
+            'ensure', 'validation_changed', 'claim', 'claim_released', 'evaluated', 'too_few_cases',
+            'defer', 'fail_limit', 'refresh', 'reject', 'block')},
+        'carried': 'memvane.learning.context_learning.candidate_close.carry_candidate',
+    })
+
+# M6: the application of one evaluated candidate (``candidate-apply.json`` ``phase``).
+# Nothing is committed under ``intent``, so every attempt forms it again. A failure
+# ends the application only when it judges the candidate, is the resident's own
+# refusal, leaves the journal unusable, or is the fifth other failure in a row; the
+# pointer is then still the incumbent's. A momentary resource state and a stale
+# evaluation change no phase. A finished journal is copied to the archive and
+# replaced when the next candidate's intent is written.
+_APPLY = 'memvane.learning.context_learning.candidate_apply.apply_candidate'
+M6 = Machine(
+    'M6', 'application', store='candidate-apply.json phase',
+    lock='candidate-apply.lock, cycles/cycle.lock', owner='learning cycle of the project worker',
+    states=(ABSENT, 'intent', 'prepared', 'pointer_committed', 'activated', 'rejected'),
+    terminal=('activated', 'rejected'),
+    transitions={
+        (ABSENT, 'intent_formed'): 'intent',
+        ('intent', 'prepared_by_service'): 'prepared',
+        ('prepared', 'pointer_committed'): 'pointer_committed',
+        ('pointer_committed', 'activated_by_service'): 'activated',
+        ('intent', 'ended'): 'rejected',
+        ('prepared', 'ended'): 'rejected',
+    },
+    where={event: _APPLY for event in ('intent_formed', 'prepared_by_service', 'pointer_committed',
+                                       'activated_by_service', 'ended')})
+
+# M7: the artifact recall is scored with (``active-checkpoint.json``). It changes in
+# one place, between ``prepared`` and ``pointer_committed`` of M6, and never back.
+M7 = Machine(
+    'M7', 'active checkpoint', store='active-checkpoint.json',
+    lock='cycles/cycle.lock', owner='learning cycle of the project worker',
+    states=('incumbent', 'candidate'),
+    terminal=(),
+    transitions={('incumbent', 'pointer_written'): 'candidate'},
+    where={'pointer_written': _APPLY})
+
+MACHINES = (M1, M1U, M1T, M2, M3, M4, M5, M6, M7, M15)
