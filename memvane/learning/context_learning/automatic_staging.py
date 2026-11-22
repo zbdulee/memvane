@@ -7,6 +7,7 @@ An insufficient validation cohort leaves a hash-pinned trained artifact staged.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import time
 
@@ -192,6 +193,10 @@ def _prepare_staged(root,policy,grant):
         if not profile['localTrain']:return {'status':'disabled'}
         minimum=profile['minFreshTrainCases']
     queue=LearningQueue(root)
+    if not synthetic:
+        # A job that trainer failures blocked a day ago gets its attempts back.
+        for job_id in queue.rearm():
+            _cycle_event(_project(root,grant),'rearmed',cycle=job_id)
     if synthetic:
         with queue.connect() as db:
             queue.schema(db)
@@ -287,6 +292,7 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
     else:
         meta = None
         start = None
+        progress = _cursor_step(folder)
         try:
             require_operation(root, policy, 'local_train',
                               approval_sha256=grant_sha)
@@ -349,6 +355,11 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
             deferred = isinstance(exc, ResourceDeferred)
             if deferred:
                 record_resource_defer(root, exc.report, reason=str(exc))
+            # A time limit reached after the cursor moved is one slice of the work,
+            # not a failed attempt: the next pass resumes from the cursor.
+            advanced = (not deferred and str(exc) == 'trainer_timeout'
+                        and _cursor_step(folder) > progress)
+            deferred = deferred or advanced
             if meta is not None and start is not None:
                 telemetry_emit(root / 'job-telemetry.jsonl', 'finished',
                     status='failure', run_ms=(time.monotonic() - start) * 1000,
@@ -359,7 +370,7 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
                     ('deferred' if deferred else 'failed', canonical({'reason': str(exc)[:80],
                                 'authorizationSha256': grant_sha,
                                 'trainEvidenceSha256': train_sha}), cycle_id))
-            queue.defer(cycle_id,'resource' if deferred else 'trainer_failed',failure=not deferred)
+            queue.defer(cycle_id,'trainer_progress' if advanced else 'resource' if deferred else 'trainer_failed',failure=not deferred)
             if not deferred:
                 # A deferral gets the worker's own row; a failure names the trainer's frames.
                 _cycle_event(project, 'failed', cycle=cycle_id, reason=str(exc)[:80],
@@ -573,8 +584,32 @@ def _closed(root,cycle_id):
     return evaluation is not None and evaluation['status']=='blocked'
 
 
+def _cursor_step(folder):
+    """Committed optimizer groups of the training cursor under ``folder``; -1 without one."""
+    from .dataset import read_private_json
+    path=folder/'resume/cursor.json'
+    try:
+        step=read_private_json(path).get('next_group') if path.exists() else None
+    except (OSError,ValueError,AttributeError):
+        return -1
+    return step if type(step) is int else -1
+
+
+def _set_aside(artifact):
+    """Move a final artifact no record vouches for to a name nothing reads.
+
+    Kept, not deleted: the bytes stay for review. Returns the new path.
+    """
+    artifact=Path(artifact)
+    if artifact.is_symlink() or not artifact.is_file():raise ValueError('learning_completion_uncertain')
+    target=artifact.with_name(artifact.name+'.uncertain-'+_hash(artifact)[:12])
+    os.replace(artifact,target)
+    return target
+
+
 def _train_once(trainer,request,folder):
-    """A durable completion is reused; uncertain final artifacts never retrain."""
+    """A durable completion is reused. A final artifact without one is set aside:
+    a finished cursor restores it from its head, anything else trains again."""
     from .dataset import read_private_json
     from .local_cycle import _atomic_json
     from .training_cursor import request_identity, completion,recover_completed
@@ -590,8 +625,15 @@ def _train_once(trainer,request,folder):
     cursor_path=folder/'resume/cursor.json'
     if cursor_path.exists() or cursor_path.is_symlink():
         with preparation():
-            if recover_completed(request):return {'schema_version':1,'status':'trained'},{'recovered_cursor':True}
-    if Path(request['artifact_path']).exists() or Path(request['artifact_path']).is_symlink():raise ValueError('learning_completion_uncertain')
+            try:recovered=recover_completed(request)
+            except ValueError as exc:
+                # The cursor is complete and the final bytes are not its head.
+                if str(exc)!='learning_completion_uncertain':raise
+                _set_aside(request['artifact_path'])
+                recovered=recover_completed(request)
+            if recovered:return {'schema_version':1,'status':'trained'},{'recovered_cursor':True}
+    if Path(request['artifact_path']).exists() or Path(request['artifact_path']).is_symlink():
+        _set_aside(request['artifact_path'])
     answer,resources=trainer.call('train',request,folder/'train.json',cwd=folder)
     if answer!={'schema_version':1,'status':'trained'}:raise ValueError('invalid_shared_train_result')
     from .training_cursor import record_completion

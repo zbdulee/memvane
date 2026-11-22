@@ -10,6 +10,15 @@ from .contracts import digest
 from .store import canonical
 from . import resident
 
+# A job blocked by repeated trainer failures is queued again this long after
+# the block (same id and members, counters at zero). The time is kept in
+# ``retry_at``: the table has no other column for it.
+REARM_SECONDS = 86400
+REARMED_REASON = 'trainer_failed'
+# Blocks no later attempt can clear: the members themselves changed, so a new
+# plan necessarily has other members and another id.
+FINAL_BLOCKS = ('source_revoked', 'already_consumed')
+
 
 def semantic_key(row, namespace, family, *, normalize_query=False):
     sample, bodies, gold = json.loads(row[3]), json.loads(row[4]), json.loads(row[5])
@@ -63,7 +72,7 @@ class LearningQueue:
             raise ValueError('holdout_in_training')
         with self.connect() as db:
             self.schema(db)
-            old=db.execute("SELECT job_id FROM learning_jobs WHERE namespace=? AND approval=? AND cohort=? AND family=? AND status IN ('queued','running','deferred','blocked') ORDER BY rowid LIMIT 1",(self.scope,approval,cohort,family)).fetchone()
+            old=db.execute("SELECT job_id FROM learning_jobs WHERE namespace=? AND approval=? AND cohort=? AND family=? AND (status IN ('queued','running','deferred') OR (status='blocked' AND COALESCE(reason,'') NOT IN (?,?))) ORDER BY rowid LIMIT 1",(self.scope,approval,cohort,family,*FINAL_BLOCKS)).fetchone()
             if old:return self.get(old[0],db=db)
             unique={}
             for row in rows:unique.setdefault(semantic_key(row,self.scope,family,normalize_query=cumulative),row)
@@ -136,9 +145,20 @@ class LearningQueue:
             job=self.get(job_id,db=db)
             if job is None:raise ValueError('learning_job_scope_invalid')
             failures=job['failures']+int(failure)
-            retry=now+min(300,30*2**min(job['attempts'],4))
-            db.execute("UPDATE learning_jobs SET status=?,failures=?,retry_at=?,reason=? WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",('blocked' if failures>=3 else 'deferred',failures,retry,reason,job_id,self.scope))
+            blocked=failures>=3
+            retry=now+(REARM_SECONDS if blocked else min(300,30*2**min(job['attempts'],4)))
+            db.execute("UPDATE learning_jobs SET status=?,failures=?,retry_at=?,reason=? WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",('blocked' if blocked else 'deferred',failures,retry,reason,job_id,self.scope))
             return self.get(job_id,db=db)
+
+    def rearm(self, *, now=None):
+        """Queue again the jobs trainer failures blocked a day ago; their ids."""
+        now=time.time() if now is None else now
+        with self.connect() as db:
+            self.schema(db)
+            ids=[r[0] for r in db.execute("SELECT job_id FROM learning_jobs WHERE namespace=? AND status='blocked' AND reason=? AND retry_at<=? ORDER BY rowid",(self.scope,REARMED_REASON,now)).fetchall()]
+            for job_id in ids:
+                db.execute("UPDATE learning_jobs SET status='queued',owner=NULL,attempts=0,failures=0,retry_at=0,reason=NULL WHERE job_id=? AND namespace=? AND status='blocked'",(job_id,self.scope))
+            return ids
 
     def complete(self, job_id, *, db=None):
         if db is None:

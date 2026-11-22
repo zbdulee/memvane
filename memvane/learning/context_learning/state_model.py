@@ -182,4 +182,75 @@ M15 = Machine(
         'wait_expired': 'memvane.learning.context_learning.teacher_state.host_waiting',
     })
 
-MACHINES = (M1, M1U, M2, M15)
+# M3: one pinned training batch (``learning_jobs.status``). A claim is held for the
+# length of one attempt; the block that held it leaves the job ``deferred`` unless
+# the attempt completed it. ``blocked`` by repeated trainer failures is queued again
+# a day later (``rearm``); ``blocked`` because the members themselves changed
+# (``already_consumed``, ``source_revoked``) stays, and the next plan pins other members.
+_QUEUE = 'memvane.learning.context_learning.learning_queue.LearningQueue'
+_OPEN_JOB = ('queued', 'running', 'deferred')
+M3 = Machine(
+    'M3', 'learning job', store='learning DB learning_jobs.status',
+    lock='learning-claim.lock (one attempt), database transaction (each step)',
+    owner='learning cycle of the project worker',
+    states=(ABSENT, *_OPEN_JOB, 'staged', 'blocked'),
+    terminal=('staged',),
+    transitions={
+        (ABSENT, 'plan'): 'queued',
+        ('queued', 'claim'): 'running',
+        ('deferred', 'claim'): 'running',
+        ('running', 'claim_released'): 'deferred',
+        **{(status, 'complete'): 'staged' for status in _OPEN_JOB},
+        ('queued', 'defer'): 'deferred',
+        ('running', 'defer'): 'deferred',
+        ('queued', 'fail'): 'deferred',
+        ('running', 'fail'): 'deferred',
+        **{(status, 'fail_limit'): 'blocked' for status in _OPEN_JOB},
+        **{(status, 'consumed_elsewhere'): 'blocked' for status in _OPEN_JOB},
+        ('running', 'source_revoked'): 'blocked',
+        ('blocked', 'rearm'): 'queued',
+    },
+    where={
+        'plan': _QUEUE, 'claim': _QUEUE, 'claim_released': _QUEUE, 'complete': _QUEUE,
+        'defer': _QUEUE, 'fail': _QUEUE, 'fail_limit': _QUEUE, 'consumed_elsewhere': _QUEUE,
+        'source_revoked': 'memvane.learning.context_learning.automatic_staging._train_pinned',
+        'rearm': _QUEUE,
+    })
+
+# M4: one training cycle (``cycles.status``), keyed by its job id. ``training`` is an
+# attempt in progress or one whose process ended without a word; ``failed`` and
+# ``deferred`` say how the last attempt ended, and every one of the three is trained
+# again by the next attempt. A cycle row has no closed state: a rejected candidate
+# is closed in the evaluation machine.
+_STAGING = 'memvane.learning.context_learning.automatic_staging.'
+_RETRAINED = ('training', 'failed', 'deferred')
+M4 = Machine(
+    'M4', 'cycle', store='learning DB cycles.status',
+    lock='learning-claim.lock (training), evaluation claim (evaluation), apply journal (apply)',
+    owner='learning cycle of the project worker',
+    states=(ABSENT, *_RETRAINED, 'staged', 'staged_evaluated', 'applied'),
+    terminal=('applied',),
+    transitions={
+        (ABSENT, 'train_started'): 'training',
+        **{(status, 'trained'): 'staged' for status in _RETRAINED},
+        ('training', 'train_failed'): 'failed',
+        ('deferred', 'train_failed'): 'failed',
+        ('training', 'train_deferred'): 'deferred',
+        ('failed', 'train_deferred'): 'deferred',
+        ('staged', 'evaluated'): 'staged_evaluated',
+        ('staged_evaluated', 'reevaluation_needed'): 'staged',
+        ('staged_evaluated', 'carried'): 'staged',
+        ('staged_evaluated', 'applied'): 'applied',
+    },
+    where={
+        'train_started': _STAGING + '_train_pinned',
+        'trained': _STAGING + '_train_pinned',
+        'train_failed': _STAGING + '_train_pinned',
+        'train_deferred': _STAGING + '_train_pinned',
+        'evaluated': _STAGING + '_evaluate_impl',
+        'reevaluation_needed': _STAGING + '_prepare_evaluation',
+        'carried': 'memvane.learning.context_learning.candidate_close.carry_candidate',
+        'applied': 'memvane.learning.context_learning.candidate_apply._finish_cycle',
+    })
+
+MACHINES = (M1, M1U, M2, M3, M4, M15)

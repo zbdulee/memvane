@@ -98,6 +98,57 @@ teacher)만 담는다.
 | `pre_send_rejected` | `reserve` | `reserved` | `general_gold_ledger.reserve` |
 | `provider_refused` | `reserve` | `reserved` | `general_gold_ledger.reserve` |
 
+## M3 learning job
+
+- 저장 위치: learning DB learning_jobs.status
+- lock: learning-claim.lock (one attempt), database transaction (each step)
+- 쓰는 주체: learning cycle of the project worker
+- 상태: `(absent)`, `queued`, `running`, `deferred`, `staged` (종결), `blocked`
+
+| 상태 | 사건 | 다음 | 쓰는 곳 |
+|---|---|---|---|
+| `(absent)` | `plan` | `queued` | `learning_queue.LearningQueue` |
+| `queued` | `claim` | `running` | `learning_queue.LearningQueue` |
+| `queued` | `complete` | `staged` | `learning_queue.LearningQueue` |
+| `queued` | `consumed_elsewhere` | `blocked` | `learning_queue.LearningQueue` |
+| `queued` | `defer` | `deferred` | `learning_queue.LearningQueue` |
+| `queued` | `fail` | `deferred` | `learning_queue.LearningQueue` |
+| `queued` | `fail_limit` | `blocked` | `learning_queue.LearningQueue` |
+| `running` | `claim_released` | `deferred` | `learning_queue.LearningQueue` |
+| `running` | `complete` | `staged` | `learning_queue.LearningQueue` |
+| `running` | `consumed_elsewhere` | `blocked` | `learning_queue.LearningQueue` |
+| `running` | `defer` | `deferred` | `learning_queue.LearningQueue` |
+| `running` | `fail` | `deferred` | `learning_queue.LearningQueue` |
+| `running` | `fail_limit` | `blocked` | `learning_queue.LearningQueue` |
+| `running` | `source_revoked` | `blocked` | `automatic_staging._train_pinned` |
+| `deferred` | `claim` | `running` | `learning_queue.LearningQueue` |
+| `deferred` | `complete` | `staged` | `learning_queue.LearningQueue` |
+| `deferred` | `consumed_elsewhere` | `blocked` | `learning_queue.LearningQueue` |
+| `deferred` | `fail_limit` | `blocked` | `learning_queue.LearningQueue` |
+| `blocked` | `rearm` | `queued` | `learning_queue.LearningQueue` |
+
+## M4 cycle
+
+- 저장 위치: learning DB cycles.status
+- lock: learning-claim.lock (training), evaluation claim (evaluation), apply journal (apply)
+- 쓰는 주체: learning cycle of the project worker
+- 상태: `(absent)`, `training`, `failed`, `deferred`, `staged`, `staged_evaluated`, `applied` (종결)
+
+| 상태 | 사건 | 다음 | 쓰는 곳 |
+|---|---|---|---|
+| `(absent)` | `train_started` | `training` | `automatic_staging._train_pinned` |
+| `training` | `train_deferred` | `deferred` | `automatic_staging._train_pinned` |
+| `training` | `train_failed` | `failed` | `automatic_staging._train_pinned` |
+| `training` | `trained` | `staged` | `automatic_staging._train_pinned` |
+| `failed` | `train_deferred` | `deferred` | `automatic_staging._train_pinned` |
+| `failed` | `trained` | `staged` | `automatic_staging._train_pinned` |
+| `deferred` | `train_failed` | `failed` | `automatic_staging._train_pinned` |
+| `deferred` | `trained` | `staged` | `automatic_staging._train_pinned` |
+| `staged` | `evaluated` | `staged_evaluated` | `automatic_staging._evaluate_impl` |
+| `staged_evaluated` | `applied` | `applied` | `candidate_apply._finish_cycle` |
+| `staged_evaluated` | `carried` | `staged` | `candidate_close.carry_candidate` |
+| `staged_evaluated` | `reevaluation_needed` | `staged` | `automatic_staging._prepare_evaluation` |
+
 ## M15 teacher host
 
 - 저장 위치: teacher-host-state.json hosts.<host>
