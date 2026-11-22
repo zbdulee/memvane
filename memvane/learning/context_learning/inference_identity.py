@@ -340,6 +340,10 @@ class IdentityCache:
             self.swept_at = None
             raise
 
+    def end_reuse(self):
+        """The next validation sweeps: what follows no longer stands on the last sweep."""
+        self.swept_at = None
+
     def _verify(self, state, argv, view, reuse):
         started = time.perf_counter()
         began = self.clock()

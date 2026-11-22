@@ -117,7 +117,7 @@ def child_patches(raw):
 
 
 class _Identity:
-    last_timing = {'identity_seconds': 0.0}
+    last_timing = {'identity_seconds': 0.0, 'identity_reused': 1}
 
     def __init__(self):
         self.reuse = []
@@ -328,6 +328,8 @@ class PromptLane(SelectorEntry):
                 self.assertEqual(row['selection'], 'selected', row)
                 self.assertIn('zqheronx', self.context(out))
                 self.assertEqual((row['selectorLane'], row['selectorCandidates']), ('prompt', 1))
+                # The worker's reuse mark reaches the recall event.
+                self.assertEqual(row['selectorIdentityReused'], 1)
                 self.assertLessEqual(row['selectorQueryChunks'], 4)
                 self.assertEqual(row['selectorQueryChunks'], 4)
                 self.assertGreater(row['selectorDroppedQuery'], 0)

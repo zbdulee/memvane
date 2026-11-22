@@ -88,8 +88,10 @@ def _forward(loaded, job, *, limits, timing, cancelled):
 class GenerationEngine:
     """Serial owner: candidate object cannot mutate the incumbent reference."""
     def __init__(self, *, load=_load, forward=_forward,
-                 admission=resident._admission, rss=_rss_mib):
+                 admission=resident._admission, rss=_rss_mib, end_reuse=None):
         self.load, self.forward, self.admission, self.rss = load, forward, admission, rss
+        # Ends the identity reuse window (inference_identity.reuse_window).
+        self.end_reuse = end_reuse or (lambda: _IDENTITY_CACHE.end_reuse())
         self.active = None
         self.footprint_mib = None
         self.pending = None
@@ -110,7 +112,7 @@ class GenerationEngine:
             if self.pending[0]!=token:raise ServiceFailure('busy')
             if self._pending_key(revalidate())!=key or cancelled():raise ServiceFailure('request_changed')
             return token
-        candidate=GenerationEngine(load=self.load,forward=self.forward,admission=self.admission,rss=self.rss)
+        candidate=GenerationEngine(load=self.load,forward=self.forward,admission=self.admission,rss=self.rss,end_reuse=self.end_reuse)
         candidate.active=self.active;candidate.footprint_mib=self.footprint_mib
         candidate.run(job,cancelled=cancelled,revalidate=revalidate)
         self.pending=(token,key,candidate.active,candidate.footprint_mib,job['deadline'])
@@ -232,6 +234,10 @@ class GenerationEngine:
                 if math.isfinite(current) and current <= job['policy']['maxRssMib']:
                     self.active, self.footprint_mib = warm
                     self.cached_load = (job['generation'], timing['model_load_seconds'])
+                    # This load was not swept after it (the request ended
+                    # first): the request that uses the model sweeps, even
+                    # inside the reuse window.
+                    self.end_reuse()
             raise
         if pending is not None:
             self.active = pending

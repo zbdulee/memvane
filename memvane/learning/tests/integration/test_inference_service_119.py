@@ -689,7 +689,7 @@ class IdentitySweepTests(unittest.TestCase):
             self.recall()
         self.assertEqual(self.sweeps.call_count, 1)
 
-    def infer(self, engine, *, lane=True):
+    def infer(self, engine, *, lane=True, cancelled=lambda: False, status='ok'):
         """(sweeps, reused) of one request through the worker's ``infer``."""
         job = {'family': ('runtime', 'base', 'view'), 'generation': ('runtime', 'base', 'view', 'a'),
                'namespace': 'one', 'policy': {'maxRssMib': 1024}, 'request': {},
@@ -706,14 +706,30 @@ class IdentitySweepTests(unittest.TestCase):
             inference_compute = inference
         self.sweeps.reset_mock()
         row = inference_score.infer(engine, Open(), validate, {'namespace': 'one'}, job['deadline'],
-                                    0.0, cancelled=lambda: False, failure=service._failure)
-        self.assertEqual(row['status'], 'ok', row)
-        return self.sweeps.call_count, row['timing']['identity_reused']
+                                    0.0, cancelled=cancelled, failure=service._failure)
+        self.assertEqual(row['status'], status, row)
+        return self.sweeps.call_count, row['timing'].get('identity_reused')
 
-    def engine(self):
-        return service.GenerationEngine(load=lambda job: 'loaded',
-                                        forward=lambda loaded, job, **kw: {'ok': True},
-                                        admission=admit, rss=lambda: 100)
+    def engine(self, load=lambda job: 'loaded'):
+        return service.GenerationEngine(load=load, forward=lambda loaded, job, **kw: {'ok': True},
+                                        admission=admit, rss=lambda: 100,
+                                        end_reuse=self.cache.end_reuse)
+
+    def test_a_load_kept_warm_past_its_deadline_is_swept_by_the_request_that_uses_it(self):
+        now = self.clocked()
+        self.assertEqual(self.recall(), (1, 1, 0))
+        now[0] += 1
+        # Inside the window the request's time ends right after the load: the
+        # model stays warm without the sweep that follows a load.
+        ended = []
+        engine = self.engine(load=lambda job: ended.append(1) or 'loaded')
+        self.assertEqual(self.infer(engine, cancelled=lambda: bool(ended), status='deadline_expired')[0], 0)
+        self.assertIsNotNone(engine.active)
+        # Still inside the window: the request that uses the model sweeps.
+        now[0] += 1
+        self.assertEqual(self.infer(engine), (1, 0))
+        now[0] += 1
+        self.assertEqual(self.infer(engine), (0, 1))
 
     def test_request_inside_the_window_sweeps_only_around_a_model_load(self):
         now = self.clocked()

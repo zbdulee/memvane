@@ -162,7 +162,9 @@ request (one that names its lane) stands on a sweep of the same generation
 that started at most 5 seconds earlier in the same process
 (`inference_identity.IDENTITY_REUSE_SECONDS`): it skips the stat sweep and the
 module walk only, a reused validation does not extend the 5 seconds, and a
-failed validation ends them. Warm-up and apply sweep at every validation.
+failed validation ends them. A first load kept warm after its request ran out
+of time also ends them, so the request that uses that model sweeps. Warm-up
+and apply sweep at every validation.
 A change to the runtime or model directory is therefore found by the first
 sweeping validation after it, at most 5 seconds of recall requests later;
 `selectorIdentityReused` marks a recall whose initial validation was reused. `raw.py` is a separate raw-data adapter with an assumed 0.3.23
