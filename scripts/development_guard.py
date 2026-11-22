@@ -298,7 +298,8 @@ def command_for(kind,argv,full=False,apply=None):
     if not argv:raise GuardError('missing_command')
     if kind not in ('test','model-test'):return argv
     if Path(argv[0]).name!='node' or '--test' not in argv:raise GuardError('test_requires_direct_node_test')
-    result=list(argv);allowed=('1','2','3') if full else ('1',)
+    # A model test loads a real model: one file at a time whatever the caller says.
+    result=list(argv);allowed=('1','2','3') if full and kind=='test' else ('1',)
     for i,arg in enumerate(result):
         if arg.startswith('--test-concurrency='):
             if arg.split('=',1)[1] not in allowed:raise GuardError('test_concurrency_must_be_one')

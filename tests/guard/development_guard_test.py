@@ -471,10 +471,10 @@ class GuardChecks(unittest.TestCase):
             ['node','--test','--test-concurrency=3'],['node','--test','--test-concurrency','2'],
             ['node','--test'])],[3,2,1])
 
-    def _full(self,folder,pressure,command,exclusive=True):
+    def _full(self,folder,pressure,command,exclusive=True,kind='test'):
         from types import SimpleNamespace
         child=SimpleNamespace(pid=500,poll=lambda:0)
-        args=SimpleNamespace(kind='test',command=command,max_seconds=60,sample_seconds=2,
+        args=SimpleNamespace(kind=kind,command=command,max_seconds=60,sample_seconds=2,
                              exclusive=exclusive)
         with patch.object(guard,'execution_hold',return_value=False), \
              patch.object(guard,'system_sample',return_value=dict(self.SAMPLE,pressure=pressure)), \
@@ -495,6 +495,16 @@ class GuardChecks(unittest.TestCase):
                                  ['node','--test',f'--test-concurrency={applied}','one.test.mjs'])
                 self.assertEqual((state['testConcurrencyRequested'],state['testConcurrency'],
                                   state['pressure']),(3,applied,pressure))
+
+    def test_a_model_test_stays_one_file_at_a_time_even_when_exclusive(self):
+        for form in (['--test-concurrency=3'],['--test-concurrency','2']):
+            args=['node','--test',*form,'one.test.mjs']
+            with self.assertRaises(guard.GuardError):guard.command_for('model-test',args,True)
+            with tempfile.TemporaryDirectory() as folder:
+                with self.assertRaises(guard.GuardError):
+                    self._full(folder,'normal',args,kind='model-test')
+                # Refused before the lease: no run record, nothing launched.
+                self.assertEqual(list(Path(folder).iterdir()),[])
 
     def test_a_focused_test_stays_one_file_at_a_time(self):
         with tempfile.TemporaryDirectory() as folder:
