@@ -3,15 +3,17 @@
 A pass that published the main view is acknowledged, so its wake row and the
 row's attempt count are gone; a re-offer is a new request. This module keeps
 what is needed to bound those requests in one small file of the install state
-root (``linked-reoffer.json``): what each waiting view had left to ingest
-after the pass before, the lowest total wait seen, and how many re-offers in a
-row did not lower it.
+root (``linked-reoffer.json``): what each waiting view had left (cards to
+ingest, vector targets to fill) after the pass before, the lowest each has
+been and the fewest views that waited, and how many re-offers in a row set no
+new low.
 
 The wake is offered again only when a waiting view was not reached by the pass
 (``schema3_pass_budget``), is seen for the first time, or has less left to
-ingest than after the pass before. Movement elsewhere (the main view, another
-view) and work that did not lower what is left are no reason. ``CAP`` offers
-in a row without a new low end the free re-offers: the pass then fails as
+than after the pass before. Movement elsewhere (the main view, another view)
+and work that did not lower what is left are no reason. ``CAP`` offers in a
+row without a new low (of any view, or of the number that wait) end the free
+re-offers: the pass then fails as
 ``schema3_linked_pending`` and the wake queue's backoff and retry cap bound it.
 
 The file is a cache. Unreadable, it reads as no history; when it cannot be
@@ -29,6 +31,11 @@ _MAX_BYTES = 256 * 1024
 _MAX_VIEWS = 64
 
 
+def _counts(value):
+    return {key: left for key, left in (value.items() if isinstance(value, dict) else ())
+            if isinstance(key, str) and type(left) is int and left >= 0}
+
+
 def _read(path):
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_BYTES:
@@ -38,11 +45,9 @@ def _read(path):
         return {}
     if not isinstance(value, dict):
         return {}
-    remaining = value.get('remaining')
-    floor, streak = value.get('floor'), value.get('streak')
-    return {'remaining': {root: left for root, left in (remaining.items() if isinstance(remaining, dict) else ())
-                          if isinstance(root, str) and type(left) is int and left >= 0},
-            'floor': floor if type(floor) is int and floor >= 0 else None,
+    views, streak = value.get('views'), value.get('streak')
+    return {'remaining': _counts(value.get('remaining')), 'floors': _counts(value.get('floors')),
+            'views': views if type(views) is int and views >= 0 else None,
             'streak': streak if type(streak) is int and streak >= 0 else 0}
 
 
@@ -61,17 +66,22 @@ def decide(state_root, backlog) -> str:
     before = _read(path)
     remaining = dict(list(backlog['remaining'].items())[:_MAX_VIEWS])
     known = before.get('remaining', {})
-    less = any(root not in known or left < known[root] for root, left in remaining.items())
+    less = any(key not in known or left < known[key] for key, left in remaining.items())
     eligible = backlog['unreached'] > 0 or less
-    total = backlog['views'] + sum(remaining.values())
-    floor, streak = before.get('floor'), before.get('streak', 0)
-    if eligible:
-        if floor is None or total < floor:
-            floor, streak = total, 0
-        else:
-            streak += 1
+    # The lows are kept per view: which views a pass counts changes from pass to pass (one is
+    # reached, another is not), so a sum over them can rise while every view only shrinks.
+    floors = dict(list(before.get('floors', {}).items())[-_MAX_VIEWS:])
+    views, streak = before.get('views'), before.get('streak', 0)
+    lower = views is None or backlog['views'] < views
+    for key, left in remaining.items():
+        if key not in floors or left < floors[key]:
+            floors[key], lower = left, True
+    if lower:
+        views, streak = backlog['views'] if views is None else min(views, backlog['views']), 0
+    elif eligible:
+        streak += 1
     try:
-        atomic_json(path, {'remaining': remaining, 'floor': floor, 'streak': streak})
+        atomic_json(path, {'remaining': remaining, 'floors': floors, 'views': views, 'streak': streak})
     except (OSError, ValueError, TypeError):
         # Checked: without the written count the re-offers would have no bound.
         return 'none'

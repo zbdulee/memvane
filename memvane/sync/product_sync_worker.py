@@ -397,10 +397,6 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
         linked = linked_reoffer.decide(decision.get('stateRoot'), backlog)
     return _settle_vectors(result, reoffer, linked)
 
-    detail = _schema3_vector_detail(result)
-    if detail:
-        result = {**result, 'detail': detail}
-    return result
 
 def _settle_vectors(result, reoffer, linked='none'):
     """The pass result after its views' vectors and waiting linked views are weighed.
@@ -646,8 +642,9 @@ def _linked_waiting(linked):
     ``held``: refused until its checkout changes) by reason, None when every
     view is current. ``backlog`` describes the waiting ones for the re-offer
     decision: how many wait, how many of them the pass did not reach
-    (``schema3_pass_budget``) and what each still has to ingest (``remaining``
-    by root, where the pass counted it); None when none waits.
+    (``schema3_pass_budget``) and what each still has to ingest or to fill
+    with vectors (``remaining`` by root, and by ``<root>#vector``, where the
+    pass counted it); None when none waits.
     """
     summary = {'waiting': 0, 'held': 0, 'reasons': {}}
     backlog = {'views': 0, 'unreached': 0, 'remaining': {}}
@@ -669,6 +666,9 @@ def _linked_waiting(linked):
             backlog['unreached'] += reason == 'schema3_pass_budget'
             if type(item.get('remaining')) is int and item['remaining'] >= 0:
                 backlog['remaining'][item['root']] = item['remaining']
+            if type(vector.get('remaining')) is int and vector['remaining'] >= 0:
+                # A published view whose vector fill goes on: its targets left count as well.
+                backlog['remaining'][item['root'] + '#vector'] = vector['remaining']
     return ((summary if summary['waiting'] or summary['held'] else None),
             (backlog if backlog['views'] else None))
 

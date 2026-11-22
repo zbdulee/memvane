@@ -133,6 +133,10 @@ class Summary(unittest.TestCase):
             'schema3_vector_budget': 1, 'unlabeled': 1}})
         # A held view is not waiting; only a counted ``remaining`` is carried.
         self.assertEqual(backlog, {'views': 4, 'unreached': 1, 'remaining': {'/f': 40}})
+        # A published view still filling vectors carries its targets left.
+        _summary, filling = worker._linked_waiting([{'root': '/g', 'state': 'unchanged', 'vector': {
+            'state': 'pending', 'reason': 'schema3_vector_deadline', 'progress': 3, 'remaining': 17}}])
+        self.assertEqual(filling, {'views': 1, 'unreached': 0, 'remaining': {'/g#vector': 17}})
 
     def test_current_and_held_views_have_no_backlog(self):
         self.assertEqual(worker._linked_waiting([{'root': '/a', 'state': 'unchanged'},
@@ -180,6 +184,27 @@ class Reoffer(FixtureCase):
         self.assertEqual(self.decide(views=2, unreached=2), 'offer')
         self.assertEqual(json.loads(self.path.read_text())['streak'], 0)
 
+    def test_views_counted_in_turn_do_not_hide_that_each_only_shrinks(self):
+        # Two cold views; the pass budget reaches one of them per pass, the other is not counted.
+        self.assertEqual(self.decide(views=2, unreached=1, a=900), 'offer')
+        left = {'a': 900, 'b': 900}
+        answers = []
+        for index in range(3 * linked_reoffer.CAP):
+            name = 'ab'[index % 2]
+            left[name] -= 10
+            answers.append(self.decide(views=2, unreached=1, **{name: left[name]}))
+        self.assertEqual(set(answers), {'offer'})
+        self.assertEqual(json.loads(self.path.read_text())['streak'], 0)
+        # The same turn-taking with nothing getting smaller is capped.
+        answers = [self.decide(views=2, unreached=1, **{'ab'[index % 2]: left['ab'[index % 2]]})
+                   for index in range(linked_reoffer.CAP + 2)]
+        self.assertEqual(answers[-1], 'capped')
+
+    def test_a_linked_views_vector_targets_left_count_like_its_cards(self):
+        self.assertEqual(self.decide(**{'a#vector': 40}), 'offer')
+        self.assertEqual(self.decide(**{'a#vector': 31}), 'offer')
+        self.assertEqual(self.decide(**{'a#vector': 31}), 'none')
+
     def test_a_pass_with_nothing_waiting_forgets_the_history(self):
         for _ in range(linked_reoffer.CAP + 2):
             self.decide(views=3, unreached=3)
@@ -190,7 +215,8 @@ class Reoffer(FixtureCase):
     def test_an_unreadable_history_reads_as_none_and_an_unwritable_one_offers_nothing(self):
         self.path.write_text('{"streak": "many", "remaining": [1], "floor"')
         self.assertEqual(self.decide(a=10), 'offer')
-        self.assertEqual(json.loads(self.path.read_text()), {'floor': 11, 'remaining': {'/a': 10}, 'streak': 0})
+        self.assertEqual(json.loads(self.path.read_text()),
+                         {'floors': {'/a': 10}, 'remaining': {'/a': 10}, 'streak': 0, 'views': 1})
         self.assertEqual(linked_reoffer.decide(None, {'views': 1, 'unreached': 1, 'remaining': {}}), 'none')
         with mock.patch('memvane.kernel.atomic_rename.atomic_json', side_effect=OSError('read-only')):
             self.assertEqual(self.decide(views=5, unreached=5), 'none')
