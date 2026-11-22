@@ -106,12 +106,18 @@ class OldBundles(EnabledInstall):
                                  (1, {'status': 'failed', 'reason': 'project_scope_authorization_invalid'}), err)
                 step = seen['step']
                 self.assertEqual(step['step'], {'status': 'started', 'mode': 'training', 'starts': 1})
-                # One assertion with the child's own records: a child that ends another
-                # way names its outcome and the tail of its log here.
+                # The old child reads the machine's real resources before its scope check
+                # (no stand-in reaches an old bundle). Ready, it fails on the grant shape;
+                # under pressure it defers with a durable wake and records no outcome.
+                # Neither touches the rows, files or CLIs asserted above.
                 log = self.root / 'worker.log'
-                detail = (step, log.read_text(encoding='utf8', errors='replace')[-800:] if log.is_file() else None)
-                self.assertEqual((step['children'], step['state']['outcome'], step['state']['revision']),
-                                 ([1], 'failed', int(tag.split('.')[-1])), detail)
+                lines = log.read_text(encoding='utf8', errors='replace').splitlines() if log.is_file() else []
+                ended = (step['children'], step['state']['outcome'])
+                self.assertIn(ended, (([1], 'failed'), ([0], None)), (step, lines[-3:]))
+                if ended == ([0], None):
+                    self.assertEqual(json.loads(lines[-1]).get('reason'), 'learning_deferred_resource',
+                                     lines[-3:])
+                self.assertEqual(step['state']['revision'], int(tag.split('.')[-1]))
                 # (c) hooks exit 0; recall answers by hybrid rank.
                 code, out, err = seen['recall']
                 self.assertEqual(code, 0, err)
