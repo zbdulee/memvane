@@ -1374,7 +1374,8 @@ class RowsMixin:
             every = [row for row in self._rows_open(db, pin.view_id, head.ordinal) if row['eligible']
                      and _path_allowed(row['path'], path_prefixes, excluded_paths)]
             cards = [row for row in every if (row['path'], row['blob_sha']) not in dropped]
-            heads = self._rows_coverage(db, cards, generation, full=False, deadline=deadline)
+            from memvane.store.view import view_accel_search
+            heads = view_accel_search.heads(self, db, cards, generation, deadline)
             groups = {}
             for row in cards:
                 groups.setdefault(row['blob_sha'], []).append(row)
@@ -1388,7 +1389,6 @@ class RowsMixin:
                          vectorReadMs=0.0, vectorUnpackMs=0.0, vectorDotMs=0.0)
             stats['vectorKernelUnavailable'] = native is None and vector_accel.requested();stats['vectorExcluded'] = len(every) - len(cards)
             if native is not None:
-                from memvane.store.view import view_accel_search
                 top = view_accel_search.search(self, db, groups, heads, recipe_id, profile_id,
                                               dimension, query, limit, deadline, stats, native)
             else:

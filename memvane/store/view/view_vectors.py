@@ -423,8 +423,11 @@ def _check_preferred(paths):
 def _python_top(store, db, groups, heads, recipe_id, profile_id, dimension, query,
                 limit, max_float_work, deadline, stats, preferred_paths):
     """The fully verified Python lane, with its original float-work cap."""
-    if sum(heads[blob]['chunk_count'] for blob in groups) * dimension * len(query) > max_float_work:
+    work = sum(heads[blob]['chunk_count'] for blob in groups) * dimension
+    if work > max_float_work:
         v.fail(WORK_EXCEEDED)
+    # More query vectors than the budget pays for: the first ones (a long prompt's last windows) are kept.
+    query = query[:max(1, max_float_work // max(work, 1))]
     top = []
     for batch in _vector_batches(_preferred_order(groups, preferred_paths), heads):
         _left(deadline)

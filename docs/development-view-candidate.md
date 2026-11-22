@@ -193,6 +193,7 @@ recall의 semantic 단계는 최대 2초(프롬프트·편집 recall 공통, 남
 `query_vector=None`이면 lexical 결과와 빈 semantic 목록, `provider_absent` 상태를
 반환한다. query가 있어도 lexical-only 세대이면 `lexical_only`다.
 semantic 검색 성공은 `complete`, 명시적 work 예산 초과는 `deferred_work_budget`,
+vector arena가 덮지 못한 set의 store 읽기가 상한을 넘으면 `deferred_cache_building`,
 semantic 시간 초과는 `deferred_deadline`이며 이미 완료한 lexical 결과를 유지한다.
 잘못된 profile·query·pin, seal/set 손상과 checkout 변경은 semantic defer로 숨기지 않고 거절한다.
 
@@ -262,7 +263,7 @@ deadline은 SQL progress handler와 유한한 검증 순회에 적용하며 실�
 `generation_seal_mismatch`, `fts_storage_mismatch`, `fts_query_invalid`,
 `fts_deadline_exceeded`, `vector_coverage_incomplete`, `vector_rows_mismatch`,
 `vector_coverage_absent`, `vector_profile_mismatch`, `vector_query_invalid`,
-`vector_work_exceeded`, `vector_deadline_exceeded`다.
+`vector_work_exceeded`, `vector_cache_building`, `vector_deadline_exceeded`다.
 거절 뒤 다른 view로 우회하는 API는 없다.
 
 검증 성공은 store의 구조·일관성에 한정된다. `pin_view`는 head의 구조와 FTS commitment를 확인하고, 이후 store에 commit이 있으면 검색 전에 다시 검증한다. 형식 4의 `verify_views`는 구현되지 않아 `row_format_unsupported`로 거절한다.

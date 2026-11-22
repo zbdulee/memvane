@@ -14,3 +14,32 @@ def scan(arena, covered, *, dimension, queries, native, deadline, stats):
     from memvane.vectorcache.scan import scan as implementation
     return implementation(arena, covered, dimension=dimension, queries=queries, native=native,
                           deadline=deadline, stats=stats)
+
+
+def identity(*, nonce, profile_id, recipe_id, dimension, store_incarnation):
+    """The identity one arena pair is bound to."""
+    from memvane.vectorcache.arena import identity as implementation
+    return implementation(nonce=nonce, profile_id=profile_id, recipe_id=recipe_id, dimension=dimension,
+                          store_incarnation=store_incarnation)
+
+
+def names(nonce):
+    """``(vec file name, idx file name)`` of the arena pair ``nonce``."""
+    from memvane.vectorcache.arena import names as implementation
+    return implementation(nonce)
+
+
+def vec_header(value):
+    from memvane.vectorcache.arena import vec_header as implementation
+    return implementation(value)
+
+
+def idx_header(value):
+    from memvane.vectorcache.arena import idx_header as implementation
+    return implementation(value)
+
+
+def record(blob_sha, first_row, chunk_count, set_digest, vec_crc):
+    """One idx record of a set whose rows start at ``first_row``."""
+    from memvane.vectorcache.arena import record as implementation
+    return implementation(blob_sha, first_row, chunk_count, set_digest, vec_crc)

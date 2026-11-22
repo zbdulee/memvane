@@ -13,8 +13,10 @@ MAX_BODY = 4 * 1024 * 1024
 MAX_CHUNKS = 1024
 WORK_EXCEEDED = 'vector_work_exceeded'
 DEADLINE_EXCEEDED = 'vector_deadline_exceeded'
+# The sets the vector arena does not hold yet are more than one store read may take.
+CACHE_BUILDING = 'vector_cache_building'
 DEFERRED = {WORK_EXCEEDED: 'deferred_work_budget', DEADLINE_EXCEEDED: 'deferred_deadline',
-            'fts_deadline_exceeded': 'deferred_deadline'}
+            'fts_deadline_exceeded': 'deferred_deadline', CACHE_BUILDING: 'deferred_cache_building'}
 FALLBACK_CHARS = (600, 90, 135)
 
 
