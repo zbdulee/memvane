@@ -40,6 +40,20 @@ class EvaluationQueue:
         with self.connect() as db:
             self.schema(db);db.execute("UPDATE learning_evaluations SET status=?,retry_at=0,reason=? WHERE job_id=? AND namespace=? AND status NOT IN ('completed','blocked')",(status,reason if status=='blocked' else None,job_id,self.scope))
 
+    def apply_failed(self,job_id,reason,limit):
+        """Count a failed application that judged nothing on its ``completed`` evaluation.
+
+        At ``limit`` the evaluation closes (``blocked``) with the reason, so a candidate
+        that can never be applied does not keep the next job from being planned.
+        """
+        with self.connect() as db:
+            old=self.get(job_id,db=db)
+            if old is None or old['status']!='completed':return old
+            failures=old['failures']+1
+            db.execute("UPDATE learning_evaluations SET status=?,failures=?,reason=? WHERE job_id=? AND namespace=? AND status='completed'",
+                ('blocked' if failures>=limit else 'completed',failures,reason if failures>=limit else None,job_id,self.scope))
+            return self.get(job_id,db=db)
+
     def reject(self,cycle_id,reason):
         """Close a judged candidate's evaluation (``blocked``); created when missing.
 

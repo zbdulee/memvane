@@ -125,17 +125,19 @@ teacher)만 담는다.
 | `queued` | `defer` | `deferred` | `learning_queue.LearningQueue` |
 | `queued` | `fail` | `deferred` | `learning_queue.LearningQueue` |
 | `queued` | `fail_limit` | `blocked` | `learning_queue.LearningQueue` |
+| `queued` | `source_revoked` | `blocked` | `automatic_staging` |
 | `running` | `claim_released` | `deferred` | `learning_queue.LearningQueue` |
 | `running` | `complete` | `staged` | `learning_queue.LearningQueue` |
 | `running` | `consumed_elsewhere` | `blocked` | `learning_queue.LearningQueue` |
 | `running` | `defer` | `deferred` | `learning_queue.LearningQueue` |
 | `running` | `fail` | `deferred` | `learning_queue.LearningQueue` |
 | `running` | `fail_limit` | `blocked` | `learning_queue.LearningQueue` |
-| `running` | `source_revoked` | `blocked` | `automatic_staging._train_pinned` |
+| `running` | `source_revoked` | `blocked` | `automatic_staging` |
 | `deferred` | `claim` | `running` | `learning_queue.LearningQueue` |
 | `deferred` | `complete` | `staged` | `learning_queue.LearningQueue` |
 | `deferred` | `consumed_elsewhere` | `blocked` | `learning_queue.LearningQueue` |
 | `deferred` | `fail_limit` | `blocked` | `learning_queue.LearningQueue` |
+| `deferred` | `source_revoked` | `blocked` | `automatic_staging` |
 | `blocked` | `rearm` | `queued` | `learning_queue.LearningQueue` |
 
 ## M4 cycle
@@ -200,6 +202,7 @@ teacher)만 담는다.
 | `waiting_quality` | `refresh` | `queued` | `evaluation_queue.EvaluationQueue` |
 | `waiting_quality` | `reject` | `blocked` | `evaluation_queue.EvaluationQueue` |
 | `waiting_quality` | `validation_changed` | `queued` | `evaluation_queue.EvaluationQueue` |
+| `completed` | `apply_failure_limit` | `blocked` | `evaluation_queue.EvaluationQueue` |
 | `completed` | `carried` | `(absent)` | `candidate_close.carry_candidate` |
 | `completed` | `refresh` | `queued` | `evaluation_queue.EvaluationQueue` |
 | `completed` | `reject` | `blocked` | `evaluation_queue.EvaluationQueue` |
@@ -218,6 +221,7 @@ teacher)만 담는다.
 | `intent` | `ended` | `rejected` | `candidate_apply.apply_candidate` |
 | `intent` | `prepared_by_service` | `prepared` | `candidate_apply.apply_candidate` |
 | `prepared` | `ended` | `rejected` | `candidate_apply.apply_candidate` |
+| `prepared` | `intent_formed` | `intent` | `candidate_apply.apply_candidate` |
 | `prepared` | `pointer_committed` | `pointer_committed` | `candidate_apply.apply_candidate` |
 | `pointer_committed` | `activated_by_service` | `activated` | `candidate_apply.apply_candidate` |
 

@@ -2174,10 +2174,9 @@ def run_training_pending(root,project):
             path=root/candidate_apply.JOURNAL
             if path.exists() or path.is_symlink():
                 intent=candidate_apply.read_journal(root)
-                # Something is committed under ``prepared`` and later: that application is
-                # resumed first. An ``intent`` commits nothing, so the pass goes on as usual
-                # and a stale evaluation is refreshed before the candidate is applied.
-                if intent['phase'] not in ('activated','rejected','intent'):
+                # Resumed first only once its pointer is written; before that nothing is committed.
+                if (intent['phase'] not in ('activated','rejected','intent') and (intent['phase']!='prepared'
+                        or read_private_json(root/'active-checkpoint.json')!=intent.get('old_pointer'))):
                     if not profile['autoApply']:return {'status':'apply_blocked','reason':'profile_apply_disabled'}
                     return _profile_apply(root,policy,profile,{'status':'already_staged_evaluated','cycle_id':intent['cycle_id']})
                 if intent['phase']=='activated':
@@ -2228,7 +2227,9 @@ def _profile_apply(root,policy,profile,result):
             if close_judged(root,result['cycle_id'],answer,queue) is None and job is not None:
                 if answer['status']=='apply_deferred':queue.defer(job['id'],'apply_resource')
                 elif answer['status'] in ('applied','already_applied'):queue.finish(job['id'],'completed')
-                elif answer['status']=='apply_blocked':queue.finish(job['id'],'blocked',str(answer.get('reason') or 'apply_blocked')[:80])
+                elif answer['status']=='apply_blocked':
+                    from .candidate_close import unapplied
+                    unapplied(root,result['cycle_id'],answer,queue,job)
         return answer
     return result
 

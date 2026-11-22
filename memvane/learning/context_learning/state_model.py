@@ -217,13 +217,13 @@ M3 = Machine(
         ('running', 'fail'): 'deferred',
         **{(status, 'fail_limit'): 'blocked' for status in _OPEN_JOB},
         **{(status, 'consumed_elsewhere'): 'blocked' for status in _OPEN_JOB},
-        ('running', 'source_revoked'): 'blocked',
+        **{(status, 'source_revoked'): 'blocked' for status in _OPEN_JOB},
         ('blocked', 'rearm'): 'queued',
     },
     where={
         'plan': _QUEUE, 'claim': _QUEUE, 'claim_released': _QUEUE, 'complete': _QUEUE,
         'defer': _QUEUE, 'fail': _QUEUE, 'fail_limit': _QUEUE, 'consumed_elsewhere': _QUEUE,
-        'source_revoked': 'memvane.learning.context_learning.automatic_staging._train_pinned',
+        'source_revoked': 'memvane.learning.context_learning.automatic_staging',
         'rearm': _QUEUE,
     })
 
@@ -291,17 +291,19 @@ M5 = Machine(
         ('waiting_quality', 'refresh'): 'queued',
         **{(status, 'reject'): 'blocked' for status in (ABSENT, *_UNJUDGED, 'completed')},
         **{(status, 'block'): 'blocked' for status in _UNJUDGED},
+        ('completed', 'apply_failure_limit'): 'blocked',
         **{(status, 'carried'): ABSENT for status in (*_UNJUDGED, 'completed', 'blocked')},
     },
     where={
         **{event: _EVALUATIONS for event in (
             'ensure', 'validation_changed', 'claim', 'claim_released', 'evaluated', 'too_few_cases',
-            'defer', 'fail_limit', 'refresh', 'reject', 'block')},
+            'defer', 'fail_limit', 'refresh', 'reject', 'block', 'apply_failure_limit')},
         'carried': 'memvane.learning.context_learning.candidate_close.carry_candidate',
     })
 
 # M6: the application of one evaluated candidate (``candidate-apply.json`` ``phase``).
-# Nothing is committed under ``intent``, so every attempt forms it again. A failure
+# Nothing is committed while the pointer is the incumbent's, so every attempt forms
+# the intent again (also from a ``prepared`` whose pointer was never written). A failure
 # ends the application only when it judges the candidate, is the resident's own
 # refusal, leaves the journal unusable, or is the fifth other failure in a row; the
 # pointer is then still the incumbent's. A momentary resource state and a stale
@@ -316,6 +318,8 @@ M6 = Machine(
     transitions={
         (ABSENT, 'intent_formed'): 'intent',
         ('intent', 'prepared_by_service'): 'prepared',
+        # The pointer was never written under it: the next attempt forms the intent again.
+        ('prepared', 'intent_formed'): 'intent',
         ('prepared', 'pointer_committed'): 'pointer_committed',
         ('pointer_committed', 'activated_by_service'): 'activated',
         ('intent', 'ended'): 'rejected',

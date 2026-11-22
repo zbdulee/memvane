@@ -229,6 +229,12 @@ def _prepare_staged(root,policy,grant):
     try: train=queue.rows(job,cohort_train)
     except ValueError:
         if frozen is not None:prequential.close(root,job['id'],'source_revoked')
+        elif job['status'] in ('queued','running','deferred'):
+            # A member row is gone before the job trained: the job can never train. It is
+            # closed with the reason, and the next plan pins the members that remain.
+            with _db(root) as db:
+                db.execute("UPDATE learning_jobs SET status='blocked',reason='source_revoked' WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",(job['id'],queue.scope))
+            _cycle_event(_project(root,grant),'blocked',cycle=job['id'],reason='source_revoked',failures=job.get('failures'))
         return {'status':'staged_source_revoked','cycle_id':job['id']}
     if sequential:validation=prequential.split(cohort_train,job)
     if job['status']=='blocked':return _blocked_result(root,grant,job)

@@ -163,8 +163,10 @@ class Checks(unittest.TestCase):
   row['new_pointer']={**row['new_pointer'],'artifact_path':self.old['artifact_path'],'artifact_sha256':self.old['artifact_sha256']}
   row['new_receipt']['checkpoint_sha256']=learning_profile.digest(row['new_pointer'])
   self.json(self.root/A.JOURNAL,row)
-  self.assertEqual(self.run_apply()['status'],'apply_blocked')
-  self.assertEqual(json.loads((self.root/'active-checkpoint.json').read_text()),self.old)
+  # 1.1.0: nothing is committed under a prepared journal whose pointer was never written, so
+  # its bytes are not used: the intent is formed again from the validated candidate.
+  self.assertEqual(self.run_apply()['status'],'applied')
+  self.assertEqual(json.loads((self.root/'active-checkpoint.json').read_text())['artifact_sha256'],self.stage['artifactSha256'])
  def test_rejected_quality_does_not_starve_next_fresh_batch(self):
   from memvane.learning.context_learning.evaluation_queue import EvaluationQueue
   from memvane.settings import api as config
@@ -219,14 +221,17 @@ class Checks(unittest.TestCase):
   with patch.object(service,'service_root',return_value=self.root),patch.object(service,'_ensure'),patch.object(service,'_exchange',return_value={'status':'queue_full'}):
    answer=A.apply_candidate(self.root,self.policy,self.cycle)
   self.assertEqual(answer['status'],'apply_deferred');self.assertEqual(json.loads((self.root/'active-checkpoint.json').read_text()),self.old)
- def test_service_identity_and_permission_errors_still_reject_candidate(self):
+ def test_service_identity_and_permission_errors_do_not_reject_candidate(self):
+  # 1.1.0: a request the resident did not answer with its own failure (another bundle's
+  # resident during an update, a refused connection) decides nothing about the candidate.
+  # It is tried again and ends the application only as the fifth failure in a row.
   from memvane.learning.context_learning import inference_service as service
   self.policy['trainerArgv']=[sys.executable,'/fake/adapter',str(self.root/'model')]
   for where,code in (('_ensure','version_mismatch'),('_exchange','version_mismatch'),('_exchange','permission_denied')):
    with self.subTest(where=where,code=code),patch.object(service,'service_root',return_value=self.root),patch.object(service,'_ensure'),patch.object(service,'_exchange'),patch.object(service,where,side_effect=service.ServiceFailure(code)):
     answer=A.apply_candidate(self.root,self.policy,self.cycle)
-   self.assertEqual(answer['status'],'apply_blocked');self.assertEqual(json.loads((self.root/'active-checkpoint.json').read_text()),self.old)
-   self.assertEqual(A.read_journal(self.root)['phase'],'rejected')
+   self.assertEqual((answer['status'],answer['failures']),('apply_deferred',1));self.assertEqual(json.loads((self.root/'active-checkpoint.json').read_text()),self.old)
+   self.assertEqual(A.read_journal(self.root)['phase'],'intent')
    (self.root/A.JOURNAL).unlink()
  def test_revoked_source_before_preparation_preserves_incumbent(self):
   with patch.object(shared,'_case_active',return_value=False):answer=self.run_apply()

@@ -225,9 +225,14 @@ default-teacher는 gold가 `minQualityTrainCases`(100건) 전이면 job을 계�
 막는다. 적용 기준은 세 지표(`necessary_recall`·`none_exact_rate`·`irrelevant_injection_rate`) 무회귀와
 `exact_rate`가 incumbent보다 큰 것이다(같으면 `apply_quality_not_improved`). 정책 파일의 `targetExact`는
 파일에 남고 이 판정에 읽지 않는다. 포인터가 아직 incumbent일 때 적용을 끝내는(`rejected`와 `reason`) 것은
-판정 사유, resident가 prepare·activate 요청을 스스로 거절한 것, 쓸 수 없게 된 journal, 그 밖의 실패 연속
-5회뿐이다. 그 밖의 실패는 backoff 뒤 다시 시도하고(`apply_deferred`와 `failures`), `apply_quality_stale`은
-아무것도 정하지 않고 재평가로 간다. 평가는 사유가 있을 때만 `blocked`가 된다.
+판정 사유, resident가 prepare·activate 요청에 실패로 답한 것, 쓸 수 없게 된 journal, 그 밖의 실패 연속
+5회뿐이다(답을 받지 못한 요청 — 닫히는 resident, 갱신 중의 다른 번들 resident — 은 그 밖의 실패다). 그 밖의 실패는 backoff 뒤 다시 시도하고(`apply_deferred`와 `failures`), `apply_quality_stale`은
+아무것도 정하지 않고 cycle을 `staged`로 되돌려 재평가로 간다. 포인터가 incumbent인 동안은 커밋된 것이 없어
+`intent`와 포인터를 쓰지 못한 `prepared`는 다음 시도가 새로 만든다. 포인터가 후보의 것이 된 뒤에는 판정을
+다시 하지 않고 정체성만 대조해 activation을 끝내며, 그때의 실패는 journal에 `failures`·`reason`으로 남고
+다섯 번째부터 답에 `activationPending`이 실린다. journal이 생기기 전의 실패는 그 후보의 `completed` 평가에
+세어 다섯 번째에 사유와 함께 닫는다. 평가는 사유가 있을 때만 `blocked`가 된다. 학습 전에 구성원 행이 사라진
+열린 job은 `source_revoked`로 닫고 다음 계획이 남은 구성원을 고정한다.
 
 hook은 teacher 전송·격리·tier·전환 모듈을 import하지 않는다. SessionStart 안내는
 `teacher_state.py`(stdlib와 kernel만 import)로 `teacher-host-state.json`과 전환 intent의

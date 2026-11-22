@@ -15,8 +15,10 @@ JOURNAL='candidate-apply.json'
 # ``apply_quality_below_target`` is no longer raised: it stays for journals an older bundle wrote.
 JUDGED=('apply_quality_regression','apply_quality_not_improved','apply_quality_below_target',
         'apply_quality_invalid','candidate_rejected')
-# The resident refused this candidate. Its momentary states (busy, starting, out of
-# time) reach here as ``ResourceDeferred``, so any other answer is about the candidate.
+# The resident answered a prepare or activate request with a failure: it refused this
+# candidate. Its momentary states (busy, starting, out of time) reach here as
+# ``ResourceDeferred``. A request that got no usable answer (a closing resident, another
+# bundle's resident during an update) is not a refusal: it is one of the other failures.
 REFUSED=('apply_prepare_failed','apply_activation_failed')
 # The journal no longer describes this application (changed bytes, or what it was formed
 # from changed after something was committed under it): no later attempt can use it.
@@ -26,13 +28,6 @@ STALE='apply_quality_stale'
 # Any other failure with a journal is tried again; this many in a row end the application.
 FAILURE_LIMIT=5
 
-class Refused(ValueError):
-    """The resident answered a request with a failure of its own (not a momentary state)."""
-
-def _ask(transport,command,row):
-    try:return transport(command,row)
-    except ResourceDeferred:raise
-    except ValueError as exc:raise Refused(str(exc)) from exc
 ARCHIVE='candidate-applications'
 SCHEMA='qmd-candidate-application-v1'
 
@@ -108,21 +103,25 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
         raise ValueError('apply_source_or_artifact_changed')
     metrics=stage['metrics'];before,after=metrics['incumbent'],metrics['candidate']
     evaluated=metrics.get('evaluatedAt')
-    if (type(evaluated)not in(int,float) or not math.isfinite(evaluated)
+    current=read_private_json(root/'active-checkpoint.json')
+    # Once the pointer is the candidate's the decision is made: only the identity of what
+    # was decided is checked again, so new gold or an older evaluation cannot strand an
+    # application between its pointer and its activation.
+    decided=expected is not None and current==expected['new_pointer']
+    if not decided and (type(evaluated)not in(int,float) or not math.isfinite(evaluated)
             or not 0<=time.time()-evaluated<=profile['maxQualityAgeSeconds']
             or metrics.get('validationEvidenceSha256')!=_case_evidence(validation)
             or metrics.get('validation_questions')!=len(validation)
             or stage.get('validationCases')!=[{'projectRoot':r[7],'requestId':r[1],'inputSha256':r[2]} for r in validation]):
         raise ValueError('apply_quality_stale')
-    for metric in ('exact_rate','necessary_recall','irrelevant_injection_rate','none_exact_rate'):
+    for metric in () if decided else ('exact_rate','necessary_recall','irrelevant_injection_rate','none_exact_rate'):
         if any(type(score.get(metric))not in(int,float) or not math.isfinite(score[metric]) or not 0<=score[metric]<=(3 if metric=='irrelevant_injection_rate' else 1) for score in (before,after)):
             raise ValueError('apply_quality_invalid')
         if (after[metric]>before[metric] if metric=='irrelevant_injection_rate' else after[metric]<before[metric]):
             raise ValueError('apply_quality_regression')
     # Applied only when exact improves; equal is not an improvement. The policy file's
     # ``targetExact`` stays in the file and is not read here.
-    if not after['exact_rate']>before['exact_rate']:raise ValueError('apply_quality_not_improved')
-    current=read_private_json(root/'active-checkpoint.json')
+    if not decided and not after['exact_rate']>before['exact_rate']:raise ValueError('apply_quality_not_improved')
     incumbent=expected['old_pointer'] if expected else current
     if metrics.get('incumbentArtifactSha256')!=incumbent['artifact_sha256']:
         raise ValueError('apply_incumbent_changed')
@@ -185,16 +184,20 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
         except BlockingIOError:return {'status':'apply_deferred','reason':'pointer_busy','cycle_id':cycle_id}
         path=root/JOURNAL
         row=read_journal(root) if path.exists() or path.is_symlink() else None
+        # Nothing is committed while the pointer is the incumbent's: an ``intent``, and a
+        # ``prepared`` whose pointer was never written (the resident's pending object expires).
+        uncommitted=(row is not None and row['phase'] in ('intent','prepared')
+                     and read_private_json(root/'active-checkpoint.json')==row['old_pointer'])
         if row and row['cycle_id']!=cycle_id:
-            # Another candidate's intent commits nothing and is replaced; a finished journal is archived.
-            if row['phase'] not in ('activated','rejected','intent'):raise ValueError('apply_other_transaction_pending')
-            if row['phase']!='intent':_archive(root,row)
+            # Another candidate's uncommitted journal is replaced; a finished one is archived.
+            if row['phase'] not in ('activated','rejected') and not uncommitted:raise ValueError('apply_other_transaction_pending')
+            if not uncommitted:_archive(root,row)
             row=None
-        if row is not None and row['phase']=='intent' and row.get('retry_at',0)>time.time():
+        if row is not None and uncommitted and row.get('retry_at',0)>time.time():
             return {'status':'apply_deferred','next_retry':row['retry_at'],'cycle_id':cycle_id}
-        if row is None or row['phase']=='intent':
-            # Nothing is committed under an intent: it is formed again from what is true now,
-            # so a re-evaluation never leaves an intent that can only fail. Its count is kept.
+        if row is None or uncommitted:
+            # It is formed again from what is true now, so a re-evaluation never leaves a
+            # journal that can only fail. Its count of failures is kept.
             fresh=_intent(root,policy,cycle_id)
             if row is not None:fresh['failures']=row.get('failures',0)
             row=fresh;put(path,row);fault('intent')
@@ -207,9 +210,9 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
         row['attempts']=row.get('attempts',0)+1;row['retry_at']=0;put(path,row)
         current=read_private_json(root/'active-checkpoint.json')
         if current==row['old_pointer']:
-            answer=_ask(transport,'prepare',row);fault('service_prepared')
+            answer=transport('prepare',row);fault('service_prepared')
             if answer.get('status')!='prepared' or not isinstance(answer.get('token'),str):raise ValueError('apply_prepare_failed')
-            row['token']=answer['token'];row['phase']='prepared';put(path,row);fault('prepared')
+            row['token']=answer['token'];row['phase']='prepared';row['failures']=0;put(path,row);fault('prepared')
             validate_candidate(root,policy,cycle_id,expected=row);_check_receipts(root,row)
             if read_private_json(root/'active-checkpoint.json')!=row['old_pointer']:raise ValueError('apply_pointer_cas_conflict')
             put(root/'active-checkpoint.json',row['new_pointer']);fault('pointer_written')
@@ -218,13 +221,14 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
         validate_candidate(root,policy,cycle_id,expected=row);_check_receipts(root,row)
         put(root/identity.RECEIPT,row['new_receipt']);fault('receipt_written')
         put(root/identity.BINDING,{'schema':identity.SCHEMA,'receipt_sha256':digest(row['new_receipt'])});fault('binding_written')
+        if row['phase']!='pointer_committed':row['failures']=0
         row['phase']='pointer_committed';put(path,row);fault('pointer_committed')
         # Reconstruct preparation if the worker restarted or its bounded slot expired.
-        answer=_ask(transport,'prepare',row)
+        answer=transport('prepare',row)
         if answer.get('status')!='prepared' or (row['token'] is not None and answer.get('token')!=row['token']):raise ValueError('apply_generation_changed')
         row['token']=answer['token'];put(path,row)
         validate_candidate(root,policy,cycle_id,expected=row)
-        answer=_ask(transport,'activate',row);fault('service_activated')
+        answer=transport('activate',row);fault('service_activated')
         if answer.get('status')!='activated' or answer.get('token')!=row['token']:raise ValueError('apply_activation_failed')
         validate_candidate(root,policy,cycle_id,expected=row)
         row['phase']='activated';put(path,row);fault('activated')
@@ -237,17 +241,25 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
     except (OSError,ValueError,KeyError,TypeError) as exc:
         reason=str(exc)[:80]
         if (reason!=STALE and row is not None and row['cycle_id']==cycle_id
-                and row['phase'] not in ('activated','rejected')
-                and read_private_json(root/'active-checkpoint.json')==row['old_pointer']):
-            if not isinstance(exc,Refused) and reason not in JUDGED+REFUSED+UNUSABLE:
-                row['failures']=row.get('failures',0)+1
-                if row['failures']<FAILURE_LIMIT:
-                    retry=time.time()+min(300,30*2**min(row['failures']-1,4))
-                    row['retry_at']=retry;put(root/JOURNAL,row)
-                    return {'status':'apply_deferred','reason':reason,'cycle_id':cycle_id,
-                            'next_retry':retry,'failures':row['failures']}
-            # A judgment, the resident's refusal, an unusable journal, or the limit of other failures.
-            row['phase']='rejected';row['reason']=reason;put(root/JOURNAL,row)
+                and row['phase'] not in ('activated','rejected')):
+            active=read_private_json(root/'active-checkpoint.json')
+            if active==row['new_pointer']:
+                # The candidate's pointer is written: the application cannot be ended here.
+                # Every pass tries it again; the journal says how often and why it failed.
+                row['failures']=row.get('failures',0)+1;row['reason']=reason;put(root/JOURNAL,row)
+                return {'status':'apply_blocked','reason':reason,'cycle_id':cycle_id,'failures':row['failures'],
+                        'activationPending':row['failures']>=FAILURE_LIMIT}
+            if active==row['old_pointer']:
+                if reason not in JUDGED+REFUSED+UNUSABLE:
+                    row['failures']=row.get('failures',0)+1
+                    if row['failures']<FAILURE_LIMIT:
+                        retry=time.time()+min(300,30*2**min(row['failures']-1,4))
+                        row['retry_at']=retry;put(root/JOURNAL,row)
+                        return {'status':'apply_deferred','reason':reason,'cycle_id':cycle_id,
+                                'next_retry':retry,'failures':row['failures']}
+                # A judgment, the resident's refusal, an unusable journal, or the limit of other failures.
+                row['phase']='rejected';row['reason']=reason;put(root/JOURNAL,row)
+            # A pointer that is neither of the journal's is someone else's change: left as it is.
         return {'status':'apply_blocked','reason':reason,'cycle_id':cycle_id}
     finally:
         if pointer_fd is not None:os.close(pointer_fd)

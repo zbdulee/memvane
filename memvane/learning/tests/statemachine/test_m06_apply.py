@@ -23,10 +23,14 @@ _WHOLE = ['intent_formed', 'prepared_by_service', 'pointer_committed', 'activate
 STIMULI = {
     'attempt': _WHOLE,
     'resident_refuses': ['intent_formed', 'ended'],
+    # The candidate is judged in the check between the resident's answer and the pointer.
+    'judged_after_prepare': ['intent_formed', 'prepared_by_service', 'ended'],
     'one_other_failure': ['intent_formed'],
     'five_other_failures': ['intent_formed', 'ended'],
     'momentary_resource_state': ['intent_formed'],
-    'stale_evaluation': [],
+    # Before the pointer is written a stale evaluation decides nothing; after it the
+    # decision is already made and the application is finished.
+    'stale_evaluation': ['activated_by_service'],
 }
 STOP_AT = {'intent': 'intent', 'prepared': 'prepared', 'pointer_committed': 'pointer_committed'}
 
@@ -93,6 +97,12 @@ class ApplyTable(unittest.TestCase):
         if name == 'resident_refuses':
             with self.later(case):
                 return self.refuse(case)
+        if name == 'judged_after_prepare':
+            def judge(at):
+                if at == 'prepared':
+                    raise ValueError('apply_quality_regression')
+            with self.later(case):
+                return case.run_apply(fault=judge)
         if name == 'one_other_failure':
             return self.other_failure(case)
         if name == 'five_other_failures':
@@ -104,16 +114,13 @@ class ApplyTable(unittest.TestCase):
             with self.later(case):
                 return case.run_apply()
         if name == 'stale_evaluation':
-            stage = dict(case.stage, metrics=dict(case.stage['metrics'], evaluatedAt=1))
-            with case.db(None) as conn:
-                before = conn.execute('SELECT evidence FROM cycles').fetchone()[0]
-                conn.execute('UPDATE cycles SET evidence=?', (canonical(stage),))
+            # A gold case confirmed since the evaluation: its cases are no longer the current ones.
+            case.validation.append(case.row(900, 'val'))
             try:
                 with self.later(case):
                     return case.run_apply()
             finally:
-                with case.db(None) as conn:
-                    conn.execute('UPDATE cycles SET evidence=?', (before,))
+                case.validation.pop()
         raise AssertionError(name)
 
     def test_every_phase_under_every_attempt_ends_where_the_model_says(self):
@@ -125,10 +132,15 @@ class ApplyTable(unittest.TestCase):
                     self.assertEqual(self.phase(case), state)
                     answer = self.stimulate(case, name)
                     expected = fold(state, events)
-                    if state == 'pointer_committed' and name in ('resident_refuses', 'five_other_failures',
-                                                                'one_other_failure'):
-                        # The pointer is already the candidate's: the attempt cannot end the
-                        # application, and no later attempt forms the intent again.
+                    if state == 'pointer_committed' and name == 'judged_after_prepare':
+                        # The check before the pointer is behind it: the attempt finishes.
+                        expected = 'activated'
+                    elif state == 'pointer_committed' and name not in ('attempt', 'stale_evaluation'):
+                        # The pointer is already the candidate's: a failed attempt cannot end
+                        # the application, and no later attempt forms the intent again.
+                        expected = state
+                    elif name == 'stale_evaluation' and state == 'prepared':
+                        # Stale before the pointer: the journal is left for the re-evaluation.
                         expected = state
                     self.assertEqual(self.phase(case), expected, answer)
                     # M7 / G-7: the pointer changed exactly when the phase passed ``prepared``.
@@ -144,7 +156,7 @@ class ApplyTable(unittest.TestCase):
                         driven.add((at, event))
                     at = M6.next(at, event)
         self.assertEqual(cells, len(M6.states) * len(STIMULI))
-        self.assertEqual((len(M6.states), len(STIMULI)), (6, 6))
+        self.assertEqual((len(M6.states), len(STIMULI)), (6, 7))
         self.assertEqual(driven, set(M6.transitions))
         self.assertEqual({event for events in STIMULI.values() for event in events}, set(M6.events))
 
@@ -228,6 +240,97 @@ class ApplyFailures(unittest.TestCase):
             conn.execute('UPDATE cycles SET evidence=?', (canonical(again),))
         self.assertEqual(case.run_apply()['status'], 'applied')
         self.assertNotEqual(A.read_journal(case.root)['stage_sha256'], first['stage_sha256'])
+
+    def stop_at(self, case, point):
+        def stop(at):
+            if at == point:
+                raise Stopped()
+        with self.assertRaises(Stopped):
+            case.run_apply(fault=stop)
+
+    def new_evidence(self, case):
+        """What a teacher pass does between two attempts: the evaluation is no longer current."""
+        case.validation.append(case.row(900 + len(case.validation), 'val'))
+
+    def test_an_application_whose_pointer_is_written_finishes_whatever_the_evaluation_became(self):
+        for point in ('pointer_written', 'receipt_written', 'binding_written', 'pointer_committed'):
+            with self.subTest(point=point):
+                case = self.fixture()
+                self.stop_at(case, point)
+                with self.assertRaises(ValueError):
+                    A.readable(case.root)
+                self.new_evidence(case)
+                with self.later(case):
+                    self.assertEqual(case.run_apply()['status'], 'applied')
+                A.readable(case.root)
+
+    def test_a_resident_busy_after_the_pointer_then_new_evidence_still_activates(self):
+        from memvane.learning.context_learning.local_cycle import ResourceDeferred
+        case = self.fixture()
+        calls = []
+
+        def busy_once(command, record):
+            calls.append(command)
+            if len(calls) == 2:
+                raise ResourceDeferred('apply_busy')
+            return case.transport(command, record)
+        answer = A.apply_candidate(case.root, case.policy, case.cycle, transport=busy_once)
+        self.assertEqual((answer['status'], self.phase(case)), ('apply_deferred', 'pointer_committed'))
+        self.new_evidence(case)
+        with self.later(case):
+            self.assertEqual(case.run_apply()['status'], 'applied')
+
+    def test_a_prepared_application_whose_pointer_was_never_written_starts_again(self):
+        case = self.fixture()
+        self.stop_at(case, 'prepared')
+        first = A.read_journal(case.root)
+        self.new_evidence(case)
+        answer = case.run_apply()
+        self.assertEqual((answer['status'], answer['reason']), ('apply_blocked', A.STALE))
+        self.assertEqual(A.read_journal(case.root), first)
+        # Evaluated again (the worker does it on that answer): the journal is formed anew.
+        from memvane.learning.context_learning import automatic_staging
+        metrics = dict(case.stage['metrics'], validation_questions=len(case.validation),
+                       validationEvidenceSha256=automatic_staging._case_evidence(case.validation))
+        again = dict(case.stage, metrics=metrics, validationCases=[
+            {'projectRoot': r[7], 'requestId': r[1], 'inputSha256': r[2]} for r in case.validation])
+        with case.db(None) as conn:
+            conn.execute('UPDATE cycles SET evidence=?', (canonical(again),))
+        self.assertEqual(case.run_apply()['status'], 'applied')
+        self.assertNotEqual(A.read_journal(case.root)['stage_sha256'], first['stage_sha256'])
+
+    def test_a_request_without_a_usable_answer_is_not_the_residents_refusal(self):
+        for reason in ('resident_wire_invalid', 'version_mismatch', 'permission_denied'):
+            with self.subTest(reason=reason):
+                case = self.fixture()
+
+                def unanswered(command, record):
+                    raise ValueError(reason)
+                answer = A.apply_candidate(case.root, case.policy, case.cycle, transport=unanswered)
+                self.assertEqual((answer['status'], answer['reason'], answer['failures']),
+                                 ('apply_deferred', reason, 1))
+                self.assertEqual(self.phase(case), 'intent')
+
+    def test_failures_are_counted_in_a_row_and_past_the_limit_a_written_pointer_only_reports(self):
+        case = self.fixture()
+        self.other_failure(case)
+        self.assertEqual(A.read_journal(case.root)['failures'], 1)
+        self.stop_at_later(case, 'prepared')
+        self.assertEqual(A.read_journal(case.root)['failures'], 0)
+        case = self.fixture()
+        self.stop_at(case, 'pointer_committed')
+        for count in range(1, A.FAILURE_LIMIT + 2):
+            answer = self.other_failure(case)
+            self.assertEqual((answer['status'], answer['failures'], answer['activationPending']),
+                             ('apply_blocked', count, count >= A.FAILURE_LIMIT))
+            self.assertEqual(A.read_journal(case.root)['reason'], 'fixture socket')
+            self.assertEqual(self.phase(case), 'pointer_committed')
+        with self.later(case):
+            self.assertEqual(case.run_apply()['status'], 'applied')
+
+    def stop_at_later(self, case, point):
+        with self.later(case):
+            self.stop_at(case, point)
 
     def test_a_judgment_or_an_unusable_journal_ends_the_application_at_once(self):
         for reason in (*A.JUDGED, *A.REFUSED, *A.UNUSABLE):

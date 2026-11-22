@@ -249,6 +249,120 @@ class EvaluationAndApplication(CycleFixture):
         self.assertEqual((self.cycle(), self.violations()), ('applied', []))
 
 
+class StoppedApplications(CycleFixture):
+    """An application stopped part way, then new gold, through the worker command."""
+
+    def setUp(self):
+        super().setUp()
+        self.attempt()
+        self.golds('v', 50, empty=10)
+
+    def pointer(self):
+        return json.loads((self.root / 'active-checkpoint.json').read_text())
+
+    def journal(self):
+        return json.loads((self.root / 'candidate-apply.json').read_text())
+
+    def retry_now(self):
+        path = self.root / 'candidate-apply.json'
+        row = json.loads(path.read_text())
+        row['retry_at'] = 0
+        path.write_text(json.dumps(row))
+        path.chmod(0o600)
+        with shared._db(self.root) as db:
+            db.execute('UPDATE learning_evaluations SET retry_at=0')
+
+    def test_a_process_gone_after_the_resident_prepared_then_new_gold_ends_applied(self):
+        from memvane.learning.context_learning import candidate_apply
+        real = candidate_apply.apply_candidate
+
+        def stop(at):
+            if at == 'prepared':
+                raise ProcessEnded()
+        with mock.patch.object(candidate_apply, 'apply_candidate',
+                               side_effect=lambda root, policy, cycle, **k: real(root, policy, cycle, fault=stop, **k)):
+            self.assertEqual(self.attempt()['status'], 'process_ended')
+        base = self.pointer()
+        self.assertEqual((self.journal()['phase'], base['cycle_id']), ('prepared', 'base'))
+        self.golds('w', 3)
+        for _ in range(3):
+            result = self.attempt()
+            if result['status'] == 'applied':
+                break
+        self.assertEqual(result['status'], 'applied', result)
+        self.assertEqual((self.journal()['phase'], self.pointer()['cycle_id']), ('activated', self.job()[0]))
+        self.assertEqual(self.violations(), [])
+
+    def test_a_resident_busy_after_the_pointer_then_one_gold_ends_applied(self):
+        from memvane.learning.context_learning.local_cycle import ResourceDeferred
+        calls = []
+
+        def busy_once(command, record):
+            calls.append(command)
+            if len(calls) == 2:
+                raise ResourceDeferred('apply_busy')
+            return {'status': 'prepared' if command == 'prepare' else 'activated', 'token': record['apply_id']}
+        self.transport = busy_once
+        self.assertEqual(self.attempt()['status'], 'apply_deferred')
+        self.assertEqual((self.journal()['phase'], self.pointer()['cycle_id']), ('pointer_committed', self.job()[0]))
+        self.gold('one-more')
+        self.retry_now()
+        result = self.attempt()
+        self.assertEqual(result['status'], 'applied', result)
+        self.assertEqual((self.journal()['phase'], self.cycle_rows()[self.job()[0]]), ('activated', 'applied'))
+        self.assertEqual(self.violations(), [])
+
+    def test_a_candidate_that_can_never_form_its_intent_is_closed_with_the_reason_at_the_limit(self):
+        from memvane.learning.context_learning import candidate_apply, inference_identity
+        binding = self.root / inference_identity.BINDING
+        value = json.loads(binding.read_text())
+        value['receipt_sha256'] = '0' * 64
+        binding.write_text(json.dumps(value))
+        binding.chmod(0o600)
+        first = self.job()[0]
+        for count in range(1, candidate_apply.FAILURE_LIMIT + 1):
+            result = self.attempt()
+            self.assertEqual((result['status'], result['reason']),
+                             ('apply_blocked', 'apply_prepared_inference_required'), result)
+            status, reason = self.evaluations()[first]
+            closed = count >= candidate_apply.FAILURE_LIMIT
+            self.assertEqual((status, reason), ('blocked', 'apply_prepared_inference_required') if closed
+                             else ('completed', None))
+        self.assertFalse((self.root / 'candidate-apply.json').exists())
+        self.assertEqual(self.pointer()['cycle_id'], 'base')
+        # The closed candidate no longer holds the next job back.
+        self.golds('n', 5)
+        trained = len(self.trained)
+        self.due_now()
+        self.worker()
+        self.assertEqual(len(self.trained), trained + 1)
+
+
+class RevokedMembers(CycleFixture):
+    def test_an_open_job_whose_member_row_is_gone_is_closed_and_the_next_plan_trains(self):
+        self.assertEqual(self.attempt('fail')['status'], 'failed')
+        first = self.job()
+        self.assertEqual(first[1], 'deferred')
+        with shared._db(self.root) as db:
+            db.execute("DELETE FROM cases WHERE request_id='t-000'")
+        self.gold('replacement')
+        result = self.attempt()
+        self.assertEqual(result['status'], 'staged_source_revoked', result)
+        with shared._db(self.root) as db:
+            rows = db.execute('SELECT job_id,status,reason FROM learning_jobs').fetchall()
+        self.assertEqual(rows, [(first[0], 'blocked', 'source_revoked')])
+        self.assertEqual([(e['outcome'], e.get('reason')) for e in self.cycle_events][-1],
+                         ('blocked', 'source_revoked'))
+        self.assertEqual(self.trained, [])
+        self.due_now()
+        self.worker()
+        with shared._db(self.root) as db:
+            rows = dict(db.execute('SELECT job_id,status FROM learning_jobs'))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual((rows[first[0]], self.trained), ('blocked', [100]))
+        self.assertEqual({status for job, status in rows.items() if job != first[0]}, {'staged'})
+
+
 class TrainingAttempts(CycleFixture):
     def test_each_job_and_cycle_invariant_names_the_state_that_breaks_it(self):
         self.attempt()

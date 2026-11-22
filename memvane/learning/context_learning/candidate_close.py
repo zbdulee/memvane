@@ -195,3 +195,26 @@ def close_judged(root, cycle, answer, queue):
     for other in older:
         queue.reject(other, 'superseded_by_judged')
     return judged
+
+
+def unapplied(root, cycle, answer, queue, job):
+    """An application that was refused without judging the candidate.
+
+    A stale evaluation decides nothing: the cycle is evaluated again by the next
+    pass. A failure under a journal whose pointer is written is counted there.
+    Any other failure has no journal to count it (it happened before one
+    existed): it is counted on the evaluation, which closes with the reason at
+    the limit so that the next job can be planned.
+    """
+    from .candidate_apply import FAILURE_LIMIT, STALE
+    from .shared import _db
+    reason = str(answer.get('reason') or 'apply_blocked')[:80]
+    if 'activationPending' in answer:
+        return
+    if reason == STALE:
+        with _db(root) as db:
+            db.execute("UPDATE cycles SET status='staged' WHERE cycle_id=? AND status='staged_evaluated'", (cycle,))
+        queue.refresh(cycle)
+        return
+    queue.finish(job['id'], 'blocked', reason)
+    queue.apply_failed(job['id'], reason, FAILURE_LIMIT)

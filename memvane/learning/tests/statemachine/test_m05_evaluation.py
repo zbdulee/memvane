@@ -112,6 +112,8 @@ class EvaluationTable(unittest.TestCase):
             self.q.defer(self.job_id, 'evaluation_failed', failure=True, now=NOW)
         elif event == 'refresh':
             self.q.refresh(CYCLE)
+        elif event == 'apply_failure_limit':
+            self.q.apply_failed(self.job_id, 'apply_prepared_inference_required', 1)
         elif event == 'block':
             self.q.finish(self.job_id, 'blocked', 'staged_source_revoked')
 
@@ -132,7 +134,7 @@ class EvaluationTable(unittest.TestCase):
                 if (state, event) in M5.transitions:
                     driven.add((state, event))
         self.assertEqual(cells, len(M5.states) * len(events))
-        self.assertEqual((len(M5.states), len(events)), (7, 11))
+        self.assertEqual((len(M5.states), len(events)), (7, 12))
         self.assertEqual(driven, {pair for pair in M5.transitions if pair[1] not in NOT_DRIVEN})
         self.assertEqual(set(M5.events) - set(events), NOT_DRIVEN)
 
@@ -144,6 +146,15 @@ class EvaluationTable(unittest.TestCase):
         self.assertEqual(self.status(), 'queued')
         self.q.finish(self.job_id, 'completed', 'ignored')
         self.assertEqual((self.status(), self.row()['reason']), ('completed', None))
+
+    def test_failed_applications_are_counted_on_a_completed_evaluation_and_close_it_at_the_limit(self):
+        self.build('completed')
+        for count in (1, 2):
+            row = self.q.apply_failed(self.job_id, 'apply_prepared_inference_required', 3)
+            self.assertEqual((row['status'], row['failures'], row['reason']), ('completed', count, None))
+        row = self.q.apply_failed(self.job_id, 'apply_prepared_inference_required', 3)
+        self.assertEqual((row['status'], row['failures'], row['reason']),
+                         ('blocked', 3, 'apply_prepared_inference_required'))
 
     def test_a_changed_stage_is_refused_and_changes_nothing(self):
         for state in M5.states:
