@@ -1,6 +1,6 @@
 # Plugin runtime resource coordination
 
-`context_learning/resource_coordination.py` provides the Coordinator: one
+`memvane/runtime/resource_coordination.py` provides the Coordinator: one
 per-OS-user trainer lease, inference-demand slots and a compute lease. Laya
 optimizer groups use that compute lease, and `training_cursor.py` commits their
 heads/RNG before advancing. `runtime_work.py` owns the durable wake queue. The
@@ -24,7 +24,7 @@ development execution guard is separate; see
 - Selected Laya route wakes: `memvane/host/host_response.py` queues `laya-sync` and
   `laya-compile` through `runtime_work.request`. Both are kinds in
   `runtime_wake_policy.KINDS`; `needs_compute_admission` is false for them
-  because their handlers own admission. `runtime_handlers.laya_sync` and
+  because their handlers own admission. `memvane/app/wiring.py`'s `laya_sync` and
   `laya_compile` call `runtime_dispatch.run`, which routes the wake into the
   installed worker with the wake's lease FD; the target process repeats
   the selected-route proof before model or store work.
@@ -108,13 +108,13 @@ development execution guard is separate; see
   the 300-second cap instead, is never dropped, and is logged once as
   `wake.sync failed target_preparing_stalled` (streak in the private
   `runtime-wake-preparing.json`). The service logs `resident.adopt waiting
-  read_only_no_worker` once when a drifted installation has no worker to
-  attach to, and `resident.adopt unproved <code>` once per code when an
+  <code>` when an installation's full proof is deferred (again only when the
+  code changes), and `resident.adopt unproved <code>` once per code when an
   installation's proof fails outright (the code, or only the exception class
   when it is not a plain code), so a binding that never happens is named in
   the installation's own log.
 - A `laya-sync` pending result with committed schema3 ingest or vector progress uses the exact detail `deferred:pending:schema3_progress_ingest` or `deferred:pending:schema3_progress_vector`. The wake retries in 30 seconds without incrementing its attempt count; pending without durable progress keeps the ordinary retry policy.
-- When no worker is ready and full proof is loading or deferred, a drifted installation waiting as `read_only_no_worker` defers reproof for up to 30 seconds. A ready worker wakes the waiting installation; the usual proof and identity checks still apply.
+- A deferred full proof retries in 5 seconds. A moved worker selection that keeps deferring past `MOVED_DEFER_LIMIT` counts as a transient start failure and follows the owner state's durable backoff.
 - `chunkDocumentByTokens` returns chunks in source position order. A
   re-split first-pass chunk can end after the next overlapping chunk starts,
   and the reviewed provider accepts only strictly increasing positions; an
@@ -483,7 +483,7 @@ claimed. Missing observations/cleanup continue to defer; no OS guard is disabled
 ## Platform observation, controls and memory admission
 
 `resource_platform.py` owns OS observations, `resource_controls.py` library
-controls, and `context_learning/memory_policy.py` the additive memory admission
+controls, and `memvane/runtime/memory_policy.py` the additive memory admission
 used by the Coordinator. `shared.resource_report` keeps an injectable path,
 subprocess and clock boundary and one shared query deadline. The development
 guard's memory-pressure threshold is separate.
@@ -521,7 +521,7 @@ Estimates are configured, not measured: admission reports carry
 `estimate_kind: configured_estimate_not_measurement`. Reserve and warm values in
 unit fixtures are synthetic examples, not recommended operating values.
 
-`context_learning/memory_policy.py` is the source of truth for the
+`memvane/runtime/memory_policy.py` is the source of truth for the
 `adaptiveMemory` profile. Unknown keys fail with `invalid_adaptive_memory`.
 
 | Field | Required | Rule |

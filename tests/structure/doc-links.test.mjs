@@ -7,8 +7,8 @@ import { dirname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-// Generated cards and dated working notes are not maintained documents.
-const SKIPPED = /^(\.memvane\/|docs\/plans\/|docs\/superpowers\/)/;
+// Generated cards are not maintained documents.
+const SKIPPED = /^\.memvane\//;
 
 /** `[text](target)` targets of Markdown `text` that name a path (code spans and fences removed). */
 export function relativeLinks(text) {

@@ -42,4 +42,4 @@
 
 제품이 받는 외부 바이트는 변하지 않는 주소와 해시로 고정한다. 주소 목록과 다운로드 호출은 `tests/structure/static.test.mjs`가 단정한다.
 
-`docs/plans/` 문서 안의 버전 문자열은 bump 대상이 아니다. 버전 변경 후 최소 `npm run test:focused -- tests/plugin-manifest.test.mjs`를 실행하고, 릴리스 전에는 `npm test`를 실행한다.
+버전 변경 후 최소 `npm run test:focused -- tests/plugin-manifest.test.mjs`를 실행하고, 릴리스 전에는 `npm test`를 실행한다.

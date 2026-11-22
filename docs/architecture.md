@@ -47,8 +47,7 @@ The main architectural rule is:
 - **Queue first, work later.** Hooks record durable wakes and queue rows; off-hook
   workers do embedding, sync, compile and verify.
 - **Current state only.** This document describes the code paths that are
-  true now. The design under `docs/plans/` (the memvane-db Git-blob model, with
-  PR8–PR10 still open) describes remaining work, not shipped behavior.
+  true now. Remaining work is listed in `docs/ROADMAP.md`.
 
 ## Repository Map
 
