@@ -9,9 +9,10 @@ of cells run equals states x stimuli.
 
 A stimulus evaluates the (state, event) pairs its events pass through, not
 every pair. The pairs of the model are accounted for one by one: evaluated by
-a stimulus, driven directly (``capture`` and the two rotations, each state
-under the real writer), unreachable in any pass order (listed by rule), or
-evaluated by another module (listed with that module).
+a stimulus, driven directly (``capture``, the two rotations and the two
+deletions before a pass, each state under the real writer), unreachable in
+any pass order (listed by rule), or evaluated by another module (one pair,
+listed with that module).
 """
 from __future__ import annotations
 
@@ -19,7 +20,8 @@ import json
 from unittest import mock
 
 from memvane.learning.context_learning import general_gold_ledger as ledger
-from memvane.learning.context_learning import case_rotation, edit_git_migration, general_teacher, shared
+from memvane.learning.context_learning import (case_rotation, edit_git_migration, general_teacher,
+                                               prompt_retirement, seam, shared)
 from memvane.learning.context_learning.contracts import digest
 from memvane.learning.context_learning.state_model import ABSENT, M1, M1U, M2
 from memvane.learning.tests.fake_teacher_cli_121 import TeacherFixture, edit_sample
@@ -49,9 +51,8 @@ STIMULI = {
     'consent_withdrawn': (['consent_withdrawn'], ['reject_kept']),
 }
 # Events no pass stimulus attempts: driven directly below or evaluated elsewhere.
-DIRECT = ('capture', 'rotation', 'rotation_historical')
-DELETIONS = ('prompt_retired', 'git_migrated')
-NOT_DRIVEN = set(DIRECT) | set(DELETIONS)
+DIRECT = ('capture', 'rotation', 'rotation_historical', 'prompt_retired', 'git_migrated')
+NOT_DRIVEN = set(DIRECT)
 _CALL_ENDS = ('answer_committed', 'answer_kept', 'not_sent', 'not_sent_exhausted',
               'provider_refused', 'content_refused', 'uncertain')
 # Pairs no order of a pass reaches.
@@ -67,10 +68,6 @@ UNREACHABLE = (
 ELSEWHERE = {
     # A consumed gold outside the kept window, with its job and cycle rows.
     ('gold', 'rotation'): 'memvane/learning/tests/integration/test_rotation_123.py',
-    **{(state, 'prompt_retired'): 'memvane/learning/tests/integration/test_prompt_retirement_118.py'
-       for state in M1.states},
-    **{(state, 'git_migrated'): 'memvane/learning/tests/integration/test_edit_git_119.py'
-       for state in M1.states},
 }
 
 
@@ -225,7 +222,7 @@ class TeacherPassTable(ParkMixin, TeacherFixture):
         self.assertEqual(cells - visited() - direct, UNREACHABLE | set(ELSEWHERE))
         self.assertFalse(visited() & UNREACHABLE)
         self.assertEqual((len(cells), len(visited()), len(direct), len(UNREACHABLE), len(ELSEWHERE)),
-                         (108, 58, 17, 20, 13))
+                         (108, 58, 29, 20, 1))
         from pathlib import Path
         repo = Path(__file__).resolve().parents[4]
         for name in set(ELSEWHERE.values()):
@@ -253,9 +250,36 @@ class TeacherPassTable(ParkMixin, TeacherFixture):
     def drive(self, event):
         if event == 'capture':
             return self.capture()
+        if event in ('prompt_retired', 'git_migrated'):
+            return self.delete_before_pass(event)
         if event == 'rotation_historical':
             self.leave_use()
         return case_rotation.rotate(self.root, self.project, self.grant, limit=0)['status']
+
+    def delete_before_pass(self, event):
+        """One of the two deletions a worker runs before every pass, over a case its
+        rule selects (the rule reads the sample, never the status)."""
+        quiet = lambda *a, **k: None
+        with mock.patch.object(seam, '_private_state', return_value=None):
+            if event == 'prompt_retired':
+                marker = self.root / prompt_retirement.MARKER
+                if marker.exists():
+                    marker.unlink()
+                with mock.patch.object(prompt_retirement, '_retired', return_value=True), \
+                        mock.patch.object(prompt_retirement, '_record', quiet):
+                    return prompt_retirement.retire(self.root, self.project, {})['status']
+            marker = self.root / edit_git_migration._name(edit_git_migration.MARKER_PREFIX, self.project)
+            kept = marker.read_bytes()
+            marker.unlink()
+            try:
+                with mock.patch.object(edit_git_migration, 'affected', return_value=True), \
+                        mock.patch.object(edit_git_migration, '_unchecked', return_value=True), \
+                        mock.patch.object(edit_git_migration, '_fix_time', return_value=None), \
+                        mock.patch.object(edit_git_migration, '_record', quiet):
+                    return edit_git_migration.migrate(self.root, self.project, {})['status']
+            finally:
+                marker.write_bytes(kept)
+                marker.chmod(0o600)
 
     def test_capture_and_rotation_on_every_case_state(self):
         cells = 0
@@ -269,6 +293,7 @@ class TeacherPassTable(ParkMixin, TeacherFixture):
                     self.assertEqual(self.observed()[0], state)
                     answer = self.drive(event)
                     self.assertEqual(self.observed()[0], M1.next(state, event), answer)
+                    self.assertEqual(invariants.check(self.root), [])
                     if event == 'capture':
                         # A second capture of the same request never replaces the row.
                         self.assertEqual(answer in ('duplicate', 'conflict'), state != ABSENT, answer)

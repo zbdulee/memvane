@@ -79,12 +79,17 @@ class OldBundles(EnabledInstall):
         seen['maintenance'] = self.entry(bundle, 'selector-maintenance', str(self.project), 'force')
         return seen
 
+    def log_lines(self):
+        log = self.root / 'worker.log'
+        return log.read_text(encoding='utf8', errors='replace').splitlines() if log.is_file() else []
+
     def test_g9_old_bundles_leave_rows_files_and_clis_untouched(self):
         rows = self.seed_122_rows(include_queued=True)
         files = self.namespace_files()
         refused = 'ValueError:project_scope_authorization_invalid'
         for tag in [tag for tag in TAGS if tag not in ('v1.0.21', 'v1.0.22', 'v1.0.23')]:
             with self.subTest(tag=tag):
+                logged = len(self.log_lines())
                 seen = self.observe(tag)
                 # (a) rows and namespace files: only the old worker's own records move.
                 self.assertEqual(self.rows(), rows)
@@ -110,13 +115,18 @@ class OldBundles(EnabledInstall):
                 # (no stand-in reaches an old bundle). Ready, it fails on the grant shape;
                 # under pressure it defers with a durable wake and records no outcome.
                 # Neither touches the rows, files or CLIs asserted above.
-                log = self.root / 'worker.log'
-                lines = log.read_text(encoding='utf8', errors='replace').splitlines() if log.is_file() else []
+                # The log is shared by the tags: only the lines this tag added count.
+                lines = self.log_lines()[logged:]
                 ended = (step['children'], step['state']['outcome'])
                 self.assertIn(ended, (([1], 'failed'), ([0], None)), (step, lines[-3:]))
                 if ended == ([0], None):
-                    self.assertEqual(json.loads(lines[-1]).get('reason'), 'learning_deferred_resource',
-                                     lines[-3:])
+                    reasons = []
+                    for line in lines:
+                        try:
+                            reasons.append(json.loads(line).get('reason'))
+                        except (ValueError, AttributeError):
+                            pass
+                    self.assertIn('learning_deferred_resource', reasons, lines[-3:])
                 self.assertEqual(step['state']['revision'], int(tag.split('.')[-1]))
                 # (c) hooks exit 0; recall answers by hybrid rank.
                 code, out, err = seen['recall']
