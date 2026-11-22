@@ -543,7 +543,19 @@ commands (`ROOT` is the installed plugin root):
 python3 -B "$ROOT/entry/setup.py" index-runtime-status
 python3 -B "$ROOT/entry/setup.py" provision-index-runtime --approve-index-runtime-download [--provider-model-file <gguf>]
 python3 -B "$ROOT/entry/setup.py" gc-index-runtime [--approve-index-runtime-gc]
+python3 -B "$ROOT/entry/setup.py" state-cleanup [--all-state] [--approve-state-cleanup <previewSha256>]
+python3 -B "$ROOT/entry/setup.py" restore-previous-model --project <project> [--plan]
 ```
+
+`state-cleanup` lists the install state roots no project selects (each with
+its `vector-cache/`) and the unused runtime generations, prints the
+`previewSha256` of that list and removes it only when the same value comes
+back with the approval; `--all-state` is the explicit request to remove every
+per-user root (`memvane/install/README.md`). `restore-previous-model` puts
+back the selection model the newest application replaced
+(`memvane/learning/README.md`). Background processes (the resident service,
+the wake timer, worker and monitor) end on their own once no host has MemVane
+installed (`memvane/resident/README.md`).
 
 Provisioning takes Node from `PATH` first, then mise, fnm, nvm, volta, asdf,
 Homebrew and system installs, accepting only real binaries (not shims) of
@@ -785,34 +797,33 @@ Reading (`skills/logs/scripts/logs.py`):
 | Event | Written by | Outcome / fields |
 |---|---|---|
 | `recall`, `gate`, `posttool`, `update`, `update-queued`, `index`, `compile`, `file-change-event` | selected-route hook actions (`memvane/host/host_response.py`) | `ok` / `refused` (`recall`: `served` / `empty` / `refused`); `reason` is a fixed refusal code or a final code such as `sync_requested` |
-| `hook.error` | `memvane/host/hook_main.py` | exception class and `file:line`, never the message |
 | `recall.edit` | posttool edit recall tail (`memvane/host/edit_recall.py`) | `served` / `empty` / `budget_exceeded` / `refused`; `request_id`, injected `cards` and `selected` (`{path, sha}` card ids), `selection` (`selector` / `default_rank` / `none`), `pool`, `repeated`, `selfCited`, selector measurement (`selectorPairs`, `selectorBatches`, `selectorBatchMs`, `selectorDevice`, ...), lexical shadow signals (`lexicalQueries`, `lexicalHits`, `lexicalTopScore`), `editTarget` (`main` / `linked`); never the edited path or text |
 | `learning.capture` | context learning capture | capture status (`stored` / `duplicate` / ...) |
 | `learning.capture.shared` | shared queue enqueue seam (`memvane/learning/context_learning/seam.py`) | emitted when shared `enqueue` returns other than `queued` or `duplicate` (e.g. `queue_full`); `outcome`, `reason`, `stage` |
 | `learning.cycle` | learning worker and staged training (`memvane/learning/context_learning/project_worker.py`, `automatic_staging.py`) | `trained` (`cycle`, `trainCases`); `deferred_resource` (inner `reason`, `deferredBy`, `availableMib`, `requiredMib`, `loadPerCpu`, `loadLimit`, `latchPaused`); `failed` (`cycle`, `reason` such as `trainer_failed:<code>`); `blocked` (`cycle`, `reason`, `failures`) from each pass that meets a job no retry will reopen. A `deferred_resource` row whose `deferredBy` is `worker_admission` is a pass the worker's own resource check or scope inventory put off before the teacher and the cycle. A trainer child's failure adds `errorSite`: the `file.py:line function` frames where it rose (at most eight, no message, value or directory). A refused control request is `learning_control_invalid:root`, `:keys` or `:stop_fd` |
 | `learning.teacher` | default teacher worker (`memvane/learning/context_learning/default_teacher.py`) | `gold` (`single_pass` or `parked_answer`), `parked` (`resource_deferred` with usage), `pending_review`, `pre_send_rejected`, `provider_refused`, `pass` (waits and queued counts) |
 | `learning.score` | prequential scorer (`memvane/learning/context_learning/prequential.py`) | `previous` / `current` / `counts`; operating score metrics plus `caseRows`, `caseLimit`, `gold`, `candidateTrain`, `candidateEval`, `candidateEvalNonEmpty`, `candidateEvalEmpty`; past 30 gold cases the rank baseline `rankCases`, `rankExactRate`, `rankMicroF1` |
-| `learning.promotion` | candidate promotion and carry (`memvane/learning/context_learning/prequential.py`, `candidate_close.py`) | `waiting`, `evaluated`, `applied`, `rejected`, `carried` (`cycle`, `carriedFrom`), `superseded` (`closed`) |
+| `learning.promotion` | candidate promotion and carry (`memvane/learning/context_learning/prequential.py`, `candidate_close.py`) | `waiting`, `evaluated`, `applied`, `rejected`, `carried` (`cycle`, `carriedFrom`), `superseded` (`closed`), `activation_pending` (a written pointer's activation failed five times in a row; `reason`), `rolled_back` (the owner restored the previous model; `cycle`, `previousCycle`) |
 | `learning.migration` | first default-namespace worker pass (`prompt_retirement.py`, `edit_git_migration.py`) | `prompt_cases_deleted` / migration outcome; `count`, `privateSamples` |
 | `learning.rotation` | default-teacher worker pass (`memvane/learning/context_learning/case_rotation.py`) | `deleted` / `nothing_closed` (over the limit, every row still protected; written once per change of the counts the plan depends on) / `deferred` (`reason`); `count` (closed cases deleted), `caseRows` (rows left), `protected`, `limit` |
 | `learning.selector.request`, `learning.selector.maintenance` | selector maintenance request and run (`memvane/learning/selector_maintenance.py`) | request `spawned` / `skipped` / `deferred` / `failed` / `completed` (`failures`, `retryAfterNs`); run `started` / `completed` / `deferred` / `failed` with a fixed `reason` and `stage`. A held prepare lease is `deferred` with `reason: learning_prepare_busy` and `busyRetries`; a run that stopped at an unsettled step is `deferred` with `reason: maintenance_incomplete` and `incomplete` (that step's fixed reason) |
 | `wiki` | compile, verify, dedup, pending publish, lifecycle, source retirement | `created` / `updated` / `deleted` / `retired`; `reason` (`compile`, `pending_publish`, `verify_retire`, `dedup`, `lifecycle:<code>`, `source_deleted`), `path`, `title` |
 | `wake.sync`, `wake.compile` | off-hook dispatcher (`memvane/app/runtime_dispatch.py`) | dispatcher outcome, `generation`, `previousGeneration` |
 | `index.publish` | off-hook dispatcher | `generation`, `previousGeneration`, `epoch` |
-| `resident.adopt`, `resident.drain`, `resident.forced_exit` | `memvane/resident/resident_service.py` | `adopted`; drain `started` / `stopped`; `exited` (`cold_load_hung`) |
+| `vector.cache` | sync owner's arena upkeep (`memvane/sync/vector_cache.py`) | `rebuild` / `compact` / `repair` / `catchup` / `append` / `skipped` / `failed`; `rows`, `sets`, `remaining`, `deadRows`, `bytes`, `ms` (the arena's own work) |
+| `resident.adopt`, `resident.drain`, `resident.forced_exit` | `memvane/resident/resident_service.py` | `adopted`; drain `started` (`reason`: `bundle_changed`, `bundle_uninstalled`, `service_root_changed`) / `stopped`; `exited` (`cold_load_hung`) |
 | `wiki.card` | `memvane/wiki/compile/wiki_compile.py`, `memvane/wiki/compile/wiki_compile_worker.py`, `memvane/wiki/dedup/wiki_dedup_resolve.py` | `over_budget` (held back for the split; `reason`, `path`, `title`, `size`, `budget`, `method`); `over_budget_written` (written after the split attempt; `reason`, `overflow`, same fields); `unmeasured` (no selector tokenizer, written); `measure_failed` (every selector runtime failed, written; `runtimes`); `split` / `split_unavailable` (source `path`, `reason`, `requested`, `parts`, `written`); `merge_kept_separate` (keeper `path`, `kept`, `size`, `budget`, `method`) |
 | `compile.extractor`, `compile.verify_pass` | `memvane/wiki/compile/wiki_compile_worker.py` | extractor stderr as `{sha256, chars}`; verify-pass exception class and frame |
 
 A `recall` event's `reason` is the final outcome (`selected`,
 `no_results_after_filter`, `no_candidates`, or a refusal code) and `notes` lists
 the diagnostic codes on the way (`laya_vector_*`, `laya_selector_*`,
-`laya_recall_proof_retry`, `laya_wiki_rows_filtered`,
-`laya_selector_selected_zero`, `laya_exclusion_candidate_capped`, ...). It also
+`laya_recall_proof_retry`, `laya_selector_selected_zero`, ...). It also
 carries `cards` (`[{path, sha}]`, exactly the injected cards), `count`,
 `candidates`, `selection`, `selection_fallback`, `vector_fallback`, `degraded`
 (`worktree`, `reader_endpoint` or `preview`), `store_format` and
 `reader_endpoint` (a recall the schema3 reader served), `retry`, `generation`,
-`filtered_count`/`filtered_reasons`, prompt-recall search-need probe signals
+prompt-recall search-need probe signals
 (`needAtoms`, `needAtomsHit`, `needAtomsRare`, `needRareTopScore`, `needProbeMs`,
 `needProbeTruncated`; skipped when `MEMVANE_NEED_SIGNALS=off`; `needRareTopScore`
 and `lexicalTopScore` are the best, that is the lowest, bm25), exact vector

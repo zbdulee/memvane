@@ -259,7 +259,7 @@ deadline은 SQL progress handler와 유한한 검증 순회에 적용하며 실�
 
 `BlobStoreError.reason`은 원문 없는 거절 코드다. 주요 코드는
 `view_preparing`, `view_handle_invalid`, `view_pin_invalid`, `view_store_closed`,
-`checkout_changed`, `view_head_conflict`, `generation_unsealed`,
+`checkout_changed`, `view_head_conflict`,
 `generation_seal_mismatch`, `fts_storage_mismatch`, `fts_query_invalid`,
 `fts_deadline_exceeded`, `vector_coverage_incomplete`, `vector_rows_mismatch`,
 `vector_coverage_absent`, `vector_profile_mismatch`, `vector_query_invalid`,
