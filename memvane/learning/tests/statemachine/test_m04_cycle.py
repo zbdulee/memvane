@@ -41,6 +41,8 @@ class ScriptedTrainer(FakeTrainer):
         if step == 'timeout_progress':
             self.case.advance(cwd)
             raise ValueError('trainer_timeout')
+        if step == 'intent_changed':
+            raise ValueError('learning_train_intent_changed')
         if step == 'defer':
             raise automatic_staging.ResourceDeferred('trainer_failed:learning_yield', {'reason': 'learning_yield'})
         if step == 'artifact_then_fail':
@@ -338,6 +340,27 @@ class StoppedApplications(CycleFixture):
         self.assertEqual(len(self.trained), trained + 1)
 
 
+class UnrepeatableFailures(CycleFixture):
+    def test_a_failure_the_next_attempt_would_repeat_closes_the_job_at_once(self):
+        self.assertEqual(self.attempt('intent_changed')['status'], 'failed')
+        job_id, status, failures, reason, _retry = self.job()
+        self.assertEqual((status, failures, reason), ('blocked', 0, 'learning_train_intent_changed'))
+        self.assertEqual(self.outcomes()[-1], 'failed')
+        # Not rearmed however long it waits; new gold pins another job, which trains.
+        with shared._db(self.root) as db:
+            db.execute('UPDATE learning_jobs SET retry_at=0')
+        self.due_now()
+        self.worker()
+        self.assertNotIn('rearmed', self.outcomes())
+        self.assertEqual(self.trained, [])
+        self.golds('n', 3)
+        self.due_now()
+        self.worker()
+        with shared._db(self.root) as db:
+            rows = dict(db.execute('SELECT job_id,status FROM learning_jobs'))
+        self.assertEqual((len(rows), rows[job_id], len(self.trained)), (2, 'blocked', 1))
+
+
 class RevokedMembers(CycleFixture):
     def test_an_open_job_whose_member_row_is_gone_is_closed_and_the_next_plan_trains(self):
         self.assertEqual(self.attempt('fail')['status'], 'failed')
@@ -404,7 +427,8 @@ class TrainingAttempts(CycleFixture):
             db.execute('UPDATE learning_jobs SET retry_at=retry_at-?', (learning_queue.REARM_SECONDS,))
         result = self.attempt()
         self.assertEqual(result['cycle_id'], job_id)
-        self.assertEqual([e.get('cycle') for e in self.cycle_events if e['outcome'] == 'rearmed'], [job_id])
+        self.assertEqual([(e.get('cycle'), e.get('attempts')) for e in self.cycle_events
+                          if e['outcome'] == 'rearmed'], [(job_id, 3)])
         self.assertEqual(self.trained, [100])
         self.assertEqual((self.job()[:3], self.cycle()), ((job_id, 'staged', 0), 'staged'))
 

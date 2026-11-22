@@ -2,8 +2,7 @@
 
 Each event is driven through the real ``LearningQueue`` writer. The expected
 state is the model's ``next``: a pair the model does not list must leave the
-status as it was. ``source_revoked`` is written by the training step itself
-and is driven by the cycle tests; here it is the one event not driven.
+status as it was. The cycle tests drive the same closures through the worker.
 """
 from __future__ import annotations
 
@@ -19,7 +18,7 @@ from memvane.learning.context_learning.learning_queue import LearningQueue
 from memvane.learning.context_learning.state_model import ABSENT, M3
 
 NOW = 1_000_000.0
-NOT_DRIVEN = {'source_revoked'}
+NOT_DRIVEN = set()
 
 
 class LearningJobTable(unittest.TestCase):
@@ -135,6 +134,10 @@ class LearningJobTable(unittest.TestCase):
                 self.assertIsNone(claim)
         elif event == 'rearm':
             self.q.rearm(now=NOW)
+        elif event == 'source_revoked':
+            self.q.block(self.job_id, 'source_revoked')
+        elif event == 'unrepeatable_failure':
+            self.q.block(self.job_id, learning_queue.UNREPEATABLE[0])
 
     def test_every_job_state_under_every_event_ends_where_the_model_says(self):
         cells, driven = 0, set()
@@ -150,7 +153,7 @@ class LearningJobTable(unittest.TestCase):
                 if (state, event) in M3.transitions:
                     driven.add((state, event))
         self.assertEqual(cells, len(M3.states) * len(events))
-        self.assertEqual((len(M3.states), len(events)), (6, 9))
+        self.assertEqual((len(M3.states), len(events)), (6, 11))
         self.assertEqual(driven, {pair for pair in M3.transitions if pair[1] not in NOT_DRIVEN})
         self.assertEqual(set(M3.events) - set(events), NOT_DRIVEN)
 
@@ -172,10 +175,12 @@ class LearningJobTable(unittest.TestCase):
         self.assertEqual(self.status(), 'blocked')
         # Blocked and not yet due: the plan answers with the same job.
         self.assertEqual(self.plan()['id'], self.job_id)
+        self.force(attempts=7)
         self.assertEqual(self.q.rearm(now=NOW + learning_queue.REARM_SECONDS), [self.job_id])
         after = self.q.get(self.job_id)
+        # The attempts stay: they count every training attempt over all rearms.
         self.assertEqual((after['status'], after['failures'], after['attempts'], after['retry_at'],
-                          after['reason']), ('queued', 0, 0, 0, None))
+                          after['reason']), ('queued', 0, 7, 0, None))
         self.assertEqual(after['members'], job['members'])
         self.assertEqual(self.q.rearm(now=NOW + 10 * learning_queue.REARM_SECONDS), [])
         with self.q.claim(self.job_id, now=NOW + learning_queue.REARM_SECONDS) as claim:
@@ -203,6 +208,18 @@ class LearningJobTable(unittest.TestCase):
                 self.assertNotEqual(later['id'], self.job_id)
                 self.assertEqual(later['status'], 'queued')
                 self.assertEqual(self.status(), 'blocked')
+
+    def test_a_failure_another_attempt_would_repeat_closes_the_job_and_is_never_rearmed(self):
+        for reason in learning_queue.UNREPEATABLE:
+            with self.subTest(reason=reason):
+                self.fresh()
+                self.job_id = self.plan()['id']
+                closed = self.q.block(self.job_id, reason)
+                self.assertEqual((closed['status'], closed['reason']), ('blocked', reason))
+                self.assertEqual(self.q.rearm(now=NOW * 10), [])
+                self.assertNotEqual(self.plan((3, 4))['id'], self.job_id)
+        with self.assertRaisesRegex(ValueError, 'learning_block_reason_invalid'):
+            self.q.block(self.job_id, 'trainer_failed')
 
     def test_a_block_of_another_reason_is_not_rearmed(self):
         self.blocked('failed', at=0)

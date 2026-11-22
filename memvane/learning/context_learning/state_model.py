@@ -195,7 +195,8 @@ M15 = Machine(
 # M3: one pinned training batch (``learning_jobs.status``). A claim is held for the
 # length of one attempt; the block that held it leaves the job ``deferred`` unless
 # the attempt completed it. ``blocked`` by repeated trainer failures is queued again
-# a day later (``rearm``); ``blocked`` because the members themselves changed
+# a day later (``rearm``); ``blocked`` by a failure another attempt would repeat, or
+# because the members themselves changed
 # (``already_consumed``, ``source_revoked``) stays: the next plan pins other members, or answers with it when they are the same.
 _QUEUE = 'memvane.learning.context_learning.learning_queue.LearningQueue'
 _OPEN_JOB = ('queued', 'running', 'deferred')
@@ -218,12 +219,13 @@ M3 = Machine(
         **{(status, 'fail_limit'): 'blocked' for status in _OPEN_JOB},
         **{(status, 'consumed_elsewhere'): 'blocked' for status in _OPEN_JOB},
         **{(status, 'source_revoked'): 'blocked' for status in _OPEN_JOB},
+        **{(status, 'unrepeatable_failure'): 'blocked' for status in _OPEN_JOB},
         ('blocked', 'rearm'): 'queued',
     },
     where={
         'plan': _QUEUE, 'claim': _QUEUE, 'claim_released': _QUEUE, 'complete': _QUEUE,
         'defer': _QUEUE, 'fail': _QUEUE, 'fail_limit': _QUEUE, 'consumed_elsewhere': _QUEUE,
-        'source_revoked': 'memvane.learning.context_learning.automatic_staging',
+        'source_revoked': _QUEUE, 'unrepeatable_failure': _QUEUE,
         'rearm': _QUEUE,
     })
 
@@ -338,7 +340,31 @@ M7 = Machine(
     transitions={('incumbent', 'pointer_written'): 'candidate'},
     where={'pointer_written': _APPLY})
 
-MACHINES = (M1, M1U, M1T, M2, M3, M4, M5, M6, M7, M15)
+# M8: the newest full (teacher and trainer) worker request of a namespace
+# (``full-worker-request.json`` and the state of its nonce in ``full-worker-state.json``).
+# A hook's ``launch`` replaces the request, and with it the state, whatever it was.
+# The dispatcher's step counts a start before it spawns the owned child; three starts
+# without an outcome are abandoned. A result of the retry set keeps the request open
+# with its starts at zero; any other result is the outcome, acknowledged by the next step.
+_SHARED = 'memvane.learning.context_learning.shared.'
+M8 = Machine(
+    'M8', 'worker request', store='full-worker-request.json, full-worker-state.json',
+    lock='full-worker.lock', owner='hook launch (request), dispatcher step and owned child (state)',
+    states=(ABSENT, 'open', 'last_start', 'settled', 'acknowledged'),
+    terminal=(),
+    transitions={
+        **{(state, 'launch'): 'open' for state in (ABSENT, 'last_start', 'settled', 'acknowledged')},
+        ('open', 'third_start'): 'last_start',
+        ('last_start', 'step'): 'acknowledged',
+        ('settled', 'step'): 'acknowledged',
+        ('open', 'child_result'): 'settled',
+        ('last_start', 'child_result'): 'settled',
+        ('last_start', 'child_retry_result'): 'open',
+    },
+    where={'launch': _SHARED + 'launch', 'third_start': _SHARED + '_full_step', 'step': _SHARED + '_full_step',
+           'child_result': _SHARED + '_settle_owned', 'child_retry_result': _SHARED + '_settle_owned'})
+
+MACHINES = (M1, M1U, M1T, M2, M3, M4, M5, M6, M7, M8, M15)
 
 # Every status a worker pass can end with (the cycle step's result is the pass result),
 # as (class, the event row that says so, what the pass leaves). The classes:

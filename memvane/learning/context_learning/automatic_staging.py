@@ -196,7 +196,8 @@ def _prepare_staged(root,policy,grant):
     if not synthetic:
         # A job that trainer failures blocked a day ago gets its attempts back.
         for job_id in queue.rearm():
-            _cycle_event(_project(root,grant),'rearmed',cycle=job_id)
+            # ``attempts``: every training attempt of this job so far, over all rearms.
+            _cycle_event(_project(root,grant),'rearmed',cycle=job_id,attempts=(queue.get(job_id) or {}).get('attempts'))
     if synthetic:
         with queue.connect() as db:
             queue.schema(db)
@@ -232,8 +233,7 @@ def _prepare_staged(root,policy,grant):
         elif job['status'] in ('queued','running','deferred'):
             # A member row is gone before the job trained: the job can never train. It is
             # closed with the reason, and the next plan pins the members that remain.
-            with _db(root) as db:
-                db.execute("UPDATE learning_jobs SET status='blocked',reason='source_revoked' WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",(job['id'],queue.scope))
+            queue.block(job['id'],'source_revoked')
             _cycle_event(_project(root,grant),'blocked',cycle=job['id'],reason='source_revoked',failures=job.get('failures'))
         return {'status':'staged_source_revoked','cycle_id':job['id']}
     if sequential:validation=prequential.split(cohort_train,job)
@@ -376,7 +376,9 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
                     ('deferred' if deferred else 'failed', canonical({'reason': str(exc)[:80],
                                 'authorizationSha256': grant_sha,
                                 'trainEvidenceSha256': train_sha}), cycle_id))
-            queue.defer(cycle_id,'trainer_progress' if advanced else 'resource' if deferred else 'trainer_failed',failure=not deferred)
+            from .learning_queue import UNREPEATABLE
+            if not deferred and str(exc)[:80] in UNREPEATABLE:queue.block(cycle_id,str(exc)[:80])  # the same again: closed, not rearmed
+            else:queue.defer(cycle_id,'trainer_progress' if advanced else 'resource' if deferred else 'trainer_failed',failure=not deferred)
             if not deferred:
                 # A deferral gets the worker's own row; a failure names the trainer's frames.
                 _cycle_event(project, 'failed', cycle=cycle_id, reason=str(exc)[:80],

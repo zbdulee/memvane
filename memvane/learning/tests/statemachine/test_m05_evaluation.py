@@ -156,6 +156,13 @@ class EvaluationTable(unittest.TestCase):
         self.assertEqual((row['status'], row['failures'], row['reason']),
                          ('blocked', 3, 'apply_prepared_inference_required'))
 
+    def test_a_deferral_asked_of_a_completed_evaluation_changes_nothing(self):
+        # The worker asks for it after ``apply_deferred``: the wait is the journal's retry time.
+        self.build('completed')
+        before = self.row()
+        self.q.defer(self.job_id, 'apply_resource', now=NOW)
+        self.assertEqual(self.row(), before)
+
     def test_a_changed_stage_is_refused_and_changes_nothing(self):
         for state in M5.states:
             if state == ABSENT:

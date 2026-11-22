@@ -22,11 +22,79 @@ from unittest import mock
 
 from memvane.learning.context_learning import (automatic_staging, candidate_apply, general_teacher,
                                                shared)
-from memvane.learning.tests.old_bundle_121 import ROOT, EnabledInstall, edit_payload
+from memvane.learning.context_learning.contracts import digest
+from memvane.learning.context_learning.store import canonical
+from memvane.learning.tests.fake_teacher_cli_121 import edit_sample
+from memvane.learning.tests.old_bundle_121 import ROOT, SITECUSTOMIZE, EnabledInstall, edit_payload
 
 READY = {'ready': True, 'available_mib': 10000, 'load_per_cpu': 0.1, 'total_mib': 16384,
          'query_status': {'memory_pressure': 'ok'},
          'memory_pressure': {'level': 'normal', 'system_free_percent': 70}}
+
+
+# The same stand-ins for a worker run as a child process (``Lp1Fixture.worker_child``):
+# appended to the fixture's own child ``sitecustomize``. With ``k`` the child ends by
+# ``os._exit(137)`` right after its k-th durable write (``tests/support/crash.py``).
+CHILD_STAND_INS = '''
+_lp1 = os.environ.get('MV110_LP1')
+if _lp1:
+    def _lp1_apply(config):
+        import tempfile
+        from unittest import mock
+        from memvane.learning.context_learning import automatic_staging, candidate_apply, general_teacher, shared
+        from memvane.learning.tests import lp1
+        tempfile.tempdir = config['tmp']
+        real = general_teacher.process_pending_default
+        fixture = lp1.ChildFixture(config)
+        for target, name, value in (
+                (general_teacher, 'process_pending_default',
+                 lambda root, project, policy, **k: real(root, project, policy, environ=config['environ'], **k)),
+                (automatic_staging, '_trainer', lambda *a, **k: lp1.FakeTrainer(fixture)),
+                (candidate_apply, 'service_transport', lambda *a: fixture.transport)):
+            mock.patch.object(target, name, value).start()
+        import time
+        report = lambda *a, **k: dict(lp1.READY, observed_at_mono=time.monotonic())
+        for module in (shared, general_teacher):
+            mock.patch.object(module, 'resource_report', report).start()
+        if config.get('seeded'):
+            # Seeded gold rows name no real source file: the source check is answered for them.
+            for module in (shared, general_teacher):
+                mock.patch.object(module, '_case_active', return_value=True).start()
+        if config.get('k'):
+            from memvane.learning.tests.support import crash
+            # Kept for the life of the process: a dropped context would undo its patches.
+            lp1.COUNTING = crash._counting(config['k'])
+            lp1.COUNTING.__enter__()
+    _lp1_apply(json.loads(_lp1))
+'''
+
+
+class ChildFixture:
+    """What ``FakeTrainer`` needs of a fixture, inside a worker child."""
+
+    def __init__(self, config):
+        self.root, self.log = Path(config['root']), Path(config['log'])
+        self.trained, self.predicted = _Logged(self.log, 'trained'), _Logged(self.log, 'predicted')
+
+    def policy(self):
+        return shared._policy(self.root)
+
+    def gold_choices(self):
+        with shared._db(self.root) as db:
+            return {rid: json.loads(gold)['selected_ids'] for rid, gold in
+                    db.execute("SELECT request_id,gold FROM cases WHERE status='gold'")}
+
+    def transport(self, command, record):
+        return {'status': 'prepared' if command == 'prepare' else 'activated', 'token': record['apply_id']}
+
+
+class _Logged:
+    def __init__(self, path, kind):
+        self.path, self.kind = path, kind
+
+    def append(self, value):
+        with open(self.path, 'a', encoding='utf8') as out:
+            out.write(json.dumps([self.kind, value]) + '\n')
 
 
 def edit_text(index):
@@ -134,6 +202,58 @@ class Lp1Fixture(EnabledInstall):
 
     def pointer(self):
         return json.loads((self.root / 'active-checkpoint.json').read_text())
+
+    # -- the worker as a child process ---------------------------------------------------
+    def child_env(self, patched=False, *, bundle=ROOT, resource_ready=False):
+        env = super().child_env(patched, bundle=bundle, resource_ready=resource_ready)
+        if patched and getattr(self, 'child_config', None) is not None:
+            stub = self.tmp / 'stub-lp1'
+            if not stub.is_dir():
+                stub.mkdir(mode=0o700)
+                (stub / 'sitecustomize.py').write_text(SITECUSTOMIZE + CHILD_STAND_INS, encoding='utf8')
+            env.update(PYTHONPATH='%s:%s' % (stub, bundle), MV110_LP1=json.dumps(self.child_config))
+        return env
+
+    def worker_child(self, k=None, *, seeded=False):
+        """One worker pass as a real child process; with ``k`` it is killed after its k-th write.
+
+        ``seeded``: the namespace holds ``seed_gold`` rows. Returns (exit code, the pass
+        result or None).
+        """
+        self.child_log = self.tmp / 'child-trainer.jsonl'
+        self.child_config = {'root': str(self.root), 'log': str(self.child_log), 'environ': self.environ,
+                             'tmp': tempfile.gettempdir(), 'k': k, 'seeded': seeded}
+        try:
+            code, out, err = self.entry(ROOT, 'learning-shared', 'run-project', str(self.project),
+                                        patched=True, resource_ready=True)
+        finally:
+            self.child_config = None
+        try:
+            return code, json.loads(out)
+        except ValueError:
+            return code, None
+
+    def child_calls(self, kind):
+        if not self.child_log.is_file():
+            return []
+        return [value for name, value in map(json.loads, self.child_log.read_text().splitlines()) if name == kind]
+
+    def seed_gold(self, prefix, count, *, empty=0):
+        """Gold cases written as rows (no teacher call): for tests that start past the teacher."""
+        key, self.clock = shared._project_key(self.project), getattr(self, 'clock', time.time())
+        with shared._db(self.root) as db:
+            for index in range(count):
+                rid = '%s-%03d' % (prefix, index)
+                sample, bodies = edit_sample(rid)
+                selected = [] if index < empty else [sample['candidates'][0]['candidate_id']]
+                self.clock += 1
+                value = {'selected_ids': selected, 'input_sha256': digest(canonical(sample)), 'review': 'single_pass'}
+                db.execute('INSERT INTO cases (project_key,project_root,request_id,input_sha256,sample,'
+                           'bodies,corpus_fingerprint,captured_at,split,family_keys,use_state,status,gold) '
+                           'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                           (key, str(self.project), rid, digest(canonical(sample)), canonical(sample),
+                            canonical(bodies), 'corpus', self.clock, 'train', '[]', 'active', 'gold',
+                            canonical(value)))
 
     def jobs(self):
         with shared._db(self.root) as db:

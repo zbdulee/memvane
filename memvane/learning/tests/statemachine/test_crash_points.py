@@ -13,9 +13,12 @@ points include the trainer having written the candidate artifact.
 """
 from __future__ import annotations
 
+import shutil
+
 from memvane.learning.context_learning import shared, teacher_state
 from memvane.learning.tests.fake_teacher_cli_121 import TeacherFixture
 from memvane.learning.tests.statemachine.test_m04_cycle import CycleFixture, ProcessEnded
+from memvane.learning.tests.lp1 import Lp1Fixture
 from memvane.learning.tests.support import crash, invariants
 
 HOST = 'claude'
@@ -140,3 +143,87 @@ class TrainingCrashPoints(CycleFixture):
         self.assertEqual((self.trained, self.marks()), ([100, 100], {'marked': 100}))
         folder = self.root / 'cycles' / self.job()[0]
         self.assertEqual(len([path for path in folder.iterdir() if '.uncertain-' in path.name]), 1)
+
+
+class WorkerProcessCrashPoints(Lp1Fixture):
+    """The worker command as a real child process, killed after each durable write.
+
+    The namespace a pass starts from is kept as a copy and restored for every
+    point. Two passes: the one that trains 100 gold cases, and the one that
+    evaluates the staged cycle against 50 later cases and applies it (its
+    points include the journal, pointer, receipt and binding writes on either
+    side of the resident's answers).
+    """
+    # pass -> durable writes of one uninterrupted run of it.
+    WRITES = {'training': 13, 'application': 8}
+
+    def keep(self):
+        self.kept = self.tmp / 'namespace-copy'
+        if self.kept.exists():
+            shutil.rmtree(self.kept)
+        shutil.copytree(self.root, self.kept, symlinks=True)
+
+    def restore(self):
+        for path in self.root.iterdir():
+            shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
+        shutil.copytree(self.kept, self.root, symlinks=True, dirs_exist_ok=True)
+
+    def violations(self):
+        # The gold cases are seeded as rows, without the teacher call a ledger row records.
+        return [line for line in invariants.check(self.root) if not line.startswith('I-3 ')]
+
+    def statuses(self):
+        counts = self.counts()
+        return counts['jobs'], counts['cycles']
+
+    def prepare(self, name):
+        self.seed_gold('t', 100, empty=20)
+        if name == 'application':
+            code, result = self.worker_child(seeded=True)
+            self.assertEqual((code, result['cycle']['status']), (0, 'staged_waiting_quality_cohort'), result)
+            self.seed_gold('v', 50, empty=10)
+        self.keep()
+
+    def run_pass(self, name, k=None):
+        self.restore()
+        return self.worker_child(k, seeded=True)
+
+    def finished(self, name):
+        """The durable end of the pass, whatever a later pass went on to do."""
+        jobs, cycles = self.statuses()
+        if name == 'training':
+            return jobs.get('staged', 0) >= 1 and sum(cycles.values()) >= 1
+        return cycles.get('applied') == 1 and self.pointer()['cycle_id'] == self.jobs()[0]
+
+    def check(self, name, ended):
+        self.prepare(name)
+        k = 0
+        while True:
+            k += 1
+            self.assertLess(k, 80, 'the pass never finished')
+            code, result = self.run_pass(name, k)
+            if code == 0:
+                break
+            with self.subTest(pass_name=name, k=k):
+                self.assertEqual((code, result), (crash.KILLED, None))
+                self.assertEqual(self.violations(), [])
+                for _ in range(REENTRIES):
+                    code, result = self.worker_child(seeded=True)
+                    self.assertEqual(code, 0, result)
+                    self.assertEqual(self.violations(), [])
+                    if self.finished(name):
+                        break
+                self.assertTrue(self.finished(name), result)
+        # One write past the last: the pass ends by itself. The count is fixed here:
+        # a new write is a new point to look at.
+        self.assertEqual(result['cycle']['status'], ended, result)
+        self.assertTrue(self.finished(name))
+        self.assertEqual(k - 1, self.WRITES[name])
+
+    def test_the_training_pass_killed_after_any_write_is_finished_by_later_passes(self):
+        self.check('training', 'staged_waiting_quality_cohort')
+        self.assertEqual(self.statuses(), ({'staged': 1}, {'staged': 1}))
+
+    def test_the_applying_pass_killed_after_any_write_is_finished_by_later_passes(self):
+        self.check('application', 'applied')
+        self.assertEqual(self.statuses()[1], {'applied': 1})

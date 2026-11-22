@@ -125,19 +125,22 @@ teacher)만 담는다.
 | `queued` | `defer` | `deferred` | `learning_queue.LearningQueue` |
 | `queued` | `fail` | `deferred` | `learning_queue.LearningQueue` |
 | `queued` | `fail_limit` | `blocked` | `learning_queue.LearningQueue` |
-| `queued` | `source_revoked` | `blocked` | `automatic_staging` |
+| `queued` | `source_revoked` | `blocked` | `learning_queue.LearningQueue` |
+| `queued` | `unrepeatable_failure` | `blocked` | `learning_queue.LearningQueue` |
 | `running` | `claim_released` | `deferred` | `learning_queue.LearningQueue` |
 | `running` | `complete` | `staged` | `learning_queue.LearningQueue` |
 | `running` | `consumed_elsewhere` | `blocked` | `learning_queue.LearningQueue` |
 | `running` | `defer` | `deferred` | `learning_queue.LearningQueue` |
 | `running` | `fail` | `deferred` | `learning_queue.LearningQueue` |
 | `running` | `fail_limit` | `blocked` | `learning_queue.LearningQueue` |
-| `running` | `source_revoked` | `blocked` | `automatic_staging` |
+| `running` | `source_revoked` | `blocked` | `learning_queue.LearningQueue` |
+| `running` | `unrepeatable_failure` | `blocked` | `learning_queue.LearningQueue` |
 | `deferred` | `claim` | `running` | `learning_queue.LearningQueue` |
 | `deferred` | `complete` | `staged` | `learning_queue.LearningQueue` |
 | `deferred` | `consumed_elsewhere` | `blocked` | `learning_queue.LearningQueue` |
 | `deferred` | `fail_limit` | `blocked` | `learning_queue.LearningQueue` |
-| `deferred` | `source_revoked` | `blocked` | `automatic_staging` |
+| `deferred` | `source_revoked` | `blocked` | `learning_queue.LearningQueue` |
+| `deferred` | `unrepeatable_failure` | `blocked` | `learning_queue.LearningQueue` |
 | `blocked` | `rearm` | `queued` | `learning_queue.LearningQueue` |
 
 ## M4 cycle
@@ -235,6 +238,26 @@ teacher)만 담는다.
 | 상태 | 사건 | 다음 | 쓰는 곳 |
 |---|---|---|---|
 | `incumbent` | `pointer_written` | `candidate` | `candidate_apply.apply_candidate` |
+
+## M8 worker request
+
+- 저장 위치: full-worker-request.json, full-worker-state.json
+- lock: full-worker.lock
+- 쓰는 주체: hook launch (request), dispatcher step and owned child (state)
+- 상태: `(absent)`, `open`, `last_start`, `settled`, `acknowledged`
+
+| 상태 | 사건 | 다음 | 쓰는 곳 |
+|---|---|---|---|
+| `(absent)` | `launch` | `open` | `shared.launch` |
+| `open` | `child_result` | `settled` | `shared._settle_owned` |
+| `open` | `third_start` | `last_start` | `shared._full_step` |
+| `last_start` | `child_result` | `settled` | `shared._settle_owned` |
+| `last_start` | `child_retry_result` | `open` | `shared._settle_owned` |
+| `last_start` | `launch` | `open` | `shared.launch` |
+| `last_start` | `step` | `acknowledged` | `shared._full_step` |
+| `settled` | `launch` | `open` | `shared.launch` |
+| `settled` | `step` | `acknowledged` | `shared._full_step` |
+| `acknowledged` | `launch` | `open` | `shared.launch` |
 
 ## M15 teacher host
 

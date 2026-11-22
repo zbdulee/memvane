@@ -15,9 +15,14 @@ from . import resident
 # ``retry_at``: the table has no other column for it.
 REARM_SECONDS = 86400
 REARMED_REASON = 'trainer_failed'
+# Training failures another attempt of the same job repeats exactly: the request no
+# longer is what the job's folder was started with, its rows moved, its cursor or its
+# final artifact is not what was written. Such a job is closed at once, not rearmed.
+UNREPEATABLE = ('learning_train_intent_changed', 'learning_batch_source_changed',
+                'learning_cursor_changed', 'learning_completion_uncertain')
 # Blocks no later attempt can clear. The next plan pins other members when there are
 # any; with the same members it answers with the blocked job.
-FINAL_BLOCKS = ('source_revoked', 'already_consumed')
+FINAL_BLOCKS = ('source_revoked', 'already_consumed', *UNREPEATABLE)
 
 
 def semantic_key(row, namespace, family, *, normalize_query=False):
@@ -72,7 +77,7 @@ class LearningQueue:
             raise ValueError('holdout_in_training')
         with self.connect() as db:
             self.schema(db)
-            old=db.execute("SELECT job_id FROM learning_jobs WHERE namespace=? AND approval=? AND cohort=? AND family=? AND (status IN ('queued','running','deferred') OR (status='blocked' AND COALESCE(reason,'') NOT IN (?,?))) ORDER BY rowid LIMIT 1",(self.scope,approval,cohort,family,*FINAL_BLOCKS)).fetchone()
+            old=db.execute("SELECT job_id FROM learning_jobs WHERE namespace=? AND approval=? AND cohort=? AND family=? AND (status IN ('queued','running','deferred') OR (status='blocked' AND COALESCE(reason,'') NOT IN (%s))) ORDER BY rowid LIMIT 1"%','.join('?'*len(FINAL_BLOCKS)),(self.scope,approval,cohort,family,*FINAL_BLOCKS)).fetchone()
             if old:return self.get(old[0],db=db)
             unique={}
             for row in rows:unique.setdefault(semantic_key(row,self.scope,family,normalize_query=cumulative),row)
@@ -153,14 +158,25 @@ class LearningQueue:
             db.execute("UPDATE learning_jobs SET status=?,failures=?,retry_at=?,reason=? WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",('blocked' if blocked else 'deferred',failures,retry,reason,job_id,self.scope))
             return self.get(job_id,db=db)
 
+    def block(self, job_id, reason):
+        """Close an open job with ``reason`` (one of ``FINAL_BLOCKS``); the job after it."""
+        if reason not in FINAL_BLOCKS:raise ValueError('learning_block_reason_invalid')
+        with self.connect() as db:
+            self.schema(db)
+            db.execute("UPDATE learning_jobs SET status='blocked',reason=? WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",(reason,job_id,self.scope))
+            return self.get(job_id,db=db)
+
     def rearm(self, *, now=None):
-        """Queue again the jobs trainer failures blocked a day ago; their ids."""
+        """Queue again the jobs trainer failures blocked a day ago; their ids.
+
+        ``attempts`` is kept: it is the count of training attempts over all rearms.
+        """
         now=time.time() if now is None else now
         with self.connect() as db:
             self.schema(db)
             ids=[r[0] for r in db.execute("SELECT job_id FROM learning_jobs WHERE namespace=? AND status='blocked' AND reason=? AND retry_at<=? ORDER BY rowid",(self.scope,REARMED_REASON,now)).fetchall()]
             for job_id in ids:
-                db.execute("UPDATE learning_jobs SET status='queued',owner=NULL,attempts=0,failures=0,retry_at=0,reason=NULL WHERE job_id=? AND namespace=? AND status='blocked'",(job_id,self.scope))
+                db.execute("UPDATE learning_jobs SET status='queued',owner=NULL,failures=0,retry_at=0,reason=NULL WHERE job_id=? AND namespace=? AND status='blocked'",(job_id,self.scope))
             return ids
 
     def complete(self, job_id, *, db=None):
