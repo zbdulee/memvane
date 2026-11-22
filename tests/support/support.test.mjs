@@ -156,3 +156,22 @@ test('the load scale is the median start time over the reference, kept in 1.0 to
   assert.equal(value, timeScale());
 });
 
+test('test_flaky_report.py lists a module whose result changed within one commit', () => {
+  const fixture = fixtureHome('mvf');
+  try {
+    const rows = [['a/test_a.py', 'pass', 'c1'], ['a/test_a.py', 'fail', 'c1'], ['a/test_a.py', 'pass', 'c1'],
+      ['a/test_b.py', 'fail', 'c1'], ['a/test_b.py', 'pass', 'c2'], ['a/test_c.py', 'fail', null]];
+    const file = join(fixture.home, 'results.jsonl');
+    writeFileSync(file, `${rows.map(([module, status, commit]) =>
+      JSON.stringify({ module, status, seconds: 1, commit })).join('\n')}\nnot json\n`);
+    const r = spawnSync('python3', ['-B', join(ROOT, 'scripts', 'test_flaky_report.py'), file],
+      { encoding: 'utf8', timeout: 60000, env: fixtureEnv(fixture) });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), { rows: 6, rowsWithoutCommit: 1, moduleCommits: 3,
+      changed: [{ module: 'a/test_a.py', commit: 'c1', pass: 2, fail: 1 }] });
+    assert.deepEqual(readFileSync(file, 'utf8').split('\n').length, 8);
+  } finally {
+    removeTemp(fixture.home);
+  }
+});
+
