@@ -1066,12 +1066,13 @@ def _session_health_notice(decision, notice, host, payload):
 
 def _timed_route_proof(decision, action):
     from memvane.journal.api import verify_selected_route
-    started = time.monotonic()
+    started, stages = time.monotonic(), {}
     try:
-        return verify_selected_route(decision)
+        return verify_selected_route(decision, stages)
     finally:
         if action == 'recall':
-            _trace_fields(routeProofMs=round((time.monotonic() - started) * 1000, 3))
+            # Where the proof's time goes; a proof that refused reports the parts it reached.
+            _trace_fields(routeProofMs=round((time.monotonic() - started) * 1000, 3), routeProofStages=stages)
 
 
 def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:

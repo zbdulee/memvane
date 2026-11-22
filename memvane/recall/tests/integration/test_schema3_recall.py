@@ -326,6 +326,10 @@ class Schema3Recall(RecallInstallCase):
         for field in ('vectorReadMs', 'vectorUnpackMs', 'vectorDotMs'):
             self.assertIsInstance(event.get(field), (int, float), field)
             self.assertGreaterEqual(event[field], 0)
+        # The route proof says where its time went, by fixed stage names only.
+        stages = event['routeProofStages']
+        self.assertEqual(list(stages), ['route', 'records', 'attestation', 'provider', 'recheck'])
+        self.assertTrue(all(type(value) in (int, float) and value >= 0 for value in stages.values()), stages)
         self.assertNotIn(PROMPT, json.dumps(event))
         self.assertNotIn(NOTE, json.dumps(event))
         self.assertIn(event['pinVerified'], ('receipt', 'full'))

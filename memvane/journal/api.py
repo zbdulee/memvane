@@ -10,9 +10,9 @@ def inspect_journal(journal_path):
     from memvane.journal.install_journal import inspect_journal as implementation
     return implementation(journal_path)
 
-def verify_selected_route(decision):
+def verify_selected_route(decision, stages=None):
     from memvane.journal.install_journal import verify_selected_route as implementation
-    return implementation(decision)
+    return implementation(decision, stages)
 
 def verify_selected_route_for_write(decision, action='update'):
     from memvane.journal.install_journal import verify_selected_route_for_write as implementation

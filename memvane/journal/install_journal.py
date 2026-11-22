@@ -654,8 +654,22 @@ _SELECTION_TRANSITIONS = frozenset((
     ('restoring', 'selected'), ('restoring', 'restored'), ('restored', 'restored')))
 
 
-def _verify_v1_selected(decision):
-    """Reprove the selected v1 journal, route, ledger and provider."""
+def _verify_v1_selected(decision, stages=None):
+    """Reprove the selected v1 journal, route, ledger and provider.
+
+    ``stages`` (a dict) receives the milliseconds of each part of the proof:
+    ``route`` (the route file and the fresh selection), ``records`` (journal
+    row, build record, ledger), ``attestation``, ``provider`` (the provider
+    manifest and its artifacts) and ``recheck`` (everything read once more).
+    """
+    import time
+    started = [time.monotonic()]
+
+    def mark(name):
+        if stages is not None:
+            now = time.monotonic()
+            stages[name] = round(stages.get(name, 0) + (now - started[0]) * 1000, 3)
+            started[0] = now
     from memvane.settings import api as project_dir
     from memvane.journal.build_record import read_v1
     from memvane.journal.ledger_io import _private_file, _read_json
@@ -672,6 +686,7 @@ def _verify_v1_selected(decision):
     current = select_route(str(project), action='recall')
     if current != decision:
         _fail('host_decision_changed')
+    mark('route')
     row = inspect_journal(path)
     build = read_v1(path.parent)
     if build is None or build['phase'] != 'ready':
@@ -700,17 +715,21 @@ def _verify_v1_selected(decision):
                    ('projectRoot', 'installId', 'scopeId', 'storePath', 'storeIncarnation', 'journalPath'))
             or row['vectorProfile'] != decision['vectorProfile']):
         _fail('selected_route_changed')
+    mark('records')
     attestation, sha = _attestation(path)
     if (sha != row['attestationSha256'] or not isinstance(attestation, dict)
             or attestation.get('journalPath') != str(path)):
         _fail('worker_attestation_changed')
+    mark('attestation')
     manifest, provider_available = _v1_provider_manifest(
         attestation, row['vectorProfile'], allow_local_unavailable=True)
+    mark('provider')
     if (inspect_journal(path) != row or read_v1(path.parent) != build
             or _read_json(path.parent / 'ledger.json') != ledger
             or _private_file(route_path, 8192) != raw
             or select_route(str(project), action='recall') != decision):
         _fail('selected_route_changed')
+    mark('recheck')
     return {'status': 'installer_v1_selected_verified', 'productRouteAllowed': True,
             'journalPath': str(path), 'selectionEpoch': row['epoch'],
             'projectRoot': str(project), 'installId': row['installId'],
@@ -720,11 +739,11 @@ def _verify_v1_selected(decision):
             'providerManifest': manifest, 'providerAvailable': provider_available}
 
 
-def verify_selected_route(decision):
-    """Verify the selected 1.0 route, journal, store and provider identity."""
+def verify_selected_route(decision, stages=None):
+    """Verify the selected 1.0 route, journal, store and provider identity (``stages``: see ``_verify_v1_selected``)."""
     if not isinstance(decision, dict) or decision.get('routeSchema') != 'memvane-route-v4':
         _fail('unselected_host_route')
-    return _verify_v1_selected(decision)
+    return _verify_v1_selected(decision, stages)
 
 
 def verify_selected_route_for_write(decision, action='update'):
