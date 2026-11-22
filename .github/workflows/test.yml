@@ -5,10 +5,11 @@ on:
     branches: [main]
   pull_request:
 
-# A newer push to the same ref replaces the run still queued or in progress for it.
+# One run per ref at a time: the run in progress finishes, and a newer push
+# replaces only the run still queued behind it.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   # Module results of the run (tests/support/runner.mjs), for scripts/test_flaky_report.py.
