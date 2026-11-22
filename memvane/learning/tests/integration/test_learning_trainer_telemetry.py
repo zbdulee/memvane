@@ -91,9 +91,26 @@ class TrainerTelemetry(unittest.TestCase):
                 self.assertEqual((str(error), error.error_site, trainer.last_error_site),
                                  ('trainer_failed:' + code, None, None))
 
+    def test_an_error_site_keeps_its_frames_and_leaves_out_the_other_entries(self):
+        secret = 'The emerald heron case text'
+        frames = ['adapter.py:869 <module>', 'adapter.py:824 main']
+        # An import failure: the frozen importlib frame has a space in its file name.
+        mixed = [frames[0], '<frozen importlib._bootstrap>:1050 _gcd_import', secret, 7, frames[1],
+                 '/Users/someone/private/adapter.py:1 main']
+        trainer, error = self.fail({'schema_version': 1, 'error_code': 'invalid_case', 'error_site': mixed})
+        self.assertEqual((str(error), error.error_site, trainer.last_error_site),
+                         ('trainer_failed:invalid_case', frames, frames))
+        # At most eight frames are kept.
+        trainer, error = self.fail({'schema_version': 1, 'error_code': 'invalid_case',
+                                    'error_site': ['adapter.py:%d main' % line for line in range(1, 12)]})
+        self.assertEqual(error.error_site, ['adapter.py:%d main' % line for line in range(1, 9)])
+        trainer, error = self.fail({'schema_version': 1, 'error_code': 'learning_yield', 'error_site': mixed})
+        self.assertEqual(error.report, {'reason': 'learning_yield', 'error_site': frames})
+        self.assertNotIn('heron', (self.root / 'resource-defer.json').read_text())
+
     def test_an_error_site_that_is_not_frames_is_dropped_and_never_stored(self):
         secret = 'The emerald heron case text'
-        for bad in ([secret], ['/Users/someone/private/adapter.py:1 main'], ['adapter.py:12 main'] * 9,
+        for bad in ([secret], ['/Users/someone/private/adapter.py:1 main'],
                     'adapter.py:12 main', [], [7], ['adapter.py:x main'], ['adapter.py:12 main\nmore']):
             with self.subTest(bad=bad):
                 trainer, error = self.fail({'schema_version': 1, 'error_code': 'invalid_case',

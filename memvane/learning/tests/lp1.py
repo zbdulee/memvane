@@ -137,6 +137,11 @@ class Lp1Fixture(EnabledInstall):
         self.environ = {'HOME': str(self.user), 'PATH': '%s:/usr/bin:/bin' % self.bin,
                         'TMPDIR': str(outside), 'LANG': 'C', 'USER': 'fixture', 'LOGNAME': 'fixture'}
         self.trained, self.predicted, self.edits = [], [], 0
+        self.worker_stand_ins()
+        self.warm_receipt()
+
+    def worker_stand_ins(self):
+        """The edges of a worker pass in this process: teacher environment, resources, trainer, transport."""
         real = general_teacher.process_pending_default
         report = mock.Mock(side_effect=lambda *a, **k: dict(READY, observed_at_mono=time.monotonic()))
         for target, name, value in (
@@ -147,7 +152,6 @@ class Lp1Fixture(EnabledInstall):
                 (automatic_staging, '_trainer', lambda *a, **k: FakeTrainer(self)),
                 (candidate_apply, 'service_transport', lambda *a: self.transport)):
             self.patches.enter_context(mock.patch.object(target, name, value))
-        self.warm_receipt()
 
     def warm_receipt(self):
         """The inference receipt a selector warm writes for the base pointer (the warm is a stand-in here)."""

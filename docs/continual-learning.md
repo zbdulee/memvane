@@ -569,7 +569,9 @@ Each call writes one `learning.teacher` row (`gold`, `parked`, `pending_review`,
 cards as `[{path, sha}]`, the isolation result and the prequential values.
 Each pass writes an `outcome: pass` row with the host waits and queued counts,
 `learning.score` rows (`caseRows`, `caseLimit`, `gold`, `candidateTrain`,
-`candidateEval`, `candidateEvalNonEmpty`, `candidateEvalEmpty`), `learning.promotion`
+`candidateEval`, `candidateEvalNonEmpty`, `candidateEvalEmpty`; with more than 30
+gold cases also the rank baseline `rankCases`, `rankExactRate`, `rankMicroF1`: the first
+three cards of the hybrid order against the gold, no inference), `learning.promotion`
 rows, and `learning.cycle` rows (`trained` on training completion, or
 `deferred_resource` with inner `reason`, `deferredBy`, `availableMib`,
 `requiredMib`, `loadPerCpu`, `loadLimit` and `latchPaused`, or `blocked` with the

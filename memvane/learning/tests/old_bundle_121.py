@@ -181,28 +181,7 @@ class EnabledInstall(RenewalFixture):
         self.runtime_file.write_text('synthetic interpreter', encoding='utf8')
         self.runtime_file.chmod(0o700)
         self.version = plugin_version()
-        self.select(host='claude', version=self.version, marker='A')
-        stack = ExitStack()
-        self.addCleanup(stack.close)
-        self.patches = stack
-        for target, kwargs in (
-            ('memvane.learning.runtime_activation.ensure_pending', {}),
-            ('memvane.learning.context_learning.host_inventory._project_listing', {'side_effect': self.listing}),
-            ('memvane.learning.context_learning.adapter_binding._codex_installed',
-             {'side_effect': lambda *a: dict(self.codex)}),
-            ('memvane.learning.context_learning.project_scope._code_snapshot', {'side_effect': self.snapshot}),
-            ('memvane.learning.context_learning.project_scope.code_identity', {'side_effect': self.code}),
-            ('memvane.learning.context_learning.inference_identity.code_identity', {'side_effect': self.code}),
-            ('memvane.learning.context_learning.selector_heal.running_adapter',
-             {'side_effect': lambda: self.running / 'memvane/learning/context_learning/adapter.py'}),
-            ('memvane.learning.context_learning.selector_heal.official_runtime',
-             {'return_value': (str(self.runtime_file), str(self.model))}),
-            ('memvane.learning.context_learning.selector_heal.pressure', {'return_value': None}),
-            ('memvane.learning.context_learning.selector_heal.heal', {'return_value': {'status': 'selector_ready'}}),
-            ('memvane.learning.context_learning.selector_heal.warm',
-             {'return_value': {'status': 'selector_warm_current'}}),
-        ):
-            stack.enter_context(mock.patch(target, **kwargs))
+        self.host_stand_ins()
         self.root.parent.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         for directory in (self.root.parent, self.root):
             directory.mkdir(mode=0o700, exist_ok=True)
@@ -235,6 +214,35 @@ class EnabledInstall(RenewalFixture):
         edit_git_migration.record_fix_time(self.root, self.project)
         self.assertTrue((self.root / edit_git_migration._name(
             edit_git_migration.FIX_PREFIX, self.project)).is_file())
+        self.fake_clis()
+
+    def host_stand_ins(self):
+        """The installed-host boundary of this process: synthetic bundles and their stand-ins."""
+        self.select(host='claude', version=self.version, marker='A')
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        self.patches = stack
+        for target, kwargs in (
+            ('memvane.learning.runtime_activation.ensure_pending', {}),
+            ('memvane.learning.context_learning.host_inventory._project_listing', {'side_effect': self.listing}),
+            ('memvane.learning.context_learning.adapter_binding._codex_installed',
+             {'side_effect': lambda *a: dict(self.codex)}),
+            ('memvane.learning.context_learning.project_scope._code_snapshot', {'side_effect': self.snapshot}),
+            ('memvane.learning.context_learning.project_scope.code_identity', {'side_effect': self.code}),
+            ('memvane.learning.context_learning.inference_identity.code_identity', {'side_effect': self.code}),
+            ('memvane.learning.context_learning.selector_heal.running_adapter',
+             {'side_effect': lambda: self.running / 'memvane/learning/context_learning/adapter.py'}),
+            ('memvane.learning.context_learning.selector_heal.official_runtime',
+             {'return_value': (str(self.runtime_file), str(self.model))}),
+            ('memvane.learning.context_learning.selector_heal.pressure', {'return_value': None}),
+            ('memvane.learning.context_learning.selector_heal.heal', {'return_value': {'status': 'selector_ready'}}),
+            ('memvane.learning.context_learning.selector_heal.warm',
+             {'return_value': {'status': 'selector_warm_current'}}),
+        ):
+            stack.enter_context(mock.patch(target, **kwargs))
+
+    def fake_clis(self):
+        """The fake host CLIs and the interpreter on the child ``PATH``."""
         self.bin = self.home / 'bin'
         self.bin.mkdir(mode=0o700)
         self.logs = self.home / 'cli-logs'

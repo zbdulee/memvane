@@ -167,6 +167,30 @@ class Funnel(StateRoot):
         self.assertTrue(scores)
         for row in scores:
             self.assertEqual((row['gold'], row['caseRows'], row['caseLimit'], row['candidateTrain']), (3, 3, 2000, None))
+            # Three gold cases: too few for the rank baseline.
+            self.assertNotIn('rankCases', row)
+
+    def test_score_rows_carry_the_rank_baseline_past_thirty_gold_cases(self):
+        grant = {'projectRoot': str(self.project), 'operations': ['gold_default', 'local_train', 'quality_evaluate'],
+                 'cohort': {'id': 'default-v1', 'notBeforeUnixMs': 0, 'minQualityTrainCases': 100}}
+        count = prequential.BASELINE_MIN_GOLD + 1
+        for index in range(count):
+            sample, bodies = edit_sample(f'b{index}')
+            self.add(f'b{index}', sample=sample, bodies=bodies, status='gold')
+            first = sample['candidates'][0]['candidate_id']
+            value = {'selected_ids': [first] if index % 2 else [], 'input_sha256': digest(canonical(sample))}
+            with shared._db(self.root) as db:
+                db.execute('UPDATE cases SET gold=? WHERE request_id=?', (canonical(value), f'b{index}'))
+        recorded = []
+        with mock.patch.object(prequential, '_emit', side_effect=lambda p, e, **f: recorded.append(dict(f, event=e))):
+            prequential.record_pass(self.root, self.project, grant)
+        scores = [row for row in recorded if row['event'] == 'learning.score']
+        self.assertTrue(scores)
+        for row in scores:
+            self.assertEqual((row['gold'], row['rankCases'], row['rankExactRate']), (count, count, 0.0))
+            # Three eligible cards against one or no gold card: the overlap is the odd half.
+            self.assertAlmostEqual(row['rankMicroF1'], 2 * (count // 2) / (3 * count + count // 2))
+            self.assertEqual({type(row[key]) for key in ('rankCases', 'rankExactRate', 'rankMicroF1')}, {int, float})
 
 
 class Deferral(StateRoot):

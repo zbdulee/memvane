@@ -41,6 +41,10 @@ KEEP_CYCLES = 16
 # K, the selector's input size: the same value as recall ``verified_rows.SELECTOR_CANDIDATES``
 # (learning cannot import recall; a tests/structure test pins the equality).
 SELECTOR_INPUT_K = 10
+# The rank baseline of ``learning.score``: the first cards of the hybrid order against the
+# gold, written once more than this many gold cases exist.
+BASELINE_TOP = 3
+BASELINE_MIN_GOLD = 30
 
 
 def _edit(sample) -> bool:
@@ -462,16 +466,26 @@ def prerecord_selections(root, project, grant):
     return len(rows)
 
 
-def score(rows, spans):
+def score(rows, spans, *, baseline=False):
     """Operating score per checkpoint (§2-1 (1)).
 
     ``rows`` are dicts with ``laya``, ``gold``, ``eligible``, ``capturedAt``
     and ``selection``. Only rows the selector answered are scored; the others
-    count as ``defaultRank`` or ``unknownSelection``.
+    count as ``defaultRank`` or ``unknownSelection``. With ``baseline`` every
+    row also scores the first ``BASELINE_TOP`` eligible cards (the hybrid rank
+    order) against the gold: ``rankCases``, ``rankExactRate``, ``rankMicroF1``.
+    No inference runs for either score.
     """
-    groups = {}
+    groups, ranks = {}, {}
     for row in rows:
         checkpoint = checkpoint_at(spans, row['capturedAt'])
+        if baseline:
+            top, wanted = set(row['eligible'][:BASELINE_TOP]), set(row['gold'])
+            rank = ranks.setdefault(checkpoint, {'cases': 0, 'exact': 0, 'overlap': 0, 'sizes': 0})
+            rank['cases'] += 1
+            rank['exact'] += top == wanted
+            rank['overlap'] += len(top & wanted)
+            rank['sizes'] += len(top) + len(wanted)
         group = groups.setdefault(checkpoint, {'cases': 0, 'exact': 0, 'overlap': 0, 'laya': 0,
                                                'gold': 0, 'empty': 0, 'emptyAgree': 0,
                                                'nonEmpty': 0, 'nonEmptyAgree': 0,
@@ -510,6 +524,10 @@ def score(rows, spans):
                  'goldOutsideK': group['goldOutsideK']}
         if group['laya'] + group['gold']:
             value['microF1'] = 2 * group['overlap'] / (group['laya'] + group['gold'])
+        rank = ranks.get(checkpoint)
+        if rank:
+            value.update(rankCases=rank['cases'], rankExactRate=rank['exact'] / rank['cases'],
+                         rankMicroF1=2 * rank['overlap'] / rank['sizes'] if rank['sizes'] else None)
         result[checkpoint] = value
     return result
 
@@ -580,7 +598,8 @@ def _record_score(root, project, grant):
         rows = score_rows(db, project, grant)
         counts = progress(db, project, grant)
     spans = intervals(read_history(root))
-    scores = score(rows, spans)
+    # The rank baseline is written once there is enough gold for it to mean something.
+    scores = score(rows, spans, baseline=len(rows) > BASELINE_MIN_GOLD)
     current = spans[-1][0]
     previous = spans[-2][0] if len(spans) > 1 else None
     emitted = False

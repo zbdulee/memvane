@@ -66,11 +66,15 @@ _SITE = re.compile(r'[A-Za-z0-9_.<>-]{1,80}:[0-9]{1,7} [A-Za-z0-9_.<>-]{1,80}\Z'
 
 
 def _error_site(value):
-    """A trainer sidecar's ``error_site`` when every entry is ``file:line function``, else None."""
-    if (not isinstance(value, list) or not 1 <= len(value) <= 8
-            or any(not isinstance(item, str) or not _SITE.match(item) for item in value)):
+    """The ``file:line function`` entries of a trainer sidecar's ``error_site`` (at most 8), else None.
+
+    Judged entry by entry: a frame whose file name has another shape (``<frozen
+    importlib._bootstrap>`` has a space) is left out and the others are kept.
+    """
+    if not isinstance(value, list):
         return None
-    return list(value)
+    kept = [item for item in value[:32] if isinstance(item, str) and _SITE.match(item)][:8]
+    return kept or None
 
 
 # Failure codes a trainer child may report in its sidecar; any other value is the generic failure.

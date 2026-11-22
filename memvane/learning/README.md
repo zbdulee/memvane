@@ -14,6 +14,14 @@ base checkpoint 포인터는 `schema_version: 1`을 기록한다. 해당 키만 
 유지보수가 끝나는 모든 방식과 요청·등록·갱신·teacher 전환·warm의 전이는
 `docs/dev/learning-state.md`의 M9~M16 표다.
 
+실제 모델로 학습 경로 전 구간을 도는 증명 run은 `memvane/learning/tests/model/lp2.py`다. LP-1의 fixture와
+진입점(편집 hook, worker 명령)을 쓰고 trainer와 자원 보고만 실제다. 한 디렉터리에 상태를 두고 여러 번의
+`model-test` 실행으로 이어 돌리며, pass·trainer 호출마다 한 줄과 끝난 뒤의 요약(학습 조각과 시간, 미룸, 기본·후보의
+네 지표, 적용 여부, 적용 뒤 recall 행의 `selectorCheckpoint`)을 `lp2-record.jsonl`에 남긴다. teacher는 결정적 가짜
+CLI이고 resident의 적용 transport는 대역이다. gold가 30건을 넘으면 `learning.score` 행에 순위 기준선
+(`rankCases`·`rankExactRate`·`rankMicroF1`: hybrid 순서의 앞 세 장 대 gold, 추론 없음)이 실린다. trainer 자식이 남긴
+`error_site`는 항목별로 걸러 `file:line function` 꼴인 것만 최대 8개 남긴다.
+
 사용자 단위 준비 lock(`learning-prepare.lock`)을 다른 설치가 쥐고 있으면
 (`learning_prepare_busy`) 실패로 세지 않는다. 요청 행에 `busyRetries`를 올리고
 60초 뒤(`BUSY_RETRY_SECONDS`) `learning` wake로 다시 요청하며, 그동안 10분 하한 대신
