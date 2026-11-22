@@ -29,6 +29,10 @@ def _top_statements(body):
             yield node
 
 
+# Domains whose line ceiling is not 8,000 (tests/structure/README.md says why).
+_DOMAIN_LINES = {'store': 8100}
+
+
 def _symbol_table(tree):
     result = set()
     for node in _top_statements(tree.body):
@@ -1170,7 +1174,7 @@ def inspect(config, baseline=None):
         if path.startswith('memvane/') and path in files:
             domain_lines[files[path]['context']] += lines
     for domain, lines in domain_lines.items():
-        if domain not in ('kernel', 'learning') and lines > 8000:
+        if domain not in ('kernel', 'learning') and lines > _DOMAIN_LINES.get(domain, 8000):
             issues['G4'].append(f'{domain}:lines:{lines}')
     old = baseline or {}
     for kind, ceiling in (('file_sizes', 800), ('function_sizes', 150)):

@@ -12,6 +12,7 @@
     "journal": 4,
     "resident": 6,
     "registry": 5,
+    "vectorcache": 2,
     "wiki/workspace": 5,
     "learning": 5,
     "wiki/intake": 6,
@@ -359,6 +360,31 @@
     "memvane/kernel/__init__.py": {
       "context": "kernel",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/vectorcache/__init__.py": {
+      "context": "vectorcache",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/vectorcache/api.py": {
+      "context": "vectorcache",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/vectorcache/arena.py": {
+      "context": "vectorcache",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/vectorcache/scan.py": {
+      "context": "vectorcache",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/vectorcache/types.py": {
+      "context": "vectorcache",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/kernel/atomic_rename.py": {
