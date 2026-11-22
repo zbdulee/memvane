@@ -50,6 +50,28 @@ class JournalStoreHeader(FixtureCase):
         self.refused('reader_store_changed', self.schema3_store, project=self.base / 'elsewhere')
         self.refused('reader_store_changed', self.schema3_store, scope='6' * 32)
 
+    def test_a_rollback_journal_removed_between_the_two_looks_reads_as_no_side_file(self):
+        # A committing writer deletes ``store.sqlite-journal`` right after this reader saw it.
+        from unittest import mock
+        real = os.path.lexists
+        seen = []
+
+        def vanishing(path):
+            if str(path).endswith('-journal'):
+                seen.append(str(path))
+                return True
+            return real(path)
+        with mock.patch.object(R.os.path, 'lexists', side_effect=vanishing):
+            header = R._store_header(self.path, self.state, worktree_id=self.worktree_id)
+        self.assertEqual(seen, [str(self.path) + '-journal'])
+        self.assertEqual(header['worktree']['worktree_id'], self.worktree_id)
+        # A side file that is there and unsafe is still refused.
+        side = self.state / 'store.sqlite-journal'
+        side.write_bytes(b'')
+        side.chmod(0o644)
+        self.addCleanup(side.unlink)
+        self.refused('reader_store_unsafe', R._store_header, self.path, self.state)
+
     def test_identity_checks_stay_around_the_read(self):
         self.path.chmod(0o644)
         self.refused('reader_store_unsafe', R._store_header, self.path, self.state)

@@ -150,7 +150,11 @@ def _identity_before(path, state):
     for suffix in ('-wal', '-shm', '-journal'):
         side = Path(str(path) + suffix)
         if os.path.lexists(side):
-            _file(side, state)
+            try:
+                _file(side, state)
+            except FileNotFoundError:
+                # A committing writer removed its rollback journal between the two looks: no side file.
+                continue
     return before
 
 

@@ -422,8 +422,9 @@ class Schema3Recall(RecallInstallCase):
                 with mock.patch.object(store_api, 'open_store',
                                        side_effect=lambda *a, **kw: RecordedStore(real_open(*a, **kw))):
                     self.install.settle()
-            except BaseException as exc:  # noqa: BLE001 - reported below
-                errors.append(exc)
+            except BaseException:  # noqa: BLE001 - reported below, with where the pass stopped
+                import traceback
+                errors.append(traceback.format_exc())
             finally:
                 done.set()
         worker = threading.Thread(target=publish)

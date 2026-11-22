@@ -9,6 +9,7 @@ from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.resident import embed_resident as resident
 from memvane.resident import resident_service as svc
 from memvane.resident.tests.support import DIM, Fixture, embed
+from tests.support.case import scaled
 
 
 class ServiceChecks(Fixture):
@@ -93,8 +94,10 @@ class ServiceChecks(Fixture):
             for thread in threads:
                 thread.start()
             for thread in threads:
-                thread.join(30)
+                thread.join(scaled(30))
         self.assertEqual(errors, [])
+        # A request that is still running is a wait that was too short, not a lost answer.
+        self.assertEqual([thread.name for thread in threads if thread.is_alive()], [])
         self.assertEqual(len(results), 24)
         self.assertEqual(len(self.loads), 1, 'one model load for every project')
         # The service never queues a seventh request at the worker, so a
