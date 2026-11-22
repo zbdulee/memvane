@@ -312,11 +312,13 @@ M5 = Machine(
 # evaluation change no phase. A finished journal is copied to the archive and
 # replaced when the next candidate's intent is written.
 _APPLY = 'memvane.learning.context_learning.candidate_apply.apply_candidate'
+_ROLLBACK = 'memvane.learning.context_learning.candidate_rollback.restore'
 M6 = Machine(
     'M6', 'application', store='candidate-apply.json phase',
     lock='candidate-apply.lock, cycles/cycle.lock', owner='learning cycle of the project worker',
     states=(ABSENT, 'intent', 'prepared', 'pointer_committed', 'activated', 'rejected'),
-    terminal=('activated', 'rejected'),
+    # ``activated`` ends the application for the worker; only the owner's command leaves it.
+    terminal=('rejected',),
     transitions={
         (ABSENT, 'intent_formed'): 'intent',
         ('intent', 'prepared_by_service'): 'prepared',
@@ -326,19 +328,24 @@ M6 = Machine(
         ('pointer_committed', 'activated_by_service'): 'activated',
         ('intent', 'ended'): 'rejected',
         ('prepared', 'ended'): 'rejected',
+        # The owner's maintenance command: the previous pointer is put back (reason ``rolled_back``).
+        ('pointer_committed', 'rolled_back'): 'rejected',
+        ('activated', 'rolled_back'): 'rejected',
     },
-    where={event: _APPLY for event in ('intent_formed', 'prepared_by_service', 'pointer_committed',
-                                       'activated_by_service', 'ended')})
+    where={**{event: _APPLY for event in ('intent_formed', 'prepared_by_service', 'pointer_committed',
+                                          'activated_by_service', 'ended')},
+           'rolled_back': _ROLLBACK})
 
 # M7: the artifact recall is scored with (``active-checkpoint.json``). It changes in
-# one place, between ``prepared`` and ``pointer_committed`` of M6, and never back.
+# one place, between ``prepared`` and ``pointer_committed`` of M6, and goes back only by the
+# owner's maintenance command (M6 ``rolled_back``).
 M7 = Machine(
     'M7', 'active checkpoint', store='active-checkpoint.json',
     lock='cycles/cycle.lock', owner='learning cycle of the project worker',
     states=('incumbent', 'candidate'),
     terminal=(),
-    transitions={('incumbent', 'pointer_written'): 'candidate'},
-    where={'pointer_written': _APPLY})
+    transitions={('incumbent', 'pointer_written'): 'candidate', ('candidate', 'pointer_restored'): 'incumbent'},
+    where={'pointer_written': _APPLY, 'pointer_restored': _ROLLBACK})
 
 # M8: the newest full (teacher and trainer) worker request of a namespace
 # (``full-worker-request.json`` and the state of its nonce in ``full-worker-state.json``).

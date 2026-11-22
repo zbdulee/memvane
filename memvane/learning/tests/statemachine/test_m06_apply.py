@@ -31,6 +31,8 @@ STIMULI = {
     # Before the pointer is written a stale evaluation decides nothing; after it the
     # decision is already made and the application is finished.
     'stale_evaluation': ['activated_by_service'],
+    # The owner's maintenance command: only a written candidate pointer is put back.
+    'owner_rollback': ['rolled_back'],
 }
 STOP_AT = {'intent': 'intent', 'prepared': 'prepared', 'pointer_committed': 'pointer_committed'}
 
@@ -121,6 +123,9 @@ class ApplyTable(unittest.TestCase):
                     return case.run_apply()
             finally:
                 case.validation.pop()
+        if name == 'owner_rollback':
+            from memvane.learning.context_learning import candidate_rollback
+            return candidate_rollback.restore(case.root)
         raise AssertionError(name)
 
     def test_every_phase_under_every_attempt_ends_where_the_model_says(self):
@@ -135,7 +140,8 @@ class ApplyTable(unittest.TestCase):
                     if state == 'pointer_committed' and name == 'judged_after_prepare':
                         # The check before the pointer is behind it: the attempt finishes.
                         expected = 'activated'
-                    elif state == 'pointer_committed' and name not in ('attempt', 'stale_evaluation'):
+                    elif state == 'pointer_committed' and name not in ('attempt', 'stale_evaluation',
+                                                                       'owner_rollback'):
                         # The pointer is already the candidate's: a failed attempt cannot end
                         # the application, and no later attempt forms the intent again.
                         expected = state
@@ -156,7 +162,7 @@ class ApplyTable(unittest.TestCase):
                         driven.add((at, event))
                     at = M6.next(at, event)
         self.assertEqual(cells, len(M6.states) * len(STIMULI))
-        self.assertEqual((len(M6.states), len(STIMULI)), (6, 7))
+        self.assertEqual((len(M6.states), len(STIMULI)), (6, 8))
         self.assertEqual(driven, set(M6.transitions))
         self.assertEqual({event for events in STIMULI.values() for event in events}, set(M6.events))
 

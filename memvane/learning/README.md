@@ -236,7 +236,14 @@ default-teacher는 gold가 `minQualityTrainCases`(100건) 전이면 job을 계�
 아무것도 정하지 않고 cycle을 `staged`로 되돌려 재평가로 간다. 포인터가 incumbent인 동안은 커밋된 것이 없어
 `intent`와 포인터를 쓰지 못한 `prepared`는 다음 시도가 새로 만든다. 포인터가 후보의 것이 된 뒤에는 판정을
 다시 하지 않고 정체성만 대조해 activation을 끝내며, 그때의 실패는 journal에 `failures`·`reason`으로 남고
-다섯 번째부터 답에 `activationPending`이 실린다. journal이 생기기 전의 실패는 그 후보의 `completed` 평가에
+다섯 번째부터 답에 `activationPending`이 실린다. 적용된 모델을 그 앞의 것으로 되돌리는 것은 소유자가 요청하는
+유지보수 명령 하나뿐이다(`candidate_rollback.restore`, setup action `restore-previous-model`): 살아 있는 journal이
+`activated`이거나 `pointer_committed`에서 멈췄고 포인터가 그 `new_pointer`일 때, 적용의 두 잠금 아래에서 receipt →
+binding → 포인터를 적용의 반대 순서로 이전 값으로 쓰고 journal을 `rejected`(`reason` `rolled_back`)로 닫는다. 그
+후보는 다시 적용되지 않고 cycle 행은 `applied`로 남는다. 따로 기록을 두지 않으므로 중단된 되돌리기는 같은 요청이
+이어서 끝내며(journal은 그대로인데 포인터가 `old_pointer`인 상태), 그 사이 selector 추론은 거절된다. resident는 다음
+요청에서 포인터가 가리키는 세대를 올린다. `candidate_apply.readable`은 적용된 포인터에서 journal이 `activated`이고
+지금 묶인 receipt가 그 포인터를 가리키는지를 본다(플러그인 갱신 뒤 다시 준비된 receipt도 같은 포인터의 것이면 읽힌다). journal이 생기기 전의 실패는 그 후보의 `completed` 평가에
 세어 다섯 번째에 사유와 함께 닫는다. 평가는 사유가 있을 때만 `blocked`가 된다. 학습 전에 구성원 행이 사라진
 열린 job은 `source_revoked`로 닫고 다음 계획이 남은 구성원을 고정한다.
 

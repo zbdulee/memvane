@@ -216,7 +216,7 @@ teacher)만 담는다.
 - 저장 위치: candidate-apply.json phase
 - lock: candidate-apply.lock, cycles/cycle.lock
 - 쓰는 주체: learning cycle of the project worker
-- 상태: `(absent)`, `intent`, `prepared`, `pointer_committed`, `activated` (종결), `rejected` (종결)
+- 상태: `(absent)`, `intent`, `prepared`, `pointer_committed`, `activated`, `rejected` (종결)
 
 | 상태 | 사건 | 다음 | 쓰는 곳 |
 |---|---|---|---|
@@ -227,6 +227,8 @@ teacher)만 담는다.
 | `prepared` | `intent_formed` | `intent` | `candidate_apply.apply_candidate` |
 | `prepared` | `pointer_committed` | `pointer_committed` | `candidate_apply.apply_candidate` |
 | `pointer_committed` | `activated_by_service` | `activated` | `candidate_apply.apply_candidate` |
+| `pointer_committed` | `rolled_back` | `rejected` | `candidate_rollback.restore` |
+| `activated` | `rolled_back` | `rejected` | `candidate_rollback.restore` |
 
 ## M7 active checkpoint
 
@@ -238,6 +240,7 @@ teacher)만 담는다.
 | 상태 | 사건 | 다음 | 쓰는 곳 |
 |---|---|---|---|
 | `incumbent` | `pointer_written` | `candidate` | `candidate_apply.apply_candidate` |
+| `candidate` | `pointer_restored` | `incumbent` | `candidate_rollback.restore` |
 
 ## M8 worker request
 

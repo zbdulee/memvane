@@ -2234,18 +2234,18 @@ def _profile_apply(root,policy,profile,result):
     return result
 
 
-TEACHER_COMMANDS = ("teacher-off", "teacher-on", "restore-teacher-enable")
+TEACHER_COMMANDS = ("teacher-off", "teacher-on", "restore-teacher-enable", "restore-previous-model")
 
 
 def _teacher_command(argv):
-    """Setup skill commands: ``teacher-off|teacher-on --project P``, ``restore-teacher-enable --project P [--plan]``."""
+    """Setup skill commands: ``teacher-off|teacher-on --project P``, ``restore-teacher-enable|restore-previous-model --project P [--plan]``."""
     plan = "--plan" in argv[1:]
     rest = [item for item in argv[1:] if item != "--plan"]
-    if len(rest) != 2 or rest[0] != "--project" or (plan and argv[0] != "restore-teacher-enable"):
+    if len(rest) != 2 or rest[0] != "--project" or (plan and not argv[0].startswith("restore-")):
         raise ValueError("teacher_setup_action_invalid")
-    if argv[0] == "restore-teacher-enable":
-        from memvane.learning.default_teacher_enable import restore_project
-        return restore_project(rest[1], plan_only=plan)
+    if argv[0].startswith("restore-"):
+        from .candidate_rollback import restore_command
+        return restore_command(argv[0], rest[1], plan_only=plan)
     from .teacher_state import switch_project
     return switch_project(rest[1], argv[0] == "teacher-on")
 

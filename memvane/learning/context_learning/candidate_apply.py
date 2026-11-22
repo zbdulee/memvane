@@ -63,9 +63,13 @@ def readable(root):
     row=read_journal(root)
     if row['apply_id']!=marker['id']:
         row=read_private_json(root/ARCHIVE/(marker['id']+'.json'))
+    # The receipt is the one bound now and it names this pointer. Its bytes need not be the
+    # journal's: inference preparation writes a new receipt for the same pointer after a plugin
+    # update, and ``inference_identity.admit`` is what judges the receipt itself.
+    receipt=read_private_json(root/identity.RECEIPT)
     if (row.get('schema')!=SCHEMA or row.get('phase')!='activated' or row.get('new_pointer')!=pointer
-            or row.get('new_receipt')!=read_private_json(root/identity.RECEIPT)
-            or read_private_json(root/identity.BINDING)!={'schema':identity.SCHEMA,'receipt_sha256':digest(row['new_receipt'])}):
+            or not isinstance(receipt,dict) or receipt.get('checkpoint_sha256')!=digest(pointer)
+            or read_private_json(root/identity.BINDING)!={'schema':identity.SCHEMA,'receipt_sha256':digest(receipt)}):
         raise ValueError('apply_activation_pending')
 
 def validate_candidate(root,policy,cycle_id,*,expected=None):

@@ -127,9 +127,34 @@ def _state_cleanup(argv):
     return 1 if result.get('status') in ('rejected', 'blocked', 'partial') else 0
 
 
+def _restore_previous_model(argv):
+    """``restore-previous-model --project P [--plan]``: go back to the model the newest application replaced.
+
+    Explicit request only. ``--plan`` shows what would be restored and writes nothing.
+    """
+    parser = argparse.ArgumentParser(prog='setup.py restore-previous-model')
+    parser.add_argument('--project', required=True)
+    parser.add_argument('--plan', action='store_true')
+    args = parser.parse_args(argv)
+    try:
+        if not args.plan:
+            from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
+            require_cached_plugin_for_live_write()
+        result = _learning_command(['restore-previous-model', '--project', args.project,
+                                    *(['--plan'] if args.plan else [])])
+    except Exception as exc:
+        result = _failure(exc)
+    print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+    if result.get('status') == 'rollback_deferred': return 75
+    return 1 if result.get('status') in ('rejected', 'rollback_blocked', 'rollback_interrupted') else 0
+
+
+_DIRECT = {'state-cleanup': _state_cleanup, 'restore-previous-model': _restore_previous_model}
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
-    if argv[:1] == ['state-cleanup']: return _state_cleanup(argv[1:])
+    if argv[:1] and argv[0] in _DIRECT: return _DIRECT[argv[0]](argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('plan-learning-profile','activate-learning-profile',
                                           'activate-learning-runtime', 'gc-index-runtime',

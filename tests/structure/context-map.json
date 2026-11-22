@@ -512,6 +512,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/learning/context_learning/candidate_rollback.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/learning/context_learning/capabilities.py": {
       "context": "learning",
       "layer": "adapter",
