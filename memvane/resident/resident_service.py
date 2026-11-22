@@ -9,7 +9,9 @@ process hosts the learning inference service on its existing socket.
 
 Lifecycle: started by the first sync wake (SessionStart) or learning request,
 never idle-exits; it drains and exits when its service root or lease file is
-gone or replaced (checked every tick by path, device and inode). A client from a newer bundle asks the running service to
+gone or replaced (checked every tick by path, device and inode), or when no
+host has MemVane enabled any more (every host record readable and empty for
+the grace of ``host_bundle.UNINSTALLED_GRACE_SECONDS``). A client from a newer bundle asks the running service to
 drain: listeners close (clients see an absent socket and serve lexical
 results), in-flight requests finish, owner leases are released, then the
 successor takes the service lease. An older client attaches to a newer
@@ -928,7 +930,7 @@ class Service:
                        if worker.handle is not None]
             self.workers.clear()
         _stop_handles(handles, cleanup_end)
-        if getattr(self, 'drain_for_bundle', False):
+        if getattr(self, 'drain_for_bundle', False) and getattr(BACKGROUND_BUNDLE, 'uninstalled', lambda: False)() is not True:
             wait_for_successor(self.stopped, lambda: _spawn(self.root, learning_root=self.learning_root, background=True))
         _event(getattr(self, 'drain_targets', ()), 'resident.drain', 'stopped',
                ms=(time.monotonic() - started) * 1000)
@@ -1000,6 +1002,9 @@ class Service:
             check = now >= next_bundle_check
             if check:
                 next_bundle_check = now + 30
+            if check and getattr(BACKGROUND_BUNDLE, 'uninstalled', lambda: False)() is True:
+                self.begin_drain('bundle_uninstalled')  # No host has MemVane enabled: no successor.
+                return
             if not BACKGROUND_BUNDLE.intact() or (check and not getattr(BACKGROUND_BUNDLE, 'preferred_background', lambda: True)()):
                 self.drain_for_bundle = True
                 self.begin_drain('bundle_changed')

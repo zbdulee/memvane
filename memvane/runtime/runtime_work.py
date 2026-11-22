@@ -321,6 +321,7 @@ def drain(queue,*,execute,on_drop=None,on_stall=None,ready=None,clock=time.monot
             return controller.check(POLICY,report)['ready']
         injected_ready=ready
         while runs<max_runs and clock()<deadline:
+            if _uninstalled():return {'status':'uninstalled','runs':runs}
             if not BACKGROUND_BUNDLE.intact() or not getattr(BACKGROUND_BUNDLE, 'preferred_background', lambda: True)():
                 return {'status':'bundle_changed','runs':runs}
             rows=queue.pending()
@@ -583,6 +584,11 @@ def _timer_available(queue, *, background=False):
     finally:os.close(fd)
 
 
+def _uninstalled():
+    """Whether every host dropped MemVane (after the grace); an identity without the check never says so."""
+    return getattr(BACKGROUND_BUNDLE,'uninstalled',lambda:False)() is True
+
+
 def _after_timer(queue,outcome):
     """Re-check after the timer released its lock.
 
@@ -591,7 +597,7 @@ def _after_timer(queue,outcome):
     after the release closes that window. A moved root ('gone') is left to
     the next hook.
     """
-    if outcome=='gone':return
+    if outcome in ('gone','uninstalled'):return
     for _attempt in range(40):
         try:result=_wake(queue, background=True)
         except (OSError,ValueError,sqlite3.Error):return
@@ -605,7 +611,8 @@ def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.
 
     The caller holds ``runtime-wake-timer.lock``. Returns 'empty' once the
     queue has no row, 'expired' at ``max_seconds`` (the caller arms a
-    successor) or 'gone' when the queue cannot be read (a moved root).
+    successor), 'gone' when the queue cannot be read (a moved root) or
+    'uninstalled' when no host has MemVane enabled (no successor is armed).
     """
     wake_once=wake_once or (lambda item: _wake(item, background=True))
     deadline=clock()+max_seconds
@@ -615,6 +622,8 @@ def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.
         rows=[row for row in rows if row['kind'] in wake_policy.KINDS]
         if not rows:return 'empty'
         if clock()>=deadline:return 'expired'
+        # No host has MemVane enabled any more: the rows stay queued and no process waits on them.
+        if _uninstalled():return 'uninstalled'
         if not BACKGROUND_BUNDLE.intact() or not getattr(BACKGROUND_BUNDLE, 'preferred_background', lambda: True)():
             # Keep the lease until the host finishes installing a successor;
             # otherwise no process remains to wake the durable queue.
@@ -713,7 +722,8 @@ def _drain_and_rewake(queue,fd,*,execute,on_drop=None,on_stall=None):
     """
     try:return drain(queue,lease_fd=fd,execute=execute,on_drop=on_drop,on_stall=on_stall)
     finally:
-        if not BACKGROUND_BUNDLE.intact():
+        if _uninstalled():pass  # Nothing is left to run a successor from.
+        elif not BACKGROUND_BUNDLE.intact():
             # The worker lease is already closed; retry an unavailable host.
             _after_timer(queue,'bundle_changed')
         else:

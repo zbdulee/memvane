@@ -35,6 +35,8 @@ def run(queue,*,coordinator=None,probe=runtime_work.sample,wake=None,
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return {'status':'busy','samples':0,'wakes':0}
         while alive():
+            if getattr(BACKGROUND_BUNDLE, 'uninstalled', lambda: False)() is True:
+                return {'status':'uninstalled','samples':samples,'wakes':wakes}
             if not BACKGROUND_BUNDLE.intact() or not getattr(BACKGROUND_BUNDLE, 'preferred_background', lambda: True)():
                 return {'status':'bundle_changed','samples':samples,'wakes':wakes}
             interval=INTERVAL

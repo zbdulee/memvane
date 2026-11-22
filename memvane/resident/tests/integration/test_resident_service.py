@@ -38,6 +38,45 @@ class ServiceChecks(Fixture):
             self.assertTrue(service.draining.is_set())
             self.assertEqual(successor.call_count, 1)
 
+    def uninstalled(self, intact):
+        identity = Mock()
+        identity.intact.return_value = intact
+        identity.preferred_background.return_value = intact
+        identity.uninstalled.return_value = True
+        service = self.service(start=False)
+        self.assertTrue(service.acquire(wait=5))
+        reasons = []
+        with patch.object(svc, 'BACKGROUND_BUNDLE', identity), \
+                patch.object(svc, '_event', side_effect=lambda _t, name, outcome, reason=None, **_k:
+                             reasons.append((name, outcome, reason))), \
+                patch.object(svc, '_spawn', return_value=True) as successor:
+            service.start()
+            self.assertTrue(service.stopped.wait(scaled(30)), 'the service did not end')
+            self.assertEqual(successor.call_count, 0)
+        started = [reason for name, outcome, reason in reasons if (name, outcome) == ('resident.drain', 'started')]
+        self.assertEqual(started, ['bundle_uninstalled'])
+
+    def test_no_enabled_host_drains_the_service_and_starts_no_successor(self):
+        self.uninstalled(intact=True)
+
+    def test_a_removed_bundle_no_host_enables_starts_no_successor(self):
+        self.uninstalled(intact=False)
+
+    def test_an_unknown_inventory_keeps_the_service(self):
+        identity = Mock()
+        identity.intact.return_value = True
+        identity.preferred_background.return_value = True
+        identity.uninstalled.return_value = False
+        service = self.service(start=False)
+        self.assertTrue(service.acquire(wait=5))
+        ticks = threading.Event()
+        with patch.object(svc, 'BACKGROUND_BUNDLE', identity), \
+                patch.object(service, 'tick', side_effect=ticks.set):
+            service.start()
+            self.assertTrue(ticks.wait(scaled(30)), 'the service never ticked')
+            self.assertFalse(service.draining.is_set())
+            self.assertGreaterEqual(identity.uninstalled.call_count, 1)
+
     def test_public_sockets_never_appear_with_a_loose_mode(self):
         # Clients refuse a socket with group/other bits; one seen between
         # bind() and chmod() would fail a request instead of waiting.
