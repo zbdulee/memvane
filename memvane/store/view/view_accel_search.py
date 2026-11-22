@@ -65,7 +65,10 @@ def search(store, db, groups, heads, recipe_id, profile_id, dimension, query,
     packed, ranges = _load(db, groups, heads, recipe_id, profile_id, dimension, deadline, stats)
     started = time.perf_counter()
     try:
-        scores = native.scores(packed, dimension, query, deadline, stats)
+        scores = native.scores(packed, dimension, query[0], deadline, stats)
+        for other in query[1:]:
+            # One more scan of the same buffer per extra query vector; a card keeps its best.
+            scores = [max(pair) for pair in zip(scores, native.scores(packed, dimension, other, deadline, stats))]
         candidates = []
         for blob, rows in groups.items():
             vectors._left(deadline)

@@ -28,6 +28,8 @@ DEFAULT_WORK = 4000000
 MAX_DEADLINE = 30
 MAX_LIMIT = 100
 MAX_DIMENSION = 2048
+# Query vectors one exact search takes: a long prompt is asked as up to four windows.
+MAX_QUERIES = 4
 
 
 def spec(value):
@@ -211,8 +213,32 @@ def qmd_first_pass(body, max_chars=2700, overlap_chars=405, window_chars=600):
     return chunks
 
 
-def options(limit, work, seconds, prefixes, exclusions):
+def card_pairs(items, reason):
+    """Validated ``excluded_cards``: at most 256 ``[relative path, blob sha]`` pairs as a set."""
+    if items is None:
+        return frozenset()
+    if type(items) is not list or len(items) > 256:
+        v.fail(reason)
+    for pair in items:
+        if (type(pair) not in (list, tuple) or len(pair) != 2 or type(pair[1]) is not str
+                or len(pair[1]) != 64 or any(c not in '0123456789abcdef' for c in pair[1])):
+            v.fail(reason)
+        v.relative(pair[0])
+    return frozenset((pair[0], pair[1]) for pair in items)
+
+
+def query_list(value):
+    """One query vector, or a list of 1 to 4 of them, as a tuple of unit tuples."""
+    if type(value) in (list, tuple) and value and type(value[0]) in (list, tuple):
+        if len(value) > MAX_QUERIES:
+            v.fail('vector_query_invalid')
+        return tuple(query_values(item) for item in value)
+    return (query_values(value),)
+
+
+def options(limit, work, seconds, prefixes, exclusions, cards=None):
     """Public exact/hybrid bounds, validated before any pin or SQL use."""
+    card_pairs(cards, 'vector_filter_invalid')
     if type(limit) is not int or not 1 <= limit <= MAX_LIMIT:
         v.fail('vector_limit_invalid')
     if type(work) is not int or work < 1:
@@ -265,7 +291,11 @@ def _unpacker(dimension):
 
 
 def _set_score(query, rows, dimension, deadline, timings=None):
-    """Max cosine over every chunk of one validated little-endian float32 set."""
+    """Max cosine over every chunk of one validated little-endian float32 set.
+
+    ``query`` is one unit vector or a tuple of them (``query_list``); a set keeps its best over all.
+    """
+    queries = query if type(query[0]) is tuple else (query,)
     unpack, best = _unpacker(dimension), None
     for row in rows:
         _left(deadline)
@@ -277,7 +307,7 @@ def _set_score(query, rows, dimension, deadline, timings=None):
         norm = math.sqrt(math.fsum(map(operator.mul, values, values)))
         if not norm or not math.isfinite(norm):
             v.fail('embedding_values_invalid')
-        score = math.fsum(map(operator.mul, query, values)) / norm
+        score = max(math.fsum(map(operator.mul, query, values)) for query in queries) / norm
         if timings is not None:
             timings['vectorDotMs'] += (time.perf_counter() - started) * 1000
         if best is None or score > best:
@@ -311,13 +341,13 @@ class VectorMixin:
 
     def search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work=DEFAULT_WORK,
                      deadline_seconds=2, path_prefixes=None, excluded_paths=None, timings=None,
-                     preferred_paths=None):
+                     preferred_paths=None, excluded_cards=None):
         began = clock()
         try:
             return self._rows_search_exact(pin, query_vector, limit, profile_id=profile_id,
                                            max_float_work=max_float_work, deadline_seconds=deadline_seconds,
                                            path_prefixes=path_prefixes, excluded_paths=excluded_paths, timings=timings,
-                                           preferred_paths=preferred_paths)
+                                           preferred_paths=preferred_paths, excluded_cards=excluded_cards)
         except MemoryError:
             v.fail(WORK_EXCEEDED)
         finally:
@@ -326,13 +356,13 @@ class VectorMixin:
 
     def search_hybrid(self, pin, fts_query, query_vector, limit, *, profile_id=None,
                       max_float_work=DEFAULT_WORK, deadline_seconds=2, path_prefixes=None,
-                      excluded_paths=None):
+                      excluded_paths=None, excluded_cards=None):
         """Two ordered lanes under one elapsed deadline; no fusion or ANN."""
         start = time.monotonic()
-        options(limit, max_float_work, deadline_seconds, path_prefixes, excluded_paths)
+        options(limit, max_float_work, deadline_seconds, path_prefixes, excluded_paths, excluded_cards)
         if profile_id is not None:
             v.identifier(profile_id)
-        query = None if query_vector is None else query_values(query_vector)
+        query = None if query_vector is None else query_list(query_vector)
         # The pinned record keeps the spec of the verified sealed stage; search
         # below checks that seal, and both reads re-verify the generation after
         # any commit to the store (_read_pinned).
@@ -340,14 +370,14 @@ class VectorMixin:
         if sealed is not None:
             if profile_id is not None and profile_id != sealed['profile_id']:
                 v.fail('vector_profile_mismatch')
-            if query is not None and len(query) != sealed['dimension']:
+            if query is not None and any(len(item) != sealed['dimension'] for item in query):
                 v.fail('vector_query_invalid')
         deadline = start + deadline_seconds
         lexical_left = deadline - time.monotonic()
         if lexical_left <= 0:
             v.fail(DEADLINE_EXCEEDED)
         lexical = self.search(pin, fts_query, limit, path_prefixes=path_prefixes,
-                              excluded_paths=excluded_paths,
+                              excluded_paths=excluded_paths, excluded_cards=excluded_cards,
                               deadline_seconds=lexical_left)
         if query is None:
             return dict(lexical=lexical, semantic=[], semantic_status='provider_absent')
@@ -360,7 +390,8 @@ class VectorMixin:
             semantic = self.search_exact(pin, query_vector, limit, profile_id=sealed['profile_id'],
                                          max_float_work=max_float_work,
                                          deadline_seconds=min(left, deadline_seconds),
-                                         path_prefixes=path_prefixes, excluded_paths=excluded_paths)
+                                         path_prefixes=path_prefixes, excluded_paths=excluded_paths,
+                                         excluded_cards=excluded_cards)
         except BlobStoreError as exc:
             if exc.reason not in DEFERRED:
                 raise
@@ -392,7 +423,7 @@ def _check_preferred(paths):
 def _python_top(store, db, groups, heads, recipe_id, profile_id, dimension, query,
                 limit, max_float_work, deadline, stats, preferred_paths):
     """The fully verified Python lane, with its original float-work cap."""
-    if sum(heads[blob]['chunk_count'] for blob in groups) * dimension > max_float_work:
+    if sum(heads[blob]['chunk_count'] for blob in groups) * dimension * len(query) > max_float_work:
         v.fail(WORK_EXCEEDED)
     top = []
     for batch in _vector_batches(_preferred_order(groups, preferred_paths), heads):
