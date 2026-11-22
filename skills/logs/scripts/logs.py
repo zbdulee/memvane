@@ -3,6 +3,7 @@
 
 usage: logs.py [--cwd DIR | --state-root DIR | --all] [--hours N] [--limit N]
                [--json] [--details] [--register PROJECT ...] [--slo]
+               [--learning-check]
                [summary|recalls|errors|events] [--event NAME]
 
 The state root comes from the project's selected route (the install
@@ -13,7 +14,9 @@ equally between readable targets; a target that cannot be read is reported
 with its reason, never shown as empty. ``--register PROJECT`` (repeatable)
 explicitly adds projects to that registry (the only write this tool makes).
 ``--slo`` prints the service-level lines of ``logs_slo`` for the window, one
-block per install.
+block per install. ``--learning-check`` reads the project's learning state
+(read-only) and prints how many rows break each invariant: counts per rule, no
+row content.
 
 Raw diagnostics. Normal text and ``--json`` never print ``diagnostic.part``
 rows or stored ``prompt.text``; a ``diagnostic.header`` shows only its ID and
@@ -697,6 +700,24 @@ def _slo(rows, args, view):
             print('  ' + logs_slo.render(line, _esc))
 
 
+def _learning_check(args):
+    """The read-only invariant check of the project's learning namespace: counts per rule only."""
+    # Like the event log reader above: the skill reads the domain's module directly.
+    from memvane.learning.context_learning import invariants
+    result = invariants.project_counts(args.cwd)
+    if args.json:
+        print(_json_line({'learningCheck': result}))
+        return 0
+    status = result.get('status')
+    if status != 'checked':
+        print('learning check: ' + _esc(status) + (' (%s)' % _esc(result['error']) if result.get('error') else ''))
+        return 0
+    print('learning check: %d violation(s)' % result['violations'])
+    for rule, count in result['rules'].items():
+        print('  %s %d' % (_esc(rule), count))
+    return 0
+
+
 def _register(args):
     """Explicitly register the given projects; one reported row per request."""
     try:
@@ -862,7 +883,13 @@ def main(argv=None):
     parser.add_argument('--json', action='store_true')
     parser.add_argument('--slo', action='store_true',
                         help='service-level lines for the window (default 24h), per install')
+    parser.add_argument('--learning-check', action='store_true',
+                        help="read-only invariant check of the project's learning state: counts per rule")
     args = parser.parse_args(argv)
+    if args.learning_check:
+        if args.all or args.slo or args.view is not None or args.state_root:
+            parser.error('--learning-check reads one project (--cwd); omit the view and the other modes')
+        return _learning_check(args)
     if args.slo:
         if args.view not in (None, 'summary'):
             parser.error('--slo is its own view; omit the view name')

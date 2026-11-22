@@ -14,6 +14,9 @@ base checkpoint 포인터는 `schema_version: 1`을 기록한다. 해당 키만 
 유지보수가 끝나는 모든 방식과 요청·등록·갱신·teacher 전환·warm의 전이는
 `docs/dev/learning-state.md`의 M9~M16 표다.
 
+학습 namespace의 불변식(`context_learning/invariants.py`: I-1~I-9, G-1, G-7)은 읽기만 하는 검사다. 시험은 단계마다
+위반 목록을 보고, 설치된 프로젝트에서는 `memvane:logs`의 학습 점검(`project_counts`)이 규칙별 위반 개수만 낸다.
+
 실제 모델로 학습 경로 전 구간을 도는 증명 run은 `memvane/learning/tests/model/lp2.py`다. LP-1의 fixture와
 진입점(편집 hook, worker 명령)을 쓰고 trainer와 자원 보고만 실제다. 한 디렉터리에 상태를 두고 여러 번의
 `model-test` 실행으로 이어 돌리며, pass·trainer 호출마다 한 줄과 끝난 뒤의 요약(학습 조각과 시간, 미룸, 기본·후보의
