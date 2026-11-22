@@ -198,6 +198,10 @@ M15 = Machine(
 # a day later (``rearm``); ``blocked`` by a failure another attempt would repeat, or
 # because the members themselves changed
 # (``already_consumed``, ``source_revoked``) stays: the next plan pins other members, or answers with it when they are the same.
+# ``source_revoked`` has two causes with one reason: a member row is gone before the job
+# trained (an open job, or one waiting for its rearm time), and a member that was not
+# active when the trained job was checked. The check answers false for a transient read
+# failure too, so a job closed that way stays closed while its members are the same.
 _QUEUE = 'memvane.learning.context_learning.learning_queue.LearningQueue'
 _OPEN_JOB = ('queued', 'running', 'deferred')
 M3 = Machine(
@@ -442,6 +446,9 @@ M12 = Machine(
 # (``renewal_pending``) while it exists. A pass that finds an intent finishes it when the
 # target is still the recorded one and otherwise restores the old bytes, then plans anew.
 # A refusal (changed inputs, a mixed state, a newer owner) writes nothing.
+# ``renewal_source_changed`` is the refusal of a plan whose recorded host registry differs
+# from the installed one: on the same host any difference, across hosts a marketplace
+# that is not the official repository on both sides or another scope or project path.
 _RENEWAL = 'memvane.learning.default_renewal.'
 M13 = Machine(
     'M13', 'approval renewal', store='project-learning-renewal.json',

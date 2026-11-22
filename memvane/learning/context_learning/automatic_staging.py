@@ -145,7 +145,7 @@ def job_family(policy):
 def _prepare_staged(root,policy,grant):
     from .shared import _db, _case_active
     from .adapter import EDIT_INPUT_VIEW, model_identity
-    from .learning_queue import LearningQueue
+    from .learning_queue import FINAL_BLOCKS, LearningQueue
     root = Path(root)
     from memvane.learning import project_learning_setup
     synthetic=project_learning_setup.synthetic_local_only(root,_project(root,grant),policy)
@@ -230,9 +230,10 @@ def _prepare_staged(root,policy,grant):
     try: train=queue.rows(job,cohort_train)
     except ValueError:
         if frozen is not None:prequential.close(root,job['id'],'source_revoked')
-        elif job['status'] in ('queued','running','deferred'):
-            # A member row is gone before the job trained: the job can never train. It is
-            # closed with the reason, and the next plan pins the members that remain.
+        elif job['status']!='blocked' or job.get('reason') not in FINAL_BLOCKS:
+            # A member row is gone before the job trained: the job can never train, so a
+            # job waiting to be rearmed has nothing to wait for either. It is closed with
+            # the reason, and the next plan pins the members that remain.
             queue.block(job['id'],'source_revoked')
             _cycle_event(_project(root,grant),'blocked',cycle=job['id'],reason='source_revoked',failures=job.get('failures'))
         return {'status':'staged_source_revoked','cycle_id':job['id']}
@@ -615,6 +616,9 @@ def _set_aside(artifact):
     if artifact.is_symlink() or not artifact.is_file():raise ValueError('learning_completion_uncertain')
     target=artifact.with_name(artifact.name+'.uncertain-'+_hash(artifact)[:12])
     os.replace(artifact,target)
+    # Only the newest one is kept: a trainer that keeps stopping here adds no file per stop.
+    for older in artifact.parent.glob(artifact.name+'.uncertain-*'):
+        if older!=target and older.is_file() and not older.is_symlink():older.unlink()
     return target
 
 

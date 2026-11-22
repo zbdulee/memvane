@@ -245,7 +245,9 @@ binding → 포인터를 적용의 반대 순서로 이전 값으로 쓰고 jour
 요청에서 포인터가 가리키는 세대를 올린다. `candidate_apply.readable`은 적용된 포인터에서 journal이 `activated`이고
 지금 묶인 receipt가 그 포인터를 가리키는지를 본다(플러그인 갱신 뒤 다시 준비된 receipt도 같은 포인터의 것이면 읽힌다). journal이 생기기 전의 실패는 그 후보의 `completed` 평가에
 세어 다섯 번째에 사유와 함께 닫는다. 평가는 사유가 있을 때만 `blocked`가 된다. 학습 전에 구성원 행이 사라진
-열린 job은 `source_revoked`로 닫고 다음 계획이 남은 구성원을 고정한다.
+열린 job과 재무장을 기다리는 job은 `source_revoked`로 닫고 다음 계획이 남은 구성원을 고정한다.
+`source_revoked`는 구성원 행이 사라진 경우와 학습 뒤 구성원의 활성 확인이 거짓인 경우 둘 다의 사유이고,
+구성원이 그대로면 다음 계획도 그 job을 돌려준다. 완료 기록 없는 최종 artifact의 격리 사본은 가장 새것 하나만 남긴다.
 
 hook은 teacher 전송·격리·tier·전환 모듈을 import하지 않는다. SessionStart 안내는
 `teacher_state.py`(stdlib와 kernel만 import)로 `teacher-host-state.json`과 전환 intent의

@@ -385,6 +385,30 @@ class RevokedMembers(CycleFixture):
         self.assertEqual((rows[first[0]], self.trained), ('blocked', [100]))
         self.assertEqual({status for job, status in rows.items() if job != first[0]}, {'staged'})
 
+    def test_a_job_waiting_to_be_rearmed_whose_member_row_is_gone_is_closed_too(self):
+        for _ in range(5):
+            self.attempt('fail')
+            if self.job()[1] == 'blocked':
+                break
+        first = self.job()
+        self.assertEqual((first[1], first[3] in learning_queue.FINAL_BLOCKS), ('blocked', False))
+        with shared._db(self.root) as db:
+            db.execute("DELETE FROM cases WHERE request_id='t-000'")
+        self.gold('replacement')
+        self.assertEqual(self.attempt()['status'], 'staged_source_revoked')
+        self.assertEqual(self.job()[:4], (first[0], 'blocked', first[2], 'source_revoked'))
+        self.assertEqual([(e['outcome'], e.get('reason')) for e in self.cycle_events][-1],
+                         ('blocked', 'source_revoked'))
+        self.worker()
+        with shared._db(self.root) as db:
+            rows = dict(db.execute('SELECT job_id,status FROM learning_jobs'))
+        self.assertEqual((len(rows), rows[first[0]], self.trained), (2, 'blocked', [100]))
+        # A job closed for good keeps its reason: no second row, no second event.
+        events = len(self.cycle_events)
+        queue = learning_queue.LearningQueue(self.root)
+        self.assertEqual(queue.block(first[0], 'already_consumed')['reason'], 'source_revoked')
+        self.assertEqual(len(self.cycle_events), events)
+
 
 class TrainingAttempts(CycleFixture):
     def test_each_job_and_cycle_invariant_names_the_state_that_breaks_it(self):
@@ -466,6 +490,20 @@ class TrainingAttempts(CycleFixture):
         self.assertEqual(self.trained, [100, 100])
         self.assertNotIn('learning_completion_uncertain',
                          [event.get('reason') for event in self.cycle_events])
+
+    def test_only_the_newest_set_aside_artifact_is_kept(self):
+        from memvane.learning.context_learning import automatic_staging
+        folder = self.tmp / 'cycle'
+        folder.mkdir(mode=0o700)
+        artifact = folder / 'candidate.artifact'
+        kept = None
+        for content in (b'first', b'second', b'third'):
+            artifact.write_bytes(content)
+            artifact.chmod(0o600)
+            kept = automatic_staging._set_aside(artifact)
+            self.assertFalse(artifact.exists())
+        self.assertEqual([path.name for path in folder.iterdir()], [kept.name])
+        self.assertEqual(kept.read_bytes(), b'third')
 
     def test_a_process_that_ends_while_training_leaves_a_job_the_next_pass_trains(self):
         self.assertEqual(self.attempt('end_process')['status'], 'process_ended')

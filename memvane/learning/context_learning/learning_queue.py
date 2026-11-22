@@ -159,11 +159,11 @@ class LearningQueue:
             return self.get(job_id,db=db)
 
     def block(self, job_id, reason):
-        """Close an open job with ``reason`` (one of ``FINAL_BLOCKS``); the job after it."""
+        """Close an open job, or one waiting to be rearmed, with ``reason`` (one of ``FINAL_BLOCKS``); the job after it."""
         if reason not in FINAL_BLOCKS:raise ValueError('learning_block_reason_invalid')
         with self.connect() as db:
             self.schema(db)
-            db.execute("UPDATE learning_jobs SET status='blocked',reason=? WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",(reason,job_id,self.scope))
+            db.execute("UPDATE learning_jobs SET status='blocked',reason=? WHERE job_id=? AND namespace=? AND (status IN ('queued','running','deferred') OR (status='blocked' AND COALESCE(reason,'') NOT IN (%s)))"%','.join('?'*len(FINAL_BLOCKS)),(reason,job_id,self.scope,*FINAL_BLOCKS))
             return self.get(job_id,db=db)
 
     def rearm(self, *, now=None):
