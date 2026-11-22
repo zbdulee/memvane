@@ -7,7 +7,8 @@ so onboarding indexes the cards as they are and no wiki compile runs. A raw
 file without a card would start one, so there is none (no README).
 
 ``build(out)`` writes the tree and returns the plan: the cards (path, file
-sha256, token) and the prompts P0..P4 with the sha256 an event row records.
+sha256, token) and the prompts P0..P4 with the sha256 an event row records and
+the ASCII mark a short prompt shows on the screen (the long P2 has none).
 ``delta(out, plan)`` applies the RS-SYNC change in place: one document and
 card added, one changed, one deleted. All content is invented.
 """
@@ -83,11 +84,15 @@ def _long_prompt(token):
     return filler[:LONG_PROMPT_CHARS] + ' ' + _question(token)
 
 
-def _prompts(roles):
+def _prompts(roles, run_id):
+    """P0..P3. Every text carries a token of this run, so its hash and its mark on
+    the screen belong to this run and to no earlier one on the same account."""
     edit = roles['edit']
-    paragraph = '추가 점검 메모: 이 문단은 smoke 편집 확인을 위한 가상의 문장이다.'
+    marks = {'P0': 'SMK%sP0' % run_id, 'P1': roles['short']['token'], 'P3': 'SMK%sP3' % run_id}
+    paragraph = '추가 점검 메모 %s: 이 문단은 smoke 편집 확인을 위한 가상의 문장이다.' % marks['P3']
     texts = {
-        'P0': '이 프로젝트 MemVane 온보딩해 줘. 계획을 검토한 뒤 그대로 적용하고 활성화까지 해 줘.',
+        'P0': '%s 실행: 이 프로젝트 MemVane 온보딩해 줘. 계획을 검토한 뒤 그대로 적용하고 활성화까지 해 줘.'
+              % marks['P0'],
         'P1': _question(roles['short']['token']),
         'P2': _long_prompt(roles['long']['token']),
         'P3': 'Edit 도구로 %s 파일 맨 끝에 다음 문단을 그대로 추가해 줘. 다른 파일은 건드리지 마. 문단: %s'
@@ -97,7 +102,8 @@ def _prompts(roles):
     # return, and the event row must record the hash of exactly this text.
     if any('\n' in text or '\r' in text for text in texts.values()):
         raise ValueError('a smoke prompt is one line')
-    return {name: {'text': text, 'sha256': prompt_sha(text), 'chars': len(text)}
+    return {name: {'text': text, 'sha256': prompt_sha(text), 'chars': len(text),
+                   'mark': marks.get(name)}
             for name, text in texts.items()}
 
 
@@ -120,7 +126,7 @@ def build(out, *, cards=len(TOPICS), learning=False, run_id=None):
     roles = dict(zip(ROLES, listed))
     return {'schema': SCHEMA, 'runId': run_id, 'name': NAME, 'learning': bool(learning),
             'cards': listed, 'roles': {role: card['slug'] for role, card in roles.items()},
-            'prompts': _prompts(roles), 'delta': None}
+            'prompts': _prompts(roles, run_id.upper()), 'delta': None}
 
 
 def delta(out, plan):
@@ -147,5 +153,5 @@ def delta(out, plan):
     plan['delta'] = {'added': added, 'changed': {'before': changed, 'after': after},
                      'deleted': deleted}
     plan['prompts'] = dict(plan['prompts'], P4={'text': text, 'sha256': prompt_sha(text),
-                                                'chars': len(text)})
+                                                'chars': len(text), 'mark': added['token']})
     return plan

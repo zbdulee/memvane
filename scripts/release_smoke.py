@@ -184,6 +184,9 @@ def judge_sync(plan, events, sessions):
     change = plan.get('delta')
     if not change:
         return item('RS-SYNC', NOT_RUN, 'the change was not applied')
+    if not change.get('afterTs'):
+        # Without it a sync pass of the onboarding would count as the pass after the change.
+        return item('RS-SYNC', NOT_RUN, 'the time of the change was not recorded')
     asked = [row for session in sessions.values() if session
              for row in _prompt_rows(events, session, plan['prompts']['P4'])]
     if not asked:
@@ -210,10 +213,7 @@ def judge_sync(plan, events, sessions):
 
 def _since_change(entry, events, plan):
     """``entry`` is not older than the change (the last row copied before it was applied)."""
-    mark = plan['delta'].get('afterTs')
-    if not mark:
-        return True
-    gap = seconds_between({'ts': mark}, entry)
+    gap = seconds_between({'ts': plan['delta']['afterTs']}, entry)
     return gap is not None and gap >= 0
 
 
@@ -460,9 +460,10 @@ def prepare(remote, out, commit, *, learning=False, target=None, build=None):
         (out / ('prompt-%s.txt' % name)).write_text(prompt['text'], encoding='utf-8')
     if not found:
         _ship(remote, tree, target)
+        # Committed only when something is staged: a run cut after the commit is run again.
         code, _out, err = remote.run(
-            'cd %s && %s init -q -b main && %s add -A && %s commit -qm fixture'
-            % (rpath(target), _GIT, _GIT, _GIT))
+            'cd %s && %s init -q -b main && %s add -A && { %s diff --cached --quiet || %s commit -qm fixture; }'
+            % (rpath(target), _GIT, _GIT, _GIT, _GIT))
         if code:
             raise RuntimeError('git init failed: ' + err.strip()[:200])
         plan['shipped'] = True
@@ -470,19 +471,45 @@ def prepare(remote, out, commit, *, learning=False, target=None, build=None):
     return plan
 
 
+# The time of the newest event row on the smoke account.
+_LAST_TS = r'''
+import glob, json, os
+last = ''
+for path in glob.glob(os.path.expanduser('~/.local/state/memvane/v1/installs/*/events.jsonl')):
+    for line in open(path, errors='replace'):
+        try: row = json.loads(line)
+        except ValueError: continue
+        if isinstance(row, dict) and isinstance(row.get('ts'), str) and row['ts'] > last:
+            last = row['ts']
+print(last)
+'''
+
+
+def last_event_time(remote):
+    """The ``ts`` of the newest event row on the account, or None."""
+    code, text, _err = remote.run('python3 -B -', stdin=_LAST_TS)
+    return text.strip() or None if code == 0 else None
+
+
 def apply_delta(remote, out, *, last_ts=None):
-    """Apply the RS-SYNC change to the remote fixture and record it in the plan."""
+    """Apply the RS-SYNC change to the remote fixture and record it in the plan.
+
+    The newest event row on the account is read before the change and kept as
+    ``afterTs``: a sync pass counts for RS-SYNC only when it is not older.
+    """
     from tests.support import smoke_fixture
     out = Path(out)
     plan = _load_plan(out)
     tree = out / TREE
+    last_ts = last_ts or last_event_time(remote)
     after = smoke_fixture.delta(tree, plan)
     change = after['delta']
     _ship(remote, tree, plan['remoteFixture'])
     removed = ' '.join(shlex.quote(name) for name in (change['deleted']['source'],
                                                         change['deleted']['file']))
-    code, _out, err = remote.run('cd %s && rm -f %s && %s add -A && %s commit -qm change'
-                                 % (rpath(plan['remoteFixture']), removed, _GIT, _GIT))
+    code, _out, err = remote.run(
+        'cd %s && rm -f %s && %s add -A && { %s diff --cached --quiet || %s commit -qm change; }'
+        % (rpath(plan['remoteFixture']), removed, _GIT, _GIT, _GIT))
     if code:
         raise RuntimeError('change commit failed: ' + err.strip()[:200])
     change['afterTs'] = last_ts
@@ -518,8 +545,9 @@ def send(remote, out, host, name, *, screen=None, pause=time.sleep, paste_reads=
 
     Every multiplexer command names window 0 (``-p 0``): an old ``screen``
     ignores a windowless ``-X`` and still exits 0. The paste counts as arrived
-    only when the window's hardcopy changed and then stopped changing; only
-    then is Enter sent, on its own. For a prompt a hook can see, the turn is
+    only when the window's hardcopy changed and then stopped changing and, for
+    a short prompt, shows the prompt's own token; only then is Enter sent, on
+    its own. For a prompt a hook can see, the turn is
     confirmed by the event row of its hash. Returns what was observed:
     ``pasted``, ``submitted`` and ``row`` (None when no row can confirm it).
     Only the prompt is typed: a permission or trust screen is the operator's.
@@ -557,6 +585,11 @@ def send(remote, out, host, name, *, screen=None, pause=time.sleep, paste_reads=
             result['pasted'] = True
             break
         last = now
+    mark = prompt.get('mark')
+    if result['pasted'] and mark:
+        # A window that changes by itself is not a paste: the prompt's own token is on it.
+        code, text, _err = remote.run("tr -d '\\n' < %s | grep -cF %s" % (rpath(shot), shlex.quote(mark)))
+        result['pasted'] = code == 0 and text.strip().isdigit() and int(text.strip()) > 0
     if not result['pasted']:
         return result
     code, _text, _err = remote.run("%sstuff $'\\r'" % control)
@@ -630,7 +663,7 @@ def installed_identity(remote, commit, installed, *, tree=None):
             tree[name] = hashlib.sha256(blob).hexdigest()
     code, out, err = remote.run(
         'cd %s && find . -type f ! -path "./.git/*" ! -name "*.pyc" -print0 | xargs -0 shasum -a 256'
-        % shlex.quote(installed), timeout=300)
+        % rpath(installed), timeout=300)
     if code:
         raise RuntimeError('installed files could not be read: ' + err.strip()[:200])
     found = {}
@@ -642,7 +675,7 @@ def installed_identity(remote, commit, installed, *, tree=None):
         found.pop(name, None)
     different = sorted(name for name in set(tree) | set(found) if tree.get(name) != found.get(name))
     versions = sorted({json.loads(text)['version'] for text in [remote.run(
-        'cat %s/package.json' % shlex.quote(installed))[1]] if text.strip()})
+        'cat %s/package.json' % rpath(installed))[1]] if text.strip()})
     return {'commit': commit, 'installed': installed, 'files': len(found),
             'different': different, 'versions': versions}
 
@@ -707,8 +740,7 @@ def main(argv=None):
     sub = command('prepare')
     sub.add_argument('--commit', required=True)
     sub.add_argument('--learning', action='store_true')
-    sub = command('delta')
-    sub.add_argument('--last-ts')
+    command('delta')
     sub = command('send')
     sub.add_argument('--host', required=True, choices=HOSTS)
     sub.add_argument('--prompt', required=True)
@@ -733,7 +765,7 @@ def main(argv=None):
         print(json.dumps({'fixture': plan['remoteFixture'], 'forbiddenEnv': plan['forbiddenEnv']}))
         return 1 if plan['forbiddenEnv'] else 0
     if args.command == 'delta':
-        apply_delta(remote, args.out, last_ts=args.last_ts)
+        apply_delta(remote, args.out)
         return 0
     if args.command == 'send':
         result = send(remote, args.out, args.host, args.prompt)

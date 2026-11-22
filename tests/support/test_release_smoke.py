@@ -43,8 +43,11 @@ elif command == 'hardcopy':
     left = int((STATE / 'settling').read_text()) if (STATE / 'settling').exists() else 0
     (STATE / 'settling').write_text(str(max(0, left - 1)))
     size = typed.stat().st_size if typed.exists() else 0
-    Path(os.path.expanduser(rest[0])).write_text('window %d %d\n' % (size, left))
+    shown = typed.read_bytes().decode()[:400] if typed.exists() and mode != 'collapsed' else ''
+    Path(os.path.expanduser(rest[0])).write_text('window %d %d\n%s\n' % (size, left, shown))
 elif command == 'stuff' and typed.exists():
+    if (STATE / 'settling').exists() and int((STATE / 'settling').read_text()) > 0:
+        (STATE / 'early_enter').write_text('1')  # Enter while the paste is still redrawing
     text = typed.read_bytes()
     typed.replace(STATE / 'submitted')
     if mode != 'no_row':
@@ -75,7 +78,8 @@ class Local:
     def put(self, local, remote, *, timeout=300):
         # As scp: a leading ``~/`` is the account's home.
         target = self.home / remote[2:] if remote.startswith('~/') else Path(remote)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.parent.is_dir():
+            raise RuntimeError('upload failed: no such directory')  # scp makes no parent
         shutil.copyfile(str(local), str(target))
 
 
@@ -115,6 +119,8 @@ class Rows:
 
     def sync(self, plan, *, outcome='indexed', served=True):
         change = plan['delta']
+        # As ``apply_delta``: the newest row before the change is its time.
+        change.setdefault('afterTs', self.rows[-1]['ts'])
         self.add('wake.sync', outcome=outcome, ms=900)
         self.add('index.publish', outcome='published')
         self.plan = plan
@@ -190,6 +196,21 @@ class Verdict(FixtureCase):
         self.assertEqual(self.status(rows=repeated)[0]['RS-DEDUP'], smoke.FAIL)
         second.update(cards=[], sessionExcluded=0)
         self.assertEqual(self.status(rows=repeated)[0]['RS-DEDUP'], smoke.FAIL)
+
+    def test_sync_needs_the_time_of_the_change_and_ignores_the_passes_before_it(self):
+        after = smoke_fixture.delta(self.tree, self.plan)
+        # Only the onboarding's pass and publish exist; P4 is asked and nothing is served.
+        self.rows.add('wake.sync', outcome='indexed', ms=900)
+        self.rows.add('index.publish', outcome='published')
+        mark = self.rows.add('gate', host='claude', session=SESSIONS['claude'], outcome='ok')['ts']
+        self.rows.plan = after
+        self.rows.recall(SESSIONS['claude'], 'claude', 'P4', [], outcome='empty', reason=smoke.SELECTED_ZERO)
+        self.assertIsNone(after['delta'].get('afterTs'))
+        sync = lambda: next(row for row in self.status(after)[1]['items'] if row['id'] == 'RS-SYNC')
+        self.assertEqual((sync()['status'], sync()['note']),
+                         (smoke.NOT_RUN, 'the time of the change was not recorded'))
+        after['delta']['afterTs'] = mark
+        self.assertEqual((sync()['status'], sync()['note']), (smoke.FAIL, 'wake.sync absent'))
 
     def test_sync_fails_on_a_failed_pass_and_leaves_cards_unjudged_when_nothing_is_served(self):
         self.assertEqual(self.status()[0]['RS-SYNC'], smoke.NOT_RUN)
@@ -288,7 +309,15 @@ class RoundTrip(FixtureCase):
                                 check=True).stdout.split()
         self.assertEqual(len(listed), 2 + 2 * 6)
         self.assertEqual((record / 'prompt-P1.txt').read_text(), plan['prompts']['P1']['text'])
-        after = smoke.apply_delta(remote, record, last_ts=None)
+        # The account already holds event rows: the change records the newest one's time.
+        earlier = account / '.local/state/memvane/v1/installs/older'
+        earlier.mkdir(parents=True)
+        (earlier / 'events.jsonl').write_text(''.join(
+            json.dumps({'event': 'recall', 'session': 'older', 'ts': ts}) + '\n'
+            for ts in ('2026-11-21T10:00:00Z', '2026-11-21T23:59:59Z', '2026-11-21T09:00:00Z')))
+        after = smoke.apply_delta(remote, record)
+        self.assertEqual(after['delta']['afterTs'], '2026-11-21T23:59:59Z')
+        self.assertEqual(smoke._load_plan(record)['delta']['afterTs'], '2026-11-21T23:59:59Z')
         self.assertFalse((fixture / after['delta']['deleted']['file']).exists())
         self.assertTrue((fixture / after['delta']['added']['file']).is_file())
         status = subprocess.run(['git', '-C', str(fixture), 'status', '--porcelain'], capture_output=True,
@@ -400,6 +429,43 @@ class RoundTrip(FixtureCase):
         self.assertEqual(hashlib.sha256(submitted).hexdigest(), plan['prompts']['P2']['sha256'])
         self.assertNotIn(b'\n', submitted)
 
+    def test_enter_is_not_sent_while_the_paste_is_still_redrawing(self):
+        remote, _account, state, record, _plan = self.prepared()
+        for name in ('P0', 'P1', 'P2'):
+            self.assertTrue(smoke.sent(smoke.send(remote, record, 'claude', name, pause=lambda _s: None)), name)
+        self.assertFalse((state / 'early_enter').exists())
+
+    def test_a_short_prompt_is_sent_only_when_its_own_token_is_on_the_window(self):
+        # The window changes and settles without showing the pasted text.
+        remote, _account, state, record, plan = self.prepared('collapsed')
+        for name in ('P0', 'P1', 'P3'):
+            self.assertTrue(plan['prompts'][name]['mark'].startswith('SMKFEED04'), name)
+            result = smoke.send(remote, record, 'claude', name, pause=lambda _s: None, paste_reads=6)
+            self.assertEqual((result['pasted'], result['submitted']), (False, False), name)
+        self.assertNotIn('stuff', [call['command'] for call in self.calls(state)])
+        # The long prompt has no mark: the settled change is its evidence.
+        self.assertIsNone(plan['prompts']['P2']['mark'])
+        self.assertTrue(smoke.sent(smoke.send(remote, record, 'claude', 'P2', pause=lambda _s: None)))
+
+    def test_the_prompts_of_two_runs_never_share_a_hash(self):
+        first = smoke_fixture.build(self.home / 'one', cards=6, run_id='feed0a')
+        second = smoke_fixture.build(self.home / 'two', cards=6, run_id='feed0b')
+        for name in ('P0', 'P1', 'P2', 'P3'):
+            self.assertNotEqual(first['prompts'][name]['sha256'], second['prompts'][name]['sha256'], name)
+            self.assertIn('SMKFEED0A', first['prompts'][name]['text'], name)
+
+    def test_a_prepare_cut_after_its_commit_is_run_again(self):
+        remote, account, _state, record, plan = self.prepared()
+        saved = smoke._load_plan(record)
+        saved['shipped'] = False  # The run ended after the remote commit, before this was written.
+        smoke._save(smoke._plan_path(record), saved)
+        again = smoke.prepare(remote, record, 'c' * 40,
+                              build=mock.Mock(side_effect=AssertionError('built twice')))
+        self.assertTrue(again['shipped'])
+        log = subprocess.run(['git', '-C', str(account / 'memvane-smoke/feed04/fixture'), 'log', '--oneline'],
+                             capture_output=True, text=True, check=True).stdout.splitlines()
+        self.assertEqual(len(log), 1)
+
     def test_send_reports_failure_when_the_session_shows_nothing(self):
         remote, _account, state, record, _plan = self.prepared('deaf')
         result = smoke.send(remote, record, 'claude', 'P1', pause=lambda _seconds: None, paste_reads=4)
@@ -448,6 +514,10 @@ class RoundTrip(FixtureCase):
         tree = {name: hashlib.sha256(text.encode()).hexdigest() for name, text in files.items()}
         record = smoke.installed_identity(remote, 'c' * 40, str(installed), tree=tree)
         self.assertEqual((record['different'], record['versions'], record['files']), ([], ['1.1.0'], 2))
+        # A path under the account's home is given with ``~/``.
+        self.assertEqual(account, remote.home)
+        home = smoke.installed_identity(remote, 'c' * 40, '~/plugin', tree=tree)
+        self.assertEqual((home['different'], home['versions'], home['files']), ([], ['1.1.0'], 2))
         (installed / 'memvane/a.py').write_text('a = 2\n')
         (installed / 'extra.py').write_text('')
         record = smoke.installed_identity(remote, 'c' * 40, str(installed), tree=tree)

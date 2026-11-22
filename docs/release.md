@@ -77,12 +77,16 @@ silently there and it is not how the product is used.
 The operator starts one `screen` session per host in the project directory,
 named `smoke-claude` and `smoke-codex`, in UTF-8 mode and detached, with the
 host CLI as the command of a login shell. The tool addresses window 0 of that
-session by name. It pastes a prompt, waits until the window shows the paste
-and stops changing, then sends Enter on its own, and reports success only
-when it observed the paste and, for a prompt a hook can see, the event row of
-the prompt's hash. Without that it exits non-zero and the item is `BLOCKED`.
-Prompts are one line each, so the text a multiplexer pastes is the text whose
-hash the event row records.
+session by name. It pastes a prompt, waits until the window changes and
+stops changing and, for a short prompt, shows that prompt's own token, then
+sends Enter on its own. It reports success only when it observed the paste
+and, for a prompt a hook can see, the event row of the prompt's hash. Without
+that it exits non-zero and the item is `BLOCKED`. Prompts are one line each,
+so the text a multiplexer pastes is the text whose hash the event row
+records, and every prompt carries a token of its run, so no row of an earlier
+run on the same account matches. Before a send the operator checks that the
+session shows its input line and no permission or trust screen: Enter goes to
+whatever the window shows.
 
 | Step | What happens | Item |
 |---|---|---|
@@ -95,7 +99,7 @@ hash the event row records.
 | recall | After the vector generation is published: a short prompt and a 12,000 character prompt, each targeting a different card. | RS-RECALL per host |
 | repeat | The short prompt again in the same session. | RS-DEDUP |
 | edit | A request to append a fixed paragraph to one file with the host's edit tool. | RS-EDIT per host |
-| sync | The tool adds, changes and deletes one document and card each; a prompt then names all three. | RS-SYNC |
+| sync | The tool records the time of the account's newest event row, then adds, changes and deletes one document and card each; a prompt then names all three. Only a sync pass and a publish after that time count; without the time the item is `NOT RUN`. | RS-SYNC |
 | verdict | The tool copies the listed fields of the project's event rows and writes the gate files. | — |
 
 A recall passes when its row is `semantic: complete` with at least one
