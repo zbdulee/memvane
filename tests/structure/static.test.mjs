@@ -385,25 +385,35 @@ test('the model download address names one upstream revision and its pinned hash
 // product fetches: the address must not move), ``index`` (a package index used
 // only with exact versions and hashes), ``identity`` (a homepage or repository
 // name that is recorded or compared, never fetched), ``scheme`` (the scheme
-// test of the downloader). A new address fails until it is listed with a kind.
+// test of the downloader). ``hf:`` names are listed too: a model URI is an
+// identity and is never handed to a resolver that downloads. Each entry is
+// ``[kind, occurrences]``; a new address, or one more occurrence of a listed
+// one, fails until it is listed.
 const ADDRESSES = {
-  [`${EMBED_RUNTIME}|https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/`]: 'download',
-  [`${EMBED_RUNTIME}|https://`]: 'scheme',
-  'memvane/learning/context_learning/runtime_installer.py|https://pypi.org/simple': 'index',
-  'memvane/learning/context_learning/raw.py|https://github.com/NandhaKishorM/laya': 'identity',
-  'memvane/learning/context_learning/adapter_binding.py|https://github.com/': 'identity',
+  [`${EMBED_RUNTIME}|https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/`]: ['download', 1],
+  [`${EMBED_RUNTIME}|https://`]: ['scheme', 1],
+  [`${EMBED_RUNTIME}|hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf`]: ['identity', 1],
+  'memvane/provider/adapters/local_embed_provider.py|hf:ggml-org/embeddinggemma-300M-GGUF/': ['identity', 1],
+  'memvane/learning/context_learning/runtime_installer.py|https://pypi.org/simple': ['index', 1],
+  'memvane/learning/context_learning/raw.py|https://github.com/NandhaKishorM/laya': ['identity', 1],
+  'memvane/learning/context_learning/adapter_binding.py|https://github.com/': ['identity', 2],
 };
 
 test('every external address in product code is listed with its kind', () => {
-  const found = new Set();
+  // Counted, not only listed: a listed prefix written a second time (to be
+  // completed with another path or reference) is a new address.
+  const found = {};
   for (const file of fetchedCode()) {
     const text = readFileSync(file, 'utf8');
     assert.doesNotMatch(text, /http:\/\/(?!127\.0\.0\.1|localhost)/, `${file}: plain http`);
-    for (const m of text.matchAll(/https:\/\/[^\s'"`)\\]*/g)) found.add(`${file}|${m[0]}`);
+    for (const m of text.matchAll(/(?:https:\/\/|\bhf:)[^\s'"`)\\]*/g)) {
+      found[`${file}|${m[0]}`] = (found[`${file}|${m[0]}`] || 0) + 1;
+    }
   }
-  assert.deepEqual([...found].sort(), Object.keys(ADDRESSES).sort());
+  const listed = Object.fromEntries(Object.entries(ADDRESSES).map(([key, [, count]]) => [key, count]));
+  assert.deepEqual(Object.fromEntries(Object.entries(found).sort()), Object.fromEntries(Object.entries(listed).sort()));
   // The one download address is completed by the pinned revision (the check above).
-  const downloads = Object.entries(ADDRESSES).filter(([, kind]) => kind === 'download');
+  const downloads = Object.entries(ADDRESSES).filter(([, [kind]]) => kind === 'download');
   assert.equal(downloads.length, 1);
   assert.ok(modelUrl().url.startsWith(downloads[0][0].split('|')[1]));
   // The package index is only ever given to an install that requires exact versions and hashes.
@@ -467,13 +477,14 @@ const TOOL_CALLS = [
   ['memvane/learning/context_learning/runtime_installer.py',
     /\[uv,'pip','sync',lock,'--python',/, 'uv pip sync of the hashed lock'],
 ];
-const DOWNLOADERS = /urlopen|urlretrieve|hf_hub_download|snapshot_download|requests\.(?:get|post)|http\.client|\bcurl\b|\bwget\b|\bnpx\b|['"]clone['"]|pip['"]?,?\s*['"]?install|npm['"]?,?\s*['"]?install|['"]ci['"]|['"]python['"],\s*['"]install|['"]pip['"],\s*['"]sync|brew install/;
+const DOWNLOADERS = /https?\.(?:request|get)\(|urllib\.request\.Request|build_opener|['"]tool['"],\s*['"]install|['"](?:fetch|pull)['"]|urlopen|urlretrieve|hf_hub_download|snapshot_download|requests\.(?:get|post)|http\.client|\bcurl\b|\bwget\b|\bnpx\b|['"]clone['"]|pip['"]?,?\s*['"]?install|npm['"]?,?\s*['"]?install|['"]ci['"]|['"]python['"],\s*['"]install|['"]pip['"],\s*['"]sync|brew install/;
 
 test('every call that can download is a listed, pinned call', () => {
   const hits = [];
   for (const file of fetchedCode()) {
     readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
-      if (DOWNLOADERS.test(line)) hits.push([file, index + 1, line]);
+      // ``fetch(`` is the network call of JavaScript only (Python code names a local helper so).
+      if (DOWNLOADERS.test(line) || (/\.m?js$/.test(file) && /\bfetch\(/.test(line))) hits.push([file, index + 1, line]);
     });
   }
   for (const [file, number, line] of hits) {
@@ -492,6 +503,8 @@ test('every call that can download is a listed, pinned call', () => {
   assert.match(installer, /def _uv_binary\(path, expected_sha,/);
   // The sync call itself refuses a requirement without a hash, a build and an interpreter download.
   assert.match(installer, /\[uv,'pip','sync',lock,[^\]]*'--require-hashes','--no-build'[^\]]*'--no-python-downloads'/s);
+  // The venv is made from the installed interpreter: uv may not fetch another.
+  assert.match(installer, /\[uv,'venv',[^\]]*'--no-python-downloads'/s);
   // A model or tokenizer is only ever loaded from local files.
   for (const file of fetchedCode().filter(path => path.endsWith('.py'))) {
     const text = readFileSync(file, 'utf8');
