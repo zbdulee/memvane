@@ -51,6 +51,34 @@ class Case(FixtureCase):
         with self.assertRaises(AssertionError):
             self.wait_until(lambda: False, timeout=0.05)
 
+    def test_waits_multiply_by_the_load_scale(self):
+        from unittest import mock
+        from tests.support import case
+        for raw, expected in (('2.5', 2.5), ('0.2', 1.0), ('9', 4.0), ('nan', 1.0), ('x', 1.0)):
+            with mock.patch.dict(os.environ, {case.TIME_SCALE_ENV: raw}):
+                self.assertEqual(case.time_scale(), expected)
+                self.assertEqual(case.scaled(2.0), 2.0 * expected)
+        with mock.patch.dict(os.environ):
+            os.environ.pop(case.TIME_SCALE_ENV, None)
+            self.assertEqual(case.time_scale(), 1.0)
+        # A stepped clock: the wait ends at the scaled deadline, counted in polls.
+        now = [0.0]
+
+        def polls(scale):
+            now[0], seen = 0.0, []
+
+            def predicate():
+                seen.append(now[0])
+                now[0] += 1.0
+                return False
+            with mock.patch.dict(os.environ, {case.TIME_SCALE_ENV: scale}), \
+                    mock.patch.object(case.time, 'monotonic', lambda: now[0]), \
+                    mock.patch.object(case.time, 'sleep', lambda _s: None):
+                with self.assertRaises(AssertionError):
+                    case.wait_until(predicate, timeout=3.0)
+            return len(seen)
+        self.assertEqual((polls('1'), polls('3')), (3, 9))
+
 
 class Project(FixtureCase):
     def test_minimal_settings_cards_and_git(self):

@@ -7,7 +7,8 @@ and an absolute ``MEMVANE_TEST_RUNTIME_ROOT``. Each test then gets
 ``self.runtime`` (its own 0700 test runtime root, set as
 ``MEMVANE_TEST_RUNTIME_ROOT``) and ``self.tmp``; the environment is restored
 afterwards. Waiting is by polling a predicate in this process: no ``sleep``
-child process.
+child process. Waits and timeouts multiply by the run's load scale
+(``MEMVANE_TEST_TIME_SCALE``, set by tests/support/timing.mjs; 1.0 when absent).
 """
 from __future__ import annotations
 
@@ -37,8 +38,26 @@ def require_fixture_env():
     return home
 
 
+TIME_SCALE_ENV = 'MEMVANE_TEST_TIME_SCALE'
+
+
+def time_scale():
+    """The run's load scale, 1.0 to 4.0; 1.0 when unset or unreadable."""
+    try:
+        value = float(os.environ.get(TIME_SCALE_ENV, '1'))
+    except ValueError:
+        return 1.0
+    return min(4.0, max(1.0, value)) if value == value else 1.0
+
+
+def scaled(seconds):
+    """``seconds`` of a test wait or subprocess timeout under the run's load scale."""
+    return seconds * time_scale()
+
+
 def wait_until(predicate, timeout=10.0, interval=0.02):
-    """Poll ``predicate`` until it returns a truthy value (returned) or ``timeout`` passes."""
+    """Poll ``predicate`` until it returns a truthy value (returned) or the scaled ``timeout`` passes."""
+    timeout = scaled(timeout)
     end = time.monotonic() + timeout
     while True:
         value = predicate()
@@ -51,6 +70,7 @@ def wait_until(predicate, timeout=10.0, interval=0.02):
 
 async def wait_until_async(predicate, timeout=10.0, interval=0.02):
     """``wait_until`` for an event loop: the loop keeps running (and reaping children)."""
+    timeout = scaled(timeout)
     end = time.monotonic() + timeout
     while True:
         value = predicate()

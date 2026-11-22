@@ -14,7 +14,8 @@
 //
 // A module's timeout is three times its recorded duration
 // (tests/support/durations.json, written by scripts/test_durations.py), at
-// least 60 s; 180 s without a record. With MEMVANE_TEST_RESULTS set, each
+// least 60 s; 180 s without a record; all times the run's load scale
+// (timing.mjs). With MEMVANE_TEST_RESULTS set, each
 // module appends one JSON line {module, status, seconds, commit} to that file.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,6 +24,7 @@ import { appendFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fixtureEnv, fixtureHome, removeTemp } from './temp.mjs';
+import { timeScale } from './timing.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -163,7 +165,7 @@ export function runDomain({ domain, tiers = ['unit', 'integration'] }) {
     for (const file of modules) {
       // The name starts `<domain> <tier> python `: package.json's part3 skips by it.
       const label = `${domain} ${tier} python ${relative(start, file)}`;
-      test(label, () => runModule(file, { timeoutMs: moduleTimeoutMs(durations[file]), label }));
+      test(label, () => runModule(file, { timeoutMs: moduleTimeoutMs(durations[file], timeScale()), label }));
     }
   }
 }

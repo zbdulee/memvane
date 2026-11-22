@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { leftoverProcesses, moduleName, moduleTimeoutMs, recordedDurations, runModule,
   testModules } from './runner.mjs';
 import { fixtureEnv, fixtureHome, removeTemp } from './temp.mjs';
+import { REFERENCE_START_MS, TIME_SCALE_ENV, clampScale, scaleOf, timeScale } from './timing.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -137,3 +138,21 @@ test('test_durations.py writes the median of passing rows per module', () => {
     removeTemp(fixture.home);
   }
 });
+
+test('the load scale is the median start time over the reference, kept in 1.0 to 4.0', () => {
+  const ms = REFERENCE_START_MS;
+  assert.equal(scaleOf([ms, ms, ms, ms, ms]), 1);
+  assert.equal(scaleOf([ms * 0.5, ms * 0.5, ms * 0.5]), 1);
+  // The median, not the mean: two slow starts out of five do not move it.
+  assert.equal(scaleOf([ms, ms * 9, ms, ms * 9, ms]), 1);
+  assert.equal(scaleOf([ms * 2, ms * 2.5, ms * 3]), 2.5);
+  assert.equal(scaleOf([ms * 40, ms * 40, ms * 40]), 4);
+  assert.equal(scaleOf([]), 1);
+  assert.deepEqual(['2.5', '0.1', '99', 'x', ''].map(clampScale), [2.5, 1, 4, 1, 1]);
+  // A value already in the environment is kept, and every fixture child receives the run's value.
+  assert.equal(timeScale({ [TIME_SCALE_ENV]: '3' }), 3);
+  const value = Number(fixtureEnv({ home: '/tmp/x', runtime: '/tmp/x/runtime' })[TIME_SCALE_ENV]);
+  assert.ok(value >= 1 && value <= 4, String(value));
+  assert.equal(value, timeScale());
+});
+
