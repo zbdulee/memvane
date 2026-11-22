@@ -315,6 +315,34 @@ class Schema3Recall(RecallInstallCase):
         self.assertEqual(observed[0][1], 2.0)
         self.assertEqual(observed[0][2], 6000000)
 
+    def git_children(self, call):
+        """The Git children ``call()`` started: the checkout observation's own (by their fixed arguments)."""
+        import subprocess
+        real, seen = subprocess.Popen, []
+
+        def started(argv, *args, **kwargs):
+            if isinstance(argv, list) and 'log.showSignature=false' in argv:
+                seen.append(argv[7:])
+            return real(argv, *args, **kwargs)
+        with mock.patch('subprocess.Popen', side_effect=started):
+            call()
+        return seen
+
+    def test_one_recall_starts_a_bounded_number_of_git_children(self):
+        # A checkout observation is twelve Git children. Where the observation cache holds
+        # (macOS on APFS) a recall of an unchanged checkout in a warm process starts none; without
+        # the cache (Linux) every observation of the recall pays them again.
+        self.install.provider.admit_queries()
+        for _ in range(2):
+            started = [command for command in self.git_children(lambda: self.recall(PROMPT))
+                       if command != ['--exec-path']]
+            observations, rest = divmod(len(started), 12)
+            self.assertEqual(rest, 0, started)
+            self.assertEqual(started.count(['--version']), observations)
+            self.assertLessEqual(observations, 18, len(started))
+            if sys.platform != 'darwin':
+                self.assertGreaterEqual(observations, 1)
+
     def test_recall_event_records_stage_times_without_prompt_or_body(self):
         self.install.provider.admit_queries()
         context, _err, event = self.recall(PROMPT)
