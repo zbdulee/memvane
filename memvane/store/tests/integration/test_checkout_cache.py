@@ -14,6 +14,74 @@ from memvane.store.tests import support as existing
 REPO = Path(__file__).resolve().parents[4]
 
 
+class GitChildren(existing.CheckoutCase):
+    """How many Git children one observation costs, on every platform (the count, not a duration)."""
+
+    def observed(self, call):
+        """``[git arguments]`` and ``[program]`` of every Git child ``call()`` started."""
+        commands, programs = [], []
+        real = view.subprocess.Popen
+
+        def started(argv, *args, **kwargs):
+            if '-c' in argv and 'log.showSignature=false' in argv:  # Only this module's own children.
+                programs.append(argv[0])
+                commands.append(argv[7:])
+            return real(argv, *args, **kwargs)
+        with mock.patch.object(view.subprocess, 'Popen', side_effect=started):
+            value = call()
+        return value, commands, programs
+
+    def test_one_full_observation_starts_twelve_git_children_and_checks_the_version_once(self):
+        repository, worktree = self.bind(self.root)
+        capture, commands, _programs = self.observed(
+            lambda: view.capture_view(str(self.root), repository, worktree, fresh=True))
+        counted = [command for command in commands if command != ['--exec-path']]
+        self.assertEqual(len(counted), 12, counted)
+        self.assertEqual(counted.count(['--version']), 1)
+        self.assertEqual(counted[0], ['--version'])
+        # The two observations still read the ref and HEAD twice each.
+        self.assertEqual(sum(command[0] == 'symbolic-ref' for command in counted), 4)
+        self.assertEqual(sum(command[:2] == ['rev-parse', '--verify'] for command in counted), 4)
+        self.assertEqual(capture['branchKey'], 'refs/heads/main')
+
+    def test_an_unsupported_git_version_is_still_refused(self):
+        repository, worktree = self.bind(self.root)
+        real = view._git
+
+        def old(args, *rest, **kwargs):
+            return (0, 'git version 2.30.0') if args == ['--version'] else real(args, *rest, **kwargs)
+        with mock.patch.object(view, '_git', side_effect=old):
+            with self.assertRaises(view.CheckoutUnavailable) as caught:
+                view.capture_view(str(self.root), repository, worktree, fresh=True)
+        self.assertEqual(caught.exception.reason, 'git_version_unsupported')
+
+    def test_git_runs_as_the_binary_the_fingerprint_proved_and_as_git_until_then(self):
+        repository, worktree = self.bind(self.root)
+        view._capture_cache.tool = None
+        _capture, commands, programs = self.observed(
+            lambda: view.capture_view(str(self.root), repository, worktree, fresh=True))
+        proved = getattr(view._capture_cache, 'tool', None)
+        if proved is None:
+            # No shim to see through (another Git on PATH, another platform, or no fingerprint here).
+            self.assertEqual(set(programs), {'git'})
+            return
+        delegated = str(proved[1])
+        self.assertTrue(delegated.endswith('/bin/git') and delegated.startswith('/'), delegated)
+        # The proof itself goes through the shim; everything after it does not.
+        self.assertEqual([program for program, command in zip(programs, commands) if command == ['--exec-path']],
+                         ['git'])
+        self.assertEqual({program for program, command in zip(programs, commands) if command != ['--exec-path']},
+                         {delegated})
+        # The proof belongs to that capture alone: a registration right after it asks ``git`` on PATH again.
+        _value, commands, programs = self.observed(lambda: view.register_repository(str(self.root)))
+        self.assertEqual((len(commands), set(programs)), (12, {'git'}))
+        # A capture whose fingerprint cannot be taken starts again from ``git``.
+        with mock.patch.object(view, '_cache_filesystem', return_value=None):
+            _capture, commands, programs = self.observed(
+                lambda: view.capture_view(str(self.root), repository, worktree, fresh=True))
+        self.assertEqual((len(commands), set(programs)), (12, {'git'}))
+
+
 @unittest.skipUnless(sys.platform == 'darwin', 'fast path requires a known APFS timestamp contract')
 class CheckoutCacheChecks(existing.CheckoutCase):
     def setUp(self):

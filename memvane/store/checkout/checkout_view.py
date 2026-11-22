@@ -105,7 +105,7 @@ def _git(args, root, deadline, *, ok=(0,)):
     buffers = {'out': bytearray(), 'err': bytearray()}
     try:
         process = subprocess.Popen(
-            ['git', '-c', 'log.showSignature=false', '-c', 'core.fsmonitor=false',
+            [getattr(_capture_cache, 'git', 'git'), '-c', 'log.showSignature=false', '-c', 'core.fsmonitor=false',
              '-c', 'core.hooksPath=' + os.devnull, *args], cwd=str(root), env=_env(),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         for stream, label in ((process.stdout, 'out'), (process.stderr, 'err')):
@@ -374,9 +374,8 @@ def _facts(project_root, deadline, *, validated_branch=None):
                 'branchKey': 'non-git', 'headOid': None, 'index': None, 'operations': []}
     # Verify the patched release family before repository/object queries,
     # never silently ignore the lazy-fetch fence on an unpatched Git.
-    _, version = _git(['--version'], root, deadline)
-    if not supports_no_lazy_fetch(version):
-        _fail('git_version_unsupported')
+    if validated_branch is None and not supports_no_lazy_fetch(_git(['--version'], root, deadline)[1]):
+        _fail('git_version_unsupported')  # Once per ``_stable``: its second observation reuses this check.
     _, raw = _git(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir',
                    '--git-common-dir', '--show-object-format=storage',
                    '--is-bare-repository', '--is-inside-work-tree'], root, deadline)
@@ -404,7 +403,8 @@ def _facts(project_root, deadline, *, validated_branch=None):
             'branchKey': branch, 'headOid': head, 'index': index, 'operations': operations}
 
 
-def _stable(root, deadline):
+def _stable(root, deadline, proved=False):
+    _capture_cache.git = getattr(_capture_cache, 'git', 'git') if proved else 'git'  # Proved by this capture only.
     for _ in range(CAPTURE_ATTEMPTS):
         try:
             first = _facts(root, deadline)
@@ -686,8 +686,7 @@ def _cache_fingerprint(project_root, repository, worktree, deadline):
             tool_key = (os.getpid(), env_digest, tool_stamp(resolved_git), tool_stamp(selection))
             saved_tool = getattr(_capture_cache, 'tool', None)
             if saved_tool is None or saved_tool[0] != tool_key:
-                _, exec_path = _git(['--exec-path'], project, deadline)
-                exec_path = Path(exec_path)
+                exec_path = Path(_git(['--exec-path'], project, deadline)[1])
                 if (not exec_path.is_absolute() or exec_path.name != 'git-core'
                         or exec_path.parent.name != 'libexec'):
                     return None
@@ -701,6 +700,7 @@ def _cache_fingerprint(project_root, repository, worktree, deadline):
                 _capture_cache.tool = (tool_key, delegated, resolved_delegated)
             else:
                 delegated, resolved_delegated = saved_tool[1:]
+            _capture_cache.git = str(delegated)  # The binary the shim runs, proved above: run it without the shim.
             tool_paths.extend((selection, delegated, resolved_delegated))
         tool_filesystems = tuple(_cache_filesystem(path) for path in (resolved_git, *tool_paths[-2:]))
         if any(value is None for value in tool_filesystems):
@@ -763,6 +763,7 @@ def _cache_fingerprint(project_root, repository, worktree, deadline):
 
 
 def _capture_facts(project_root, repository, worktree, deadline):
+    _capture_cache.git = 'git'  # Until this capture's fingerprint proves the shim's target again.
     before = _cache_fingerprint(project_root, repository, worktree, deadline)
     now_wall, now_mono, pid = time.time_ns(), time.monotonic(), os.getpid()
     entry = getattr(_capture_cache, 'entry', None)
@@ -774,7 +775,7 @@ def _capture_facts(project_root, repository, worktree, deadline):
             and now_wall >= entry[1] and now_mono >= entry[2]
             and before == entry[3] and settled(before, entry[1])):
         return copy.deepcopy(entry[4])
-    facts = _stable(project_root, deadline)
+    facts = _stable(project_root, deadline, True)
     _repository(repository, facts)
     _worktree(worktree, repository, facts)
     after = _cache_fingerprint(project_root, repository, worktree, deadline)
@@ -792,10 +793,9 @@ def _capture_facts(project_root, repository, worktree, deadline):
 def capture_view(project_root, repository, worktree, *, deadline=None, fresh=False):
     if type(fresh) is not bool:
         _fail('invalid_checkout_value')
-    limit = _deadline(deadline)
     if fresh:
         _capture_cache.entry = None
-    facts = _capture_facts(project_root, repository, worktree, limit)
+    facts = _capture_facts(project_root, repository, worktree, _deadline(deadline))
     _repository(repository, facts)
     _worktree(worktree, repository, facts)
     value = {'schema': CAPTURE_SCHEMA, 'projectRoot': facts['project']['path'],
