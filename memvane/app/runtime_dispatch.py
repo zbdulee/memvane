@@ -186,18 +186,39 @@ def _deferred_detail(result):
     return ':'.join(parts)
 
 
-def _sync_progress(kind, exc):
-    """Recognize normal bounded sync handoffs without masking actual failures."""
-    if kind != 'laya-sync' or exc.code != 'target_deferred':
+def _progress(kind, exc):
+    """Recognize normal bounded handoffs without masking actual failures.
+
+    A sync pass that handed its fill to the next one, and a compile pass that
+    worked part of its backlog off (``compile_progress``), are ``progress``.
+    """
+    if exc.code != 'target_deferred':
         return False
     detail = getattr(exc, 'detail', None)
     if not isinstance(detail, str):
         return False
+    if kind == 'laya-compile':
+        return detail == 'deferred:pending:compile_progress'
     parts = detail.split(':')
-    return (len(parts) >= 3 and parts[:2] == ['deferred', 'pending']
+    return (kind == 'laya-sync' and len(parts) >= 3 and parts[:2] == ['deferred', 'pending']
             and parts[2] in ('schema3_progress_ingest', 'schema3_progress_vector',
                              'schema3_vector_budget',
                              'schema3_vector_content_busy'))
+
+
+def _linked(result):
+    """A sync pass's linked-view summary as fixed codes and counts, else None."""
+    value = result.get('linkedWaiting')
+    if not isinstance(value, dict):
+        return None
+    counts = {key: value.get(key) for key in ('waiting', 'held')}
+    reasons = value.get('reasons')
+    if (not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in counts.values())
+            or not isinstance(reasons, dict) or len(reasons) > 32):
+        return None
+    counts['reasons'] = {_code(reason): n for reason, n in reasons.items()
+                         if _code(reason) and isinstance(n, int) and not isinstance(n, bool) and n > 0}
+    return counts
 
 
 def _diagnostic_route(target):
@@ -305,6 +326,7 @@ def _event(target, kind, started, *, outcome, reason=None, result=None, extra=No
                        previousGeneration=target.get('generation'),
                        detail=result.get('detail'), path=result.get('path'),
                        cause=result.get('cause'), provenance=_provenance(result),
+                       linked=_linked(result),
                        **(extra if isinstance(extra, dict) else {}), **common)
         if result.get('state') == 'indexed':
             event_log.emit('index.publish', outcome='published',
@@ -367,7 +389,7 @@ def run(kind, value, *, owner_fd=None):
         diagnostic_fields = _diagnostic_fields(target, kind, exc)
         if exc.code == 'target_preparing':
             diagnostic_fields['severity'] = 'warning'
-        _event(target, kind, started, outcome='progress' if _sync_progress(kind, exc) else 'failed',
+        _event(target, kind, started, outcome='progress' if _progress(kind, exc) else 'failed',
                reason=exc.code,
                result={'detail': getattr(exc, 'detail', None),
                        'path': getattr(exc, 'member_path', None),

@@ -387,34 +387,35 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
         diagnostics.emit('sync.profile', decision=decision, outcome='observed',
                          ms=(time.monotonic_ns() - started) / 1000000, **fields)
     result = _after_sync(decision, proof, grants, result, raw_snapshot=raw_scan.get('snapshot'))
-    vectors = [item['vector'] for item in [result, *result.get('worktrees', ())] if item.get('vector')]
-    waiting = ([v for v in vectors if v['state'] == 'provider_blocked']
-               or [v for v in vectors if v['state'] in ('pending', 'deferred')])
     main = result.get('vector') or {}
-    progressed = (main.get('state') == 'pending' and main.get('progress', 0) > 0
-                  and waiting and waiting[0] is main)
-    blocked = [v for v in vectors if v['state'] == 'provider_blocked']
-    if (result.get('state') in ('indexed', 'unchanged') and not blocked
-            and (progressed or result.get('linkedReoffer'))):
-        # The main view's vectors moved this pass (or it published them and
-        # a linked view waits for the budget): ACK (not a counted failure)
-        # and offer the same wake again shortly, so the fill goes on with a
-        # warm worker instead of waiting for the next edit. An offer
-        # failure leaves the next natural wake to go on.
+    views = [main, *(item.get('vector') or {} for item in result.get('worktrees', ()))]
+    # A provider defect is the install's, whichever view met it.
+    blocked = [v for v in views if v.get('state') == 'provider_blocked']
+    progressed = main.get('state') == 'pending' and main.get('progress', 0) > 0
+    published = result.get('state') in ('indexed', 'unchanged')
+    main_waits = main.get('state') in ('pending', 'deferred')
+    if published and not blocked and (progressed or (result.get('linkedReoffer') and not main_waits)):
+        # The main view's vectors moved this pass, or a linked view waits and
+        # the pass moved something: ACK (not a counted failure) and offer the
+        # same wake again shortly, so the work goes on with a warm worker
+        # instead of waiting for the next edit.
         try:
             from memvane.runtime import api as runtime_work
             runtime_work.request('laya-sync', str(project), delay=SCHEMA3_VECTOR_REOFFER_SECONDS)
             result = {**result, 'vectorReoffer': True}
         except Exception:
-            result = {**result, 'state': 'pending', 'reason': main.get('reason')}
-    elif result.get('state') in ('indexed', 'unchanged') and waiting:
+            # Unchecked for a linked view's offer: the pass published the main
+            # view and the next sync request reaches the linked ones. The main
+            # view's own unfinished vectors keep the wake instead.
+            if progressed:
+                result = {**result, 'state': 'pending', 'reason': main.get('reason')}
+    elif published and (blocked or main_waits):
         # The lexical generations are published and discovery ran; the
-        # wake stays until the views' vector generations are published,
-        # or ends ``blocked`` on a provider defect of the install.
-        state = 'blocked' if waiting[0]['state'] == 'provider_blocked' else waiting[0]['state']
-        result = {**result, 'state': state, 'reason': waiting[0].get('reason')}
-        if state == 'pending' and waiting[0] is main and main.get('progress', 0) > 0:
-            result['progressKind'] = 'vector'
+        # wake stays until the main view's vector generation is published,
+        # or ends ``blocked`` on a provider defect of the install. A linked
+        # view's unfinished vectors are ``linkedWaiting``, not a failed pass.
+        first = blocked[0] if blocked else main
+        result = {**result, 'state': 'blocked' if blocked else main['state'], 'reason': first.get('reason')}
     detail = _schema3_vector_detail(result)
     if detail:
         result = {**result, 'detail': detail}
@@ -595,19 +596,47 @@ def _publish_schema3(decision, proof, writer, vectors=None):
     main = result.get('vector') or {}
     advanced = ((main.get('state') == 'pending' and main.get('progress', 0) > 0)
                 or main.get('state') == 'published')
-    budget = [item for item in linked if item['state'] == 'pending'
-              and item.get('reason') == 'schema3_pass_budget']
-    # While the main view's vectors move (or this pass published them), a
-    # linked view held only by this pass's budget does not make the pass a
-    # failure: the re-offered wake (``_run_sync``) runs the next pass, which
-    # reaches it.
-    if advanced and budget:
+    waiting, moved = _linked_waiting(linked)
+    if waiting:
+        # The main view is published: the pass is a success whatever the
+        # linked views still wait for, and only a main failure counts a retry.
+        result['linkedWaiting'] = waiting
+    # A waiting linked view is offered again only by a pass that moved
+    # something (the main view published or filled vectors, a linked view
+    # ingested, published or filled). A pass without progress ends; the next
+    # sync request reaches the linked views.
+    if waiting and waiting['waiting'] and (advanced or moved or result['state'] == 'indexed'):
         result['linkedReoffer'] = True
-    if any(item['state'] in ('pending', 'deferred') and not (advanced and item in budget) for item in linked):
-        result['state'] = 'pending'
-        result.setdefault('reason', 'schema3_linked_pending')
-        result.pop('progressKind', None)
     return result, proof
+
+
+def _linked_waiting(linked):
+    """``(summary, moved)`` of a pass's linked views.
+
+    ``summary`` counts the views left without a current generation
+    (``waiting``: the view or its vectors are ``pending``/``deferred``;
+    ``held``: refused until its checkout changes) by reason, None when every
+    view is current. ``moved``: a linked view ingested, published or filled
+    vectors this pass.
+    """
+    summary, moved = {'waiting': 0, 'held': 0, 'reasons': {}}, False
+    for item in linked:
+        vector = item.get('vector') or {}
+        moved = moved or bool(item['state'] == 'indexed' or item.get('ingested')
+                              or (vector.get('state') == 'pending'
+                                  and (vector.get('progress') or vector.get('filled') or 0) > 0))
+        if item['state'] == 'held':
+            kind, reason = 'held', item.get('reason')
+        elif item['state'] in ('pending', 'deferred'):
+            kind, reason = 'waiting', item.get('reason')
+        elif vector.get('state') in ('pending', 'deferred'):
+            kind, reason = 'waiting', vector.get('reason')
+        else:
+            continue
+        reason = reason if isinstance(reason, str) and reason else 'unlabeled'
+        summary[kind] += 1
+        summary['reasons'][reason] = summary['reasons'].get(reason, 0) + 1
+    return (summary if summary['waiting'] or summary['held'] else None), moved
 
 
 def _schema3_linked_projects(decision, deadline):
