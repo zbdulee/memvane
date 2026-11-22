@@ -86,9 +86,17 @@ class QueryVectors(unittest.TestCase):
     def test_a_request_that_outlasts_the_recall_is_given_up_and_the_recall_goes_on(self):
         release = threading.Event()
         self.addCleanup(release.set)
-        handle = Handle(lambda text, timeout: release.wait(30) and [1.0, 0.0])
+        threads = []
+
+        def slow(text, timeout):
+            threads.append(threading.current_thread())
+            return release.wait(30) and [1.0, 0.0]
+        handle = Handle(slow)
         self.assertEqual(self.refusal(handle, budget=0.05), 'provider_unavailable')
         self.assertEqual(len(handle.asked), 1)
+        # The abandoned request never keeps the hook process from exiting: its thread is a daemon.
+        self.assertEqual([(thread.name, thread.daemon, thread.is_alive()) for thread in threads],
+                         [('memvane-query-embed', True, True)])
 
     def test_provider_errors_outside_allowed_become_result_invalid(self):
         def refuse(code):

@@ -346,6 +346,29 @@ class Schema3Recall(RecallInstallCase):
             if sys.platform != 'darwin':
                 self.assertGreaterEqual(observations, 1)
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'the observation cache needs macOS on APFS')
+    def test_a_cold_thread_observes_the_checkout_once_and_a_warm_one_not_at_all(self):
+        # The observation cache is per thread: a new thread is what a new hook process is.
+        import threading
+        self.install.provider.admit_queries()
+        counts, errors = [], []
+
+        def two_recalls():
+            try:
+                for _ in range(2):
+                    counts.append(self.git_children(lambda: self.recall(PROMPT)))
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                errors.append(exc)
+        thread = threading.Thread(target=two_recalls)
+        thread.start()
+        thread.join(scaled(120))
+        self.assertEqual((errors, len(counts)), ([], 2))
+        cold, warm = counts
+        # One observation (twelve children) and, behind the macOS shim, at most the one proof of its target.
+        self.assertEqual(len([command for command in cold if command != ['--exec-path']]), 12, cold)
+        self.assertLessEqual(cold.count(['--exec-path']), 1)
+        self.assertEqual(warm, [])
+
     def test_recall_event_records_stage_times_without_prompt_or_body(self):
         self.install.provider.admit_queries()
         context, _err, event = self.recall(PROMPT)
@@ -366,6 +389,19 @@ class Schema3Recall(RecallInstallCase):
         self.assertIn(event['pinVerified'], ('receipt', 'full'))
         _context, _err, repeated = self.recall(PROMPT)
         self.assertEqual(repeated['pinVerified'], 'receipt')
+
+    def test_an_unexpected_failure_of_the_query_round_trip_serves_lexical_rows(self):
+        # Whatever the round trip raised (a thread that could not start, a bug): the recall goes on.
+        from memvane.provider import api as provider_api
+        self.install.provider.admit_queries()
+        reads, patch = self.observed_reads()
+        with patch, mock.patch.object(provider_api, 'query_vectors',
+                                      side_effect=RuntimeError("can't start new thread")) as asked:
+            context, _err, event = self.recall(PROMPT)
+        self.assertEqual(asked.call_count, 1)
+        self.assertIn('zqheronx', context)
+        self.assertEqual([(vector, result.semantic_status) for vector, result in reads], [(None, 'provider_absent')])
+        self.assertEqual(event['outcome'], 'served')
 
     def test_a_cold_provider_serves_lexical_rows_and_wakes_the_owner_once(self):
         self.install.provider.admit_queries()

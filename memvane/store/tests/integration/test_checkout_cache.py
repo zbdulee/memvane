@@ -82,6 +82,49 @@ class GitChildren(existing.CheckoutCase):
         self.assertEqual((len(commands), set(programs)), (12, {'git'}))
 
 
+    def proved(self, repository, worktree):
+        """One capture whose fingerprint proved the shim's target, or None where there is none to prove."""
+        view._capture_cache.tool = None
+        view.capture_view(str(self.root), repository, worktree, fresh=True)
+        proved = getattr(view._capture_cache, 'tool', None)
+        return None if proved is None else str(proved[1])
+
+    def test_the_proof_is_always_asked_of_the_shim_even_when_the_tool_changes_inside_a_capture(self):
+        repository, worktree = self.bind(self.root)
+        delegated = self.proved(repository, worktree)
+        if delegated is None:
+            self.skipTest('no shim to see through here')
+        real, calls = view._cache_fingerprint, []
+
+        def tool_changed(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                # ``xcode-select --switch`` between the capture's two fingerprints: the saved key no longer holds.
+                view._capture_cache.tool = (None, *view._capture_cache.tool[1:])
+            return real(*args, **kwargs)
+        with mock.patch.object(view, '_cache_fingerprint', side_effect=tool_changed):
+            _capture, commands, programs = self.observed(
+                lambda: view.capture_view(str(self.root), repository, worktree, fresh=True))
+        self.assertEqual(len(calls), 2)
+        asked = [program for program, command in zip(programs, commands) if command == ['--exec-path']]
+        self.assertEqual(asked, ['git'])
+
+    def test_a_capture_that_never_reaches_the_proof_runs_git_from_path(self):
+        repository, worktree = self.bind(self.root)
+        delegated = self.proved(repository, worktree)
+        if delegated is None:
+            self.skipTest('no shim to see through here')
+        # Straight after a proved capture, PATH's git is another one: the fingerprint stops before the proof.
+        other = self.tmp / 'git'
+        other.write_text('#!/bin/sh\n')
+        other.chmod(0o700)
+        with mock.patch.object(view.shutil, 'which', return_value=str(other)):
+            _capture, commands, programs = self.observed(
+                lambda: view.capture_view(str(self.root), repository, worktree, fresh=True))
+        self.assertNotIn(['--exec-path'], commands)
+        self.assertEqual((len(commands), set(programs)), (12, {'git'}))
+
+
 @unittest.skipUnless(sys.platform == 'darwin', 'fast path requires a known APFS timestamp contract')
 class CheckoutCacheChecks(existing.CheckoutCase):
     def setUp(self):

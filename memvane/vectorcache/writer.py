@@ -155,7 +155,7 @@ class Writer:
                       deadRows=self._dead_rows(), bytes=PAGE + self._rows * self._width if self._vec is not None else 0)
         moved = answer['catchupRows'] or answer['appendRows']
         if answer['skipped'] is None and not moved:
-            # The quota is a reason whatever is left (it also refuses a compaction); an unreadable set only while sets are left.
+            # The quota is a reason whatever is left; an unreadable set only while sets are left.
             answer['skipped'] = ('quota' if self._quota
                                  else 'set_unreadable' if answer['unreadable'] and answer['remaining'] else None)
         return answer

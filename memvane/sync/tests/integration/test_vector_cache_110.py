@@ -202,6 +202,25 @@ class CatchUp(ArenaCase):
         self.assertEqual(self.cache_events(before), [('failed', 'RuntimeError')])
 
 
+class Report(ArenaCase):
+    def test_the_event_ms_is_the_writers_own_time_not_the_pass_around_it(self):
+        from memvane.sync import vector_cache
+
+        class Done:
+            def summary(self):
+                return dict(rebuilt=False, compacted=False, repaired=0, catchupRows=3, appendRows=0, unreadable=0,
+                            skipped=None, ms=7.5, remaining=0, deadRows=0, bytes=4096)
+
+            def close(self):
+                pass
+        rows = []
+        vectors = {'arena': {'writer': Done(), 'failed': None, 'started': 0.0, 'path': None}}
+        with mock.patch('memvane.diagnostics.api.emit', side_effect=lambda event, **fields: rows.append((event, fields))):
+            self.assertFalse(vector_cache.finish(vectors, {}))
+        self.assertEqual([(event, fields['outcome'], fields['ms'], fields['rows']) for event, fields in rows],
+                         [('vector.cache', 'catchup', 7.5, 3)])
+
+
 class Settle(ArenaCase):
     def settle(self, result, cache, fails=False):
         calls = []

@@ -150,7 +150,8 @@ def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline
         from memvane.recall.recall_scope import edit_recall
         vectors,requested=_provider_vector(provider,prompt,remaining,chunks=edit_recall() is None)
     except IndexContractError as exc:
-        if str(exc) not in ('provider_unavailable','provider_identity_mismatch',
+        # ``provider_process_failed``: whatever else the round trip raised. The recall goes on without a vector.
+        if str(exc) not in ('provider_unavailable','provider_identity_mismatch','provider_process_failed',
                             'provider_result_invalid','provider_socket_invalid','provider_socket_changed'):
             raise
         if _vector_proof(authority,snapshot,decision,provider,deadline)!=proof:

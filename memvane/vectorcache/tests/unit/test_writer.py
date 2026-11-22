@@ -263,6 +263,40 @@ class SelfCheck(WriterCase):
         self.assertTrue(self.run_pass()['compacted'])
         self.assertEqual(len(list(self.directory.iterdir())), 3)
 
+    def test_a_pass_whose_compaction_failed_appends_nothing_before_the_publication_either(self):
+        self.filled(count=6)
+        for index in range(2, 6):
+            del self.store.sets[sha(index)]
+        self.store.put(9)  # A set the publication of this pass would bring.
+        vec = self.pair()[0]
+        size = vec.stat().st_size
+        with mock.patch.object(writer.os, 'fsync', side_effect=OSError(28, 'No space left on device')):
+            report = self.run_pass(add=True)
+        self.assertEqual((report['skipped'], report['appendRows'], report['catchupRows']), ('write_unavailable', 0, 0))
+        self.assertEqual((vec.stat().st_size, self.pair()[0]), (size, vec))
+        self.assertEqual(self.cover()[1], [sha(9)])
+        report = self.run_pass(add=True)
+        self.assertEqual((report['skipped'], self.cover()[1]), (None, []))
+
+    def test_ms_is_the_time_the_arena_work_took_in_both_halves_of_a_pass(self):
+        now = [100.0]
+        real = self.store.read
+
+        def read(blob):
+            now[0] += 0.125  # Each set read costs an eighth of a second on the pass's clock.
+            return real(blob)
+        for index in range(3):
+            self.store.put(index)
+        made = writer.Writer(self.directory, **SPEC, clock=lambda: now[0])
+        self.addCleanup(made.close)
+        made.start(self.store.live, read)
+        self.assertEqual(made.summary()['ms'], 375.0)
+        now[0] += 50  # The pass around the arena: not the arena's time.
+        self.store.put(7)
+        self.store.put(8)
+        made.add(self.store.live, read)
+        self.assertEqual(made.summary()['ms'], 625.0)
+
     def test_a_compaction_asks_the_disk_and_the_quota_before_it_writes(self):
         self.filled(count=6)
         for index in range(2, 6):

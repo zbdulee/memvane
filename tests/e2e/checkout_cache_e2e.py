@@ -35,7 +35,7 @@ SANDBOX_KEYS = ('QMD_SANDBOX', 'CODEX_SANDBOX', 'CLAUDE_SANDBOX', 'CLAUDE_HEADLE
 DEVICE_SHIFT = 7
 LINKED_VIEWS = 12
 # Checkout-capture git children per view in one settled sync pass: one full
-# proof is 13, and each view is allowed one more. A whole comparison of the
+# proof is 12, and each view is allowed two more. A whole comparison of the
 # stored records measured 86 per view.
 SYNC_GIT_PER_VIEW = 26
 

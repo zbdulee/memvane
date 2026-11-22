@@ -686,12 +686,11 @@ def _cache_fingerprint(project_root, repository, worktree, deadline):
             tool_key = (os.getpid(), env_digest, tool_stamp(resolved_git), tool_stamp(selection))
             saved_tool = getattr(_capture_cache, 'tool', None)
             if saved_tool is None or saved_tool[0] != tool_key:
+                _capture_cache.git = 'git'  # The proof is always asked of the shim, never of an earlier answer.
                 exec_path = Path(_git(['--exec-path'], project, deadline)[1])
-                if (not exec_path.is_absolute() or exec_path.name != 'git-core'
-                        or exec_path.parent.name != 'libexec'):
-                    return None
                 delegated = exec_path.parent.parent / 'bin/git'
-                if not str(delegated).startswith(('/Library/Developer/', '/Applications/')):
+                if (not exec_path.is_absolute() or exec_path.name != 'git-core' or exec_path.parent.name != 'libexec'
+                        or not str(delegated).startswith(('/Library/Developer/', '/Applications/'))):
                     return None
                 resolved_delegated = delegated.resolve(strict=True)
                 if (tool_stamp(selection) is None
