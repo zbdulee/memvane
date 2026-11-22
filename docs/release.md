@@ -91,15 +91,16 @@ whatever the window shows.
 | Step | What happens | Item |
 |---|---|---|
 | prepare | The tool checks that the account's shell carries no sandbox or test variable, builds the synthetic project (raw documents, each with one verified card, so onboarding indexes them without a wiki compile) and ships it. | a forbidden variable voids the run |
-| update | The operator updates the plugins by the README steps. The user approves the Codex hook trust in that account; no agent does it. | RS-UPDATE |
+| update | The operator updates the plugins by the README steps and enables the plugin for the new project the way the README describes for a project. The user approves the Codex hook trust in that account; no agent does it. | RS-UPDATE |
 | identity | The installed plugin files are compared with the release commit. | RS-ID |
 | model address | The pinned model address is fetched on the account; size and sha256 are read back. | RS-MODELURL |
 | sessions | One interactive session per host in the project directory. | RS-HOSTENV: each session's SessionStart row exists; otherwise that host's later items are `BLOCKED` |
 | onboarding | A request to onboard the project and apply the plan. | RS-ONBOARD |
+| new sessions | The operator ends the two sessions and starts them again: a session started before the onboarding has no SessionStart row in the project's log, and every later item of that host would be `BLOCKED`. | RS-HOSTENV |
 | recall | After the vector generation is published: a short prompt and a 12,000 character prompt, each targeting a different card. | RS-RECALL per host |
 | repeat | The short prompt again in the same session. | RS-DEDUP |
 | edit | A request to append a fixed paragraph to one file with the host's edit tool. | RS-EDIT per host |
-| sync | The tool records the time of the account's newest event row, then adds, changes and deletes one document and card each; a prompt then names all three. Only a sync pass and a publish after that time count; without the time the item is `NOT RUN`. | RS-SYNC |
+| sync | The tool writes, removes and commits exactly the three changed documents and their cards (nothing else in the project is touched or staged), records the time of the account's newest event row, and asks one host session to refresh the index: a change made outside a hook wakes no sync by itself. It waits for a publish later than that time and exits non-zero without one. A prompt then names all three documents. Only a sync pass and a publish later than the recorded time count; without the time nothing is changed. | RS-SYNC |
 | verdict | The tool copies the listed fields of the project's event rows and writes the gate files. | — |
 
 A recall passes when its row is `semantic: complete` with at least one
@@ -112,7 +113,8 @@ approved the hook trust. The tool types prompts only: a directory trust or
 edit permission screen is answered by the operator in that session.
 
 The project's learning is off unless a run turns it on; with learning off the
-`learning.capture` part of RS-EDIT is `NOT RUN`.
+`learning.capture` part of RS-EDIT is `NOT RUN`. The paragraph of the edit
+request is longer than the shortest edit that starts an edit recall.
 
 ### Affected paths (Q5)
 

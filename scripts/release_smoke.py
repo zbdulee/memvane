@@ -212,9 +212,9 @@ def judge_sync(plan, events, sessions):
 
 
 def _since_change(entry, events, plan):
-    """``entry`` is not older than the change (the last row copied before it was applied)."""
+    """``entry`` is later than the change (the newest row read right after it was committed)."""
     gap = seconds_between({'ts': plan['delta']['afterTs']}, entry)
-    return gap is not None and gap >= 0
+    return gap is not None and gap > 0
 
 
 def judge_model_url(record):
@@ -291,7 +291,7 @@ def judge(plan, events, sessions, *, model_url=None, identity=None, aged=None):
              item('RS-ONBOARD', PASS) if [row for row in _rows(events, 'index.publish')
                                           if row.get('outcome') == 'published']
              else item('RS-ONBOARD', FAIL, 'no index.publish')]
-    blocked = 'host_env: no SessionStart row of the session'
+    blocked = 'host_env: no SessionStart row of the session (start it after the onboarding)'
     for host in HOSTS:
         session = sessions.get(host)
         if not reached[host]:
@@ -491,30 +491,72 @@ def last_event_time(remote):
     return text.strip() or None if code == 0 else None
 
 
-def apply_delta(remote, out, *, last_ts=None):
+# Counts ``index.publish`` rows later than a time on the smoke account.
+_PUBLISHED_AFTER = r'''
+import glob, json, os, sys
+mark, count = sys.argv[1], 0
+for path in glob.glob(os.path.expanduser('~/.local/state/memvane/v1/installs/*/events.jsonl')):
+    for line in open(path, errors='replace'):
+        if 'index.publish' not in line: continue
+        try: row = json.loads(line)
+        except ValueError: continue
+        if (isinstance(row, dict) and row.get('event') == 'index.publish'
+                and row.get('outcome') == 'published' and str(row.get('ts', '')) > mark):
+            count += 1
+print(count)
+'''
+
+
+def apply_delta(remote, out, *, host=None, last_ts=None, pause=time.sleep, publish_reads=90, **sending):
     """Apply the RS-SYNC change to the remote fixture and record it in the plan.
 
-    The newest event row on the account is read before the change and kept as
-    ``afterTs``: a sync pass counts for RS-SYNC only when it is not older.
+    Only the three changed documents and cards are written or removed, and only
+    those paths are staged: whatever else the project holds by then (the host's
+    own files, an edit a prompt asked for) stays as it is. The newest event row
+    on the account is read after the commit and kept as ``afterTs``; a sync pass
+    counts for RS-SYNC only when it is later. Without a readable time nothing
+    is changed. With ``host``, the refresh prompt is then sent to that host's
+    session (nothing else wakes a sync after a change made outside a hook) and
+    a publish later than the change is waited for (``syncSeen``).
     """
     from tests.support import smoke_fixture
     out = Path(out)
     plan = _load_plan(out)
     tree = out / TREE
-    last_ts = last_ts or last_event_time(remote)
+    if not (last_ts or last_event_time(remote)):
+        raise RuntimeError('no event time can be read on the account: the change is not applied')
     after = smoke_fixture.delta(tree, plan)
     change = after['delta']
-    _ship(remote, tree, plan['remoteFixture'])
-    removed = ' '.join(shlex.quote(name) for name in (change['deleted']['source'],
-                                                        change['deleted']['file']))
+    target = plan['remoteFixture'].rstrip('/')
+    written = [change['added']['source'], change['added']['file'],
+               change['changed']['after']['source'], change['changed']['after']['file']]
+    removed = [change['deleted']['source'], change['deleted']['file']]
+    for name in written:
+        remote.put(tree / name, '%s/%s' % (target, name))
     code, _out, err = remote.run(
-        'cd %s && rm -f %s && %s add -A && { %s diff --cached --quiet || %s commit -qm change; }'
-        % (rpath(plan['remoteFixture']), removed, _GIT, _GIT, _GIT))
+        'cd %s && %s rm -q --ignore-unmatch -- %s && %s add -- %s && '
+        '{ %s diff --cached --quiet || %s commit -qm change; }'
+        % (rpath(target), _GIT, ' '.join(shlex.quote(name) for name in removed),
+           _GIT, ' '.join(shlex.quote(name) for name in written), _GIT, _GIT))
     if code:
         raise RuntimeError('change commit failed: ' + err.strip()[:200])
-    change['afterTs'] = last_ts
+    change['afterTs'] = last_ts or last_event_time(remote)
     _save(_plan_path(out), after)
-    (out / 'prompt-P4.txt').write_text(after['prompts']['P4']['text'], encoding='utf-8')
+    for name in ('P4', 'PS'):
+        (out / ('prompt-%s.txt' % name)).write_text(after['prompts'][name]['text'], encoding='utf-8')
+    if host is not None:
+        asked = send(remote, out, host, 'PS', pause=pause, **sending)
+        seen = False
+        if sent(asked):
+            count = 'python3 -B - %s' % shlex.quote(change['afterTs'])
+            for _ in range(publish_reads):
+                code, text, _err = remote.run(count, stdin=_PUBLISHED_AFTER)
+                if code == 0 and text.strip().isdigit() and int(text.strip()) > 0:
+                    seen = True
+                    break
+                pause(2)
+        change['syncRequested'], change['syncSeen'] = sent(asked), seen
+        _save(_plan_path(out), after)
     return after
 
 
@@ -588,7 +630,9 @@ def send(remote, out, host, name, *, screen=None, pause=time.sleep, paste_reads=
     mark = prompt.get('mark')
     if result['pasted'] and mark:
         # A window that changes by itself is not a paste: the prompt's own token is on it.
-        code, text, _err = remote.run("tr -d '\\n' < %s | grep -cF %s" % (rpath(shot), shlex.quote(mark)))
+        # Bytes, not characters: a hardcopy is not valid text in every locale.
+        code, text, _err = remote.run("LC_ALL=C tr -d '\\n' < %s | LC_ALL=C grep -cF %s"
+                                      % (rpath(shot), shlex.quote(mark)))
         result['pasted'] = code == 0 and text.strip().isdigit() and int(text.strip()) > 0
     if not result['pasted']:
         return result
@@ -615,13 +659,14 @@ def _model_constants():
     text = (ROOT / 'memvane/provider/embed_runtime.py').read_text(encoding='utf-8')
 
     def assigned(name):
+        """The first quoted literal of the assignment (a trailing comment is not part of it)."""
         for line in text.splitlines():
-            if line.startswith(name + ' = '):
-                return line.split('=', 1)[1].strip()
+            found = re.match(re.escape(name) + r" = '([^']*)'", line)
+            if found:
+                return found.group(1)
         raise RuntimeError(name + ' not found')
-    revision, name = (assigned(key).strip("'") for key in ('MODEL_REVISION', 'MODEL_NAME'))
-    prefix = assigned('MODEL_URL').split('+')[0].strip().strip("'")
-    return prefix + revision + '/' + name, assigned('MODEL_SHA256').strip("'")
+    return (assigned('MODEL_URL') + assigned('MODEL_REVISION') + '/' + assigned('MODEL_NAME'),
+            assigned('MODEL_SHA256'))
 
 
 def model_url(remote):
@@ -671,8 +716,10 @@ def installed_identity(remote, commit, installed, *, tree=None):
         digest, _, name = line.partition('  ')
         if name.startswith('./'):
             found[name[2:]] = digest
-    for name in HOST_METADATA:
-        found.pop(name, None)
+    # A host entry is a file or a directory of files (``.in_use/<pid>``).
+    for name in [name for name in found
+                 if any(name == entry or name.startswith(entry + '/') for entry in HOST_METADATA)]:
+        del found[name]
     different = sorted(name for name in set(tree) | set(found) if tree.get(name) != found.get(name))
     versions = sorted({json.loads(text)['version'] for text in [remote.run(
         'cat %s/package.json' % rpath(installed))[1]] if text.strip()})
@@ -740,7 +787,9 @@ def main(argv=None):
     sub = command('prepare')
     sub.add_argument('--commit', required=True)
     sub.add_argument('--learning', action='store_true')
-    command('delta')
+    sub = command('delta')
+    sub.add_argument('--host', required=True, choices=HOSTS,
+                     help='the host session that is asked to refresh the index after the change')
     sub = command('send')
     sub.add_argument('--host', required=True, choices=HOSTS)
     sub.add_argument('--prompt', required=True)
@@ -765,7 +814,10 @@ def main(argv=None):
         print(json.dumps({'fixture': plan['remoteFixture'], 'forbiddenEnv': plan['forbiddenEnv']}))
         return 1 if plan['forbiddenEnv'] else 0
     if args.command == 'delta':
-        apply_delta(remote, args.out)
+        after = apply_delta(remote, args.out, host=args.host)
+        if not after['delta'].get('syncSeen'):
+            print('BLOCKED (host_env): no index publish was observed after the change', file=sys.stderr)
+            return 1
         return 0
     if args.command == 'send':
         result = send(remote, args.out, args.host, args.prompt)

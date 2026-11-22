@@ -44,7 +44,9 @@ elif command == 'hardcopy':
     (STATE / 'settling').write_text(str(max(0, left - 1)))
     size = typed.stat().st_size if typed.exists() else 0
     shown = typed.read_bytes().decode()[:400] if typed.exists() and mode != 'collapsed' else ''
-    Path(os.path.expanduser(rest[0])).write_text('window %d %d\n%s\n' % (size, left, shown))
+    # Bytes a UTF-8 locale cannot read as text, as a real hardcopy may hold.
+    Path(os.path.expanduser(rest[0])).write_bytes(
+        b'\xff\xfe' + ('window %d %d\n%s\n' % (size, left, shown)).encode())
 elif command == 'stuff' and typed.exists():
     if (STATE / 'settling').exists() and int((STATE / 'settling').read_text()) > 0:
         (STATE / 'early_enter').write_text('1')  # Enter while the paste is still redrawing
@@ -57,6 +59,9 @@ elif command == 'stuff' and typed.exists():
             out.write(json.dumps({'event': 'recall', 'session': 'fake', 'ts': '2026-11-22T00:00:00Z',
                                   'prompt': {'sha256': hashlib.sha256(text).hexdigest(),
                                              'chars': len(text.decode())}}) + '\n')
+            if b'PS ' in text and mode != 'no_publish':
+                out.write(json.dumps({'event': 'index.publish', 'outcome': 'published',
+                                      'ts': '2026-11-22T00:00:09Z'}) + '\n')
 '''
 
 SESSIONS = {'claude': 'session-claude', 'codex': 'session-codex'}
@@ -211,6 +216,9 @@ class Verdict(FixtureCase):
                          (smoke.NOT_RUN, 'the time of the change was not recorded'))
         after['delta']['afterTs'] = mark
         self.assertEqual((sync()['status'], sync()['note']), (smoke.FAIL, 'wake.sync absent'))
+        # A row at the very time of the change is not after it.
+        self.assertFalse(smoke._since_change({'ts': mark}, self.rows.rows, after))
+        self.assertTrue(smoke._since_change({'ts': stamp(len(self.rows.rows))}, self.rows.rows, after))
 
     def test_sync_fails_on_a_failed_pass_and_leaves_cards_unjudged_when_nothing_is_served(self):
         self.assertEqual(self.status()[0]['RS-SYNC'], smoke.NOT_RUN)
@@ -372,7 +380,9 @@ class RoundTrip(FixtureCase):
     def prepared(self, mode='ok'):
         account = self.home / 'account'
         account.mkdir()
-        remote = Local(account, {'PATH': '%s:%s' % (account / 'bin', os.environ['PATH'])})
+        # A UTF-8 locale, as on the smoke account.
+        remote = Local(account, {'PATH': '%s:%s' % (account / 'bin', os.environ['PATH']),
+                                 'LANG': 'en_US.UTF-8', 'LC_ALL': 'en_US.UTF-8'})
         state = self.fake_screen(account, mode)
         record = self.home / 'record'
         plan = smoke.prepare(remote, record, 'c' * 40,
@@ -466,6 +476,67 @@ class RoundTrip(FixtureCase):
                              capture_output=True, text=True, check=True).stdout.splitlines()
         self.assertEqual(len(log), 1)
 
+    def seed_events(self, account, *stamps):
+        log = account / '.local/state/memvane/v1/installs/earlier'
+        log.mkdir(parents=True, exist_ok=True)
+        with open(log / 'events.jsonl', 'a') as out:
+            for ts in stamps:
+                out.write(json.dumps({'event': 'recall', 'session': 'earlier', 'ts': ts}) + '\n')
+
+    def git(self, fixture, *args):
+        return subprocess.run(['git', '-C', str(fixture), *args], capture_output=True, text=True,
+                              check=True).stdout
+
+    def test_the_change_touches_and_stages_only_its_own_six_paths(self):
+        remote, account, _state, record, plan = self.prepared()
+        fixture = account / 'memvane-smoke/feed04/fixture'
+        self.seed_events(account, '2026-11-21T10:00:00Z')
+        # What the project holds by then: host files and the edit a prompt asked for.
+        edited = fixture / plan['cards'][2]['source']
+        edited.write_text(edited.read_text() + '\nappended by the edit prompt\n')
+        for name in ('.claude/settings.local.json', '.memvane/compile/queue.jsonl'):
+            (fixture / name).parent.mkdir(parents=True, exist_ok=True)
+            (fixture / name).write_text('host file\n')
+        after = smoke.apply_delta(remote, record)
+        change = after['delta']
+        committed = set(self.git(fixture, 'show', '--name-only', '--format=', 'HEAD').split())
+        self.assertEqual(committed, {change['added']['source'], change['added']['file'],
+                                     change['changed']['after']['source'], change['changed']['after']['file'],
+                                     change['deleted']['source'], change['deleted']['file']})
+        self.assertIn('appended by the edit prompt', edited.read_text())
+        status = self.git(fixture, 'status', '--porcelain').splitlines()
+        self.assertEqual(sorted(line[3:] for line in status if line.startswith('??')),
+                         ['.claude/', '.memvane/compile/'])
+        self.assertEqual([line for line in status if not line.startswith('??')],
+                         [' M ' + plan['cards'][2]['source']])
+        self.assertFalse((fixture / change['deleted']['file']).exists())
+
+    def test_the_change_is_not_applied_when_no_event_time_can_be_read(self):
+        remote, account, _state, record, plan = self.prepared()
+        fixture = account / 'memvane-smoke/feed04/fixture'
+        head = self.git(fixture, 'rev-parse', 'HEAD')
+        with self.assertRaisesRegex(RuntimeError, 'no event time'):
+            smoke.apply_delta(remote, record)
+        self.assertEqual(self.git(fixture, 'rev-parse', 'HEAD'), head)
+        self.assertEqual(self.git(fixture, 'status', '--porcelain'), '')
+        self.assertIsNone(smoke._load_plan(record)['delta'])
+
+    def test_the_change_asks_the_host_to_refresh_and_waits_for_a_later_publish(self):
+        quiet = lambda _seconds: None
+        for mode, seen in (('ok', True), ('no_publish', False)):
+            with self.subTest(mode=mode):
+                remote, account, state, record, _plan = self.prepared(mode)
+                self.seed_events(account, '2026-11-21T10:00:00Z')
+                after = smoke.apply_delta(remote, record, host='claude', pause=quiet, publish_reads=3)
+                change = after['delta']
+                self.assertEqual(change['afterTs'], '2026-11-21T10:00:00Z')
+                self.assertEqual((change['syncRequested'], change['syncSeen']), (True, seen))
+                self.assertEqual(smoke._load_plan(record)['delta']['syncSeen'], seen)
+                submitted = (state / 'submitted').read_bytes()
+                self.assertEqual(hashlib.sha256(submitted).hexdigest(), after['prompts']['PS']['sha256'])
+                shutil.rmtree(str(account))
+                shutil.rmtree(str(record))
+
     def test_send_reports_failure_when_the_session_shows_nothing(self):
         remote, _account, state, record, _plan = self.prepared('deaf')
         result = smoke.send(remote, record, 'claude', 'P1', pause=lambda _seconds: None, paste_reads=4)
@@ -518,8 +589,19 @@ class RoundTrip(FixtureCase):
         self.assertEqual(account, remote.home)
         home = smoke.installed_identity(remote, 'c' * 40, '~/plugin', tree=tree)
         self.assertEqual((home['different'], home['versions'], home['files']), ([], ['1.1.0'], 2))
+        # A host's marker directory holds one file per process.
+        installed.joinpath('.in_use').unlink()
+        installed.joinpath('.in_use').mkdir()
+        installed.joinpath('.in_use/4242').write_text('')
+        marked = smoke.installed_identity(remote, 'c' * 40, str(installed), tree=tree)
+        self.assertEqual((marked['different'], marked['files']), ([], 2))
         (installed / 'memvane/a.py').write_text('a = 2\n')
         (installed / 'extra.py').write_text('')
         record = smoke.installed_identity(remote, 'c' * 40, str(installed), tree=tree)
         self.assertEqual(record['different'], ['extra.py', 'memvane/a.py'])
         self.assertEqual(smoke.judge_identity(record)['status'], smoke.FAIL)
+
+    def test_the_pinned_model_address_is_read_without_its_comment(self):
+        url, sha = smoke._model_constants()
+        self.assertRegex(url, r'^https://huggingface\.co/[\w.-]+/[\w.-]+/resolve/[0-9a-f]{40}/[\w.-]+\.gguf$')
+        self.assertRegex(sha, r'^[0-9a-f]{64}$')

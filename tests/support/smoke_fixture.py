@@ -50,6 +50,8 @@ NO_TOOLS = '도구는 쓰지 말고 답만 해 줘. '
 # Roles of the cards a run targets; each prompt of one session names a different card.
 ROLES = ('short', 'long', 'edit', 'changed', 'deleted')
 LONG_PROMPT_CHARS = 12000
+# ``memvane/host/edit_recall.py`` skips an edit shorter than 200 characters.
+MIN_EDIT_PARAGRAPH = 220
 
 
 def prompt_sha(text):
@@ -89,7 +91,14 @@ def _prompts(roles, run_id):
     the screen belong to this run and to no earlier one on the same account."""
     edit = roles['edit']
     marks = {'P0': 'SMK%sP0' % run_id, 'P1': roles['short']['token'], 'P3': 'SMK%sP3' % run_id}
-    paragraph = '추가 점검 메모 %s: 이 문단은 smoke 편집 확인을 위한 가상의 문장이다.' % marks['P3']
+    # Longer than the shortest edit that starts an edit recall (200 characters).
+    paragraph = ('추가 점검 메모 %s: 이 문단은 smoke 편집 확인을 위한 가상의 문장이다. ' % marks['P3']
+                 + '점검 항목은 저장 위치, 점검 주기, 담당 순번, 기록 양식, 보관 기한의 다섯 가지이고 '
+                 '각 항목은 가상의 운영 기록에서 한 줄씩 차지한다. 이 메모는 어떤 실제 문서의 내용도 아니며 '
+                 '편집 뒤의 색인 갱신과 편집 recall을 확인하는 데만 쓰인다. 문단의 끝에는 같은 표식을 한 번 더 적는다: %s.'
+                 % marks['P3'])
+    if len(paragraph) < MIN_EDIT_PARAGRAPH:
+        raise ValueError('the edit paragraph is shorter than an edit recall needs')
     texts = {
         'P0': '%s 실행: 이 프로젝트 MemVane 온보딩해 줘. 계획을 검토한 뒤 그대로 적용하고 활성화까지 해 줘.'
               % marks['P0'],
@@ -147,11 +156,16 @@ def delta(out, plan):
     for name in (deleted['source'], deleted['file']):
         (out / name).unlink()
     text = _question(added['token'], after['token'], deleted['token'])
-    if '\n' in text or '\r' in text:
+    mark = 'SMK%sPS' % run_id
+    refresh = '%s 실행: 이 프로젝트의 MemVane 인덱스를 새로고침해 줘.' % mark
+    if any('\n' in value or '\r' in value for value in (text, refresh)):
         raise ValueError('a smoke prompt is one line')
     plan = dict(plan)
     plan['delta'] = {'added': added, 'changed': {'before': changed, 'after': after},
                      'deleted': deleted}
-    plan['prompts'] = dict(plan['prompts'], P4={'text': text, 'sha256': prompt_sha(text),
-                                                'chars': len(text), 'mark': added['token']})
+    plan['prompts'] = dict(
+        plan['prompts'],
+        P4={'text': text, 'sha256': prompt_sha(text), 'chars': len(text), 'mark': added['token']},
+        # Asked right after the change: nothing else wakes a sync for a change no hook saw.
+        PS={'text': refresh, 'sha256': prompt_sha(refresh), 'chars': len(refresh), 'mark': mark})
     return plan

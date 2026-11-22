@@ -57,6 +57,14 @@ class SmokeFixture(FixtureCase):
         self.assertEqual(row['prompt'], {'sha256': prompt['sha256'], 'chars': prompt['chars']})
         self.assertIn({'path': card['path'], 'sha': card['sha256']}, row['cards'], row['cards'])
 
+    def test_the_edit_paragraph_is_long_enough_to_start_an_edit_recall(self):
+        plan = smoke_fixture.build(self.home / 'tree', cards=6, run_id='feed09')
+        paragraph = plan['prompts']['P3']['text'].split('문단: ', 1)[1]
+        # ``memvane/host/edit_recall.py`` skips an edit shorter than 200 characters.
+        self.assertGreaterEqual(len(paragraph), 220)
+        self.assertEqual(paragraph.count('SMKFEED09P3'), 2)
+        self.assertNotIn('\n', plan['prompts']['P3']['text'])
+
     def test_the_delta_adds_changes_and_deletes_one_card_each(self):
         out, plan, project = self.built(cards=6)
         after = smoke_fixture.delta(out, plan)
