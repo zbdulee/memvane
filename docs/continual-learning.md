@@ -458,8 +458,8 @@ checks do not count.
   `consent.unreadable` in `teacher-host-state.json` (`learning.teacher`
   `deferred` with `consentUnreadable`) and a pass that reads the file clears
   it; at five in a row a SessionStart says once in seven days that labelling
-  is stopped. A pass event carries `preparedHosts` (hosts whose CLI the pass
-  started) and `preCallMs` (how long after the pass began the first pre-send
+  is stopped. A pass event carries `preparedHosts` (hosts the pass
+  prepared: CLI path, isolation and model checks) and `preCallMs` (how long after the pass began the first pre-send
   resource check ran), and a pass that finds a call cut short by a worker exit
   reports the closed cases as `pending_review` `interrupted_external_attempt`
   with their `count`. A post-send `ResourceDeferred`

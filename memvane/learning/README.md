@@ -198,7 +198,7 @@ teacher는 학습 worker에서만 돈다(`general_teacher.process_pending_defaul
 `ResourceDeferred`(`teacher_consent_unreadable`)이므로 보관 답을 닫지 않는다. 그런 pass마다
 `teacher-host-state.json`의 `consent.unreadable`이 1씩 늘고(`learning.teacher` `deferred`의
 `consentUnreadable`) 파일을 읽은 pass가 0으로 되돌린다. 연속 5회부터 SessionStart가 7일에 한 번
-라벨링이 멈췄다고 알린다. pass 이벤트는 `preparedHosts`(이 pass가 CLI를 띄운 host 수)와
+라벨링이 멈췄다고 알린다. pass 이벤트는 `preparedHosts`(이 pass가 CLI 경로·격리·모델을 점검한 host 수)와
 `preCallMs`(pass 시작부터 첫 전송 전 자원 판정까지)를 싣고, worker 종료로 끊긴 호출의 사례를 닫은
 pass는 `pending_review` `interrupted_external_attempt`와 그 `count`를 남긴다.
 응답 뒤 guard의 `ResourceDeferred`는 사례를 `first_done`, ledger를

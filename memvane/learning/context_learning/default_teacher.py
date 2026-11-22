@@ -349,7 +349,7 @@ def _finish(root,project,result,status,counts,ready,queue,mark,queued_by_host,te
     _gt()._emit(project,'learning.teacher',outcome='pass',reason=status,calls=counts['calls'],
           gold=counts['gold'],pendingReview=counts['pendingReview'],requeued=counts['requeued'],
           parked=counts['parked'],
-          # Hosts whose CLI this pass started, and how long after the pass began the
+          # Hosts this pass prepared (path, isolation, model), and how long after the pass began the
           # first pre-send resource check ran (None: no case reached it).
           preparedHosts=counts['prepared'],preCallMs=counts.get('preCallMs'),
           skippedLocal=counts['skippedLocal'],

@@ -42,7 +42,7 @@ class TeacherCounts(TeacherFixture):
         self.run_pass()
         self.assertEqual(len([e for e in self.teacher_events() if e['reason'] == INTERRUPTED]), 1)
 
-    def test_a_pass_reports_the_hosts_it_started_and_when_the_first_pre_send_check_ran(self):
+    def test_a_pass_reports_the_hosts_it_prepared_and_when_the_first_pre_send_check_ran(self):
         self.add('one')
         self.run_pass()
         row = self.passes()[-1]
@@ -50,7 +50,7 @@ class TeacherCounts(TeacherFixture):
         self.assertIs(type(row['preCallMs']), int)
         self.assertGreaterEqual(row['preCallMs'], 0)
 
-    def test_a_pass_deferred_before_sending_still_started_the_host_cli(self):
+    def test_a_pass_deferred_before_sending_still_prepared_the_host(self):
         self.add('one')
         with mock.patch.object(general_teacher, 'resource_report', return_value={'ready': False}):
             self.run_pass()
@@ -61,7 +61,7 @@ class TeacherCounts(TeacherFixture):
         self.assertEqual(self.runs('claude'), 0)
         self.assertEqual(self.cases()['one'][0], 'queued')
 
-    def test_a_pass_whose_host_waits_starts_no_cli_and_reaches_no_pre_send_check(self):
+    def test_a_pass_whose_host_waits_prepares_no_host_and_reaches_no_pre_send_check(self):
         self.add('one')
         state = self.host_state()
         state['hosts']['claude'].update(reason='teacher_provider_waiting',
