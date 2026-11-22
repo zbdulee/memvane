@@ -46,16 +46,15 @@ BATCH = 256
 VERIFY_SETS = 60
 
 
-# SQLite's busy wait on the measured store (a writer may hold it); no check waits on it.
-BUSY_SECONDS = 5
-
 def ms(started):
     return round((time.perf_counter() - started) * 1000, 2)
 
 
 def connect(path, pragma=None):
     from memvane.kernel.errors import _query_only_uri
-    db = sqlite3.connect(_query_only_uri(path), uri=True, timeout=BUSY_SECONDS)
+    from tests.support.case import scaled
+    # The busy wait on the measured store (a writer may hold it), under the run's load scale.
+    db = sqlite3.connect(_query_only_uri(path), uri=True, timeout=scaled(5))
     db.execute('PRAGMA query_only=1')
     if pragma:
         db.execute(pragma)
