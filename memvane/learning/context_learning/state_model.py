@@ -127,4 +127,30 @@ M2 = Machine(
         'recover': _LEDGER + 'recover',
     })
 
-MACHINES = (M1, M2)
+# M15: one host's entry of ``teacher-host-state.json``, read at a pass. ``resting``
+# is a reason without an expiry (the CLI is missing, the consent does not name the
+# host, the isolation check refused): the next pass asks again. The two timed waits
+# end by their expiry, and the pass after it finds the host ready. Fewer than three
+# consecutive failures only move the counter; an answer resets it.
+M15 = Machine(
+    'M15', 'teacher host', store='teacher-host-state.json hosts.<host>',
+    lock='teacher-host-state.lock (under project-worker.lock)', owner='teacher pass',
+    states=('ready', 'resting', 'provider_waiting', 'failing'),
+    terminal=(),
+    transitions={
+        ('ready', 'host_not_ready'): 'resting',
+        ('resting', 'host_ready'): 'ready',
+        ('ready', 'provider_refused'): 'provider_waiting',
+        ('ready', 'failure_limit'): 'failing',
+        ('provider_waiting', 'wait_expired'): 'ready',
+        ('failing', 'wait_expired'): 'ready',
+    },
+    where={
+        'host_not_ready': _TEACHER + '_default_pass',
+        'host_ready': _TEACHER + '_default_pass',
+        'provider_refused': _TEACHER + '_failed',
+        'failure_limit': _TEACHER + '_failed',
+        'wait_expired': 'memvane.learning.context_learning.teacher_state.host_waiting',
+    })
+
+MACHINES = (M1, M2, M15)
