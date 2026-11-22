@@ -133,8 +133,15 @@ class Install:
             return []
         return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines() if line]
 
-    def recall(self, prompt, host='claude', session='fixture-session'):
-        """In-process selected recall: the injected context ('' when none)."""
+    def recall(self, prompt, host='claude', session=None):
+        """In-process selected recall: the injected context ('' when none).
+
+        Each call is a session of its own unless ``session`` names one: a
+        session's later recalls leave out the cards it already holds.
+        """
+        if session is None:
+            self._recall_sessions = getattr(self, '_recall_sessions', 0) + 1
+            session = 'fixture-session-%d' % self._recall_sessions
         from memvane.host.api import serve_selected
         from memvane.journal.api import select_route
         decision = select_route(str(self.project.root), action='recall')

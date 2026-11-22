@@ -65,6 +65,22 @@ def edit_recall():
     return state.get('edit') if state is not None else None
 
 
+def set_session_exclusions(cards) -> None:
+    """Cards (``[<wiki collection>/<member path>, blob sha]``) this recall's search leaves out.
+
+    The host sets them for a prompt recall from the session's record of cards
+    it already injected; an edit recall filters after its selection instead.
+    """
+    state = _RECALL_STATE.get()
+    if state is not None:
+        state['excluded'] = [(str(path), str(sha)) for path, sha in cards][:256]
+
+
+def session_exclusions() -> list:
+    state = _RECALL_STATE.get()
+    return list(state.get('excluded', ())) if state is not None and state.get('edit') is None else []
+
+
 def _recall_epoch(proof) -> None:
     """Raise when a proof's journal epoch is below the recall's highest one.
 

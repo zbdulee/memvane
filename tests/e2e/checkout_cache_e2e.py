@@ -11,6 +11,7 @@ this process and counts the checkout capture's git calls. Every assertion is a
 number of git children, never a wall clock.
 """
 from __future__ import annotations
+import uuid
 
 import json
 import os
@@ -71,7 +72,7 @@ class CheckoutCacheEndToEnd(FixtureCase):
         for key in SANDBOX_KEYS:
             env.pop(key, None)
         seen = len([e for e in install.events() if e.get('event') == 'recall'])
-        payload = {'session_id': 'e2e-cache', 'cwd': str(project.root),
+        payload = {'session_id': 'e2e-cache-' + uuid.uuid4().hex[:8], 'cwd': str(project.root),
                    'hook_event_name': 'UserPromptSubmit', 'prompt': prompt}
         result = subprocess.run(['bash', str(ROOT / 'hooks' / 'run-hook'), 'recall', 'claude'],
                                 input=json.dumps(payload), capture_output=True, text=True,

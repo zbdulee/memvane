@@ -6,6 +6,7 @@ main view; an edit in one checkout moves only that view; a new branch is a
 cold view whose cards are ingested again (trust is never reused across
 views). A checkout whose settings identity differs is not a linked view.
 """
+import uuid
 import json
 import unittest
 
@@ -29,7 +30,7 @@ class WorktreeViews(SyncCase):
         from memvane.journal.api import select_route
         decision = select_route(str(root), action='recall')
         served = serve_selected('recall', 'claude', decision, {
-            'session_id': 'fixture-session', 'cwd': str(root), 'hook_event_name': 'UserPromptSubmit',
+            'session_id': 'fixture-session-' + uuid.uuid4().hex[:8], 'cwd': str(root), 'hook_event_name': 'UserPromptSubmit',
             'prompt': prompt})
         context = ((served or {}).get('hookSpecificOutput') or {}).get('additionalContext', '')
         recalls = self.events('recall')

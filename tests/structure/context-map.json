@@ -41,6 +41,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/host/session_cards.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/host/edit_recall.py": {
       "context": "host",
       "layer": "adapter",

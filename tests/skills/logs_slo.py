@@ -237,6 +237,25 @@ class Lines(unittest.TestCase):
         del inside[1]
         self.assertEqual(by_name(inside)['dedup']['repeated'], round(1 / 21, 4))
 
+    def test_dedup_counts_an_edit_injection_only_in_the_context_that_holds_it(self):
+        def edit(index, by, name):
+            return dict(recall(index, cards=self.cards(name)), event='recall.edit', injectedBy=by)
+
+        def share(by, gap=0):
+            rows = [edit(0, by, 'a')] if by else [dict(recall(0, cards=self.cards('a')), event='recall.edit')]
+            rows += [recall(1 + i, cards=self.cards('c%d' % i)) for i in range(gap)]
+            rows.append(recall(40, cards=self.cards('a')))
+            line = by_name(rows)['dedup']
+            # Only prompt recalls are judged; the edit recall is history.
+            self.assertEqual(line['n'], gap + 1)
+            return line['repeated']
+        self.assertEqual(share('e'), 1.0)
+        # A subagent's injection, and one whose context the host did not say, are not in the main context.
+        self.assertEqual((share('e:0a1b2c3d'), share('e?'), share(None)), (0, 0, 0))
+        # An edit injection can leave the context without a signal: it counts inside the window only.
+        self.assertEqual(share('e', logs_slo.REPEAT_WINDOW - 1), round(1 / (logs_slo.REPEAT_WINDOW), 4))
+        self.assertEqual(share('e', logs_slo.REPEAT_WINDOW), 0)
+
     def test_dedup_counts_recalls_the_exclusion_emptied_apart(self):
         rows = [recall(i, cards=self.cards('a%d' % i)) for i in range(20)]
         rows += [recall(20 + i, outcome='empty', reason='no_candidates_after_exclusion') for i in range(3)]

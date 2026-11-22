@@ -9,6 +9,7 @@ context, exit codes and the install's recall event lines; none reads a wall
 clock.
 """
 from __future__ import annotations
+import uuid
 
 import json
 import os
@@ -52,7 +53,7 @@ class RecallEndToEnd(FixtureCase):
 
     def run_hook(self, cwd, prompt, host='claude'):
         """``hooks/run-hook recall <host>`` for a prompt in ``cwd``: ``(exit code, context, stderr)``."""
-        payload = {'session_id': 'e2e-' + host, 'cwd': str(cwd), 'hook_event_name': 'UserPromptSubmit',
+        payload = {'session_id': 'e2e-' + host + '-' + uuid.uuid4().hex[:8], 'cwd': str(cwd), 'hook_event_name': 'UserPromptSubmit',
                    'prompt': prompt}
         result = subprocess.run(['bash', str(ROOT / 'hooks' / 'run-hook'), 'recall', host],
                                 input=json.dumps(payload), capture_output=True, text=True,

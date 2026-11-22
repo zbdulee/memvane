@@ -19,8 +19,20 @@ _PROVIDER_ERRORS=frozenset(('provider_unavailable','provider_identity_mismatch',
     'provider_artifact_hash_mismatch','provider_model_not_gguf','vector_profile_mismatch'))
 
 
-def _fused_sources(lexical, nearest, timings):
+def _session_excluded(name):
+    """This view's pairs of the cards the session already holds, or None.
+
+    They leave both lanes; the next ranks fill their places.
+    """
+    from memvane.recall.recall_scope import session_exclusions
+    return [[path[len(name)+1:],sha] for path,sha in session_exclusions() if path.startswith(name+'/')] or None
+
+
+def _fused_sources(lexical, nearest, timings, emptied=None):
     from memvane.recall.domain.rules import _fuse_verified_lists
+    if emptied is not None and emptied[3] and timings is not None and not any(lexical) and not nearest:
+        store, pin, queries, excluded, status, deadline = emptied
+        timings['sessionExcludedHits'] = _excluded_hits(store, pin, queries, excluded, status, timings, deadline)
     lists = lexical + ([] if nearest is None else [nearest])
     rows = _fuse_verified_lists(lists, max_rows=15) if any(lists) else []
     if timings is not None:
@@ -317,6 +329,26 @@ def _lexical_signals(timings, queries, lexical):
         pass
 
 
+def _excluded_hits(store, pin, queries, excluded, status, timings, deadline):
+    """How many candidates of an empty recall the session exclusions removed.
+
+    Asked only when both lanes came back empty: the lexical queries once more
+    without the exclusions (their rows that are excluded pairs), plus the
+    eligible cards the exact filter dropped when the semantic search completed
+    (an exact lane has no score floor, so its empty list is all exclusions).
+    """
+    from memvane.recall.types import HYBRID_LIST_LIMIT
+    from memvane.store.types import BlobStoreError
+    pairs, hits = {(path, sha) for path, sha in excluded}, 0
+    try:
+        for query in queries:
+            hits += sum((row['path'], row['blob_sha']) in pairs for row in store.search(
+                pin, query, HYBRID_LIST_LIMIT, deadline_seconds=_reader_remaining(deadline)))
+    except (BlobStoreError, ValueError):
+        pass  # A count that could not be read leaves the recall's own empty reason.
+    return hits + (timings.get('vectorExcluded', 0) if status == 'complete' else 0)
+
+
 def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,snapshot,decision,
                              provider,authority,linked=None,timings=None):
     """Read the journal-selected schema3 endpoint at its current view head.
@@ -403,9 +435,10 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                     answer.append({'scope':decision['scopeId'],'generation':pin.gen_id,'path':full,
                                    'hash':row['blob_sha'],'body':row['body'],'score':row['score']})
                 return answer
+            excluded=_session_excluded(name)
             started = time.monotonic()
             try:
-                lexical=[shaped(store.search(pin, query, HYBRID_LIST_LIMIT, deadline_seconds=_reader_remaining(deadline)))
+                lexical=[shaped(store.search(pin, query, HYBRID_LIST_LIMIT, deadline_seconds=_reader_remaining(deadline), excluded_cards=excluded))
                          for query in queries]
                 if timings is not None:
                     _lexical_signals(timings, queries, lexical)
@@ -413,7 +446,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                     # A cold provider can leave the conjunctive query empty.
                     atoms = list(dict.fromkeys(atom for query in queries for atom in query.split(' AND ') if atom))[:3]
                     if len(atoms)>1:
-                        lexical=[shaped(store.search(pin, atom, HYBRID_LIST_LIMIT, deadline_seconds=_reader_remaining(deadline)))
+                        lexical=[shaped(store.search(pin, atom, HYBRID_LIST_LIMIT, deadline_seconds=_reader_remaining(deadline), excluded_cards=excluded))
                                  for atom in atoms]
             finally:
                 if timings is not None:
@@ -436,14 +469,14 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                                                       profile_id=vector['profile_id'],
                                                       max_float_work=6000000,
                                                       deadline_seconds=min(SEMANTIC_DEADLINE_SECONDS, remaining), timings=timings,
-                                                      preferred_paths=preferred))
+                                                      preferred_paths=preferred, excluded_cards=excluded))
                 except (BlobStoreError, ValueError) as exc:
                     status = _semantic_error_status(exc, timings)
                 finally:
                     if timings is not None:
                         timings['semanticMs'] = round((time.monotonic() - started) * 1000, 3)
 
-            rows = _fused_sources(lexical, nearest, timings)
+            rows = _fused_sources(lexical, nearest, timings, emptied=(store, pin, queries, excluded, status, deadline))
             started = time.monotonic()
             try:
                 spans = _card_spans(store, pin, rows, name, status, deadline)

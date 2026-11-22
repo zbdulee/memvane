@@ -244,35 +244,52 @@ def _cards(row):
             if isinstance(card, dict) and _text(card.get('path')) and _text(card.get('sha'))]
 
 
-def _dedup(rows, floor_time):
-    """Cards injected again into a session that already holds them.
+def _holds(context):
+    """The injection contexts whose cards a recall in ``context`` already has."""
+    if context == 'p':
+        return ('p', 'e')
+    return ('p', 'e', 'e?') if context in ('e', 'e?') else (context,)
 
-    A session's history starts over at a row that carries ``sessionReset``.
-    A host with no compaction signal looks back ``REPEAT_WINDOW`` served recalls.
+
+def _dedup(rows, floor_time):
+    """Prompt recall cards that the session's own context already held when they were injected.
+
+    A session's history is its served prompt and edit recalls, each with the
+    context it injected into (``injectedBy``; a row without it is a prompt
+    recall, or an edit recall of an unknown context). It starts over at a row
+    that carries ``sessionReset``. An entry that can leave the context without
+    a signal (an edit injection, any entry of a host with no compaction
+    signal) counts for ``REPEAT_WINDOW`` injecting recalls only. A card that
+    comes back after that, after a reset or in another context is not a repeat.
     """
     history, injected, repeated, all_repeated, recalls, emptied = {}, 0, 0, 0, 0, 0
     for row in rows:
         session = _text(row.get('session'))
         if session and _text(row.get('sessionReset')):
             history[session] = []
-        if row.get('event') != 'recall':
+        prompt = row.get('event') == 'recall'
+        if not prompt and row.get('event') != 'recall.edit':
             continue
         current = (_ts(row) or floor_time) >= floor_time
-        if current and row.get('reason') == 'no_candidates_after_exclusion':
+        if prompt and current and row.get('reason') == 'no_candidates_after_exclusion':
             emptied += 1
         cards = _cards(row)
         if not session or row.get('outcome') != 'served' or not cards:
             continue
         earlier = history.setdefault(session, [])
-        looked = earlier if row.get('host') in SIGNAL_HOSTS else earlier[-REPEAT_WINDOW:]
-        seen = set().union(*looked) if looked else set()
-        if current:
+        context = _text(row.get('injectedBy')) or ('p' if prompt else 'e?')
+        if prompt and current:
+            holds, signal = _holds(context), row.get('host') in SIGNAL_HOSTS
+            seen = set()
+            for age, (held, by) in enumerate(reversed(earlier)):
+                if by in holds and ((by == 'p' and signal) or age < REPEAT_WINDOW):
+                    seen |= held
             again = sum(card in seen for card in cards)
             recalls += 1
             injected += len(cards)
             repeated += again
             all_repeated += again == len(cards)
-        earlier.append(set(cards))
+        earlier.append((set(cards), context))
     if not injected:
         return _line('dedup', 'no-data', recalls, noCandidatesAfterExclusion=emptied)
     share = repeated / injected

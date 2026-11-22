@@ -1,5 +1,6 @@
 """The shared fixtures do what tests rely on (run through ``support.test.mjs``)."""
 from __future__ import annotations
+import uuid
 
 import json
 import os
@@ -173,7 +174,7 @@ class Builders(FixtureCase):
         self.assertIn('zqfalconx', target.recall('what marker does the falcon protocol keep?'))
         # The hook child finds the fixture provider at the test runtime root (the subprocess seam).
         code, out, err = target.hook('recall', {
-            'session_id': 's', 'cwd': str(target.project.root), 'hook_event_name': 'UserPromptSubmit',
+            'session_id': 's-' + uuid.uuid4().hex[:8], 'cwd': str(target.project.root), 'hook_event_name': 'UserPromptSubmit',
             'prompt': 'what marker does the falcon protocol keep?'})
         self.assertEqual(code, 0, err)
         self.assertIn('zqfalconx', json.loads(out)['hookSpecificOutput']['additionalContext'])

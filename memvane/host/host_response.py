@@ -801,8 +801,48 @@ def _render_answer_timed(host: str, payload: dict, answer) -> dict:
         except Exception:
             remember_cards = None  # The recall answer never depends on edit recall.
         if remember_cards is not None:
-            remember_cards(answer.decision, payload, answer.rows)
+            _trace_fields(injectedBy='p')
+            if remember_cards(answer.decision, payload, answer.rows) == 'write_skipped':
+                # The next recall may inject these cards once more.
+                _trace_fields(sessionState='write_skipped')
     return host_payload(host, context)
+
+
+def _session_exclusions(host: str, decision: dict, payload: dict) -> None:
+    """Hand this prompt recall the cards its session already holds; never raises."""
+    if host not in ('claude', 'codex'):
+        return
+    try:
+        from memvane.host import session_cards
+        from memvane.recall.api import set_session_exclusions
+        cards, state = session_cards.exclusions(decision, payload, host)
+        set_session_exclusions(cards)
+        _trace_fields(sessionExcluded=len(cards), sessionState=state)
+    except Exception:  # noqa: BLE001 - a recall without exclusions repeats a card at worst
+        pass
+
+
+def _session_reset(host: str, decision: dict, payload: dict) -> None:
+    """A SessionStart after a compaction or clear starts the session's injected cards over.
+
+    The marker is written before anything else the hook does and without the
+    session lock, so an edit recall holding that lock cannot delay it.
+    """
+    try:
+        from memvane.diagnostics.api import session_id
+        from memvane.host import session_cards
+        source = payload.get('source')
+        if not isinstance(source, str):
+            return
+        _trace_fields(sessionSource=source if source in session_cards.SESSION_SOURCES else 'other')
+        session = session_id(payload)
+        if host in ('claude', 'codex') and source in session_cards.RESET_SOURCES and session is not None:
+            # Unchecked beyond the trace: a marker that could not be written leaves the
+            # record as it is, and the missing ``sessionReset`` field shows it.
+            if session_cards.mark_reset(decision, session):
+                _trace_fields(sessionReset=source)
+    except Exception:  # noqa: BLE001 - SessionStart never depends on the session record
+        pass
 
 
 def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dict:
@@ -827,6 +867,8 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
     from memvane.provider.api import verification_scope
     with _event_scope(action, host, decision, payload), verification_scope():
         try:
+            if action == 'update-queued':
+                _session_reset(host, decision, payload)
             if action != 'recall':
                 return _serve_selected_once(action, host, decision, payload)
             return _serve_selected_recall(action, host, decision, payload)
@@ -855,6 +897,7 @@ def _serve_selected_recall(action: str, host: str, decision: dict, payload: dict
     # in-process host (Hermes) may run recalls concurrently or nested.
     from memvane.recall.api import recall_scope
     with recall_scope():
+        _session_exclusions(host, decision, payload)
         try:
             return _serve_selected_once(action, host, decision, payload)
         except Exception as exc:
