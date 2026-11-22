@@ -235,8 +235,14 @@ default-teacher는 gold가 `minQualityTrainCases`(100건) 전이면 job을 계�
 5회뿐이다(답을 받지 못한 요청 — 닫히는 resident, 갱신 중의 다른 번들 resident — 은 그 밖의 실패다). 그 밖의 실패는 backoff 뒤 다시 시도하고(`apply_deferred`와 `failures`), `apply_quality_stale`은
 아무것도 정하지 않고 cycle을 `staged`로 되돌려 재평가로 간다. 포인터가 incumbent인 동안은 커밋된 것이 없어
 `intent`와 포인터를 쓰지 못한 `prepared`는 다음 시도가 새로 만든다. 포인터가 후보의 것이 된 뒤에는 판정을
-다시 하지 않고 정체성만 대조해 activation을 끝내며, 그때의 실패는 journal에 `failures`·`reason`으로 남고
-다섯 번째부터 답에 `activationPending`이 실린다. 적용된 모델을 그 앞의 것으로 되돌리는 것은 소유자가 요청하는
+다시 하지 않고 정체성(후보 artifact의 해시, journal의 stage·profile digest와 binding)만 대조해 activation을 끝낸다.
+그 구간에서는 구성원·평가 사례의 활성, 구성원 행, 품질 준비, 승인 해시를 다시 보지 않으므로 원문 카드 수정이나 승인
+갱신이 적용을 `pointer_committed`에 세워 두지 않는다. 그때의 실패는 journal에 `failures`·`reason`으로 남고
+다섯 번째부터 답에 `activationPending`이 실리며, 다섯 번째에 `learning.promotion` 행(outcome `activation_pending`)이
+한 번 남는다. journal의 `failures`는 `pointer_committed`에서만 0으로 돌아간다(`prepared`에서는 유지). resident가 자기
+검증에서 평가가 낡았다고 본 prepare는 응답 코드 `apply_quality_stale`로 돌아오고 worker는 아무것도 정하지 않는다(재평가).
+평가 행의 `failures`는 평가가 `completed`가 되거나 재평가(`refresh`)로 돌아갈 때 0이 되어, 평가 실패와 적용 실패가
+한 칸에서 더해지지 않는다. 적용된 모델을 그 앞의 것으로 되돌리는 것은 소유자가 요청하는
 유지보수 명령 하나뿐이다(`candidate_rollback.restore`, setup action `restore-previous-model`): 살아 있는 journal이
 `activated`이거나 `pointer_committed`에서 멈췄고 포인터가 그 `new_pointer`일 때, 적용의 두 잠금 아래에서 receipt →
 binding → 포인터를 적용의 반대 순서로 이전 값으로 쓰고 journal을 `rejected`(`reason` `rolled_back`)로 닫는다. 그

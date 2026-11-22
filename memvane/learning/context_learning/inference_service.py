@@ -272,7 +272,9 @@ _CODES = {'queue_full', 'deadline_expired', 'resource_deferred', 'replacement_de
           'replacement_failed', 'load_failed', 'model_family_mismatch',
           'request_changed', 'request_rejected', 'inference_attestation_required',
           'worker_error', 'version_mismatch', 'busy', 'starting', 'permission_denied',
-          'resource_unavailable', 'invalid_prediction', 'input_budget_exceeded'}
+          'resource_unavailable', 'invalid_prediction', 'input_budget_exceeded',
+          # An application whose evaluation went stale between the worker's check and this one.
+          'apply_quality_stale'}
 
 
 @lru_cache(maxsize=1)
@@ -794,7 +796,10 @@ def _validate_apply(envelope):
     record=application.read_journal(state)
     if record['namespace_root']!=str(state) or record['apply_id']!=envelope['apply_id']:raise ServiceFailure('request_changed')
     policy=shared_policy(state)
-    profile,stage,_=application.validate_candidate(state,policy,record['cycle_id'],expected=record)
+    try:profile,stage,_=application.validate_candidate(state,policy,record['cycle_id'],expected=record)
+    except ValueError as exc:
+        if str(exc)==application.STALE:raise ServiceFailure(application.STALE) from exc
+        raise
     application._check_receipts(state,record)
     if envelope['command']=='apply_activate' and (record['phase']!='pointer_committed'
             or read_private_json(state/'active-checkpoint.json')!=record['new_pointer']):raise ServiceFailure('request_changed')

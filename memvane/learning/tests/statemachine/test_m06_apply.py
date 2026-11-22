@@ -321,7 +321,12 @@ class ApplyFailures(unittest.TestCase):
         case = self.fixture()
         self.other_failure(case)
         self.assertEqual(A.read_journal(case.root)['failures'], 1)
+        # W13 r2 F-9: the count is kept through ``prepared`` (it was reset there, so a failure
+        # between the resident's answer and the pointer never reached the limit) and goes back
+        # to zero once the pointer is committed.
         self.stop_at_later(case, 'prepared')
+        self.assertEqual(A.read_journal(case.root)['failures'], 1)
+        self.stop_at_later(case, 'pointer_committed')
         self.assertEqual(A.read_journal(case.root)['failures'], 0)
         case = self.fixture()
         self.stop_at(case, 'pointer_committed')

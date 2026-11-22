@@ -17,7 +17,7 @@ JUDGED=('apply_quality_regression','apply_quality_not_improved','apply_quality_b
         'apply_quality_invalid','candidate_rejected')
 # The resident answered a prepare or activate request with a failure: it refused this
 # candidate. Its momentary states (busy, starting, out of time) reach here as
-# ``ResourceDeferred``. A request that got no usable answer (a closing resident, another
+# ``ResourceDeferred``, and an evaluation it found stale as ``STALE`` (nothing is decided). A request that got no usable answer (a closing resident, another
 # bundle's resident during an update) is not a refusal: it is one of the other failures.
 REFUSED=('apply_prepare_failed','apply_activation_failed')
 # The journal no longer describes this application (changed bytes, or what it was formed
@@ -92,10 +92,22 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
         manifest=db.execute('SELECT manifest FROM learning_jobs WHERE job_id=?',(cycle_id,)).fetchone()
         train_rows,validation=training_and_validation(db,Path(profile['projectRoot']),grant)
     if old is None or old[0] not in ('staged_evaluated','applied') or manifest is None:raise ValueError('apply_quality_required')
-    stage=json.loads(old[1]);job=json.loads(manifest[0]);train=LearningQueue(root).rows(job,train_rows)
+    stage=json.loads(old[1]);job=json.loads(manifest[0])
     artifact=root/'cycles'/cycle_id/'candidate.artifact'
     if any(p.is_symlink() for p in artifact.parents):raise ValueError('apply_unsafe_path')
-    if (stage['artifactPath']!=str(artifact) or _hash(artifact)!=stage['artifactSha256']
+    current=read_private_json(root/'active-checkpoint.json')
+    # Once the pointer is the candidate's the decision is made: only the identity of what
+    # was decided is checked again (the artifact, and below the journal's stage, profile and
+    # binding), so new gold, an older evaluation, an edited member card or a renewed approval
+    # cannot strand an application between its pointer and its activation. A source revoked
+    # in that span is handled as after any finished application: the pointer does not go back.
+    decided=expected is not None and current==expected['new_pointer']
+    if decided:
+        if stage['artifactPath']!=str(artifact) or _hash(artifact)!=stage['artifactSha256']:
+            raise ValueError('apply_source_or_artifact_changed')
+        train=None
+    else:train=LearningQueue(root).rows(job,train_rows)
+    if not decided and (stage['artifactPath']!=str(artifact) or _hash(artifact)!=stage['artifactSha256']
             or not stage['sourceActiveAtStage'] or stage['authorizationSha256']!=proposal_sha256(grant)
             or job['approval']!=proposal_sha256(grant) or profile['runtimeApprovalSha256']!=proposal_sha256(grant)
             or stage['model_input_view']!=profile['view']
@@ -107,11 +119,6 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
         raise ValueError('apply_source_or_artifact_changed')
     metrics=stage['metrics'];before,after=metrics['incumbent'],metrics['candidate']
     evaluated=metrics.get('evaluatedAt')
-    current=read_private_json(root/'active-checkpoint.json')
-    # Once the pointer is the candidate's the decision is made: only the identity of what
-    # was decided is checked again, so new gold or an older evaluation cannot strand an
-    # application between its pointer and its activation.
-    decided=expected is not None and current==expected['new_pointer']
     if not decided and (type(evaluated)not in(int,float) or not math.isfinite(evaluated)
             or not 0<=time.time()-evaluated<=profile['maxQualityAgeSeconds']
             or metrics.get('validationEvidenceSha256')!=_case_evidence(validation)
@@ -215,8 +222,11 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
         current=read_private_json(root/'active-checkpoint.json')
         if current==row['old_pointer']:
             answer=transport('prepare',row);fault('service_prepared')
+            if answer.get('status')==STALE:raise ValueError(STALE)
             if answer.get('status')!='prepared' or not isinstance(answer.get('token'),str):raise ValueError('apply_prepare_failed')
-            row['token']=answer['token'];row['phase']='prepared';row['failures']=0;put(path,row);fault('prepared')
+            # ``failures`` goes back to zero only at ``pointer_committed``: a failure that recurs between
+            # this point and the pointer would otherwise never reach the limit (each new intent keeps the count).
+            row['token']=answer['token'];row['phase']='prepared';put(path,row);fault('prepared')
             validate_candidate(root,policy,cycle_id,expected=row);_check_receipts(root,row)
             if read_private_json(root/'active-checkpoint.json')!=row['old_pointer']:raise ValueError('apply_pointer_cas_conflict')
             put(root/'active-checkpoint.json',row['new_pointer']);fault('pointer_written')

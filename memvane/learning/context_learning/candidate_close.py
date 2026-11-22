@@ -210,6 +210,8 @@ def unapplied(root, cycle, answer, queue, job):
     from .shared import _db
     reason = str(answer.get('reason') or 'apply_blocked')[:80]
     if 'activationPending' in answer:
+        if answer.get('failures') == FAILURE_LIMIT:
+            _activation_pending(root, cycle, reason)
         return
     if reason == STALE:
         with _db(root) as db:
@@ -218,3 +220,22 @@ def unapplied(root, cycle, answer, queue, job):
         return
     queue.finish(job['id'], 'blocked', reason)
     queue.apply_failed(job['id'], reason, FAILURE_LIMIT)
+
+
+def _activation_pending(root, cycle, reason):
+    """One ``learning.promotion`` row when a written pointer's activation has failed the limit in a row.
+
+    The application goes on being tried; the row is how the log shows that the
+    learned selection is closed meanwhile. Diagnostic only: a failure is ignored.
+    """
+    try:
+        prequential._emit(_project_of(root), 'learning.promotion', outcome='activation_pending', reason=reason,
+                          cycle=cycle)
+    except Exception:
+        pass
+
+
+def _project_of(root):
+    from .dataset import read_private_json
+    from .learning_profile import NAME
+    return read_private_json(Path(root) / NAME)['proposal']['projectRoot']
