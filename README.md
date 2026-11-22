@@ -126,8 +126,10 @@ MemVane은 프로젝트 밖의 사용자 디렉터리에 state를 둡니다. 아
 | 로컬 학습 런타임(학습을 켠 경우) | `~/Library/Application Support/memvane` | 약 1.4GB |
 | 상주 프로세스 메모리 | 임베딩 모델을 올린 동안 | 약 1GB |
 
-상주 프로세스는 첫 세션이 시작하고, MemVane을 켠 호스트가 하나도 없으면 스스로
-끝납니다. 플러그인을 끄거나 제거하면 10분 안에 MemVane 프로세스가 남지 않습니다.
+상주 프로세스는 첫 세션이 시작하고, MemVane을 쓰는 호스트가 하나도 없으면 스스로
+끝납니다. 모든 호스트에서 플러그인을 제거하면(Codex는 끄기만 해도) 10분 안에 MemVane
+프로세스가 남지 않습니다. Claude Code에서 끄기만 한 설치는 프로젝트별로 다시 켜질 수
+있어 상주 프로세스를 끝내지 않습니다.
 state와 대기 중인 작업 기록은 그대로 남으며, 다시 설치하면 이어서 씁니다.
 
 state를 정리할 때는 에이전트에게 요청합니다.
@@ -141,7 +143,8 @@ state를 정리할 때는 에이전트에게 요청합니다.
 
 어느 경우에도 프로젝트의 `.memvane/` 폴더(위키, 설정)는 지우지 않습니다. 플러그인을
 이미 제거했다면 위 표의 `~/.local/state/memvane`, `~/Library/Application Support/memvane`,
-`~/Library/Caches/memvane` 디렉터리를 직접 지워도 됩니다.
+`~/Library/Caches/memvane` 디렉터리(삭제가 중단됐다면 그 옆의 `memvane.removing-*`)를
+직접 지워도 됩니다.
 
 ### 프로젝트 폴더 `.memvane/`
 

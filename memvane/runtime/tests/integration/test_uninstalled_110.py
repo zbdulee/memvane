@@ -166,3 +166,50 @@ class Processes(FixtureCase):
             result = monitor.run(queue, alive=lambda: True, wait=lambda _seconds: self.fail('waited'),
                                  wake=lambda: self.fail('woke a worker'))
         self.assertEqual((result['status'], result['wakes'], len(queue.pending())), ('uninstalled', 0, 1))
+
+
+class Certain(Uninstalled):
+    """Only what is certainly off counts as off (W17 review F-1, F-5)."""
+
+    def codex_config(self, enabled):
+        config = self.home / '.codex' / 'config.toml'
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text('[plugins."memvane@market"]\nenabled = %s\n' % ('true' if enabled else 'false'))
+        config.chmod(0o600)
+
+    def claude(self, installed, listing):
+        plugins = self.home / '.claude' / 'plugins'
+        plugins.mkdir(parents=True, exist_ok=True)
+        (plugins / 'installed_plugins.json').write_text(json.dumps({'plugins': installed}), encoding='utf8')
+        return mock.patch.object(host_bundle, '_claude_listing', return_value=listing)
+
+    def absent(self):
+        self.reset()
+        return host_bundle.background_absent_seconds() is not None
+
+    def test_a_missing_codex_executable_is_not_an_empty_codex(self):
+        self.codex_config(enabled=True)
+        # No ``codex`` on this process's PATH: the listing is empty, the config still enables MemVane.
+        with mock.patch.dict(os.environ, {'PATH': str(self.tmp)}):
+            self.assertEqual(host_bundle._codex_inventory(self.home), {'installed': []})
+            self.assertFalse(self.absent())
+            self.assertFalse(host_bundle.BundleIdentity(self.bundle()).uninstalled())
+        self.codex_config(enabled=False)
+        with mock.patch.dict(os.environ, {'PATH': str(self.tmp)}):
+            self.assertTrue(self.absent())
+        # A config that cannot be parsed leaves the answer unknown.
+        (self.home / '.codex' / 'config.toml').write_text('[plugins."memvane@market"]\nenabled = maybe\n')
+        with self.codex(NONE):
+            self.assertFalse(self.absent())
+
+    def test_a_claude_plugin_listed_as_not_enabled_is_not_certainly_off(self):
+        row = {'id': 'memvane@market', 'version': '1.1.0', 'scope': 'project', 'enabled': False,
+               'installPath': str(self.home / '.claude/plugins/cache/market/memvane/1.1.0')}
+        installed = {'memvane@market': [{'version': '1.1.0', 'installPath': row['installPath'], 'scope': 'project'}]}
+        with self.codex(NONE):
+            for scope in ('project', 'local', 'user'):
+                with self.claude(installed, [dict(row, scope=scope)]):
+                    self.assertFalse(self.absent(), scope)
+            # Removed from Claude: no row names it any more.
+            with self.claude({}, [{'id': 'other@market', 'enabled': False}]):
+                self.assertTrue(self.absent())

@@ -90,37 +90,65 @@ def _failure(exc):
     return result
 
 
+def _cleanup_preview(everything):
+    """``(result, digest, names)`` of what a cleanup would remove now; writes nothing."""
+    import hashlib
+    from memvane.install import api as product
+    result = product.state_cleanup(everything=everything)
+    if everything:
+        names = {'roots': sorted(row['path'] for row in result['roots'] if row['action'] == 'remove')}
+    else:
+        try:
+            from memvane.provider import api as laya_embed_runtime
+            runtime = laya_embed_runtime.collect(approve=False)
+            runtime.pop('dependencyClosure', None)
+        except Exception as exc:  # No runtime on this machine: nothing of it to collect.
+            runtime = {'status': 'unavailable', 'reason': str(exc), 'changesApplied': 0}
+        result['indexRuntime'] = runtime
+        names = {'installs': sorted(row['install'] for row in result['installs'] if row['action'] == 'remove'),
+                 'generations': sorted(row['generation'] for row in runtime.get('generations', ())
+                                       if row.get('action') in ('remove', 'remove_stale_staging'))}
+    digest = hashlib.sha256(json.dumps(names, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    result['previewSha256'] = digest
+    return result, digest, names
+
+
 def _state_cleanup(argv):
-    """``state-cleanup``: list what a cleanup would remove; remove it only with the approval flag.
+    """``state-cleanup``: list what a cleanup would remove; remove it only when that list is approved.
 
     Default scope: released install state roots and unused embedding runtime
     generations. ``--all-state`` is the explicit "delete everything" request.
+    The preview prints ``previewSha256``; ``--approve-state-cleanup <that
+    value>`` removes exactly the previewed list and is refused when the list
+    has changed since.
     """
     parser = argparse.ArgumentParser(prog='setup.py state-cleanup')
-    parser.add_argument('--approve-state-cleanup', action='store_true')
+    parser.add_argument('--approve-state-cleanup', metavar='PREVIEW_SHA256')
     parser.add_argument('--all-state', action='store_true')
     args = parser.parse_args(argv)
-    approve = args.approve_state_cleanup
+    approved = args.approve_state_cleanup
     try:
-        if approve:
+        result, digest, names = _cleanup_preview(args.all_state)
+        if approved is not None and approved != digest:
+            # The owner approved another list: nothing is removed, the current one is shown again.
+            result.update(status='rejected', reason='state_cleanup_preview_changed')
+        elif approved is not None:
             from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
             require_cached_plugin_for_live_write()
-        from memvane.install import api as product
-        if args.all_state:
-            result = product.state_cleanup_everything(approve=approve)
-        else:
-            result = product.state_cleanup(approve=approve)
-            try:
+            from memvane.install import api as product
+            if args.all_state:
+                result = product.state_cleanup(approve=True, everything=True, only=set(names['roots']))
+            else:
+                result = product.state_cleanup(approve=True, only=set(names['installs']))
                 from memvane.provider import api as laya_embed_runtime
-                runtime = laya_embed_runtime.collect(approve=approve)
+                runtime = (laya_embed_runtime.collect(approve=True) if names['generations']
+                           else {'status': 'collected', 'changesApplied': 0})
                 runtime.pop('dependencyClosure', None)
-            except Exception as exc:  # No runtime on this machine: nothing of it to collect.
-                runtime = {'status': 'unavailable', 'reason': str(exc), 'changesApplied': 0}
-            result['indexRuntime'] = runtime
-            result['changesApplied'] += runtime.get('changesApplied', 0)
-            # Either half left something behind: the whole command says so.
-            if approve and runtime.get('status') in ('blocked', 'partial') and result['status'] == 'collected':
-                result['status'] = 'partial'
+                result['indexRuntime'] = runtime
+                result['changesApplied'] += runtime.get('changesApplied', 0)
+                # Either half left something behind: the whole command says so.
+                if runtime.get('status') in ('blocked', 'partial') and result['status'] == 'collected':
+                    result['status'] = 'partial'
     except Exception as exc:
         result = _failure(exc)
     print(json.dumps(result, sort_keys=True, ensure_ascii=False))

@@ -207,6 +207,19 @@ class Released(CleanupCase):
         self.assertEqual((result['status'], result['removed'], os.listdir(self.installs)), ('collected', 1, []))
 
 
+    def test_an_install_that_became_removable_after_the_preview_is_left(self):
+        self.layout()
+        preview = install.state_cleanup(self.home)
+        approved = {row['install'] for row in preview['installs'] if row['action'] == 'remove'}
+        self.assertEqual(approved, {RELEASED, MOVED})
+        # After the preview the selected project's pointer leaves its place (a stash, a clean).
+        (self.kept / '.memvane' / 'route.json').unlink()
+        result = state_cleanup.cleanup(self.home, approve=True, only=approved, owner=granted)
+        self.assertEqual((result['status'], result['removed']), ('partial', 2))
+        self.assertEqual(result['failed'], [{'install': SELECTED, 'reason': 'not_previewed'}])
+        self.assertTrue((self.installs / SELECTED / 'store.sqlite').is_file())
+
+
 class Everything(CleanupCase):
     def roots(self):
         darwin = sys.platform == 'darwin'
@@ -226,7 +239,7 @@ class Everything(CleanupCase):
         self.state(SELECTED, project)
         self.roots()
         before = tree(self.home)
-        result = install.state_cleanup_everything(self.home)
+        result = install.state_cleanup(self.home, everything=True)
         self.assertEqual((result['status'], result['scope'], result['changesApplied']), ('planned', 'everything', 0))
         self.assertEqual([(row['root'], row['action']) for row in result['roots']],
                          [('state', 'remove'), ('support', 'remove'), ('cache', 'remove')])
@@ -237,12 +250,12 @@ class Everything(CleanupCase):
         self.state(SELECTED, project)
         state, support, cache, config = self.roots()
         folder, settings = tree(project), tree(config)
-        result = install.state_cleanup_everything(self.home, approve=True)
+        result = install.state_cleanup(self.home, approve=True, everything=True)
         self.assertEqual((result['status'], result['removed'], result['failed']), ('collected', 3, []))
         self.assertEqual([os.path.lexists(path) for path in (state, support, cache)], [False] * 3)
         self.assertEqual([name for name in os.listdir(state.parent) if 'memvane' in name], [])
         self.assertEqual((tree(project), tree(config)), (folder, settings))
-        again = install.state_cleanup_everything(self.home, approve=True)
+        again = install.state_cleanup(self.home, approve=True, everything=True)
         self.assertEqual((again['status'], again['roots']), ('collected', []))
 
     def test_a_root_that_is_a_link_is_never_followed(self):
@@ -252,8 +265,31 @@ class Everything(CleanupCase):
         state = self.base.parent
         os.rename(state, self.home / 'real-state')
         os.symlink(elsewhere, state)
-        result = install.state_cleanup_everything(self.home, approve=True)
+        result = install.state_cleanup(self.home, approve=True, everything=True)
         self.assertEqual((result['status'], result['removed']), ('partial', 0))
         self.assertEqual(result['failed'], [{'root': 'state', 'reason': 'unsafe_root'}])
         self.assertEqual((elsewhere / 'keep').read_text(encoding='utf8'), 'keep')
         self.assertTrue(os.path.islink(state))
+
+    def test_a_tree_an_interrupted_removal_left_is_listed_and_removed_by_the_next_run(self):
+        state, support, cache, config = self.roots()
+        left = state.with_name(state.name + state_cleanup.REMOVING + '4242')
+        os.rename(state, left)
+        preview = install.state_cleanup(self.home, everything=True)
+        rows = {row['path']: (row['root'], row['action'], row.get('reason')) for row in preview['roots']}
+        self.assertEqual(rows[str(left)], ('state', 'remove', 'interrupted_removal'))
+        self.assertEqual(len(rows), 3)
+        result = install.state_cleanup(self.home, approve=True, everything=True)
+        self.assertEqual((result['status'], result['removed'], result['failed']), ('collected', 3, []))
+        self.assertEqual([name for name in os.listdir(state.parent) if 'memvane' in name], [])
+        # A link under that name is no target.
+        os.symlink(config, left)
+        self.assertEqual(install.state_cleanup(self.home, everything=True)['roots'], [])
+        self.assertTrue(os.path.islink(left))
+
+    def test_a_root_that_was_not_in_the_approved_preview_is_left(self):
+        state, support, cache, _config = self.roots()
+        result = install.state_cleanup(self.home, approve=True, everything=True, only={str(support), str(cache)})
+        self.assertEqual((result['status'], result['removed']), ('partial', 2))
+        self.assertEqual(result['failed'], [{'root': 'state', 'reason': 'not_previewed'}])
+        self.assertTrue(state.is_dir())

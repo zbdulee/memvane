@@ -266,14 +266,22 @@ def _hermes_enabled(home):
 
 
 def _inventory(home=None):
-    """``(enabled bundles, True)`` once every host record was read; ``(None, False)`` otherwise."""
+    """``(enabled bundles, certain)``; ``(None, False)`` when a host record could not be read.
+
+    ``certain`` is what "no host has MemVane enabled" may rest on. It is False
+    whenever a record leaves room for an enabled bundle this listing did not
+    show: Codex's own config enables MemVane but its listing named none (the
+    ``codex`` executable is not on this process's PATH), or Claude lists
+    MemVane installed but not enabled from ``/`` (a project or local scope
+    enables it per project). Only a removed plugin is certainly off there.
+    """
     home = Path.home() if home is None else Path(home)
     codex = Path(os.environ.get('CODEX_HOME') or home / '.codex')
     claude = Path(os.environ.get('CLAUDE_CONFIG_DIR') or home / '.claude')
     hermes_home = Path(os.environ.get('HERMES_HOME') or home / '.hermes')
     if not all(path.is_absolute() for path in (home, codex, claude, hermes_home)):
         return None, False
-    found = []
+    found, certain = [], True
     try:
         inventory = _codex_inventory(home)
         rows = inventory['installed']
@@ -285,6 +293,8 @@ def _inventory(home=None):
                 item = _candidate(codex, row.get('marketplaceName'), row.get('version'), 'codex')
                 if item:
                     found.append(item)
+        if not found:
+            certain = _codex_config_off(codex)
     except (OSError, ValueError, KeyError, TypeError, UnicodeError, subprocess.TimeoutExpired):
         return None, False
     try:
@@ -307,6 +317,7 @@ def _inventory(home=None):
             if type(row.get('enabled')) is not bool:
                 raise ValueError('bundle_inventory_invalid')
             if not row['enabled']:
+                certain = False  # Installed: a project may enable what this listing from ``/`` shows off.
                 continue
             rows = plugins.get(name)
             if not isinstance(rows, list) or len(rows) > 128:
@@ -341,7 +352,17 @@ def _inventory(home=None):
         pass  # Hermes is not installed.
     except (OSError, ValueError, TypeError, AttributeError, UnicodeError):
         return None, False
-    return found, True
+    return found, certain
+
+
+def _codex_config_off(codex):
+    """Whether Codex's own config enables no MemVane plugin (no config: Codex is not set up)."""
+    try:
+        return not _codex_enabled_markets(codex)
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError, TypeError, UnicodeError):
+        return False
 
 
 def latest_installed(*, home=None):

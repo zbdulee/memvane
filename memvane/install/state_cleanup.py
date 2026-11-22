@@ -9,7 +9,8 @@ never touched.
 The preview writes nothing. A removal holds the install lock and the sync
 owner of that install without waiting, classifies it again, renames the
 directory aside and deletes the renamed tree; a tree that could not be deleted
-stays under its ``.removing-`` name for the next run.
+stays under its ``.removing-`` name and the next run lists and removes it
+(``installs/.removing-<id>``, and beside a root ``memvane.removing-<pid>``).
 """
 from __future__ import annotations
 
@@ -225,7 +226,7 @@ def _rename_and_delete(base, directory, aside):
             try:
                 os.unlink(path)
             except OSError:
-                pass
+                pass  # Ignored: what stays is an empty socket name no install answers on.
     return reason is None, reason
 
 
@@ -237,8 +238,12 @@ def _project(directory):
     return route.get('projectRoot') if route else None
 
 
-def cleanup(home=None, *, approve=False, owner=_owner):
-    """Released installs: the preview rows, and with ``approve`` their removal."""
+def cleanup(home=None, *, approve=False, only=None, owner=_owner):
+    """Released installs: the preview rows, and with ``approve`` their removal.
+
+    ``only`` is the previewed list the owner approved: an install that became
+    removable since is left and reported as ``not_previewed``.
+    """
     base = memvane_paths.state_base(home)
     rows = _rows(base)
     if not approve:
@@ -248,6 +253,10 @@ def cleanup(home=None, *, approve=False, owner=_owner):
         if row['action'] != 'remove':
             continue
         name = row['install']
+        if only is not None and name not in only:
+            row['action'] = 'kept'
+            failed.append({'install': name, 'reason': 'not_previewed'})
+            continue
         if name.startswith(REMOVING):
             reason = _delete(base / 'installs' / name)
             done = reason is None
@@ -276,15 +285,33 @@ def _roots(home=None):
             ('cache', home.joinpath('Library', 'Caches', name) if darwin else home.joinpath('.cache', name))]
 
 
-def cleanup_everything(home=None, *, approve=False):
-    """Every per-user root: the preview rows, and with ``approve`` their removal."""
+def _leftovers(path):
+    """Trees an interrupted removal of this root left beside it (``memvane.removing-<pid>``)."""
+    prefix = path.name + REMOVING
+    try:
+        names = sorted(name for name in os.listdir(path.parent) if name.startswith(prefix))
+    except OSError:
+        return []
+    return [path.parent / name for name in names if _own_directory(path.parent / name)]
+
+
+def cleanup_everything(home=None, *, approve=False, only=None):
+    """Every per-user root: the preview rows, and with ``approve`` their removal.
+
+    ``only`` is the previewed list of paths the owner approved.
+    """
     rows = []
-    for kind, path in _roots(home):
+    places = [(kind, root, path) for kind, root in _roots(home) for path in (root, *_leftovers(root))]
+    for kind, root, path in places:
         if not os.path.lexists(path):
             continue
+        aside = path != root
         # Only a real directory of this user at the documented place is ever a target.
-        safe = _own_directory(path) and path.name == memvane_paths.NAME and Path(os.path.realpath(path)) == path
+        safe = _own_directory(path) and Path(os.path.realpath(path)) == path and (
+            aside or path.name == memvane_paths.NAME)
         row = {'root': kind, 'path': str(path), 'action': 'remove' if safe else 'keep'}
+        if aside:
+            row['reason'] = 'interrupted_removal'
         if safe:
             row['bytes'], complete = _size(path)
             if not complete:
@@ -301,11 +328,18 @@ def cleanup_everything(home=None, *, approve=False):
                 failed.append({'root': row['root'], 'reason': 'unsafe_root'})
             continue
         path = Path(row['path'])
+        if only is not None and row['path'] not in only:
+            row['action'] = 'kept'
+            failed.append({'root': row['root'], 'reason': 'not_previewed'})
+            continue
         aside = path.with_name(path.name + REMOVING + str(os.getpid()))
         try:
-            # Renamed first: a running service sees its root gone and drains instead of writing into the tree.
-            os.rename(path, aside)
-            reason = _delete(aside)
+            if row.get('reason') == 'interrupted_removal':
+                reason = _delete(path)
+            else:
+                # Renamed first: a running service sees its root gone and drains instead of writing into the tree.
+                os.rename(path, aside)
+                reason = _delete(aside)
         except OSError as exc:
             reason = type(exc).__name__
         if reason is None:
