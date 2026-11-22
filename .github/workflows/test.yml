@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# A newer push to the same ref replaces the run still queued or in progress for it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Linux: a pull request runs Node 22 only; a push to main runs every Node version.
   test:
