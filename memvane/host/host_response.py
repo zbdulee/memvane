@@ -1163,8 +1163,8 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
                 external = laya_external_edits.notify(
                     outside, cwd=current, host=host, origin=decision['projectRoot'])
                 _trace_fields(external_edits=external)
-                if inside:
-                    _request_selected_sync(action, decision, proof)
+                if inside:  # The inside part queued the wake: the row says so, as a plain inside edit does.
+                    _request_selected_sync(action, decision, proof);_trace_final('sync_requested')
                 return {}
         elif action != "file-change-event" and payload.get("hook_event_name") != "SessionStart":
             _fail("invalid_session_event")

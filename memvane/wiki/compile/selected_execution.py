@@ -80,7 +80,9 @@ def _run(project: Path):
         if idle:
             # A lifecycle pass that left nothing to compile skips the worker.
             return {'state': 'drained', 'processed': 0}
-    # What this pass has to work off, counted before the worker recovers and claims.
+    # What this pass has to work off, counted before the worker recovers and claims. Events
+    # the worker only then recovers into rows are not in it, so a first pass over more
+    # recoveries than one run settles reads as no progress once (one attempt, a 5-second backoff).
     before = _backlog(project, source, bound)
     from memvane.kernel.bundle_paths import entry_argv
     proc = subprocess.run(

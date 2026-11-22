@@ -176,6 +176,38 @@ class CompileLoop(FixtureCase):
         self.assertEqual(len(self.calls), 1)
 
     # -- what still runs again --------------------------------------------------------
+    def finished(self, reason):
+        """``process_job_settled`` for a job that ended done and not kept with ``reason``."""
+        def ended(root, config, compile_cfg, job, **_kwargs):
+            worker.bounded_failure('skipped', job, reason)
+            return True, False, []
+        with patch.object(worker, 'process_job', side_effect=ended):
+            worker.process_job_settled(self.root, self.config, self.config['compile'], {'source': {'path': SOURCE}})
+        return {key: value['reason'] for key, value in self.settled().items()}
+
+    def test_a_settlement_names_why_the_event_ended_or_says_not_refreshed(self):
+        event = self.edit()
+        # A reason that only happened to be the job's last report is not why the event ended.
+        for reported in ('cards_per_source_cap', 'selected', 'something_new'):
+            self.assertEqual(self.finished(reported), {event['eventId']: 'not_refreshed'}, reported)
+        for reported in ('verify_inconclusive_suppressed', 'source_unreadable', 'unknown_host_exhausted',
+                         'writer_rejected'):
+            self.assertEqual(self.finished(reported), {event['eventId']: reported})
+
+    def test_a_job_that_tried_nothing_of_the_pending_content_settles_nothing(self):
+        self.edit()
+        for reported in ('initial_backfill_already_settled', 'initial_backfill_source_changed',
+                         'invalid_fallback_attempt_receipt', 'delete_proof_invalid', 'source_reappeared'):
+            self.assertEqual(self.finished(reported), {}, reported)
+
+    def test_an_event_of_a_source_that_is_no_longer_compiled_is_settled_without_a_job(self):
+        event = self.edit()
+        # The collection or role changed since the edit: no job can be made for the source.
+        with patch.object(worker, '_source_record', return_value=None):
+            self.assertEqual(self.selected_pass()['state'], 'drained')
+            self.assert_attempted_once(event, calls=0, reason='not_a_compile_source')
+        self.assertEqual(self.queued(), [])
+
     def test_a_new_edit_of_the_same_source_is_attempted_again(self):
         first = self.edit()
         self.selected_pass()

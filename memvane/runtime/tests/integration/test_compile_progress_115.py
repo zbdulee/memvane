@@ -87,6 +87,22 @@ class ProductiveCompileWake(FixtureCase):
         self.run_once(lambda row: True, 4000)
         self.assertEqual((self.streak(), self.queue.pending()), ([], []))
 
+    def test_an_uncounted_outcome_in_between_does_not_start_the_streak_over(self):
+        # W1c r2 review F-9: a backlog that is put back every pass, with the compile run lock
+        # held by another process once in a while, still reaches the cap.
+        self.queue.put('laya-compile', self.target, now=0)
+
+        def busy(row):
+            raise policy.DispatchFailure('target_deferred', detail='deferred:deferred:owner_busy')
+        wall = 1000
+        for n in range(1, 7):
+            self.run_once(self.progress, wall)
+            wall = self.queue.pending()[0]['due']
+            if n % 2 == 0:
+                self.run_once(busy, wall)
+                wall = self.queue.pending()[0]['due']
+        self.assertEqual((self.streak(), self.queue.pending()[0]['attempts']), ([6], 0))
+
     def test_the_streak_rule_is_the_policy_alone(self):
         error = policy.DispatchFailure('target_deferred', detail='deferred:pending:compile_progress')
         cap = policy.COMPILE_PROGRESS_STREAK_CAP

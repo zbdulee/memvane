@@ -203,6 +203,24 @@ class SelectedActions(HostInstallCase):
         self.assertEqual(self.serve('index', self.edit('notes/heron.md', is_error=True)), {})
         self.assertEqual(self.wakes.calls, [])
 
+    def test_an_edit_of_files_inside_and_outside_the_project_records_its_sync_request(self):
+        # W3c review F-1: the row of a mixed edit says the wake was queued, as an inside edit's does.
+        patch = {'hook_event_name': 'PostToolUse', 'tool_name': 'apply_patch', 'tool_input': {'patch': (
+            '*** Begin Patch\n*** Update File: notes/heron.md\n*** Update File: ../outside.md\n*** End Patch')}}
+        rows = {}
+        for name, payload in (('inside', self.edit('notes/heron.md')), ('mixed', patch),
+                              ('outside', self.edit('../outside.md'))):
+            self.wakes.calls.clear()
+            before = len(self.install.events())
+            self.assertEqual(self.main('index', payload)[0], 0)
+            row = [event for event in self.install.events()[before:] if event.get('event') == 'index'][-1]
+            rows[name] = (row.get('outcome'), row.get('reason'), 'external_edits' in row,
+                          'laya-sync' in self.wakes.kinds())
+        self.assertEqual(rows['inside'], ('ok', 'sync_requested', False, True))
+        self.assertEqual(rows['mixed'], ('ok', 'sync_requested', True, True))
+        # An edit outside alone queues no wake of this project and names no request.
+        self.assertEqual(rows['outside'][1:], (None, True, False))
+
     def test_gate_and_posttool_accept_project_and_external_edits(self):
         for action, event in (('gate', 'PreToolUse'), ('posttool', 'PostToolUse')):
             for rel in ('notes/heron.md', '../outside.md'):

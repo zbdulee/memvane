@@ -364,7 +364,8 @@ def drain(queue,*,execute,on_drop=None,on_stall=None,ready=None,clock=time.monot
                 if step.get('drop'):_record_drop(queue.root,row,step,error,wall(),on_drop=on_drop)
                 if not missing or step['ack']:_clear_missing(queue.root,row['id'])
                 if not preparing or step['ack']:_clear_missing(queue.root,row['id'],PREPARING_FILE)
-                if not progressing or step['ack']:_clear_missing(queue.root,row['id'],PROGRESS_FILE)
+                # An uncounted outcome in between (owner busy, target preparing) is no verdict on the backlog: the streak stays.
+                if step['ack'] or (not progressing and step['count']):_clear_missing(queue.root,row['id'],PROGRESS_FILE)
                 if step.get('stalled'):_record_stall(queue.root,row,waiting,step,wall(),on_stall=on_stall)
                 if step['ack']:
                     # Revision-scoped ACK: a wake re-put while running survives, re-pended.

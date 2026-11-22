@@ -1369,6 +1369,19 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
     return True
 
 
+# Ends of a job that tried nothing of the pending content (a backfill or delete row
+# that won the dedup over the recover row): the event stays for the next recovery.
+_NOT_AN_ATTEMPT = frozenset(('initial_backfill_already_settled', 'initial_backfill_source_changed',
+                             'invalid_fallback_attempt_receipt', 'delete_proof_invalid', 'source_reappeared'))
+# The reasons a settlement is recorded with. ``bounded_failure`` also reports reasons that
+# do not say why the event ended (``cards_per_source_cap`` beside a finished write, an
+# engine's ``selected``): those are recorded as ``not_refreshed``.
+_SETTLING = frozenset(('not_refreshed', 'verify_inconclusive_suppressed', 'source_unreadable', 'invalid_source_scope',
+                       'unsafe_source_path', 'missing_source_path', 'missing_extractor', 'missing_candidates',
+                       'extractor_unavailable', 'writer_rejected', 'unknown_host_exhausted',
+                       'source_folder_excluded', 'already_compiled_revision'))
+
+
 def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, *,
                         checkout=None) -> tuple[bool, bool, list[str]]:
     """``process_job``, then settle the refresh event a finished job left unresolved.
@@ -1387,7 +1400,7 @@ def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, 
         reason = _LAST_REASON.get()
     finally:
         _LAST_REASON.reset(token)
-    if result[0] and not result[1]:
+    if result[0] and not result[1] and reason not in _NOT_AN_ATTEMPT:
         raw_source = job.get("source")
         rel = raw_source.get("path") if isinstance(raw_source, dict) else None
         pending = wiki_freshness.latest_unresolved_pending(root, rel) if isinstance(rel, str) and rel else None
@@ -1399,13 +1412,23 @@ def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, 
                 sha = snapshot.get('sha256') if isinstance(snapshot, dict) else None
             # Ignored on failure (rule 3): the event only stays unsettled, the
             # next pass tries the source once more and writes the record again.
-            refresh_settlement.settle(root, pending, sha, reason or 'not_refreshed')
+            refresh_settlement.settle(root, pending, sha, reason if reason in _SETTLING else 'not_refreshed')
     return result
 
 
 def _unsettled_refreshes(root: Path) -> list[dict]:
     from memvane.wiki.compile import refresh_settlement
     return refresh_settlement.unsettled(root, wiki_freshness.unresolved_pending_refreshes(root))
+
+
+def _settle_unrecoverable(root: Path, pending: dict) -> None:
+    from memvane.wiki.compile import refresh_settlement
+    rel = pending.get("sourcePath")
+    if not isinstance(rel, str) or not rel or '..' in Path(rel).parts:
+        return
+    snapshot = wiki_freshness.snapshot_file((root / rel).resolve())
+    sha = snapshot.get('sha256') if isinstance(snapshot, dict) else None
+    refresh_settlement.settle(root, pending, sha, 'not_a_compile_source')
 
 
 def recover_pending_refreshes(root: Path, config: dict, queue: Path) -> int:
@@ -1421,6 +1444,11 @@ def recover_pending_refreshes(root: Path, config: dict, queue: Path) -> int:
             pending.get("engine", settings_types.UNKNOWN_ENGINE),
         )
         if record is None:
+            # No longer a compile source (collection or role changed, a denied or hidden
+            # path): no job will ever try it. Settled for this content, so the worker is
+            # not woken for it on every pass. Ignored on failure (rule 3): the next pass
+            # finds it unsettled and writes the record again.
+            _settle_unrecoverable(root, pending)
             continue
         # Recovery must not make the same unresolved event perpetually young on
         # every worker retry.  Its durable pending timestamp owns debounce age.
@@ -1717,9 +1745,9 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                              stale_lines=stale_lines)
     _run_verify_pass(root, config, compile_cfg, produced_targets=verify_targets)
     if attempt_budget.get('deferred') and remaining and selected_route is not None:
-        # Re-offer the existing kind for extractor-budget continuation. A new
-        # revision alone does not reset failures; completed/staleDropped below
-        # prove productive pending to the selected execution/wake policy.
+        # Re-offer the existing kind for extractor-budget continuation. Whether the
+        # pass made progress is the selected execution's count of what is left
+        # (rows and unsettled refresh events), not anything reported here.
         from memvane.wiki.workspace import api as wiki_selected_laya
         wiki_selected_laya.request_compile(root, selected_route)
     if args.json:
