@@ -287,6 +287,18 @@ class Lines(unittest.TestCase):
         rows = [self.request(logs_slo.SYNC_SECONDS + 1)]
         self.assertEqual(by_name(rows)['sync']['status'], 'over')
 
+    def test_sync_counts_published_passes_whose_linked_views_waited(self):
+        waiting = {'waiting': 2, 'held': 1, 'reasons': {'schema3_pass_budget': 2, 'worktree_missing': 1}}
+        rows = [self.sync_pass(900, 100, outcome='unchanged', linked=waiting),
+                self.sync_pass(800, 100, linked=dict(waiting, reasons={'schema3_pass_budget': 2})),
+                self.sync_pass(700, 100, linked={'waiting': 0, 'held': 1, 'reasons': {'worktree_missing': 1}}),
+                self.sync_pass(600, 100, outcome='failed', reason='target_deferred', linked=waiting),
+                self.sync_pass(500, 100, linked='2 views'), self.sync_pass(400, 100)]
+        line = by_name(rows)['sync']
+        self.assertEqual((line['linkedWaiting'], line['linkedReasons'], line['failedRun']),
+                         (2, {'schema3_pass_budget': 4, 'worktree_missing': 1}, 0))
+        self.assertNotIn('linkedWaiting', by_name([self.sync_pass(400, 100)])['sync'])
+
     def test_sync_failure_run_is_over_above_the_target_and_skips_progress_rows(self):
         failed = [self.sync_pass(500 - i, 100, outcome='failed', reason='target_deferred') for i in range(3)]
         rows = [self.sync_pass(900, 100)] + failed

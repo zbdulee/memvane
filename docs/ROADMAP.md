@@ -106,7 +106,7 @@ L2 후속 ── L3
 
 ### 1.0.x-1 연결 worktree view 대기의 실패 기록
 
-- **현재 동작.** main view가 게시된 pass도 연결 worktree view가 cold면 `schema3_linked_pending`으로 wake가 `failed target_deferred`가 되고 재시도 횟수가 쌓인다. service-engineering은 연결 view 2개가 stage만 있고 게시된 head가 없어 매 pass 이렇게 끝난다.
+- **현재 동작.** main view가 게시된 pass는 연결 worktree view가 기다려도 `wake.sync`가 `indexed`·`unchanged`로 기록되고 재시도 횟수가 쌓이지 않는다. 연결 view의 대기는 이벤트의 `linked` 필드(`waiting`·`held`·`reasons`)에 사유별 수로 남는다. `memvane:logs`의 SLO `sync` 줄이 그런 pass의 수(`linkedWaiting`)와 사유를 보인다. service-engineering의 연결 view 2개가 게시되지 않는 원인은 진단 전이다.
 - **목표.** main 게시는 성공으로 기록되고, 연결 view의 대기는 사유와 함께 따로 기록된다.
 - **범위.** wake 결과에서 main 게시와 연결 view 대기를 분리한다. `pending`에 사유를 채운다. `memvane:logs` 요약이 둘을 따로 센다. 연결 view가 끝내 게시되지 않는 원인을 service-engineering에서 진단한다.
 - **의존.** 없음. **크기.** S. **불변.** 없음.

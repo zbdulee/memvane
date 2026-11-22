@@ -47,7 +47,7 @@ With `--slo` the script prints service-level lines for the window (24 hours unle
 - `selector`: the selector's duration and the share of answers that ran out of their time.
 - `host <name>`: duration and semantic share per host.
 - `dedup`: the share of injected cards the same session had already been given (after its last compaction or clear; for a host that sends no such signal, within its last 20 served recalls), and the recalls the exclusion left empty.
-- `sync`: the trailing failed passes, and the time from a sync request to the end of the first pass that started after it and published; `unanswered` requests have no such pass yet. A request is a hook row that queued a sync (`reason` `sync_requested`); an edit outside the project or one that did not succeed queues none.
+- `sync`: the trailing failed passes, and the time from a sync request to the end of the first pass that started after it and published; `unanswered` requests have no such pass yet. A request is a hook row that queued a sync (`reason` `sync_requested`); an edit outside the project or one that did not succeed queues none. `linkedWaiting` counts the published passes of the window that left linked worktree views waiting, with their `linkedReasons`; it does not change the line's status.
 - `failed`: failed or refused rows that name no reason.
 - `learning`: stored cases, teacher answers and cycle outcomes in the window, since when the cycle has been put off, and cycle rows that name no reason.
 - `identity`: whether the device number recorded in the install's route is the current one. A moved number is expected after some restarts and is shown, not judged.
@@ -96,6 +96,8 @@ after one selector runtime failed and another counted it; this and every other
 and the `failure` codes.
 
 `index.build.progress` lines record the latest completed pass's stage and available ingest or vector counts. These are snapshots; when no recent line is available, `index-build-status` reports unknown counts rather than zero.
+
+A `wake.sync` line whose pass left linked worktree views without a current generation carries `linked`: `waiting` (the view or its vectors are still pending), `held` (refused until that checkout changes) and `reasons` (count per reason code). The pass itself is `indexed`/`unchanged` when the main view published; linked views alone never make it `failed`.
 
 A `wake.sync` line that settled compile intents carries `provenance`:
 `consumed` (verified cards whose compile evidence the sync recorded in the

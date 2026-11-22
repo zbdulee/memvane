@@ -320,6 +320,16 @@ def _sync(rows, window, now):
                       targetSeconds=SYNC_SECONDS)
     if waiting:
         values.update(unanswered=len(waiting), oldestUnansweredSeconds=round(max(waiting), 1))
+    held, held_reasons = 0, Counter()
+    for row in window:
+        linked = row.get('linked') if row.get('event') == 'wake.sync' and row.get('outcome') in SYNC_OK else None
+        if isinstance(linked, dict) and (_number(linked.get('waiting')) or 0) > 0:
+            # A pass that published the main view while linked worktree views still waited.
+            held += 1
+            held_reasons.update({str(key): value for key, value in (linked.get('reasons') or {}).items()
+                                 if _number(value)} if isinstance(linked.get('reasons'), dict) else {})
+    if held:
+        values.update(linkedWaiting=held, linkedReasons=dict(held_reasons.most_common(3)))
     stalled = count > SYNC_STREAK or (waiting and max(waiting) > SYNC_SECONDS)
     status = 'over' if stalled else _judge(len(delays), SYNC_FLOOR, delays and values['p95Seconds'] > SYNC_SECONDS)
     return _line('sync', status, len(delays), **values)
