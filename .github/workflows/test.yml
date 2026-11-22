@@ -6,12 +6,13 @@ on:
   pull_request:
 
 jobs:
+  # Linux: a pull request runs Node 22 only; a push to main runs every Node version.
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        node-version: [22, 24, 26]
+        node-version: ${{ github.event_name == 'pull_request' && fromJSON('[22]') || fromJSON('[22, 24, 26]') }}
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +27,41 @@ jobs:
         run: |
           node --version
           python3 --version
+          bash --version
+      - name: Run deterministic tests
+        run: npm run test:part${{ matrix.shard }}
+
+  # The product's platform: macOS arm64 with the system Python 3.9 that hooks run.
+  test-macos:
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Use the system Python 3.9
+        run: |
+          version="$(/usr/bin/python3 --version)"
+          echo "$version"
+          case "$version" in
+            "Python 3.9."*) ;;
+            *) echo "/usr/bin/python3 is not Python 3.9" >&2; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/system-python"
+          ln -s /usr/bin/python3 "$RUNNER_TEMP/system-python/python3"
+          echo "$RUNNER_TEMP/system-python" >> "$GITHUB_PATH"
+      - name: Verify runtime prerequisites
+        run: |
+          uname -m
+          node --version
+          python3 --version
+          test "$(python3 -c 'import sys; print(sys.version_info[:2])')" = "(3, 9)"
           bash --version
       - name: Run deterministic tests
         run: npm run test:part${{ matrix.shard }}
