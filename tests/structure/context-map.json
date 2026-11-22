@@ -1767,6 +1767,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/install/state_cleanup.py": {
+      "context": "install",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/learning/wiki_card_budget.py": {
       "context": "learning",
       "layer": "domain",

@@ -194,7 +194,10 @@ worker lease) then sleeps until the earliest due time, re-reading the queue at
 least every 15 seconds, and wakes a worker when a row falls due; it exits when
 the queue is empty (re-checking the queue after it released its lock, so a
 row backed off meanwhile re-arms a timer) and hands over to a successor after
-an hour. Any wake that
+an hour. When no host has MemVane enabled (every host record read, none
+enabling it, for `UNINSTALLED_GRACE_SECONDS`), the timer, a worker and the
+monitor end as `uninstalled` and arm no successor; the queued rows stay for a
+later install. Any wake that
 finds only backed-off rows arms it, so a retry runs on time without another
 hook or a running resident service. A hook, a recall's sync request (which
 pulls its row due) and the monitor below also start a worker once a row is

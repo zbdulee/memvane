@@ -18,6 +18,18 @@ def install_lock(parent):
     return implementation(parent)
 
 
+def state_cleanup(home=None, *, approve=False):
+    """Preview (and with ``approve`` remove) install state roots no project selects."""
+    from memvane.install.state_cleanup import cleanup as implementation
+    return implementation(home, approve=approve)
+
+
+def state_cleanup_everything(home=None, *, approve=False):
+    """Preview (and with ``approve`` remove) every per-user MemVane root; explicit request only."""
+    from memvane.install.state_cleanup import cleanup_everything as implementation
+    return implementation(home, approve=approve)
+
+
 def build_lookup(project_root):
     from memvane.install.initial_build import lookup as implementation
     return implementation(project_root)

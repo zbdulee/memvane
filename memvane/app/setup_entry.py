@@ -90,17 +90,52 @@ def _failure(exc):
     return result
 
 
+def _state_cleanup(argv):
+    """``state-cleanup``: list what a cleanup would remove; remove it only with the approval flag.
+
+    Default scope: released install state roots and unused embedding runtime
+    generations. ``--all-state`` is the explicit "delete everything" request.
+    """
+    parser = argparse.ArgumentParser(prog='setup.py state-cleanup')
+    parser.add_argument('--approve-state-cleanup', action='store_true')
+    parser.add_argument('--all-state', action='store_true')
+    args = parser.parse_args(argv)
+    approve = args.approve_state_cleanup
+    try:
+        if approve:
+            from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
+            require_cached_plugin_for_live_write()
+        from memvane.install import api as product
+        if args.all_state:
+            result = product.state_cleanup_everything(approve=approve)
+        else:
+            result = product.state_cleanup(approve=approve)
+            try:
+                from memvane.provider import api as laya_embed_runtime
+                runtime = laya_embed_runtime.collect(approve=approve)
+                runtime.pop('dependencyClosure', None)
+            except Exception as exc:  # No runtime on this machine: nothing of it to collect.
+                runtime = {'status': 'unavailable', 'reason': str(exc), 'changesApplied': 0}
+            result['indexRuntime'] = runtime
+            result['changesApplied'] += runtime.get('changesApplied', 0)
+            # Either half left something behind: the whole command says so.
+            if approve and runtime.get('status') in ('blocked', 'partial') and result['status'] == 'collected':
+                result['status'] = 'partial'
+    except Exception as exc:
+        result = _failure(exc)
+    print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+    return 1 if result.get('status') in ('rejected', 'blocked', 'partial') else 0
+
+
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ['state-cleanup']: return _state_cleanup(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('plan-learning-profile','activate-learning-profile',
-                                          'activate-learning-runtime',
-                                          'gc-index-runtime',
-                                          'plan-fresh-wiki-origin',
-                                          'index-runtime-status', 'provision-index-runtime',
-                                          'review-index-provider',
-                                          'prepare-fresh-wiki-origin',
-                                          'index-origin-status',
-                                          'index-build-status','index-build-rescan',
+                                          'activate-learning-runtime', 'gc-index-runtime',
+                                          'plan-fresh-wiki-origin', 'index-runtime-status', 'provision-index-runtime',
+                                          'review-index-provider', 'prepare-fresh-wiki-origin',
+                                          'index-origin-status', 'index-build-status','index-build-rescan',
                                           'finalize-index-origin',
                                           'activate-index-origin','recover-index-origin',
                                           'restore-index-origin',

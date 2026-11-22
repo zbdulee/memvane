@@ -30,6 +30,16 @@ live `v1/`에 쓰는 setup·writer·wake 큐·sync owner lock·resident service�
 
 `runtime_wake_cancel.py`는 프로젝트의 `laya-sync` 빌드 wake 행을 읽기 전용으로 보여 준다(`build-wake-status`). 큐 읽기는 runtime api `wake_cancel_status`가 한다. 1.0에는 wake 행을 지우는 취소 명령이 없다.
 
+## state 정리
+
+`state_cleanup.py`(`install.api.state_cleanup`·`state_cleanup_everything`, setup action `state-cleanup`)는 사용자 state의 미리보기와 승인 삭제를 맡는다. 미리보기는 아무것도 쓰지 않는다.
+
+- 기본 범위는 `installs/`의 설치 state root다. 설치의 `route.json`이 가리키는 프로젝트 폴더가 있고 그 폴더의 `route.json`·`selection.json`이 이 state root를 가리키지 않으며 `initial-builds` 포인터도 없을 때만 `remove released`다. `selected`, `building`, `project_unreachable`(프로젝트 폴더가 없다. 분리된 볼륨일 수 있다), `pointer_unreadable`, `build_pointer_unreadable`, `unrecognized`는 남긴다.
+- 삭제는 그 설치의 `install_lock`과 sync owner를 비대기로 잡고 분류를 다시 확인한 뒤 `installs/.removing-<id>`로 rename하고 `kernel/safe_rmtree`로 지운다(`vector-cache/`는 설치와 함께 sync owner 아래에서 사라진다). lock을 잡지 못하면 `busy`로 남기고, 지우다 멈춘 `.removing-*`은 다음 실행이 지운다.
+- `state_cleanup_everything`은 사용자가 전부 삭제를 명시해 요청했을 때만 쓰는 범위다. state(`~/.local/state/memvane`)·지원·캐시 루트가 본인 소유의 실제 디렉터리일 때만 rename 뒤 지운다. resident service는 service root가 사라져 스스로 drain한다.
+- 삭제가 유일한 효과이므로 남은 것은 `failed`에 사유와 함께 싣고 `partial`로 끝낸다. 프로젝트의 `.memvane/`과 `~/.config/memvane`은 어느 범위에서도 건드리지 않는다.
+- 임베딩 runtime 세대 정리(`provider.api.collect`)는 app 층의 setup 진입점이 같은 결과의 `indexRuntime`에 합친다.
+
 ## 온보딩 use case
 
 plan·prepare·finalize·activate·recover·restore는 모두 `install.api`에 있다. 설치 ledger(`ledger.json`, `memvane-install-ledger-v1`)는 install만 쓴다(`application/onboarding_activation.py`의 finalize·activate, `application/onboarding_restore.py`의 restore). finalize는 원문 관측(`wiki.intake.api.schema3_wiki_cards`·`schema3_sources`)을 직접 부르고, 위 층의 sync dispatch 확인 하나만 `resolve_sync_target` keyword port로 받는다. `activate_origin_selection`·`recover_origin_selection`은 호출자가 state root의 `install_lock`을 쥔 채 부르고, `select_origin`은 route를 읽고 그 lock을 직접 잡는 CLI용 입구다.
