@@ -34,7 +34,7 @@ Files kept next to this record:
 | P1 static | NOT RUN | `<CI run URL>` | tier table compared on `<YYYY-MM-DD>` |
 | P2 focused | NOT RUN | `<guard run ids>` | Python 3.13 and 3.9 |
 | P3 PR CI | NOT RUN | `<run URL>` | macOS job: `<result>` |
-| P4 full suite | NOT RUN | `<three guard run ids>` | |
+| P4 full suite | NOT RUN | `<four guard run ids>` | |
 | P5 real model | NOT RUN | `<guard run id>` | |
 | P6 independent review | NOT RUN | `<review document>` | |
 

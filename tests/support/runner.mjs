@@ -17,12 +17,14 @@
 // least 60 s; 180 s without a record; all times the run's load scale
 // (timing.mjs). With MEMVANE_TEST_RESULTS set, each
 // module appends one JSON line {module, status, seconds, commit, scale} to that file.
+// With MEMVANE_TEST_PART=<k>/<n> only the modules of that part run (parts.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { partFilter } from './parts.mjs';
 import { fixtureEnv, fixtureHome, removeTemp } from './temp.mjs';
 import { timeScale } from './timing.mjs';
 
@@ -151,6 +153,11 @@ export function runModule(file, { root = ROOT, timeoutMs, label = file } = {}) {
     for (const { pid } of left) {
       try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
     }
+    if (r.error && r.error.code === 'ETIMEDOUT') {
+      // Three times the recorded duration: a module that grew needs a new record.
+      assert.fail(`${label} ran past its ${Math.round(timeoutMs / 1000)} s limit `
+        + '(tests/support/durations.json; scripts/test_durations.py rewrites it from a run\'s module results)');
+    }
     assert.ifError(r.error);
     assert.equal(r.signal, null, `${label} killed by ${r.signal}`);
     // Python 3.12+ exits 5 when a module holds no test yet (a skeleton).
@@ -167,6 +174,7 @@ export function runModule(file, { root = ROOT, timeoutMs, label = file } = {}) {
 
 export function runDomain({ domain, tiers = ['unit', 'integration'] }) {
   const durations = recordedDurations();
+  const inPart = partFilter(process.env.MEMVANE_TEST_PART, durations);
   // Once per test file: the scale every wait and timeout of this run is multiplied by.
   process.stderr.write(`[tests] ${domain}: load scale ${timeScale()}\n`);
   for (const tier of tiers) {
@@ -176,8 +184,7 @@ export function runDomain({ domain, tiers = ['unit', 'integration'] }) {
       test(`${domain} ${tier} python tests`, { skip: 'tier absent' }, () => {});
       continue;
     }
-    for (const file of modules) {
-      // The name starts `<domain> <tier> python `: package.json's part3 skips by it.
+    for (const file of modules.filter(inPart)) {
       const label = `${domain} ${tier} python ${relative(start, file)}`;
       test(label, () => runModule(file, { timeoutMs: moduleTimeoutMs(durations[file], timeScale()), label }));
     }
