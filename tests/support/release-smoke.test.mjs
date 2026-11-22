@@ -15,7 +15,7 @@ for (const module of ['tests.support.test_smoke_fixture', 'tests.support.test_re
     const fixture = fixtureHome('mvq');
     try {
       const r = spawnSync('python3', ['-B', '-m', 'unittest', module, '-v'],
-        { cwd: ROOT, encoding: 'utf8', timeout: scaled(300000), env: fixtureEnv(fixture) });
+        { cwd: ROOT, encoding: 'utf8', timeout: Math.ceil(scaled(300000)), env: fixtureEnv(fixture) });
       if (r.stderr) process.stderr.write(r.stderr.slice(-12000));
       assert.ifError(r.error);
       assert.equal(r.signal, null);

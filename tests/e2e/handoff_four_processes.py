@@ -130,16 +130,18 @@ class Handoff(unittest.IsolatedAsyncioTestCase):
                     running.append(subprocess.Popen([sys.executable,'-B',str(old/'entry/run.py'),role,
                         str(home),str(old),str(new)], env=env, stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True))
-                await wait_until_async(lambda:all((home/name).exists() for name in
-                    ('timer-old','monitor-old','resident-old','worker-old')), timeout=30)
+                # Each process writes its pid after creating the file: wait for the digits, not the name.
+                await wait_until_async(lambda:all((home/name).exists() and (home/name).read_text().strip().isdigit()
+                    for name in ('timer-old','monitor-old','resident-old','worker-old')), timeout=30)
                 old_worker = int((home/'worker-old').read_text())
                 old_pids = {int((home/name).read_text()) for name in
                             ('timer-old','monitor-old','resident-old','worker-old')}
                 self.assertEqual(len(old_pids), 4)
                 (home/'switch').write_text('switch')
                 await wait_until_async(lambda:all((home/name).exists() for name in
-                    ('timer-old-done','monitor-old-done','resident-old-done',
-                     'timer-new','monitor-new','resident-new','worker-new')), timeout=45)
+                    ('timer-old-done','monitor-old-done','resident-old-done')) and all(
+                    (home/name).exists() and (home/name).read_text().strip().isdigit() for name in
+                    ('timer-new','monitor-new','resident-new','worker-new')), timeout=45)
                 for process in running:
                     self.assertEqual(process.wait(timeout=5), 0, process.stderr.read())
                 self.assertNotEqual(old_worker, int((home/'worker-new').read_text()))
