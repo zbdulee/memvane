@@ -476,6 +476,9 @@ const TOOL_CALLS = [
     /\[uv,'python','install',PYTHON_PIN,'--install-dir'/, 'uv python install of the exact pinned version'],
   ['memvane/learning/context_learning/runtime_installer.py',
     /\[uv,'pip','sync',lock,'--python',/, 'uv pip sync of the hashed lock'],
+  // The release smoke (a maintenance tool) checks the pinned model address from the smoke account.
+  ['scripts/release_smoke.py', /'curl -sIL -o \/dev\/null/, 'the header check of the pinned model address'],
+  ['scripts/release_smoke.py', /curl -sfL -o "\$f" %s/, 'the fetch of the pinned model address, hash-compared by its caller'],
 ];
 const DOWNLOADERS = /https?\.(?:request|get)\(|urllib\.request\.Request|build_opener|['"]tool['"],\s*['"]install|['"](?:fetch|pull)['"]|urlopen|urlretrieve|hf_hub_download|snapshot_download|requests\.(?:get|post)|http\.client|\bcurl\b|\bwget\b|\bnpx\b|['"]clone['"]|pip['"]?,?\s*['"]?install|npm['"]?,?\s*['"]?install|['"]ci['"]|['"]python['"],\s*['"]install|['"]pip['"],\s*['"]sync|brew install/;
 

@@ -10,7 +10,7 @@ import { scaled } from './timing.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-for (const module of ['tests.support.test_smoke_fixture']) {
+for (const module of ['tests.support.test_smoke_fixture', 'tests.support.test_release_smoke']) {
   test(`release smoke python ${module}`, () => {
     const fixture = fixtureHome('mvq');
     try {
