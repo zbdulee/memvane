@@ -281,11 +281,89 @@ class SelfCheck(WriterCase):
                 report = self.run_pass(add=True)
             self.assertEqual((report['skipped'], report['compacted'], report['appendRows']),
                              ('write_unavailable', False, 0))
-            with mock.patch.object(types, 'GLOBAL_BYTES', 0):
-                report = self.run_pass()
-            self.assertEqual((report['skipped'], report['compacted']), ('quota', False))
         self.assertEqual(opened, [])
         self.assertEqual({path.name: path.read_bytes() for path in self.directory.iterdir()}, before)
+
+    def test_a_compaction_is_not_held_back_by_the_quota_and_the_pass_goes_on_catching_up(self):
+        # Most rows are dead and all installs together are at their bound: the copy only frees bytes.
+        self.filled(count=8)
+        for index in range(2, 8):
+            del self.store.sets[sha(index)]
+        self.store.put(20, count=1)
+        own = sum(path.stat().st_size for path in self.directory.iterdir())
+        os.utime(self.directory / arena.CURRENT, (1000, 1000))
+        with mock.patch.object(types, 'GLOBAL_BYTES', own + 100):
+            report = self.run_pass()
+        self.assertEqual((report['compacted'], report['catchupRows'], report['remaining'], report['skipped'],
+                          report['deadRows']), (True, 1, 0, None, 0))
+        self.assertGreater(os.stat(self.directory / arena.CURRENT).st_mtime, 1000)
+
+    def test_zeroed_rows_of_a_set_that_is_no_longer_live_are_not_left_between_the_sets(self):
+        vec, _idx = self.filled(count=6)
+        del self.store.sets[sha(3)]
+        raw = bytearray(vec.read_bytes())
+        raw[4096 + 3 * 2 * 8:4096 + 4 * 2 * 8] = b'\0' * 16  # The dead set's rows, zeroed on disk.
+        vec.write_bytes(bytes(raw))
+        report = self.run_pass()
+        self.assertEqual((report['compacted'], report['repaired'], report['deadRows'], report['remaining']),
+                         (True, 0, 0, 0))
+        self.assertEqual(self.pair()[0].stat().st_size, 4096 + 5 * 2 * 8)
+        # A dead set whose rows are what was written stays until the ordinary bound.
+        del self.store.sets[sha(4)]
+        self.assertFalse(self.run_pass()['compacted'])
+
+    def failing_fsync(self, fail_from):
+        """An ``os.fsync`` stand-in that fails from its ``fail_from``-th call on."""
+        real, calls = os.fsync, []
+
+        def fsync(fd):
+            calls.append(fd)
+            if len(calls) >= fail_from:
+                raise OSError(5, 'Input/output error')
+            real(fd)
+        return mock.patch.object(writer.os, 'fsync', side_effect=fsync)
+
+    def test_a_pass_that_fails_after_the_switch_keeps_the_new_pair_and_the_next_pass_removes_the_old_one(self):
+        self.filled(count=6)
+        for index in range(2, 6):
+            del self.store.sets[sha(index)]
+        old = self.current()['nonce']
+        open_before = self.descriptors()
+        # The activation syncs the vec, the idx and current.json, renames, then syncs the directory.
+        with self.failing_fsync(5):
+            report = self.run_pass()
+        self.assertEqual(report['skipped'], 'write_unavailable')
+        self.assertEqual(self.descriptors(), open_before)
+        new = self.current()['nonce']
+        self.assertNotEqual(new, old)
+        names = sorted(path.name for path in self.directory.iterdir())
+        self.assertEqual(names, sorted([arena.CURRENT, *arena.names(old), *arena.names(new)]))
+        # The pair current.json names is whole: a recall answers from it.
+        self.assertEqual(self.cover(), ({sha(0): (0, 2), sha(1): (2, 2)}, [], 0))
+        report = self.run_pass()
+        self.assertEqual((report['skipped'], report['rebuilt'], report['remaining']), (None, False, 0))
+        self.assertEqual(sorted(path.name for path in self.directory.iterdir()),
+                         sorted([arena.CURRENT, *arena.names(new)]))
+
+    def test_a_new_arena_that_cannot_be_made_leaves_nothing_behind(self):
+        self.store.put(1)
+        open_before = self.descriptors()
+        real = os.open
+
+        def second_fails(path, flags, *args, **kwargs):
+            if flags & os.O_CREAT and str(path).endswith('.idx'):
+                raise OSError(28, 'No space left on device')
+            return real(path, flags, *args, **kwargs)
+        with mock.patch.object(writer.os, 'open', side_effect=second_fails):
+            report = self.run_pass()
+        self.assertEqual((report['skipped'], list(self.directory.iterdir()), self.descriptors()),
+                         ('write_unavailable', [], open_before))
+        # The pair is written but cannot be made the active one.
+        with self.failing_fsync(1):
+            report = self.run_pass()
+        self.assertEqual((report['skipped'], list(self.directory.iterdir()), self.descriptors()),
+                         ('write_unavailable', [], open_before))
+        self.assertEqual(self.run_pass()['catchupRows'], 1)
 
     def test_a_reader_that_mapped_the_old_pair_reads_it_to_its_end_across_a_compaction(self):
         self.filled(count=4)
@@ -424,6 +502,35 @@ class Skipped(WriterCase):
         self.assertEqual(self.cover()[0], {})
         again = self.run_pass()
         self.assertEqual((again['skipped'], again['catchupRows'], again['remaining']), (None, 4, 0))
+
+    def test_sets_the_store_cannot_read_count_toward_the_bounds_of_a_pass(self):
+        for index in range(6):
+            self.store.put(index)
+            self.store.unreadable.add(sha(index))
+        with mock.patch.object(types, 'PASS_VECTORS', 2):
+            report = self.run_pass(add=True)
+        # Two sets asked by the catch-up and two ahead of a publication: not all six, twice.
+        self.assertEqual((len(self.store.reads), report['unreadable'], report['skipped']), (4, 4, 'set_unreadable'))
+        self.store.reads.clear()
+        ticks = iter(range(0, 10000, 10))
+        made = writer.Writer(self.directory, clock=lambda: next(ticks), **SPEC)
+        self.addCleanup(made.close)
+        made.start(self.store.live, self.store.read)
+        self.assertEqual(len(self.store.reads), 1)  # An expired pass still asks one.
+
+    def test_sets_a_publication_leaves_behind_are_left_to_the_catch_up(self):
+        self.store.put(1)
+        with mock.patch.object(types, 'PASS_VECTORS', 4):
+            made = writer.Writer(self.directory, **SPEC)
+            self.addCleanup(made.close)
+            made.start(self.store.live, self.store.read)
+            for index in range(10, 14):
+                self.store.put(index, count=2)
+            made.add(self.store.live, self.store.read)
+        report = made.summary()
+        self.assertEqual((report['catchupRows'], report['appendRows'], report['remaining'], report['skipped']),
+                         (1, 4, 2, None))
+        self.assertGreaterEqual(report['ms'], 0)
 
     def test_sets_the_store_cannot_read_are_skipped_once_the_rest_is_in(self):
         for index in range(3):

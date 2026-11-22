@@ -24,9 +24,11 @@ truncated or rewritten in place; a recall that mapped it reads it to its end.
 The same holds for rows whose bytes no longer match their record's crc: the
 set is read again from the store and the pair is replaced in that pass.
 
-A compaction first asks the quota and the disk for the bytes of the copy; a
-pair that does not become the active one is closed and removed, so a pass
-that fails leaves no file and no descriptor behind.
+A compaction first asks the disk for the bytes of the copy (not the quota:
+the copy is never larger than the pair it replaces). A pair that does not
+become the active one is closed and removed, so a pass that fails leaves no
+file and no descriptor behind; an old pair left by a pass that failed after
+its switch is removed when the next pass opens the arena.
 
 The whole arena is replaced only when its identity is not this store's and
 vector spec's (or its format number is lower). A higher format number is
@@ -56,10 +58,6 @@ _OWNED_FILE = re.compile(r'(current\.json(\.[0-9a-f]{32}\.tmp)?|arena-[0-9a-f]{3
 _NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
 _CLOEXEC = getattr(os, 'O_CLOEXEC', 0)
 _DIRECTORY = getattr(os, 'O_DIRECTORY', 0)
-
-
-class _Skipped(Exception):
-    """The pass stops here; its report already says why."""
 
 
 def _write(fd, data):
@@ -114,13 +112,13 @@ class Writer:
         self._others = None  # Bytes of the other installs' arenas, counted once per pass.
         self._add_rows, self._add_deadline = types.PASS_VECTORS, None
         self._report = dict(rebuilt=False, compacted=False, repaired=0, catchupRows=0, appendRows=0,
-                            unreadable=0, skipped=None)
+                            unreadable=0, skipped=None, ms=0.0)
 
     # ------------------------------------------------------------------ the pass
 
     def start(self, live, read):
         """Prepare the arena, check it against ``live``, compact it and catch up; never raises OSError."""
-        self._wanted = set(live)
+        self._wanted, began = set(live), self._clock()
         try:
             if not self._prepare():
                 return
@@ -130,29 +128,36 @@ class Writer:
                 self._compact()
             self._append(live, read, types.PASS_VECTORS, self._clock() + types.PASS_SECONDS, 'catchupRows')
             os.utime(CURRENT, dir_fd=self._dfd)  # The install's last use, read by other installs' quota.
-        except _Skipped:
-            pass
         except OSError:
             self._report['skipped'] = 'write_unavailable'
+        finally:
+            self._report['ms'] += (self._clock() - began) * 1000
 
     def add(self, live, read):
         """Append the live sets the arena does not hold yet, inside the pass's own bound."""
-        if (self._vec is None or self._untracked
-                or self._report['skipped'] in ('format_newer', 'write_unavailable')):
-            return
+        if self._vec is None or self._report['skipped'] in ('format_newer', 'write_unavailable'):
+            return  # Also after a compaction that failed: nothing is appended beside rows no record names.
+        began = self._clock()
         if self._add_deadline is None:
-            self._add_deadline = self._clock() + types.PASS_SECONDS
+            self._add_deadline = began + types.PASS_SECONDS
+        # What this publication makes visible is wanted too: sets left here are left to the catch-up.
+        self._wanted |= set(live)
         try:
             self._add_rows -= self._append(live, read, max(self._add_rows, 0), self._add_deadline, 'appendRows')
         except OSError:
             self._report['skipped'] = 'write_unavailable'
+        finally:
+            self._report['ms'] += (self._clock() - began) * 1000
 
     def summary(self):
         """The pass's report: counts, what is left (``remaining`` sets) and why nothing moved (``skipped``)."""
-        answer = dict(self._report, remaining=len(self._wanted - set(self._records)),
+        answer = dict(self._report, remaining=len(self._wanted - set(self._records)), ms=round(self._report['ms'], 3),
                       deadRows=self._dead_rows(), bytes=PAGE + self._rows * self._width if self._vec is not None else 0)
-        if answer['skipped'] is None and answer['remaining'] and not answer['catchupRows']:
-            answer['skipped'] = 'quota' if self._quota else 'set_unreadable' if answer['unreadable'] else None
+        moved = answer['catchupRows'] or answer['appendRows']
+        if answer['skipped'] is None and not moved:
+            # The quota is a reason whatever is left (it also refuses a compaction); an unreadable set only while sets are left.
+            answer['skipped'] = ('quota' if self._quota
+                                 else 'set_unreadable' if answer['unreadable'] and answer['remaining'] else None)
         return answer
 
     def close(self):
@@ -178,6 +183,7 @@ class Writer:
         if (isinstance(nonce, str) and fmt._NONCE.match(nonce)
                 and {key: value.get(key) for key in fmt.IDENTITY_KEYS} == fmt.identity(nonce=nonce, **self._spec)
                 and self._open_pair(nonce)):
+            self._sweep(nonce)
             return True
         nonce, vec, idx = self._new_pair()
         try:
@@ -236,6 +242,23 @@ class Writer:
                 os.close(fd)
             return False
 
+    def _sweep(self, nonce):
+        """Remove every arena file but the pair ``nonce`` and ``current.json``.
+
+        A pass that failed after its switch left the old pair behind; nothing here raises.
+        """
+        keep = set(fmt.names(nonce)) | {CURRENT}
+        try:
+            found = _owned_files(self._dfd)
+        except OSError:
+            return
+        for name, _size, _mtime in found:
+            if name not in keep:
+                try:
+                    os.unlink(name, dir_fd=self._dfd)  # A recall that mapped it reads it to its end.
+                except OSError:
+                    pass  # Unchecked: an orphan is removed by the next pass that opens the pair.
+
     def _new_pair(self):
         nonce = os.urandom(16).hex()
         value, opened = fmt.identity(nonce=nonce, **self._spec), []
@@ -280,13 +303,7 @@ class Writer:
             os.close(fd)
         os.replace(temporary, CURRENT, src_dir_fd=self._dfd, dst_dir_fd=self._dfd)
         os.fsync(self._dfd)
-        keep = set(fmt.names(nonce)) | {CURRENT}
-        for name, _size, _mtime in _owned_files(self._dfd):
-            if name not in keep:
-                try:
-                    os.unlink(name, dir_fd=self._dfd)  # A recall that mapped it reads it to its end.
-                except OSError:
-                    pass  # Unchecked: an orphan pair is removed by the next activation.
+        self._sweep(nonce)
         return vec, idx
 
     # ------------------------------------------------------------------ check, compact, append
@@ -301,9 +318,12 @@ class Writer:
         try:
             kept = {}
             for blob, (first, rows, digest, crc) in self._records.items():
-                if blob not in live:
-                    continue
                 begin = PAGE + first * self._width
+                if blob not in live:
+                    # A dead set's rows stay between member sets until a compaction: they must be what was written.
+                    self._untracked = self._untracked or (rows >= 1 and first + rows <= self._rows and zlib.crc32(
+                        view[begin:begin + rows * self._width]) != crc)
+                    continue
                 if ((rows, digest) == tuple(live[blob]) and rows >= 1 and first + rows <= self._rows
                         and zlib.crc32(view[begin:begin + rows * self._width]) == crc):
                     kept[blob] = (first, rows, digest, crc)
@@ -321,12 +341,10 @@ class Writer:
 
     def _compact(self):
         """Copy the sets that hold into a new pair; a set whose bytes changed since the check is left to catch-up."""
-        # The copy needs its bytes beside the old pair until the switch: asked of the quota and the disk first.
+        # The copy needs its bytes beside the old pair until the switch: the disk is asked first. The
+        # quota is not: the copy is never larger than the pair it replaces, so the switch only frees bytes.
         need = PAGE + fmt.IDX_HEADER + sum(count * self._width + fmt.RECORD_BYTES
                                            for _first, count, _digest, _crc in self._records.values())
-        if not self._room(need):
-            self._report['skipped'] = 'quota'
-            raise _Skipped()
         space = os.fstatvfs(self._dfd)
         if space.f_bavail * space.f_frsize < need:
             raise OSError(errno.ENOSPC, 'arena_compaction_space')
@@ -357,15 +375,17 @@ class Writer:
     def _append(self, live, read, max_rows, deadline, counter):
         """Append the live sets without a record that holds, up to ``max_rows`` and ``deadline``; rows appended."""
         cap = max(2 * self._width * sum(count for count, _digest in live.values()), types.INSTALL_FLOOR_BYTES)
-        done, batch = 0, []
+        done, asked, batch = 0, 0, []
         try:
             for blob in sorted(live):
                 if blob in self._records:
                     continue
                 count, digest = live[blob]
-                # The first set of a call is always tried: a bound never stops all progress.
-                if done and (done + count > max_rows or self._clock() >= deadline):
+                # The first set of a call is always tried: a bound never stops all progress. Every
+                # set asked of the store counts, also one the store could not read.
+                if asked and (asked + count > max_rows or self._clock() >= deadline):
                     break
+                asked += count
                 size = count * self._width
                 if PAGE + (self._rows + count) * self._width > cap or not self._room(size):
                     self._quota = True
