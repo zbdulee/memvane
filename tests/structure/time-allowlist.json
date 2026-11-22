@@ -189,11 +189,6 @@
   "elapsed": 2,
   "shortTimeout": 0
  },
- "memvane/store/tests/measure/vector_read_measure.py": {
-  "sleep": 0,
-  "elapsed": 0,
-  "shortTimeout": 1
- },
  "memvane/store/tests/support.py": {
   "sleep": 1,
   "elapsed": 0,
