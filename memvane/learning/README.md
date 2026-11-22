@@ -122,7 +122,7 @@ pass에 다시 계획한다. private `samples`와 gold ledger는 그대로 둔�
 default-local namespace는 순환하지 않는다. `seam._store`가 `queued`·`duplicate`
 밖의 결과를 받으면 `learning.capture.shared` 이벤트를 남긴다. worker pass는 자원 수락
 미룸 시 `resource-defer.json`의 안쪽 사유와 관측 수치를 `learning.cycle`(`deferred_resource`)에
-남기고, 학습이 끝나면 `learning.cycle`(`trained`)을 남긴다. worker 자신의 자원 점검이나 scope inventory가 teacher와 cycle 앞에서 pass를 미루면 `deferredBy: worker_admission`인 `deferred_resource` 행을, 막힌 job(`blocked`)을 만난 pass는 `learning.cycle`(`blocked`, 사유와 실패 횟수)을 남긴다. 학습 실패 3회로 막힌 job은 24시간 뒤 같은 id·구성원으로 다시 `queued`가 되고(`learning.cycle` `rearmed`, 횟수 0), 구성원이 바뀌어 막힌 job(`source_revoked`·`already_consumed`)은 그대로 두고 다음 계획이 다른 구성원을 고정한다. 학습 cursor가 전진한 뒤의 `trainer_timeout`은 실패가 아니라 미룸(`trainer_progress`)이다. 완료 기록 없는 최종 artifact는 쓰지도 지우지도 않고 cycle 폴더의 `candidate.artifact.uncertain-<해시 앞자리>`로 옮긴 뒤 끝난 cursor에서 복원하거나 다시 학습한다. worker 격리 env에 provider가
+남기고, 학습이 끝나면 `learning.cycle`(`trained`)을 남긴다. worker 자신의 자원 점검이나 scope inventory가 teacher와 cycle 앞에서 pass를 미루면 `deferredBy: worker_admission`인 `deferred_resource` 행을, 막힌 job(`blocked`)을 만난 pass는 `learning.cycle`(`blocked`, 사유와 실패 횟수)을 남긴다. 학습 실패 3회로 막힌 job은 24시간 뒤 같은 id·구성원으로 다시 `queued`가 되고(`learning.cycle` `rearmed`, 횟수 0), 구성원이 바뀌어 막힌 job(`source_revoked`·`already_consumed`)은 그대로 두고 다음 계획이 다른 구성원을 고정한다(구성원이 같으면 막힌 그 job을 돌려준다). 학습 cursor가 전진한 뒤의 `trainer_timeout`은 실패가 아니라 미룸(`trainer_progress`)이다. 완료 기록 없는 최종 artifact는 쓰지도 지우지도 않고 cycle 폴더의 `candidate.artifact.uncertain-<해시 앞자리>`로 옮긴 뒤 끝난 cursor에서 복원하거나 다시 학습한다. worker 격리 env에 provider가
 더하는 키 목록은 `runtime_admission.PROVIDER_ENV_KEYS`에 고정한다. CLI에는
 `--accept-security-policy` 플래그를 두지 않는다.
 

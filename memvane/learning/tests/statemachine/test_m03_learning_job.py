@@ -195,6 +195,9 @@ class LearningJobTable(unittest.TestCase):
                 self.blocked(reason, at=0)
                 self.assertEqual(self.q.rearm(now=NOW * 10), [])
                 self.assertEqual(self.status(), 'blocked')
+                # The same members: their digest is the same id, and the job stays blocked.
+                same = self.plan()
+                self.assertEqual((same['id'], same['status'], same['reason']), (self.job_id, 'blocked', reason))
                 self.assertIsNone(self.plan((1,)))
                 later = self.plan((3, 4))
                 self.assertNotEqual(later['id'], self.job_id)

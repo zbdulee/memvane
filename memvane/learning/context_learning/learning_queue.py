@@ -15,8 +15,8 @@ from . import resident
 # ``retry_at``: the table has no other column for it.
 REARM_SECONDS = 86400
 REARMED_REASON = 'trainer_failed'
-# Blocks no later attempt can clear: the members themselves changed, so a new
-# plan necessarily has other members and another id.
+# Blocks no later attempt can clear. The next plan pins other members when there are
+# any; with the same members it answers with the blocked job.
 FINAL_BLOCKS = ('source_revoked', 'already_consumed')
 
 
@@ -89,6 +89,9 @@ class LearningQueue:
             keys=fresh+replay
             if minimum_members is not None and len(keys)<minimum_members:return None
             job_id='cohort-'+digest(canonical([self.scope,approval,cohort,family,keys]))[:20]
+            # The same members again (a block the members caused, and nothing changed since):
+            # the id is their digest, so that job is the answer, blocked as it is.
+            if db.execute('SELECT 1 FROM learning_jobs WHERE job_id=?',(job_id,)).fetchone():return self.get(job_id,db=db)
             members=[{'key':key,'request_id':unique[key][1],'input_sha256':unique[key][2],
                       'row_sha256':digest(canonical(list(unique[key][:6]))),'fresh':key in fresh} for key in keys]
             manifest={'id':job_id,'namespace':self.scope,'approval':approval,'cohort':cohort,'family':family,'members':members}

@@ -196,7 +196,7 @@ M15 = Machine(
 # length of one attempt; the block that held it leaves the job ``deferred`` unless
 # the attempt completed it. ``blocked`` by repeated trainer failures is queued again
 # a day later (``rearm``); ``blocked`` because the members themselves changed
-# (``already_consumed``, ``source_revoked``) stays, and the next plan pins other members.
+# (``already_consumed``, ``source_revoked``) stays: the next plan pins other members, or answers with it when they are the same.
 _QUEUE = 'memvane.learning.context_learning.learning_queue.LearningQueue'
 _OPEN_JOB = ('queued', 'running', 'deferred')
 M3 = Machine(
