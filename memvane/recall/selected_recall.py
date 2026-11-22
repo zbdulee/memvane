@@ -25,13 +25,21 @@ def _search_trace(trace, timings):
     trace.fields(**timings)
     if timings.get('vectorKernelUnavailable'):
         trace.note('laya_vector_kernel_unavailable')
-    return sources, only, timings.get('sessionExcludedHits', 0)
+    return sources, (only, timings.pop('semanticCosine', {})), timings.get('sessionExcludedHits', 0)
 
 
-def _note_semantic_only(trace, result, only, answer):
-    """Injected cards the lexical lists did not have: what the semantic lane added."""
+def _note_semantic_only(trace, result, semantic, answer):
+    """What the semantic lane gave the injected cards.
+
+    ``semanticOnlyInjected``: how many of them the lexical lists did not have.
+    ``injectedCosine``: each injected card's cosine in injection order (None
+    for a card the semantic list did not hold). With ``sessionExcluded`` it
+    shows how far down the ranking the session exclusions have pushed.
+    """
+    only, cosine = semantic
     if result.semantic_status == 'complete':
-        trace.fields(semanticOnlyInjected=sum(row['path'] in only for row in answer.rows))
+        trace.fields(semanticOnlyInjected=sum(row['path'] in only for row in answer.rows),
+                     injectedCosine=[cosine.get(row['path']) for row in answer.rows])
 
 
 def _vector_off_fallback(decision, main_proof, vector_off, trace):
@@ -190,6 +198,7 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
             return head['gen_id'] == result.data_generation
     if not result.rows and excluded_hits:
         # Every candidate is a card this session already holds: nothing is injected again.
+        trace.fields(selection='no_candidates', candidates=0, generation=result.data_generation)
         trace.final('no_candidates_after_exclusion')
         return RecallAnswer(decision, own_view=own_view)
     answer = _serve_verified_rows(

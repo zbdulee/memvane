@@ -216,8 +216,11 @@ def _linked(result):
     if (not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in counts.values())
             or not isinstance(reasons, dict) or len(reasons) > 32):
         return None
-    counts['reasons'] = {_code(reason): n for reason, n in reasons.items()
-                         if _code(reason) and isinstance(n, int) and not isinstance(n, bool) and n > 0}
+    counts['reasons'] = {}
+    for reason, n in reasons.items():
+        if _code(reason) and isinstance(n, int) and not isinstance(n, bool) and n > 0:
+            # Two reasons that clean to one code are added, not overwritten.
+            counts['reasons'][_code(reason)] = counts['reasons'].get(_code(reason), 0) + n
     return counts
 
 

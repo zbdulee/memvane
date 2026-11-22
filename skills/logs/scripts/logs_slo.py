@@ -37,6 +37,9 @@ SELECTOR_OVER_BUDGET = 0.02
 REPEAT_SHARE = 0.05
 # A host that sends no compaction signal forgets an injection after this many served recalls.
 REPEAT_WINDOW = 20
+# What the product's session record forgets: pairs beyond the newest 256, and a session idle for a day.
+SESSION_PAIRS = 256
+SESSION_IDLE = 24 * 3600
 SIGNAL_HOSTS = frozenset(('claude',))
 SYNC_STREAK = 3
 SYNC_SECONDS = 300
@@ -195,10 +198,21 @@ def _semantic(prompt):
     if asked:
         values['complete'] = round(counts.get('complete', 0) / len(asked), 4)
         values['completeTarget'] = SEMANTIC_COMPLETE
-    if arena:
-        # Before an install has an arena no recall names it: nothing to judge yet.
+    # Before a bundle that reports the cache state no recall says anything about an arena:
+    # nothing to judge. Once a recall reports it, no arena answer at all is a share of 0.
+    measured = any(row.get('vectorCache') in VECTOR_CACHE for row in sourced)
+    if sourced and (arena or measured):
         values['arena'] = round(arena / len(sourced), 4)
         values['arenaTarget'] = ARENA_SHARE
+    answered = [row for row in sourced if row['vectorSource'] == 'arena']
+    if answered:
+        # The recalls the arena answered, on their own: their completion and their semantic stage.
+        values['arenaComplete'] = round(sum(row['semantic'] == 'complete' for row in answered) / len(answered), 4)
+        timed = [row['semanticMs'] for row in answered
+                 if _one_query(row) and _number(row.get('semanticMs')) is not None]
+        if timed:
+            values.update(arenaSemanticP50=round(_percentile(timed, .5), 3),
+                          arenaSemanticP95=round(_percentile(timed, .95), 3), arenaSemanticN=len(timed))
     over = bool(asked) and (values['complete'] < SEMANTIC_COMPLETE
                             or values.get('arena', 1.0) < ARENA_SHARE
                             or values['deferred_cache_building'] > 0
@@ -262,7 +276,7 @@ def _dedup(rows, floor_time):
     signal) counts for ``REPEAT_WINDOW`` injecting recalls only. A card that
     comes back after that, after a reset or in another context is not a repeat.
     """
-    history, injected, repeated, all_repeated, recalls, emptied = {}, 0, 0, 0, 0, 0
+    history, seen_at, injected, repeated, all_repeated, recalls, emptied = {}, {}, 0, 0, 0, 0, 0
     for row in rows:
         session = _text(row.get('session'))
         if session and _text(row.get('sessionReset')):
@@ -277,11 +291,19 @@ def _dedup(rows, floor_time):
         if not session or row.get('outcome') != 'served' or not cards:
             continue
         earlier = history.setdefault(session, [])
+        moment = _ts(row)
+        if earlier and moment and seen_at.get(session) and (moment - seen_at[session]).total_seconds() > SESSION_IDLE:
+            # The product forgets a session's record after a day without a recall.
+            del earlier[:]
+        seen_at[session] = moment or seen_at.get(session)
         context = _text(row.get('injectedBy')) or ('p' if prompt else 'e?')
         if prompt and current:
             holds, signal = _holds(context), row.get('host') in SIGNAL_HOSTS
-            seen = set()
+            seen, pairs = set(), 0
             for age, (held, by) in enumerate(reversed(earlier)):
+                pairs += len(held)
+                if pairs > SESSION_PAIRS:
+                    break  # The record keeps the newest pairs only.
                 if by in holds and ((by == 'p' and signal) or age < REPEAT_WINDOW):
                     seen |= held
             again = sum(card in seen for card in cards)
@@ -337,16 +359,22 @@ def _sync(rows, window, now):
                       targetSeconds=SYNC_SECONDS)
     if waiting:
         values.update(unanswered=len(waiting), oldestUnansweredSeconds=round(max(waiting), 1))
-    held, held_reasons = 0, Counter()
-    for row in window:
-        linked = row.get('linked') if row.get('event') == 'wake.sync' and row.get('outcome') in SYNC_OK else None
-        if isinstance(linked, dict) and (_number(linked.get('waiting')) or 0) > 0:
-            # A pass that published the main view while linked worktree views still waited.
-            held += 1
-            held_reasons.update({str(key): value for key, value in (linked.get('reasons') or {}).items()
-                                 if _number(value)} if isinstance(linked.get('reasons'), dict) else {})
-    if held:
-        values.update(linkedWaiting=held, linkedReasons=dict(held_reasons.most_common(3)))
+    waited, waited_reasons, last, inside = 0, Counter(), None, {id(row) for row in window}
+    for row in rows:
+        if row.get('event') != 'wake.sync' or row.get('outcome') not in SYNC_OK:
+            continue
+        linked = row.get('linked') if isinstance(row.get('linked'), dict) else {}
+        # The newest published pass says whether linked views wait now; the window says how often they did.
+        last = linked
+        if id(row) in inside and (_number(linked.get('waiting')) or 0) > 0:
+            waited += 1
+            waited_reasons.update({str(key): value for key, value in (linked.get('reasons') or {}).items()
+                                   if _number(value)} if isinstance(linked.get('reasons'), dict) else {})
+    if waited:
+        values.update(linkedWaiting=waited, linkedReasons=dict(waited_reasons.most_common(3)))
+    if last:
+        values.update(linkedWaitingLast=int(_number(last.get('waiting')) or 0),
+                      linkedHeldLast=int(_number(last.get('held')) or 0))
     stalled = count > SYNC_STREAK or (waiting and max(waiting) > SYNC_SECONDS)
     status = 'over' if stalled else _judge(len(delays), SYNC_FLOOR, delays and values['p95Seconds'] > SYNC_SECONDS)
     return _line('sync', status, len(delays), **values)

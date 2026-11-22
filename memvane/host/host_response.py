@@ -910,6 +910,8 @@ def _serve_selected_recall(action: str, host: str, decision: dict, payload: dict
         _set_learning_capture(None)
         _write_selection_log(_decision_project_root(decision), 'laya_recall_proof_retry', [],
                              retry=changed)
+        # The retry runs outside the recall scope that held the exclusions: it excludes nothing.
+        _trace_fields(sessionExcluded=0, sessionState='retry')
         return _serve_selected_once(action, host, retry, payload)
 
 

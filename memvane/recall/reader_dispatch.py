@@ -39,6 +39,7 @@ def _fused_sources(lexical, nearest, timings, emptied=None):
     if timings is not None:
         semantic = {row['path'] for row in nearest or []}
         timings['semanticOnly'] = sorted(semantic - {row['path'] for lane in lexical for row in lane})
+        timings['semanticCosine'] = {row['path']: round(row['score'], 4) for row in nearest or []}
         timings['semanticSources'] = {row['path']: timings.get('vectorSource', 'python')
                                      if row['path'] in semantic else 'lexical' for row in rows}
     return rows

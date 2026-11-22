@@ -196,6 +196,34 @@ class Lines(unittest.TestCase):
         self.assertEqual((lines['host codex']['status'], lines['host codex']['n'],
                           lines['host codex']['complete']), ('no-data', 3, 0.0))
 
+    def test_semantic_judges_the_arena_share_once_any_recall_reports_the_cache_state(self):
+        # Every recall read the store and said why: the arena never answered. That is a share of 0.
+        rows = [recall(i, semantic='complete', vectorSource='store', vectorCache='absent') for i in range(20)]
+        line = by_name(rows)['semantic']
+        self.assertEqual((line['status'], line['arena'], line['complete']), ('over', 0.0, 1.0))
+        self.assertNotIn('arenaComplete', line)
+        # Recalls of a bundle that does not report the state say nothing about an arena.
+        rows = [recall(i, semantic='complete', vectorSource='store') for i in range(20)]
+        self.assertNotIn('arena', by_name(rows)['semantic'])
+        # A cache switched off on purpose is no arena miss and no measurement.
+        rows = [recall(i, semantic='complete', vectorSource='store', vectorCache='disabled') for i in range(20)]
+        line = by_name(rows)['semantic']
+        self.assertEqual(line['status'], 'ok')
+        self.assertNotIn('arena', line)
+
+    def test_semantic_shows_the_recalls_the_arena_answered_on_their_own(self):
+        rows = [recall(i, semantic='complete', vectorSource='arena', vectorCache='ok', semanticMs=100 + i)
+                for i in range(98)]
+        rows += [recall(98, semantic='deferred_deadline', vectorSource='arena', vectorCache='ok', semanticMs=2000),
+                 recall(99, semantic='complete', vectorSource='arena', vectorCache='ok', semanticMs=900,
+                        queryChunks=4),
+                 recall(100, semantic='complete', vectorSource='store', vectorCache='building', semanticMs=5000)]
+        line = by_name(rows)['semantic']
+        self.assertEqual((line['arenaComplete'], line['arenaSemanticN']), (0.99, 99))
+        # The four-vector recall and the store recall are left out of the arena timing.
+        self.assertEqual(line['arenaSemanticP95'] < 900, True)
+        self.assertEqual(line['arena'], round(100 / 101, 4))
+
     def cards(self, *names):
         return [{'path': 'wiki/' + name + '.md', 'sha': name[0] * 64} for name in names]
 
@@ -255,6 +283,19 @@ class Lines(unittest.TestCase):
         # An edit injection can leave the context without a signal: it counts inside the window only.
         self.assertEqual(share('e', logs_slo.REPEAT_WINDOW - 1), round(1 / (logs_slo.REPEAT_WINDOW), 4))
         self.assertEqual(share('e', logs_slo.REPEAT_WINDOW), 0)
+
+    def test_dedup_forgets_what_the_session_record_forgets(self):
+        # A day without a recall: the record is swept, the card comes back and is no repeat.
+        rows = [recall(-86500, cards=self.cards('a')), recall(10, cards=self.cards('a'))]
+        self.assertEqual(by_name(rows, hours=48)['dedup']['repeated'], 0)
+        rows = [recall(-80000, cards=self.cards('a')), recall(10, cards=self.cards('a'))]
+        self.assertEqual(by_name(rows, hours=48)['dedup']['repeated'], 0.5)
+        # The record keeps the newest pairs: a card pushed out by newer ones is no repeat.
+        pairs = logs_slo.SESSION_PAIRS
+        many = [{'path': 'wiki/n%d.md' % index, 'sha': 'b' * 64} for index in range(pairs)]
+        rows = [recall(10, cards=self.cards('a')), recall(2000, cards=many), recall(3000, cards=self.cards('a'))]
+        line = by_name(rows)['dedup']
+        self.assertEqual((line['cards'], line['repeated']), (pairs + 2, 0))
 
     def test_dedup_counts_recalls_the_exclusion_emptied_apart(self):
         rows = [recall(i, cards=self.cards('a%d' % i)) for i in range(20)]
@@ -317,6 +358,21 @@ class Lines(unittest.TestCase):
         self.assertEqual((line['linkedWaiting'], line['linkedReasons'], line['failedRun']),
                          (2, {'schema3_pass_budget': 4, 'worktree_missing': 1}, 0))
         self.assertNotIn('linkedWaiting', by_name([self.sync_pass(400, 100)])['sync'])
+
+    def test_sync_shows_whether_linked_views_wait_after_the_newest_published_pass(self):
+        waiting = {'waiting': 2, 'held': 1, 'reasons': {'schema3_pass_budget': 2}}
+        rows = [self.sync_pass(900, 100, linked=waiting), self.sync_pass(800, 100, linked=waiting),
+                self.sync_pass(700, 100, outcome='failed', reason='target_deferred')]
+        line = by_name(rows)['sync']
+        self.assertEqual((line['linkedWaiting'], line['linkedWaitingLast'], line['linkedHeldLast']), (2, 2, 1))
+        # The wait is over once a later published pass carries no waiting view.
+        rows.append(self.sync_pass(600, 100, outcome='unchanged'))
+        line = by_name(rows)['sync']
+        self.assertEqual(line['linkedWaiting'], 2)
+        self.assertNotIn('linkedWaitingLast', line)
+        rows.append(self.sync_pass(500, 100, linked={'waiting': 0, 'held': 3, 'reasons': {'worktree_missing': 3}}))
+        line = by_name(rows)['sync']
+        self.assertEqual((line['linkedWaiting'], line['linkedWaitingLast'], line['linkedHeldLast']), (2, 0, 3))
 
     def test_sync_failure_run_is_over_above_the_target_and_skips_progress_rows(self):
         failed = [self.sync_pass(500 - i, 100, outcome='failed', reason='target_deferred') for i in range(3)]
