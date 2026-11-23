@@ -28,9 +28,10 @@ A run is continued like LP-2's, from the directory on the command line::
       npm run dev:guard -- --kind model-test --max-seconds 1800 -- \\
       python3 -B -m memvane.learning.tests.model.resident_loop <directory> --seconds 1500
 
-``<directory>/lp2-record.jsonl`` is LP-2's record. The call exits 0 while the
-path has not ended and when it ended with the recall on the applied artifact;
-1 when it ended any other way.
+``<directory>/lp2-record.jsonl`` is LP-2's record. The call exits 0 when the
+path ended with the recall on the applied artifact and no violation, or when
+the call only ran out of time; 2 when it stopped on repeated resource
+deferrals; 1 when it ended any other way.
 """
 from __future__ import annotations
 
@@ -210,7 +211,9 @@ def run(directory, home, seconds):
         # No pause between retried passes: after a resource deferral the admission's recovery
         # latch needs observations at most ``RECOVERY_MAX_GAP`` seconds apart. In an install the
         # service's monitor makes them while a learning wake is registered; here the passes do.
-        return lp2.run(directory, seconds=seconds, fixture_class=chosen, pause=lambda _seconds: None)
+        staged = json.loads((directory / HOME_MARKER).read_text(encoding='utf8'))
+        return lp2.run(directory, seconds=seconds, fixture_class=chosen, pause=lambda _seconds: None,
+                       identity={'commit': staged.get('commit'), 'modified': staged.get('modified')})
     finally:
         left = chosen.stop_services(chosen)
         if left:
@@ -241,7 +244,8 @@ def main(argv=None):
     summary = run(directory, Path(args.home), args.seconds)
     print(json.dumps(summary if summary is not None else {'summary': None, 'continue': str(directory)},
                      sort_keys=True))
-    return 0 if summary is None or summary.get('recallOnApplied') else 1
+    from memvane.learning.tests.model import lp2
+    return lp2.exit_code(directory, summary, passed=lambda row: row.get('recallOnApplied') is True)
 
 
 if __name__ == '__main__':

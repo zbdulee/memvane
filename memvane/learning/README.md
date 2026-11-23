@@ -22,11 +22,20 @@ worker의 것과 같이 즉시 닫힌다.
 학습 namespace의 불변식(`context_learning/invariants.py`: I-1~I-9, G-1, G-7)은 읽기만 하는 검사다. 시험은 단계마다
 위반 목록을 보고, 설치된 프로젝트에서는 `memvane:logs`의 학습 점검(`project_counts`)이 규칙별 위반 개수만 낸다.
 
-실제 모델로 학습 경로 전 구간을 도는 증명 run은 `memvane/learning/tests/model/lp2.py`다. LP-1의 fixture와
-진입점(편집 hook, worker 명령)을 쓰고 trainer와 자원 보고만 실제다. 한 디렉터리에 상태를 두고 여러 번의
-`model-test` 실행으로 이어 돌리며, pass·trainer 호출마다 한 줄과 끝난 뒤의 요약(학습 조각과 시간, 미룸, 기본·후보의
-네 지표, 적용 여부, 적용 뒤 recall 행의 `selectorCheckpoint`)을 `lp2-record.jsonl`에 남긴다. teacher는 결정적 가짜
-CLI이고 resident의 적용 transport는 대역이다. gold가 30건을 넘으면 `learning.score` 행에 순위 기준선
+실제 모델로 학습 경로를 도는 증명 run은 `memvane/learning/tests/model/`의 둘이다. 둘 다 한 디렉터리에 상태를
+두고 여러 번의 `model-test` 실행으로 이어 돌리며, 호출마다 시작 줄(호출 번호, 커밋, 플러그인 버전, 프로필이 묶은
+모델 정체성, 인자)과 끝 줄(끝난 이유), pass·trainer 호출마다 한 줄, 끝난 뒤의 요약(학습 조각과 시간, 미룸, 기본·후보의
+네 지표, 적용 여부, 적용 뒤 recall 행의 `selectorCheckpoint`)을 `lp2-record.jsonl`에 남긴다. 종료 코드는 위반 없이
+끝에 닿았거나 시간 예산만 다한 호출이 0, 자원 미룸이 이어져 멈춘 호출이 2, 그 밖이 1이다. teacher는 둘 다 결정적 가짜
+CLI다.
+
+- `resident_loop.py`: 체크아웃을 fixture HOME의 host 플러그인 캐시에 복사해 그 번들로 돈다. enrollment의 selector
+  준비·warm, 코드 정체성, 제품이 policy로 만든 trainer와 그 자원 감시, 적용 transport, 실제 interpreter와 모델로
+  도는 추론 서비스(`apply_prepare`·`apply_activate`), recall의 selector 예측이 실제다. 끝의 recall 행의
+  `selectorCheckpoint`가 적용 artifact와 같아야 통과다. 대역은 host CLI(teacher, 플러그인 목록), 설치된 runtime
+  조회, 서비스의 시작 방식(per-user resident가 띄우는 대신 learning 전용 시작)과 wake(구동기가 pass를 부른다)다.
+- `lp2.py`: LP-1의 합성 enrollment 위에서 trainer의 학습·예측 프로토콜과 수락 쪽 자원 보고만 실제다. trainer는
+  구동기가 만들어 제품의 trainer 감시는 지나지 않고, resident의 적용 transport는 대역이다. gold가 30건을 넘으면 `learning.score` 행에 순위 기준선
 (`rankCases`·`rankExactRate`·`rankMicroF1`: hybrid 순서의 앞 세 장 대 gold, 추론 없음)이 실린다. trainer 자식이 남긴
 `error_site`는 항목별로 걸러 `file:line function` 꼴인 것만 최대 8개 남긴다.
 

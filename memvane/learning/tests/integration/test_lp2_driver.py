@@ -52,3 +52,24 @@ class Continued(FixtureCase):
                           for row in passes[1:]], [(2, 8, {'gold': 16}, 0), (3, 0, {'gold': 16}, 0)])
         self.assertEqual(json.loads((directory / 'lp2-fixture.json').read_text()), marker)
         self.assertEqual([row for row in rows if 'summary' in row], [])
+        # Each call says what it ran on and why it ended.
+        calls = [row for row in rows if 'call' in row]
+        self.assertEqual([(row['call'], row['real'], row['editTarget'], row['maxPasses']) for row in calls],
+                         [(1, False, 16, 1), (2, False, 16, 3)])
+        self.assertTrue(all(row['pluginVersion'] and 'modelIdentitySha256' in row for row in calls))
+        self.assertEqual([row['callEnd'] for row in rows if 'callEnd' in row], ['max_passes', 'max_passes'])
+        from memvane.learning.tests.model import lp2
+        # A call that hit the pass limit is not a pass; one that only ran out of time is.
+        self.assertEqual(lp2.exit_code(directory, None, passed=lambda row: True), 1)
+        with open(directory / 'lp2-record.jsonl', 'a') as out:
+            out.write(json.dumps({'callEnd': 'time_budget'}) + '\n')
+        self.assertEqual(lp2.exit_code(directory, None, passed=lambda row: True), 0)
+        with open(directory / 'lp2-record.jsonl', 'a') as out:
+            out.write(json.dumps({'callEnd': 'retry_repeats'}) + '\n')
+        self.assertEqual(lp2.exit_code(directory, None, passed=lambda row: True), 2)
+        self.assertEqual(lp2.exit_code(directory, {'violations': 0, 'summary': 'applied'},
+                                       passed=lambda row: row['summary'] == 'applied'), 0)
+        self.assertEqual(lp2.exit_code(directory, {'violations': 1, 'summary': 'applied'},
+                                       passed=lambda row: True), 1)
+        self.assertEqual(lp2.exit_code(directory, {'violations': 0, 'summary': 'not_applied:x'},
+                                       passed=lambda row: row['summary'] == 'applied'), 1)

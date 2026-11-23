@@ -15,7 +15,8 @@ Rules (design appendix B-3):
 - I-3 a ``gold`` case of the default teacher (``review: single_pass``) has a
   ledger row at ``committed``.
 - I-4 a ``staged`` or ``staged_evaluated`` cycle has a ``staged`` job, and its
-  candidate artifact is the file its evidence names with the recorded hash.
+  candidate artifact is the file its evidence names with the recorded hash
+  (not asked of a cycle whose evaluation is closed: it is never applied).
 - I-5 every consumed evidence key is a member of a ``staged`` job.
 - I-6 a ``completed`` evaluation belongs to a ``staged_evaluated`` or ``applied`` cycle.
 - I-7 an ``activated`` application journal: the active pointer is its new pointer and
@@ -113,8 +114,11 @@ def _jobs(db, tables):
             if status != 'staged' or key not in members:
                 found.append('I-5 consumed key of job %s (%s)' % (job_id, status))
     cycles = dict(db.execute('SELECT cycle_id,status FROM cycles'))
+    closed = set()
     if 'learning_evaluations' in tables:
         for cycle_id, status, reason in db.execute('SELECT cycle_id,status,reason FROM learning_evaluations'):
+            if status == 'blocked':
+                closed.add(cycle_id)
             if status == 'blocked' and not reason:
                 found.append('I-8 evaluation of %s blocked without a reason' % cycle_id)
             if status == 'completed' and cycles.get(cycle_id) not in ('staged_evaluated', 'applied'):
@@ -125,6 +129,9 @@ def _jobs(db, tables):
             continue
         if jobs.get(cycle_id, (None,))[0] != 'staged':
             found.append('I-4 cycle %s %s with job %s' % (cycle_id, status, jobs.get(cycle_id, (None,))[0]))
+        if cycle_id in closed:
+            # Its evaluation is closed: the candidate is never applied, so its artifact binds nothing.
+            continue
         stage = _json(evidence) or {}
         path = Path(str(stage.get('artifactPath', '')))
         if not path.is_file() or shared._hash(path) != stage.get('artifactSha256'):
@@ -182,8 +189,9 @@ def project_counts(project):
     """
     try:
         from memvane.settings import api as settings
-        project = Path(project).resolve(strict=True)
-        root = shared._safe_root(settings.find_project_config(str(project))['config'], project)
+        # Asked from a folder inside the project, the namespace is still the project's.
+        found = settings.find_project_config(str(Path(project).resolve(strict=True)))
+        root = shared._safe_root(found['config'], Path(found.get('projectRoot') or project).resolve(strict=True))
         if root is None or not (Path(root) / shared.DATABASE_NAME).is_file():
             return {'status': 'no_namespace'}
         rules = counts(root)

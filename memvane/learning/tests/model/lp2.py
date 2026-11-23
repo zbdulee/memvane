@@ -20,9 +20,20 @@ reached its end::
       npm run dev:guard -- --kind model-test --max-seconds 1800 -- \\
       python3 -B -m memvane.learning.tests.model.lp2 <directory> --seconds 1500
 
-``<directory>/lp2-record.jsonl`` holds one line per pass (result, counts of
-rows, invariant violations, seconds), one per trainer call (mode, cases,
-seconds or the error code) and, once the path ended, a ``summary`` line.
+``<directory>/lp2-record.jsonl`` holds, per call, a first line (its number,
+the commit, the plugin version, the model identity the profile binds and the
+arguments) and a last line (why the call ended); one line per pass (result,
+counts of rows, invariant violations, seconds), one per trainer call (mode,
+cases, seconds or the error code) and, once the path ended, a ``summary``
+line. The call exits 0 when the path ended applied without a violation or the
+call only ran out of time, 2 when it stopped on repeated resource deferrals
+and 1 otherwise.
+
+The trainer of this driver is built by the driver (the fixture's enrollment
+is synthetic, so the product's own trainer construction cannot run here): the
+training and prediction protocol is real, the product's monitoring of the
+trainer is not exercised. ``resident_loop.py`` runs the trainer the product
+builds, under its resource watch.
 """
 from __future__ import annotations
 
@@ -179,6 +190,16 @@ class Lp2Fixture(lp1.Lp1Fixture):
             self.note({'attested': True})
         return folder
 
+    def identity(self):
+        """What a call ran on: the plugin version and the model the profile binds."""
+        from memvane.kernel.memvane_version import plugin_version
+        from memvane.learning.context_learning import learning_profile
+        try:
+            model = self.read(learning_profile.NAME)['proposal'].get('modelIdentitySha256')
+        except (OSError, ValueError, KeyError, TypeError):
+            model = None
+        return {'pluginVersion': plugin_version(), 'modelIdentitySha256': model}
+
     def due(self):
         """The driver is the wake: a deferred job or evaluation is due for the next pass."""
         with shared._db(self.root) as db:
@@ -262,8 +283,12 @@ class Lp2Fixture(lp1.Lp1Fixture):
 
 
 def run(directory, *, seconds, real=True, edits=EDITS, max_passes=MAX_PASSES, clock=time.monotonic,
-        pause=time.sleep, fixture_class=None):
-    """Go on from what ``directory`` holds for at most ``seconds``; the summary, or None when not ended."""
+        pause=time.sleep, fixture_class=None, identity=None):
+    """Go on from what ``directory`` holds for at most ``seconds``; the summary, or None when not ended.
+
+    Every call leaves a first line (``call``: its number, what it ran on and with) and a
+    last line (``callEnd``: ``ended``, ``time_budget``, ``max_passes`` or ``retry_repeats``).
+    """
     from memvane.learning.context_learning.state_model import CYCLE_RESULTS
     directory = Path(directory).resolve()
     began = clock()
@@ -273,6 +298,8 @@ def run(directory, *, seconds, real=True, edits=EDITS, max_passes=MAX_PASSES, cl
     done = [row for row in fixture.notes() if 'summary' in row]
     if done:
         return done[-1]
+    fixture.note({'call': 1 + len([row for row in fixture.notes() if 'call' in row]), 'seconds': seconds,
+                  'real': real, 'editTarget': edits, 'maxPasses': max_passes, **fixture.identity(), **(identity or {})})
     while fixture.edits < edits and clock() - began < seconds:
         outcomes = fixture.edit(min(EDIT_BATCH, edits - fixture.edits))
         fixture.note({'edits': fixture.edits, 'stored': outcomes.count('stored'), 'captures': len(outcomes)})
@@ -283,6 +310,7 @@ def run(directory, *, seconds, real=True, edits=EDITS, max_passes=MAX_PASSES, cl
         if end is not None:
             summary = fixture.summary(end)
             fixture.note(summary)
+            fixture.note({'callEnd': 'ended'})
             return summary
         started = clock()
         result = fixture.run_project()
@@ -298,12 +326,34 @@ def run(directory, *, seconds, real=True, edits=EDITS, max_passes=MAX_PASSES, cl
             repeated = (repeated[0], repeated[1] + 1) if repeated[0] == (status, reason) else ((status, reason), 1)
             if repeated[1] >= RETRY_REPEATS:
                 fixture.note({'stopped': 'retry_repeats', 'status': status, 'reason': reason})
+                fixture.note({'callEnd': 'retry_repeats'})
                 return None
             pause(max(0, min(RETRY_PAUSE_SECONDS, seconds - (clock() - began))))
             fixture.due()
         else:
             repeated = (None, 0)
+    fixture.note({'callEnd': 'max_passes' if passes >= max_passes and fixture.edits >= edits else 'time_budget'})
     return None
+
+
+def exit_code(directory, summary, *, passed):
+    """0: the path ended as ``passed`` says, or the call only ran out of time. 2: stopped on
+    repeated resource deferrals. 1: anything else (violations, another end, the pass limit)."""
+    if summary is not None:
+        return 0 if summary.get('violations') == 0 and passed(summary) else 1
+    path = Path(directory) / RECORD
+    rows = [json.loads(line) for line in path.read_text(encoding='utf8').splitlines()] if path.exists() else []
+    end = next((row['callEnd'] for row in reversed(rows) if 'callEnd' in row), None)
+    violations = sum(row.get('violations', 0) for row in rows if 'pass' in row)
+    if violations:
+        return 1
+    return {'time_budget': 0, 'retry_repeats': 2}.get(end, 1)
+
+
+def head_commit(root):
+    import subprocess
+    done = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'], capture_output=True, text=True)
+    return done.stdout.strip() if done.returncode == 0 else None
 
 
 def main(argv=None):
@@ -321,9 +371,9 @@ def main(argv=None):
     os.environ.update(HOME=str(home), QMD_SETUP_GUARD_FIXTURE='1',
                       MEMVANE_TEST_RUNTIME_ROOT=str(home / 'rt'), PYTHONDONTWRITEBYTECODE='1')
     (home / 'rt').mkdir(mode=0o700, exist_ok=True)
-    summary = run(directory, seconds=args.seconds)
+    summary = run(directory, seconds=args.seconds, identity={'commit': head_commit(ROOT)})
     print(json.dumps(summary if summary is not None else {'summary': None, 'continue': str(directory)}, sort_keys=True))
-    return 0
+    return exit_code(directory, summary, passed=lambda row: row.get('summary') == 'applied')
 
 
 if __name__ == '__main__':

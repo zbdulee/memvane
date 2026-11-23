@@ -24,6 +24,10 @@ class LearningCheck(EnabledInstall):
         before = (self.rows(), self.namespace_files())
         clean = invariants.project_counts(self.project)
         self.assertEqual((clean['status'], clean['rules']), ('checked', invariants.counts(self.root)))
+        # Rows shaped as 1.0.22 left them (a kept answer, a lineage job, a blocked evaluation) break no rule.
+        self.assertEqual(clean['rules'], {})
+        # From a folder inside the project the same namespace is read.
+        self.assertEqual(invariants.project_counts(self.project / 'notes'), clean)
         self.assertEqual(clean['violations'], sum(clean['rules'].values()))
         self.assertEqual(json.loads(self.entry('--json'))['learningCheck'], clean)
         self.assertEqual((self.rows(), self.namespace_files()), before)

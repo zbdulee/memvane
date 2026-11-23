@@ -69,6 +69,10 @@ class RealLaya(unittest.TestCase):
         self.assertTrue(len(report['edit_selected_ids']) <= 3)
         self.assertIs(report['edit_deterministic'], True)
         self.assertEqual(report['edit_trained'], {'schema_version': 1, 'status': 'trained'})
+        # The measured pair budgets side by side (12 shipped, 20 wide): counts, seconds and choices.
+        print(json.dumps({'pairBudget': {'edit': edit, 'edit_wide': wide,
+                                         'edit_selected_ids': report['edit_selected_ids']}}, sort_keys=True),
+              flush=True)
         # Moved as-is from the old wrapper; a wall-clock bound (timing-flaky-deferred list).
         self.assertLess(report['heavy_pairing_seconds'], 1)
 
