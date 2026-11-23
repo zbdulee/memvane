@@ -178,37 +178,35 @@ class WorkerRequestTable(unittest.TestCase):
         self.assertEqual(self.observed(), 'open')
         self.assertEqual(ends('deferred_resource')['learning_retry'], {'status': 'durable_wake_pending'})
 
-    def test_a_slice_that_advanced_clears_the_count_and_keeps_the_request(self):
-        # Third-party review T-3: a job that keeps moving is never settled by the retry limit.
+    def retry(self, state, status='deferred_resource'):
+        """One retry result settled while the durable state is ``state``; (kept, rows written)."""
         from memvane.learning.context_learning import worker_retry
-        self.fresh()
-        limit = worker_retry.RETRY_RESULT_LIMIT
-        with patch('memvane.diagnostics.api.emit', side_effect=AssertionError('settled')), \
-                patch('memvane.journal.api.select_route', return_value={}):
-            for index in range(2 * limit):
-                result = {'status': 'deferred_resource', 'cycle': {'status': 'deferred_resource', 'progress': True}}
-                self.assertTrue(worker_retry.again(self.root, self.project, 'deferred_resource', True, result))
-                self.assertFalse((self.root / worker_retry.NAME).exists())
-            # Without progress the same status counts from one.
-            self.assertTrue(worker_retry.again(self.root, self.project, 'deferred_resource', True,
-                                               {'status': 'deferred_resource', 'cycle': {'status': 'deferred_resource'}}))
-        self.assertEqual(json.loads((self.root / worker_retry.NAME).read_text())['count'], 1)
-
-    def test_deferrals_before_any_claim_reach_the_limit(self):
-        # Supervisor's condition on T-3: the short wait before a claim is bounded by this count.
-        from memvane.learning.context_learning import worker_retry
-        limit = worker_retry.RETRY_RESULT_LIMIT
-        self.fresh()
         emitted = []
-        # What a pass answers when the resources were not ready before it claimed the job.
-        cycle = {'status': 'deferred_resource', 'resources': {'ready': False}, 'cycle_id': 'c', 'next_retry': 30}
-        result = {'status': 'deferred_resource', 'cycle': cycle}
-        with patch('memvane.diagnostics.api.emit', side_effect=lambda event, **f: emitted.append((event, f))), \
+        with patch.object(worker_retry, 'snapshot', return_value=state), \
+                patch('memvane.diagnostics.api.emit', side_effect=lambda event, **f: emitted.append((event, f))), \
                 patch('memvane.journal.api.select_route', return_value={}):
-            kept = [worker_retry.again(self.root, self.project, 'deferred_resource', True, result) for _ in range(limit)]
-        self.assertEqual((kept.count(True), kept[-1]), (limit - 1, False))
+            return worker_retry.again(self.root, self.project, status, True), emitted
+
+    def test_a_pass_that_moved_starts_the_count_over_and_one_that_did_not_reaches_the_limit(self):
+        # Third-party review T-3, review 10: progress is the durable state going forward.
+        from memvane.learning.context_learning import worker_retry
+        limit = worker_retry.RETRY_RESULT_LIMIT
+        self.fresh()
+        still = {'M3': {'job': 'deferred'}, 'M4': {'job': 'deferred'}, 'groups': {'job': 4}}
+        for _ in range(limit - 1):
+            self.assertEqual(self.retry(still), (True, []))
+        # The pass that would reach the limit saved more groups: kept, and counted from one.
+        further = {**still, 'groups': {'job': 5}}
+        self.assertEqual(self.retry(further), (True, []))
+        self.assertEqual(json.loads((self.root / worker_retry.NAME).read_text())['count'], 1)
+        # Deferrals before any claim change nothing durable: they reach the limit (supervisor's condition).
+        for _ in range(limit - 2):
+            self.assertEqual(self.retry(further), (True, []))
+        kept, emitted = self.retry(further)
+        self.assertFalse(kept)
         self.assertEqual([(event, row['outcome'], row['reason'], row['retries']) for event, row in emitted],
                          [('learning.cycle', 'retry_cap', 'deferred_resource', limit)])
+        self.assertFalse((self.root / worker_retry.NAME).exists())
 
     def test_a_result_that_is_not_a_retry_clears_the_count(self):
         from memvane.learning.context_learning import worker_retry
@@ -221,22 +219,6 @@ class WorkerRequestTable(unittest.TestCase):
             with patch('memvane.runtime.api.request', return_value={'status': 'queued'}):
                 shared._settle_owned(self.root, shared.FULL_WORKER_STATE, state, {'status': status}, self.project)
             self.assertEqual((self.root / worker_retry.NAME).exists(), kept)
-
-    def test_progress_after_a_long_run_without_any_keeps_the_request(self):
-        # Review 10 (W15 F-11): progress is judged before the limit, also on the pass that would reach it.
-        from memvane.learning.context_learning import worker_retry
-        limit = worker_retry.RETRY_RESULT_LIMIT
-        self.fresh()
-        with patch('memvane.diagnostics.api.emit', side_effect=AssertionError('settled')), \
-                patch('memvane.journal.api.select_route', return_value={}):
-            for _ in range(limit - 1):
-                self.assertTrue(worker_retry.again(self.root, self.project, 'deferred_resource', True,
-                                                   {'status': 'deferred_resource'}))
-            for status in ('deferred_resource', 'staged_evaluation_deferred'):
-                moved = {'status': status, 'cycle': {'status': status, 'progress': True}}
-                self.assertTrue(worker_retry.again(self.root, self.project, status, True, moved))
-                self.assertFalse((self.root / worker_retry.NAME).exists())
-
 
 if __name__ == '__main__':
     unittest.main()

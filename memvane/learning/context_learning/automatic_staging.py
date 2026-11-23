@@ -384,21 +384,10 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
                 # A deferral gets the worker's own row; a failure names the trainer's frames.
                 _cycle_event(project, 'failed', cycle=cycle_id, reason=str(exc)[:80],
                              errorSite=getattr(exc, 'error_site', None))
-            return _moved({'status': 'deferred_resource' if deferred else 'failed', 'reason': str(exc)[:80],
-                           'cycle_id': cycle_id}, advanced)
-    return _moved(_evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,
-        trainer_factory=trainer_factory,coordination=coordination), True)
-
-
-def _moved(result, advanced):
-    """``result`` with ``progress`` when the pass moved and still asks to be woken again.
-
-    A slice that advanced the cursor, or the pass that trained and staged the job and
-    whose evaluation then waits: the worker's count of retries starts over
-    (``worker_retry``). A later pass that only defers the same evaluation did not move.
-    """
-    from memvane.runtime.types import RETRY
-    return {**result, 'progress': True} if advanced and result.get('status') in RETRY else result
+            return {'status': 'deferred_resource' if deferred else 'failed', 'reason': str(exc)[:80],
+                    'cycle_id': cycle_id}
+    return _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,
+        trainer_factory=trainer_factory,coordination=coordination)
 
 
 def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*,trainer_factory,coordination):

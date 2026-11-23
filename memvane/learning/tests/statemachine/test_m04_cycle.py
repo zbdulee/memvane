@@ -84,6 +84,13 @@ class CycleFixture(CarryFixture):
         path.write_text(json.dumps({'next_group': self.groups}), encoding='utf-8')
         path.chmod(0o600)
 
+    def moving(self, *script):
+        """``attempt`` and whether the pass moved the cycle's durable state (``worker_retry.moved``)."""
+        from memvane.learning.context_learning import worker_retry
+        before = worker_retry.snapshot(self.root)
+        result = self.attempt(*script)
+        return result, worker_retry.moved(before, worker_retry.snapshot(self.root))
+
     def attempt(self, *script):
         """One worker pass whose training attempt follows ``script``; the cycle result."""
         self.script[:] = script
@@ -234,12 +241,41 @@ class EvaluationAndApplication(CycleFixture):
         deferred = lambda *a, cycle_id, **k: {'status': 'staged_evaluation_deferred', 'cycle_id': cycle_id,
                                               'reason': 'resource'}
         with mock.patch.object(automatic_staging, '_evaluate_impl', side_effect=deferred):
-            first = self.attempt()
-            self.assertEqual((first['status'], first.get('progress'), self.cycle(), len(self.trained)),
+            first, moved = self.moving()
+            self.assertEqual((first['status'], moved, self.cycle(), len(self.trained)),
                              ('staged_evaluation_deferred', True, 'staged', 1))
-            second = self.attempt()
-            self.assertEqual((second['status'], second.get('progress'), len(self.trained)),
-                             ('staged_evaluation_deferred', None, 1))
+            second, moved = self.moving()
+            self.assertEqual((second['status'], moved, len(self.trained)),
+                             ('staged_evaluation_deferred', False, 1))
+
+    def test_the_pass_that_stored_the_evaluation_is_progress_and_a_later_deferred_application_is_not(self):
+        # Review 10 r2 (W15 F-13): the metrics are stored, only the application waits.
+        from memvane.learning.context_learning.local_cycle import ResourceDeferred
+
+        def busy(command, record):
+            raise ResourceDeferred('apply_busy')
+        self.attempt()
+        self.golds('v', 50, empty=10)
+        self.transport = busy
+        result, moved = self.moving()
+        self.assertEqual((result['status'], moved, self.cycle(), self.evaluation()),
+                         ('apply_deferred', True, 'staged_evaluated', 'completed'))
+        scored = len(self.predicted)
+        journal = self.root / 'candidate-apply.json'
+        for _ in range(2):
+            waiting = json.loads(journal.read_text())
+            waiting['retry_at'] = 0
+            journal.write_text(json.dumps(waiting))
+            journal.chmod(0o600)
+            result, moved = self.moving()
+            self.assertEqual((result['status'], moved, len(self.predicted)), ('apply_deferred', False, scored))
+        del self.transport
+        waiting = json.loads(journal.read_text())
+        waiting['retry_at'] = 0
+        journal.write_text(json.dumps(waiting))
+        journal.chmod(0o600)
+        result, moved = self.moving()
+        self.assertEqual((result['status'], moved), ('applied', True))
 
     def damage_active(self, change):
         path = Path(self.pointer()['artifact_path'])
@@ -526,19 +562,19 @@ class TrainingAttempts(CycleFixture):
 
     def test_a_yield_after_the_cursor_moved_is_progress_and_one_without_is_not(self):
         # Review 10 (W14 F-11): saved groups are progress however the slice ended.
-        result = self.attempt('yield_progress')
-        self.assertEqual((result['status'], result.get('progress')), ('deferred_resource', True))
+        result, moved = self.moving('yield_progress')
+        self.assertEqual((result['status'], moved), ('deferred_resource', True))
         self.assertEqual(self.job()[1:4], ('deferred', 0, 'trainer_progress'))
-        result = self.attempt('defer')
-        self.assertEqual((result['status'], result.get('progress')), ('deferred_resource', None))
+        result, moved = self.moving('defer')
+        self.assertEqual((result['status'], moved), ('deferred_resource', False))
         self.assertEqual(self.job()[1:4], ('deferred', 0, 'resource'))
         self.assertNotIn('failed', self.outcomes())
 
     def test_a_time_limit_after_the_cursor_moved_is_a_deferral_not_a_failure(self):
         for _ in range(4):
-            result = self.attempt('timeout_progress')
+            result, moved = self.moving('timeout_progress')
             self.assertEqual((result['status'], result['reason']), ('deferred_resource', 'trainer_timeout'))
-            self.assertIs(result.get('progress'), True)  # The worker's retry count starts over (T-3).
+            self.assertTrue(moved)  # The worker's retry count starts over (T-3).
             self.assertEqual(self.job()[1:4], ('deferred', 0, 'trainer_progress'))
             self.assertEqual(self.cycle(), 'deferred')
         self.assertNotIn('failed', self.outcomes())

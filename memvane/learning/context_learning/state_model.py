@@ -518,6 +518,57 @@ M16 = Machine(
 
 MACHINES = (M1, M1U, M1T, M2, M3, M4, M5, M6, M7, M8, M9, M10, M12, M13, M14, M15, M16)
 
+# The cycle's durable state moved forward: the events of the cycle machines after which less
+# work is left or something was decided (a job trained or closed, an evaluation's metrics
+# stored or the evaluation closed, a pointer written, an application activated or ended).
+# Every other event of these machines waits, retries, starts over or goes back. One more
+# sign is not an event: the training cursor saved more optimizer groups. A worker pass that
+# did any of this made progress (``worker_retry.moved``); only passes that did not are counted.
+CYCLE_MACHINES = (M3, M4, M5, M6, M7)
+PROGRESS = {
+    'M3': {'complete', 'consumed_elsewhere', 'source_revoked', 'unrepeatable_failure', 'fail_limit'},
+    'M4': {'trained', 'evaluated', 'applied'},
+    'M5': {'evaluated', 'block', 'fail_limit', 'reject', 'apply_failure_limit'},
+    'M6': {'pointer_committed', 'activated_by_service', 'ended', 'rolled_back'},
+    'M7': {'pointer_written', 'pointer_restored'},
+}
+# ``plan`` and ``train_started`` begin work without saving any; ``rearm`` is the clock's;
+# ``intent_formed`` and ``prepared_by_service`` are formed again by any later attempt;
+# ``carried``, ``refresh``, ``reevaluation_needed`` and ``validation_changed`` go back.
+NOT_PROGRESS = {
+    'M3': {'plan', 'claim', 'claim_released', 'defer', 'fail', 'rearm'},
+    'M4': {'train_started', 'train_deferred', 'train_failed', 'carried', 'reevaluation_needed'},
+    'M5': {'ensure', 'claim', 'claim_released', 'defer', 'too_few_cases', 'refresh', 'validation_changed', 'carried'},
+    'M6': {'intent_formed', 'prepared_by_service'},
+    'M7': set(),
+}
+
+
+def _shortest(machine, old, new):
+    """The event sequences of the shortest paths from ``old`` to ``new`` in ``machine``."""
+    paths, seen = [(old, ())], {old}
+    while paths:
+        found = [events for state, events in paths if state == new and events]
+        if found:
+            return found
+        following = [(target, events + (event,)) for state, events in paths
+                     for (source, event), target in machine.transitions.items() if source == state]
+        paths = [(state, events) for state, events in following if state not in seen or state == new]
+        seen |= {state for state, _events in paths}
+    return []
+
+
+def forward_pairs(machine):
+    """Every (old state, new state) of ``machine`` a pass can cross with progress.
+
+    The state changed and a shortest path from the old state to the new one holds a
+    ``PROGRESS`` event (a pass may take several steps). ``worker_retry.FORWARD`` is this
+    table written out, since product code does not import the model; a test compares them.
+    """
+    states = (ABSENT, *machine.states)
+    return {(old, new) for old in states for new in states if old != new
+            and any(set(events) & PROGRESS[machine.name] for events in _shortest(machine, old, new))}
+
 # Every status a worker pass can end with (the cycle step's result is the pass result),
 # as (class, the event row that says so, what the pass leaves). The classes:
 # ``retry``   the worker asks for another wake (``memvane.runtime.types.RETRY``);

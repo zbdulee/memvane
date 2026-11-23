@@ -15,7 +15,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-from memvane.learning.context_learning import project_worker
+import json
+
+from memvane.learning.context_learning import project_worker, state_model, worker_retry
 from memvane.learning.context_learning.state_model import CYCLE_RESULTS, PASS_ENDS
 from memvane.runtime.types import RETRY
 
@@ -76,6 +78,72 @@ class CycleResults(unittest.TestCase):
         # W14 review F-8: nothing is closed by these two; a later pass evaluates again.
         for status in ('staged_cohort_changed', 'staged_authorization_expired'):
             self.assertEqual(CYCLE_RESULTS[status][:2], ('waiting', None))
+
+    def test_every_event_of_the_cycle_machines_is_classified_as_progress_or_not(self):
+        # Review 10 r2 (W15 F-13): one definition; a new event fails here until it is classified.
+        for machine in state_model.CYCLE_MACHINES:
+            forward, other = state_model.PROGRESS[machine.name], state_model.NOT_PROGRESS[machine.name]
+            self.assertEqual((forward | other, forward & other), (set(machine.events), set()), machine.name)
+
+    def transitions(self):
+        return [(machine, state, event, target) for machine in state_model.CYCLE_MACHINES
+                for (state, event), target in sorted(machine.transitions.items())]
+
+    def test_the_products_forward_table_is_the_one_the_model_derives(self):
+        derived = {}
+        for machine in state_model.CYCLE_MACHINES:
+            if machine.name == 'M7':  # Kept as the pointer's digest: any change is one of its two events.
+                self.assertEqual(state_model.NOT_PROGRESS['M7'], set())
+                continue
+            for old, new in state_model.forward_pairs(machine):
+                derived.setdefault(machine.name, {}).setdefault(new, set()).add(old)
+        self.assertEqual({name: {new: set(olds) for new, olds in table.items()}
+                          for name, table in worker_retry.FORWARD.items()}, derived)
+        self.assertEqual(worker_retry.ABSENT, state_model.ABSENT)
+
+    def test_each_transition_moves_the_state_exactly_when_its_event_is_progress(self):
+        for machine, state, event, target in self.transitions():
+            if machine.name == 'M7':
+                continue
+            moved = worker_retry.moved({machine.name: {'row': state}}, {machine.name: {'row': target}})
+            self.assertEqual(moved, event in state_model.PROGRESS[machine.name], (machine.name, state, event, target))
+        # Several steps in one pass, a change the machine does not model, the pointer and saved groups.
+        for name, old, new, moved in (('M4', 'training', 'applied', True), ('M4', 'staged_evaluated', 'staged', False),
+                                      ('M6', state_model.ABSENT, 'prepared', False),
+                                      ('M6', state_model.ABSENT, 'activated', True), ('M5', 'queued', 'unknown', False),
+                                      ('M7', 'a' * 64, 'b' * 64, True), ('M7', 'a' * 64, 'a' * 64, False)):
+            key = 'pointer' if name == 'M7' else 'row'
+            self.assertEqual(worker_retry.moved({name: {key: old}}, {name: {key: new}}), moved, (name, old, new))
+        for old, new, moved in ((3, 4, True), (3, 3, False), (None, 0, True), (4, -1, False)):
+            before = {'groups': {} if old is None else {'c': old}}
+            self.assertEqual(worker_retry.moved(before, {'groups': {'c': new}}), moved, (old, new))
+
+    def test_after_287_retries_each_transition_keeps_or_settles_the_request_by_its_class(self):
+        limit = worker_retry.RETRY_RESULT_LIMIT
+        self.assertEqual(limit, 288)
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch('memvane.diagnostics.api.emit') as emitted, \
+                mock.patch('memvane.journal.api.select_route', return_value={}):
+            root = Path(folder)
+            counted = 0
+            for machine, state, event, target in self.transitions():
+                before, after = {machine.name: {'row': state}}, {machine.name: {'row': target}}
+                if machine.name == 'M7':  # The pointer is kept as itself: any change is one of M7's two events.
+                    before, after = {'M7': {'pointer': 'a' * 64}}, {'M7': {'pointer': 'b' * 64}}
+                (root / worker_retry.NAME).write_text(json.dumps(
+                    {'schema': 1, 'status': 'busy', 'count': limit - 1, 'state': before}))
+                (root / worker_retry.NAME).chmod(0o600)
+                emitted.reset_mock()
+                with mock.patch.object(worker_retry, 'snapshot', return_value=after):
+                    kept = worker_retry.again(root, root, 'apply_deferred', True)
+                progress = event in state_model.PROGRESS[machine.name]
+                # Progress: the next wake is asked for and the count is one. Otherwise: settled, one row.
+                self.assertEqual((kept, emitted.call_count), (progress, 0 if progress else 1),
+                                 (machine.name, state, event, target))
+                if progress:
+                    self.assertEqual(json.loads((root / worker_retry.NAME).read_text())['count'], 1)
+                counted += 1
+            self.assertEqual(counted, sum(len(machine.transitions) for machine in state_model.CYCLE_MACHINES))
 
     def test_the_classes_are_the_known_five_and_every_row_says_what_stays(self):
         self.assertEqual({row[0] for row in CYCLE_RESULTS.values()},
