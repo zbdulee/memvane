@@ -400,6 +400,24 @@ class Settlement(FixtureCase):
     def open_ids(self, events):
         return [item['eventId'] for item in refresh_settlement.unsettled(self.root, events)]
 
+    def test_a_source_that_resolves_outside_the_root_is_settled_as_it_is_checked(self):
+        # W18 review R F-1: settled with the outside file's hash it would never hold.
+        outside = self.home / 'outside.md'
+        outside.write_text('outside\n', encoding='utf-8')
+        (self.root / 'docs/out.md').symlink_to(outside)
+        event = {**self.event('a'), 'sourcePath': 'docs/out.md'}
+        self.assertEqual(self.open_ids([event]), [event['eventId']])
+        worker._settle_unrecoverable(self.root, event)
+        entry = json.loads(self.path.read_text(encoding='utf-8'))[event['eventId']]
+        self.assertEqual((entry['sourceSha256'], entry['reason']), (None, 'not_a_compile_source'))
+        self.assertEqual(self.open_ids([event]), [])
+        # One inside the root is settled for its content.
+        inside = self.event('b')
+        worker._settle_unrecoverable(self.root, inside)
+        self.assertEqual(self.open_ids([inside]), [])
+        (self.root / 'docs/b.md').write_text('edited\n', encoding='utf-8')
+        self.assertEqual(self.open_ids([inside]), [inside['eventId']])
+
     def test_an_entry_holds_only_for_its_event_and_the_settled_content(self):
         a, b = self.event('a'), self.event('b')
         self.assertEqual(self.open_ids([a, b]), [a['eventId'], b['eventId']])

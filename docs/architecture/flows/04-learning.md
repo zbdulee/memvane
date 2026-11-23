@@ -65,7 +65,7 @@ flowchart TD
 - [`memvane/learning/context_learning/training_cursor.py:13-33`](../../../memvane/learning/context_learning/training_cursor.py#L13-L33): request·artifact hash에 고정된 완료 영수증입니다. publish 작업은 아닙니다.
 - [`memvane/learning/context_learning/training_cursor.py:49-111`](../../../memvane/learning/context_learning/training_cursor.py#L49-L111): 두 head slot과 `group-plan.json`·`cursor.json`을 사용합니다. 그래서 쓰기가 중단되어도 커밋된 head를 덮어쓰지 않습니다.
 - [`memvane/learning/context_learning/training_cursor.py:114-115`](../../../memvane/learning/context_learning/training_cursor.py#L114-L115): 완전히 커밋된 cursor만 모델 실행 없이 완료로 처리합니다.
-- [`memvane/app/setup_entry.py:187`](../../../memvane/app/setup_entry.py#L187), [`memvane/app/setup_entry.py:199`](../../../memvane/app/setup_entry.py#L199): learning profile action과 `--learning-choice`(`preserve`·`local-auto-apply`·`local-staged`·`off`)입니다.
+- [`memvane/app/setup_entry.py`](../../../memvane/app/setup_entry.py)의 `main`: learning profile action과 `--learning-choice`(`preserve`·`local-auto-apply`·`local-staged`·`off`)입니다.
 - [`memvane/runtime/runtime_work.py:37-57`](../../../memvane/runtime/runtime_work.py#L37-L57): coordinator의 실제 구현은 `context_learning.resource_coordination`에 있습니다. foreground demand 표시는 compute lock을 잡지 않습니다.
 
 ### QA 증거와 미검증

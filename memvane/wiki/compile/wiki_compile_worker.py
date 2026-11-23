@@ -1408,8 +1408,8 @@ def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, 
             from memvane.wiki.compile import refresh_settlement
             sha = job.get('_processedContentRevision')
             if not isinstance(sha, str):
-                snapshot = wiki_freshness.snapshot_file((root / rel).resolve()) if '..' not in Path(rel).parts else None
-                sha = snapshot.get('sha256') if isinstance(snapshot, dict) else None
+                # The same reading as the check of the settlement: a path that leaves the root has no content.
+                sha = refresh_settlement._current_sha(root, rel)
             # Ignored on failure (rule 3): the event only stays unsettled, the
             # next pass tries the source once more and writes the record again.
             refresh_settlement.settle(root, pending, sha, reason if reason in _SETTLING else 'not_refreshed')
@@ -1426,9 +1426,8 @@ def _settle_unrecoverable(root: Path, pending: dict) -> None:
     rel = pending.get("sourcePath")
     if not isinstance(rel, str) or not rel or '..' in Path(rel).parts:
         return
-    snapshot = wiki_freshness.snapshot_file((root / rel).resolve())
-    sha = snapshot.get('sha256') if isinstance(snapshot, dict) else None
-    refresh_settlement.settle(root, pending, sha, 'not_a_compile_source')
+    # Read as the settlement is checked (None outside the root), or it would never hold.
+    refresh_settlement.settle(root, pending, refresh_settlement._current_sha(root, rel), 'not_a_compile_source')
 
 
 def recover_pending_refreshes(root: Path, config: dict, queue: Path) -> int:

@@ -914,6 +914,15 @@ The controlled late-worker barrier is unavailable. Mark Part B `BLOCKED` until a
 
 For each installed candidate, verify reviewed provider and worker digests, fresh onboarding, published wiki-only recall, linked worktree isolation, sync after edits and removals, and restore followed by a new onboarding plan. A real-model run uses the model-test resource guard. Record unavailable checks as `NOT RUN` or `BLOCKED`; fixture results do not substitute for a real-model run.
 
+### 1.1 maintenance checks
+
+Run each on the installed candidate with the fixture account; record a check that cannot run as `NOT RUN` or `BLOCKED`.
+
+- **State cleanup.** Onboard two fixture projects and release one. The `state-cleanup` preview lists only the released install as `remove`, writes nothing and returns a `previewSha256`; the approved run with that digest removes exactly that install and leaves the selected one, the project's `.memvane/` folder and `~/.config/memvane` unchanged. An approval with another digest removes nothing.
+- **Previous model.** In a project whose selector has an applied candidate, `restore-previous-model --plan` reports `rollback_planned` with the applied cycle and writes nothing; the run without `--plan` reports `restored`, the active pointer is the previous model's, recall still serves, and a second `--plan` no longer names that cycle. A project with no applied candidate reports `nothing_to_restore`.
+- **Learning check.** `memvane:logs` with the learning check on that project reads without writing and reports `0 violation(s)` before and after the restore.
+- **No host enabled.** After MemVane is removed from every host (disabled in Codex), no MemVane background process is left within ten minutes and none is started again; reinstalling starts them on the next hook.
+
 ## 10. Domain ownership
 
 Scenarios respect domain ownership. Two rules apply:
