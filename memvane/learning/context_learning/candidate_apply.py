@@ -43,12 +43,6 @@ def _unaccepted(row,answer,refusal):
 IO_ERROR='apply_io_error'
 OTHER_ERROR='apply_error'
 
-def _code(exc):
-    """The fixed reason of a failure: a code this code raised, or the word for its kind."""
-    if isinstance(exc,OSError):return IO_ERROR
-    text=exc.args[0] if isinstance(exc,(ValueError,ResourceDeferred)) and exc.args and isinstance(exc.args[0],str) else ''
-    return text if re.fullmatch(r'[a-z][a-z0-9_]{2,79}',text) else OTHER_ERROR
-
 def recorded_status(root,cycle_id):
     """The ``serviceStatus`` the live journal of ``cycle_id`` holds, or None; never raises."""
     try:
@@ -65,6 +59,29 @@ STALE='apply_quality_stale'
 INCUMBENT_DAMAGED='apply_incumbent_artifact_changed'
 # Any other failure with a journal is tried again; this many in a row end the application.
 FAILURE_LIMIT=5
+
+# What the resident's momentary states and start failures reach here as (``service_transport``).
+TRANSIENT=('resource_deferred','replacement_deferred','busy','deadline_expired','queue_full','starting',
+    'start_refused','start_path_invalid','start_io_failed','start_failed')
+# Every reason a row or an event may carry: the codes of this module, the resident's status
+# words, and the codes of the checks an application runs (the evidence, the wire, the profile).
+# A text that is not listed here is never kept, whatever it looks like.
+REASONS=frozenset((
+    *JUDGED,*REFUSED,*UNUSABLE,STALE,INCUMBENT_DAMAGED,SERVICE_ERROR,IO_ERROR,OTHER_ERROR,*SERVICE_STATUSES,
+    *('apply_'+word for word in (*TRANSIENT,'permission_denied')),
+    'apply_activation_pending','apply_archive_changed','apply_authorization_required','apply_cycle_invalid',
+    'apply_generation_changed','apply_incumbent_changed','apply_inference_evidence_changed',
+    'apply_journal_invalid','apply_other_transaction_pending','apply_pointer_cas_conflict',
+    'apply_pointer_invalid','apply_prepared_inference_required','apply_quality_required',
+    'apply_source_or_artifact_changed','apply_unsafe_path','apply_busy','pointer_busy',
+    'resident_wire_invalid'))
+
+def _code(exc):
+    """The fixed reason of a failure: one of ``REASONS``, or the word for its kind."""
+    if isinstance(exc,OSError):return IO_ERROR
+    text=exc.args[0] if isinstance(exc,(ValueError,ResourceDeferred)) and exc.args and isinstance(exc.args[0],str) else None
+    return text if text in REASONS else OTHER_ERROR
+
 
 ARCHIVE='candidate-applications'
 SCHEMA='qmd-candidate-application-v1'
@@ -380,8 +397,7 @@ def service_transport(root,policy):
         from . import inference_service as service
         deadline=time.monotonic()+30
         address=service.service_root(create=True)
-        transient={'resource_deferred','replacement_deferred','busy','deadline_expired','queue_full','starting',
-                   'start_refused','start_path_invalid','start_io_failed','start_failed'}
+        transient=set(TRANSIENT)
         try:
             try:service._ensure(address,policy['trainerArgv'][0],deadline)
             except service.ServiceFailure as exc:

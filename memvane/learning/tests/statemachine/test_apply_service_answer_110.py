@@ -91,6 +91,21 @@ class ServiceAnswer(unittest.TestCase):
         self.assertNotIn('serviceStatus', A.read_journal(case.root))
 
 
+class Reasons(unittest.TestCase):
+    def test_every_reason_the_application_raises_is_a_listed_one(self):
+        import re
+        from pathlib import Path
+        source = Path(A.__file__).read_text(encoding='utf8')
+        raised = set(re.findall(r"(?:ValueError|ResourceDeferred)\('([a-z_]+)'\)", source))
+        self.assertGreater(len(raised), 15)
+        self.assertEqual(raised - A.REASONS, set())
+        for text in ('fixture_private_note', 'apply_made_up', 'Expecting value: line 1', '', None, 7):
+            self.assertEqual(A._code(ValueError(text)), A.OTHER_ERROR)
+        self.assertEqual(A._code(KeyError('apply_quality_stale')), A.OTHER_ERROR)
+        self.assertEqual(A._code(OSError('apply_quality_stale')), A.IO_ERROR)
+        self.assertEqual(A._code(ValueError(A.STALE)), A.STALE)
+
+
 class TwoCandidates(unittest.TestCase):
     """Two evaluated candidates of one namespace taking turns (review 11 F-18)."""
 
@@ -247,25 +262,36 @@ class WorkerPasses(workers.WorkerFixture):
                 found.append(path.read_bytes())
         return b'\n'.join(found)
 
-    def transport_error(self, fail):
-        secret = 'fixture-free-text-37'
+    def transport_error(self, fail, error=None, reason=A.IO_ERROR, secrets=('fixture-free-text-37', '/private/path')):
         self.ready()
         self.profiled()
 
         def answer(command, record):
             if command == fail:
-                raise OSError(secret + ' /private/path')
+                raise error or OSError('fixture-free-text-37 /private/path')
             return {'status': 'prepared', 'token': record['apply_id']}
         self.transport = answer
         reasons = []
         for _ in range(A.FAILURE_LIMIT):
             reasons.append(self.worker()['cycle']['reason'])
             self.past_backoff()
-        self.assertEqual(set(reasons), {A.IO_ERROR})
-        self.assertEqual(A.read_journal(self.root)['reason'], A.IO_ERROR)
+        self.assertEqual(set(reasons), {reason})
+        self.assertEqual(A.read_journal(self.root)['reason'], reason)
         self.assertEqual(len(self.rejected() if fail == 'prepare' else self.pending()), 1)
-        self.assertNotIn(secret.encode(), self.texts())
-        self.assertNotIn(b'/private/path', self.texts())
+        for secret in secrets:
+            self.assertNotIn(secret.encode(), self.texts())
+
+    def test_a_text_shaped_like_a_code_is_not_kept_either(self):
+        # Review 12: only the listed reasons are kept, whatever an exception's text looks like.
+        for fail in ('prepare', 'activate'):
+            with self.subTest(fail=fail):
+                self.assertNotIn('fixture_private_note', A.REASONS)
+        self.transport_error('prepare', ValueError('fixture_private_note'), A.OTHER_ERROR,
+                             ('fixture_private_note',))
+
+    def test_a_text_shaped_like_a_code_at_the_activation_is_not_kept(self):
+        self.transport_error('activate', ValueError('fixture_private_note'), A.OTHER_ERROR,
+                             ('fixture_private_note',))
 
     def test_the_text_of_an_error_at_the_prepare_reaches_no_row_and_no_file(self):
         self.transport_error('prepare')
