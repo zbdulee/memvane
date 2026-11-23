@@ -119,6 +119,7 @@ class SelectorRequestTable(retry_tests.MaintenanceRetry):
         self.assertEqual(delays, sorted(delays))
         self.build('requested')
         clock = 1000
+        self.assertEqual(maintenance.BUSY_RETRY_LIMIT, 30)  # The number M10 names (W15 review F-7).
         for count in range(1, maintenance.BUSY_RETRY_LIMIT + 1):
             self.assertEqual(self.settle(clock + 1, busy=True)['busyRetries'], count)
             clock += 1 + maintenance.BUSY_RETRY_SECONDS

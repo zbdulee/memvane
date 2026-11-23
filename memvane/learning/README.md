@@ -10,10 +10,10 @@ base checkpoint 포인터는 `schema_version: 1`을 기록한다. 해당 키만 
 유지보수 한 번의 전체 시간은 `MAINTENANCE_SECONDS`(1,800초)다. 넘으면 그 run은
 `maintenance_timeout` 실패로 끝나 요청이 backoff하고 준비 잠금을 반납한다.
 `learning` wake는 미완으로 끝난 pass가 연속 288회(약 24시간)면 `retry_cap`으로
-버려지고(`wake.drop`), 다음 hook의 요청이나 selector 재제안이 새 행을 만든다.
-worker 자식이 같은 재시도 결과(`deferred_resource` 등)로 연속 288회 끝나면 그 요청은 더 깨우지 않고
-그 결과로 정산되며 `learning.cycle` `retry_cap` 행(사유 = 그 결과, `retries`)이 남는다(`worker_retry.py`).
-다음 hook의 요청부터 다시 센다. trainer 실패로 막힌 job은 누적 학습 시도가 30회에 닿으면 재무장하지 않고
+버려지고(`wake.drop`), 다음 hook의 요청이나 selector 재제안이 새 행을 만든다. 이 상한은 사유를 보지 않고 미완 pass를 센다: 학습이 조각으로 진행 중인 pass와 자식이 도는 동안의 확인도 한 번이므로, `kind` `learning`의 `wake.drop` `retry_cap` 행만으로 "학습이 끝내 못 돌았다"고 읽지 않고 같은 시간대의 `learning.cycle` 행과 함께 본다. 상한이 없던 버전에서 오래 미뤄진 행은 갱신 뒤 첫 미완 pass에서 큰 `attempts`와 함께 바로 버려질 수 있다.
+worker 자식이 재시도 결과(`deferred_resource`·`busy`·`apply_deferred` 등, 종류가 섞여도 이어 센다)로 연속 288회 끝나면 그 요청은 더 깨우지 않고
+마지막 결과로 정산되며 `learning.cycle` `retry_cap` 행(사유 = 마지막 결과, `retries`)이 남는다(`worker_retry.py`). 재시도가 아닌 결과만 이 수를 0으로 돌린다.
+다음 hook의 요청부터 다시 센다. trainer 실패로 막힌 job은 실패한 학습 시도의 누적(`attempts`: 실패하거나 중단된 claim만 세고, cursor가 전진한 조각과 자원·추론 미룸은 세지 않는다)이 30회에 닿으면 재무장하지 않고
 `trainer_attempts_exhausted`로 닫히며, trainer 자식이 보고한 반복 불가 사유(`trainer_failed:` 접두)도
 worker의 것과 같이 즉시 닫힌다.
 유지보수가 끝나는 모든 방식과 요청·등록·갱신·teacher 전환·warm의 전이는
@@ -259,7 +259,7 @@ default-teacher는 gold가 `minQualityTrainCases`(100건) 전이면 job을 계�
 검증에서 평가가 낡았다고 본 prepare는 응답 코드 `apply_quality_stale`로 돌아오고 worker는 아무것도 정하지 않는다(재평가).
 평가 행의 `failures`는 평가 자신의 실패만 센다(`completed`와 `refresh`에서 0). journal이 생기기 전의 적용 실패는
 namespace의 `apply-failures.json`(cycle별 연속 횟수와 마지막 사유)에 세어 재평가를 넘겨 유지하고, 다섯 번째에 평가를 그
-사유로 닫는다. 파일에 쓰지 못한 실패는 평가 행에 센다. 활성 artifact의 바이트가 포인터의 해시와 다른 실패(`apply_incumbent_artifact_changed`)는 재평가로 바뀌지 않으므로 재평가하지 않고 센다. 이 파일은 캐시다: 없거나 읽히지 않으면 0부터 세고, 쓸 때 열린 후보의 항목만 남기며, 1.x 영속 계약에 들지 않는다.
+사유로 닫는다. 파일에 쓰지 못한 실패는 평가 행에 센다. 활성 artifact의 바이트가 포인터의 해시와 다르면(`apply_incumbent_artifact_changed`, 평가와의 대조보다 먼저 본다) 어느 pass도 그 바이트를 바꾸지 못하므로 그 후보의 평가를 첫 실패에서 그 사유로 닫고 다시 평가하지 않는다(`learning.promotion` `rejected` 행 하나). 나오는 길은 소유자의 되돌리기나 artifact 복구다. 이 파일은 캐시다: 없거나 읽히지 않으면 0부터 세고, 쓸 때 열린 후보의 항목만 남기며, 1.x 영속 계약에 들지 않는다.
 포인터 뒤의 profile 대조는 플러그인 갱신이 다시 쓰는 파생 필드(`default_renewal_plan.PROFILE_DERIVED`)를 뺀 digest
 (journal의 `profile_stable_sha256`. 이 값이 없는 옛 journal은 전체 digest)로 하고, 그 포인터에 다시 준비된 receipt는 journal의
 것으로 받아 덮어쓰지 않는다. 그래서 `pointer_committed`에서 멈춘 적용이 갱신을 넘겨도 끝난다. 적용된 모델을 그 앞의 것으로 되돌리는 것은 소유자가 요청하는

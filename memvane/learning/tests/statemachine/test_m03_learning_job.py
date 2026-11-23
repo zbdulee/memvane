@@ -258,6 +258,51 @@ class LearningJobTable(unittest.TestCase):
         self.force(attempts=limit * 3, failures=2)
         self.assertEqual(self.q.defer(self.job_id, 'resource', now=NOW)['status'], 'deferred')
 
+    def attempt(self, reason, failure, at):
+        """One real claim that ends deferred with ``reason``."""
+        with self.q.claim(self.job_id, now=at) as claim:
+            self.assertIsNotNone(claim)
+            return self.q.defer(self.job_id, reason, failure=failure, now=at)
+
+    def test_only_failed_attempts_reach_the_attempt_limit(self):
+        # W14 r2 review F-9: slices that advance and deferrals are claims, not failed attempts.
+        limit, day = learning_queue.ATTEMPT_LIMIT, learning_queue.REARM_SECONDS
+        self.fresh()
+        self.job_id = self.plan()['id']
+        at = NOW
+        for index in range(limit + 1):
+            at += day
+            row = self.attempt('trainer_progress' if index % 2 else 'resource', False, at)
+            self.assertEqual((row['status'], row['attempts'], row['failures']), ('deferred', 0, 0))
+        for count in (1, 2, 3):
+            at += day
+            row = self.attempt('trainer_failed', True, at)
+        # Three failures after all that progress: blocked for a day and queued again, not closed.
+        self.assertEqual((row['status'], row['reason'], row['attempts']), ('blocked', 'trainer_failed', 3))
+        at += day
+        self.assertEqual(self.q.rearm(now=at), [self.job_id])
+        # Progress between the failures changes nothing: the limit is the failed attempts over all rearms.
+        rearms = 1
+        while True:
+            for _ in range(3):
+                at += day
+                self.attempt('trainer_progress', False, at)
+                at += day
+                row = self.attempt('trainer_failed', True, at)
+            if row['reason'] != 'trainer_failed':
+                break
+            at += day
+            self.assertEqual(self.q.rearm(now=at), [self.job_id])
+            rearms += 1
+        self.assertEqual((row['status'], row['reason'], row['attempts'], rearms),
+                         ('blocked', learning_queue.ATTEMPTS_EXHAUSTED, limit, limit // 3 - 1))
+        self.assertEqual(self.q.rearm(now=at * 10), [])
+        # A deferral outside a claim (resources checked before claiming) takes nothing back.
+        self.fresh()
+        self.job_id = self.plan()['id']
+        self.force(attempts=5)
+        self.assertEqual(self.q.defer(self.job_id, 'resource', now=NOW)['attempts'], 5)
+
     def test_a_block_of_another_reason_is_not_rearmed(self):
         self.blocked('failed', at=0)
         self.assertEqual(self.q.rearm(now=NOW * 10), [])

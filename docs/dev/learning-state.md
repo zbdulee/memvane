@@ -405,8 +405,8 @@ pass의 결과는 cycle 단계의 결과다. 모든 결과 상태는 아래 다�
 | `learning_job_blocked` | closed(사유와 함께 닫힘) | `learning.cycle blocked` | the blocked job until its rearm time |
 | `staged_source_revoked` | closed(사유와 함께 닫힘) | `learning.cycle blocked` | the job or the candidate closed as source_revoked |
 | `apply_blocked` | closed(사유와 함께 닫힘) | `learning.promotion rejected` | a rejected journal or a counted failure on the evaluation |
-| `staged_cohort_changed` | closed(사유와 함께 닫힘) | — | the evaluation deferred: its rows moved under the attempt |
-| `staged_authorization_expired` | closed(사유와 함께 닫힘) | — | the evaluation deferred until renewal carries or closes it |
+| `staged_cohort_changed` | waiting(입력 대기) | — | the evaluation deferred: its rows moved under the attempt |
+| `staged_authorization_expired` | waiting(입력 대기) | — | the evaluation deferred until renewal carries or closes it |
 | `staged_artifact_changed` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | a staged cycle whose artifact or evidence no longer matches |
 | `cohort_cycle_conflict` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | a cycle row in a state training cannot enter |
 | `evaluation_stage_unavailable` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | an evaluation whose cycle or job row is missing |
@@ -416,6 +416,15 @@ pass의 결과는 cycle 단계의 결과다. 모든 결과 상태는 아래 다�
 | `cohort_source_revoked` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | more than 2,000 admitted rows |
 | `runtime_approval_required` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | no valid runtime approval |
 | `synthetic_training_budget_exhausted` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | the synthetic QA profile used its budget |
+
+아래는 cycle 결과가 아닌 종료다. 어느 것도 job·cycle·평가 행을 바꾸지 않고 이벤트를 쓰지 않으며 wake를 다시 요청하지 않는다.
+
+| 종료 | 결과 상태 | 만드는 곳 | 남기는 것 |
+|---|---|---|---|
+| pass_raised | `failed` | `shared.py` | nothing: the pass raised and the answer carries the reason (an unreadable application journal ends every pass so until it is repaired) |
+| no_request | `idle` | `shared.py` | nothing: the owned worker found no request to serve |
+| synthetic_not_started | `synthetic_training_start_required` | `project_learning_setup.py` | nothing: the synthetic QA profile has no started budget |
+| synthetic_time_spent | `synthetic_training_time_exhausted` | `project_learning_setup.py` | nothing: the synthetic QA budget is past its deadline |
 
 ## M11 selector 유지보수 pass의 결과
 

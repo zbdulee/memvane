@@ -25,6 +25,8 @@ REFUSED=('apply_prepare_failed','apply_activation_failed')
 UNUSABLE=('apply_journal_binding_changed','apply_intent_changed')
 # The evaluation is too old or its cases changed: nothing is decided, it is evaluated again.
 STALE='apply_quality_stale'
+# The active artifact's bytes are not the pointer's: nothing a pass does changes that.
+INCUMBENT_DAMAGED='apply_incumbent_artifact_changed'
 # Any other failure with a journal is tried again; this many in a row end the application.
 FAILURE_LIMIT=5
 
@@ -137,6 +139,9 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
     # ``targetExact`` stays in the file and is not read here.
     if not decided and not after['exact_rate']>before['exact_rate']:raise ValueError('apply_quality_not_improved')
     incumbent=expected['old_pointer'] if expected else current
+    # Before the comparison with the evaluation: an evaluation of damaged bytes records their
+    # hash, which differs from the pointer's on every pass, and evaluating again cannot change it.
+    if _hash(incumbent['artifact_path'])!=incumbent['artifact_sha256']:raise ValueError(INCUMBENT_DAMAGED)
     if metrics.get('incumbentArtifactSha256')!=incumbent['artifact_sha256']:
         raise ValueError('apply_incumbent_changed')
     if expected:
@@ -161,8 +166,6 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
                 or type(stamp)not in(int,float) or not math.isfinite(stamp) or not 0<stamp<=time.time()+1
                 or expected['new_receipt']!={**expected['old_receipt'],'checkpoint_sha256':digest(pointer),'createdAt':stamp}):
             raise ValueError('apply_journal_binding_changed')
-    # Its own reason: a re-evaluation cannot change these bytes, so this failure is counted.
-    if _hash(incumbent['artifact_path'])!=incumbent['artifact_sha256']:raise ValueError('apply_incumbent_artifact_changed')
     return profile,stage,incumbent
 
 def _stable(profile):

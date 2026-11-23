@@ -20,9 +20,11 @@ REARMED_REASON = 'trainer_failed'
 # final artifact is not what was written. Such a job is closed at once, not rearmed.
 UNREPEATABLE = ('learning_train_intent_changed', 'learning_batch_source_changed',
                 'learning_cursor_changed', 'learning_completion_uncertain')
-# A job whose trainer failures blocked it after this many training attempts in all
+# A job whose trainer failures blocked it after this many failed training attempts in all
 # (over every rearm; about ten days at three a day) is closed with this reason instead
-# of being queued again.
+# of being queued again. ``attempts`` counts the claims that failed or were interrupted:
+# a claim that ends deferred without a failure (a slice that advanced the cursor, a
+# resource or inference deferral) gives its count back, so progress never reaches the limit.
 ATTEMPT_LIMIT = 30
 ATTEMPTS_EXHAUSTED = 'trainer_attempts_exhausted'
 # Blocks no later attempt can clear. The next plan pins other members when there are
@@ -164,10 +166,12 @@ class LearningQueue:
             job=self.get(job_id,db=db)
             if job is None:raise ValueError('learning_job_scope_invalid')
             failures=job['failures']+int(failure)
+            # Not an attempt that failed: the claim's count is given back (see ATTEMPT_LIMIT).
+            attempts=job['attempts']-int(not failure and job['status']=='running' and job['attempts']>0)
             blocked=failures>=3
             if blocked and failure and job['attempts']>=ATTEMPT_LIMIT:reason=ATTEMPTS_EXHAUSTED  # final: never rearmed
             retry=now+(REARM_SECONDS if blocked else min(300,30*2**min(job['attempts'],4)))
-            db.execute("UPDATE learning_jobs SET status=?,failures=?,retry_at=?,reason=? WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",('blocked' if blocked else 'deferred',failures,retry,reason,job_id,self.scope))
+            db.execute("UPDATE learning_jobs SET status=?,failures=?,attempts=?,retry_at=?,reason=? WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",('blocked' if blocked else 'deferred',failures,attempts,retry,reason,job_id,self.scope))
             return self.get(job_id,db=db)
 
     def block(self, job_id, reason):
@@ -181,7 +185,7 @@ class LearningQueue:
     def rearm(self, *, now=None):
         """Queue again the jobs trainer failures blocked a day ago; their ids.
 
-        ``attempts`` is kept: it is the count of training attempts over all rearms.
+        ``attempts`` is kept: it is the count of failed training attempts over all rearms.
         """
         now=time.time() if now is None else now
         with self.connect() as db:

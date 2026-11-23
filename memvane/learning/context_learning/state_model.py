@@ -548,8 +548,8 @@ CYCLE_RESULTS = {
     'learning_job_blocked': ('closed', _CYCLE + ' blocked', 'the blocked job until its rearm time'),
     'staged_source_revoked': ('closed', _CYCLE + ' blocked', 'the job or the candidate closed as source_revoked'),
     'apply_blocked': ('closed', _PROMOTION + ' rejected', 'a rejected journal or a counted failure on the evaluation'),
-    'staged_cohort_changed': ('closed', None, 'the evaluation deferred: its rows moved under the attempt'),
-    'staged_authorization_expired': ('closed', None, 'the evaluation deferred until renewal carries or closes it'),
+    'staged_cohort_changed': ('waiting', None, 'the evaluation deferred: its rows moved under the attempt'),
+    'staged_authorization_expired': ('waiting', None, 'the evaluation deferred until renewal carries or closes it'),
     'staged_artifact_changed': ('held', _CYCLE + ' held', 'a staged cycle whose artifact or evidence no longer matches'),
     'cohort_cycle_conflict': ('held', _CYCLE + ' held', 'a cycle row in a state training cannot enter'),
     'evaluation_stage_unavailable': ('held', _CYCLE + ' held', 'an evaluation whose cycle or job row is missing'),
@@ -559,6 +559,19 @@ CYCLE_RESULTS = {
     'cohort_source_revoked': ('held', _CYCLE + ' held', 'more than 2,000 admitted rows'),
     'runtime_approval_required': ('held', _CYCLE + ' held', 'no valid runtime approval'),
     'synthetic_training_budget_exhausted': ('held', _CYCLE + ' held', 'the synthetic QA profile used its budget'),
+}
+
+# Ends of a worker run that are not a cycle result: as (the status the run answers with,
+# where it is made, what it leaves). None of them changes a job, a cycle or an evaluation,
+# none writes an event, and none asks for another wake.
+PASS_ENDS = {
+    'pass_raised': ('failed', 'shared.py', 'nothing: the pass raised and the answer carries the reason '
+                    '(an unreadable application journal ends every pass so until it is repaired)'),
+    'no_request': ('idle', 'shared.py', 'nothing: the owned worker found no request to serve'),
+    'synthetic_not_started': ('synthetic_training_start_required', '../project_learning_setup.py',
+                              'nothing: the synthetic QA profile has no started budget'),
+    'synthetic_time_spent': ('synthetic_training_time_exhausted', '../project_learning_setup.py',
+                             'nothing: the synthetic QA budget is past its deadline'),
 }
 
 # M11: one selector maintenance pass has no durable state of its own. Every way it ends,

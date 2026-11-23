@@ -391,20 +391,46 @@ class FailuresBeforeAJournal(Case):
         self.assertEqual(seen, [('completed', None)] * (A.FAILURE_LIMIT - 1)
                          + [('blocked', 'apply_prepared_inference_required')])
 
-    def test_changed_bytes_of_the_incumbent_artifact_are_counted_not_compared_again(self):
-        # W13 r4 review F-17: a re-evaluation cannot change them.
-        case = self.fixture()
-        queue, _job = self.queue(case)
-        # The active model is a copy beside the policy's base file, with the same bytes when it was evaluated.
+    def damaged(self, case, evaluated_after):
+        """The active model is a copy beside the policy's base file whose bytes changed."""
         active = case.root / 'active.artifact'
         case.write(active, (case.root / 'base.artifact').read_bytes())
         case.json(case.root / 'active-checkpoint.json', {**case.old, 'artifact_path': str(active)})
         active.write_bytes(b'damaged')
-        answer = case.run_apply()
-        if (answer['status'], answer['reason']) != ('apply_blocked', 'apply_incumbent_artifact_changed'):
-            raise AssertionError(answer)
-        self.assertEqual(self.fail(case, queue, answer['reason']), ('completed', None))
-        self.assertEqual(self.counts(case), {case.cycle: 1})
+        if evaluated_after:
+            # What an evaluation of the damaged bytes records as its incumbent.
+            case.stage['metrics']['incumbentArtifactSha256'] = shared._hash(active)
+            with case.db(None) as db:
+                db.execute('UPDATE cycles SET evidence=? WHERE cycle_id=?',
+                           (apply_tests.canonical(case.stage), case.cycle))
+
+    def test_a_damaged_incumbent_artifact_closes_the_evaluation_at_once_and_is_not_evaluated_again(self):
+        # W13 r4 review F-17, W13b r3 review F-18: whether the bytes changed before or after the evaluation.
+        for evaluated_after in (False, True):
+            with self.subTest(evaluated_after_the_damage=evaluated_after):
+                case = self.fixture()
+                queue, _job = self.queue(case)
+                self.damaged(case, evaluated_after)
+                answer = case.run_apply()
+                if (answer['status'], answer['reason']) != ('apply_blocked', A.INCUMBENT_DAMAGED):
+                    raise AssertionError(answer)
+                events = []
+                with patch.object(candidate_close, '_project_of', return_value=str(case.project)), \
+                        patch.object(candidate_close.prequential, '_emit',
+                                          side_effect=lambda _project, event, **fields: events.append((event, fields))):
+                    closed = self.fail(case, queue, answer['reason'])
+                if closed != ('blocked', A.INCUMBENT_DAMAGED):
+                    raise AssertionError(closed)
+                if events:  # The closed evaluation is reported by the pass's promotion row, not here.
+                    raise AssertionError(events)
+                # Nothing is left for a pass to evaluate again, and nothing was counted for later.
+                with case.db(None) as db:
+                    status = db.execute('SELECT status FROM cycles WHERE cycle_id=?', (case.cycle,)).fetchone()[0]
+                with queue.claim('evaluate:' + case.cycle, now=time.time() + 10000) as lease:
+                    claimed = lease
+                if (status, claimed) != ('staged_evaluated', None):
+                    raise AssertionError((status, claimed))
+                self.assertFalse((case.root / candidate_close.APPLY_FAILURES).exists())
 
     def test_only_open_candidates_are_kept(self):
         case = self.fixture()

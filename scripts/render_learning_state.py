@@ -55,6 +55,10 @@ def render():
     for status, (kind, event, leaves) in state_model.CYCLE_RESULTS.items():
         lines.append('| `%s` | %s(%s) | %s | %s |' % (
             status, kind, kinds[kind], '`%s`' % event if event else '—', leaves))
+    lines += ['', '아래는 cycle 결과가 아닌 종료다. 어느 것도 job·cycle·평가 행을 바꾸지 않고 이벤트를 쓰지 않으며 wake를 다시 요청하지 않는다.', '',
+              '| 종료 | 결과 상태 | 만드는 곳 | 남기는 것 |', '|---|---|---|---|']
+    for name, (status, source, leaves) in state_model.PASS_ENDS.items():
+        lines.append('| %s | `%s` | `%s` | %s |' % (name, status, source.replace('../', ''), leaves))
     settled = {'completed': '완료(횟수 0)', 'kept': 'backoff, wake 재제안 없음', 'deferred': 'backoff(미룸)',
                'failed': 'backoff(실패)', 'busy': '짧은 재시도'}
     lines += ['', '## M11 selector 유지보수 pass의 결과', '',

@@ -16,7 +16,7 @@ import unittest
 from unittest import mock
 
 from memvane.learning.context_learning import project_worker
-from memvane.learning.context_learning.state_model import CYCLE_RESULTS
+from memvane.learning.context_learning.state_model import CYCLE_RESULTS, PASS_ENDS
 from memvane.runtime.types import RETRY
 
 SOURCE = Path(project_worker.__file__).resolve().parent
@@ -62,6 +62,20 @@ class CycleResults(unittest.TestCase):
                        for name in ('automatic_staging.py', 'candidate_apply.py', 'shared.py', 'project_worker.py'))
         self.assertEqual([status for status in CYCLE_RESULTS if "'%s'" % status not in text], [])
         self.assertGreaterEqual(len(found), 25)
+
+    def test_the_ends_that_are_not_cycle_results_are_listed_with_where_they_are_made(self):
+        # W14 review F-3: a raised pass, the owned worker without a request, the synthetic budget.
+        for name, (status, source, leaves) in PASS_ENDS.items():
+            text = (SOURCE / source).read_text(encoding='utf-8')
+            self.assertRegex(text, r"""['"]status['"]\s*:\s*['"]%s['"]""" % status, name)
+            self.assertTrue(leaves.startswith('nothing'), name)
+        # Only the raised pass shares its status with a cycle result (a failed training attempt).
+        self.assertEqual({row[0] for row in PASS_ENDS.values()} & set(CYCLE_RESULTS), {'failed'})
+
+    def test_a_deferred_evaluation_is_waiting_not_closed(self):
+        # W14 review F-8: nothing is closed by these two; a later pass evaluates again.
+        for status in ('staged_cohort_changed', 'staged_authorization_expired'):
+            self.assertEqual(CYCLE_RESULTS[status][:2], ('waiting', None))
 
     def test_the_classes_are_the_known_five_and_every_row_says_what_stays(self):
         self.assertEqual({row[0] for row in CYCLE_RESULTS.values()},

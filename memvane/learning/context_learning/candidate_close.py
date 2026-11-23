@@ -206,7 +206,7 @@ def unapplied(root, cycle, answer, queue, job):
     existed): it is counted in ``apply-failures.json``, and at the limit the
     evaluation closes with the reason so that the next job can be planned.
     """
-    from .candidate_apply import FAILURE_LIMIT, STALE
+    from .candidate_apply import FAILURE_LIMIT, INCUMBENT_DAMAGED, STALE
     from .shared import _db
     reason = str(answer.get('reason') or 'apply_blocked')[:80]
     if 'activationPending' in answer:
@@ -221,6 +221,13 @@ def unapplied(root, cycle, answer, queue, job):
         queue.refresh(cycle)
         return
     queue.finish(job['id'], 'blocked', reason)
+    if reason == INCUMBENT_DAMAGED:
+        # No pass can change the active artifact's bytes and an evaluation against them
+        # decides nothing: closed here, never evaluated again. The closed evaluation is
+        # reported once as ``learning.promotion`` ``rejected`` with this reason. The owner's
+        # way out is ``restore-previous-model`` or a repaired artifact.
+        queue.apply_failed(job['id'], reason, 1)
+        return
     # Counted beside the evaluation, not on it: a re-evaluation (new gold) starts the
     # evaluation's own count again and must not forget how often the application failed.
     count = _count_failure(root, cycle, reason)

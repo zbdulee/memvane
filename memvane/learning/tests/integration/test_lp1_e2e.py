@@ -110,6 +110,8 @@ class LearningPath(Lp1Fixture):
                                                      'learning_job_blocked'),
                   'blocked for good': (('blocked', 'learning_cursor_changed', 1, 1, 0, 'failed'),
                                        'learning_job_blocked'),
+                  'blocked for good at the attempt limit': (('blocked', 'trainer_attempts_exhausted', 30, 3, 0, 'failed'),
+                                                            'learning_job_blocked'),
                   'deferred after progress': (('deferred', 'trainer_progress', 1, 0, later, 'deferred'),
                                               'deferred_resource')}
         launches = len(self.launches())

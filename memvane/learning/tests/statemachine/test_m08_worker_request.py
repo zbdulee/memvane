@@ -149,7 +149,7 @@ class WorkerRequestTable(unittest.TestCase):
 if __name__ == '__main__':
     unittest.main()
 
-    def test_a_child_that_keeps_ending_with_one_retry_result_settles_the_request_at_the_limit(self):
+    def test_a_child_that_keeps_ending_with_retry_results_settles_the_request_at_the_limit(self):
         from memvane.learning.context_learning import worker_retry
         limit = worker_retry.RETRY_RESULT_LIMIT
         self.assertEqual(limit, 288)
@@ -162,20 +162,19 @@ if __name__ == '__main__':
                     patch('memvane.diagnostics.api.emit', side_effect=lambda event, **f: emitted.append((event, f))), \
                     patch('memvane.journal.api.select_route', return_value={}):
                 return shared._settle_owned(self.root, shared.FULL_WORKER_STATE, state, {'status': status}, self.project)
-        # Another result in between starts the count again: only the same result in a row counts.
-        for _ in range(limit - 1):
-            ends('deferred_resource')
-        self.assertEqual(ends('busy')['learning_retry'], {'status': 'durable_wake_pending'})
-        for _ in range(limit - 1):
-            self.assertEqual(ends('deferred_resource')['learning_retry'], {'status': 'durable_wake_pending'})
-        self.assertEqual((len(asked), self.observed(), emitted), (2 * limit - 1, 'open', []))
-        # The limit: no wake is asked for, the request is settled with the result, one row says so.
-        last = ends('deferred_resource')
+        # W15 r2 review F-9: retry results of different kinds in a row count together, so a
+        # resource deferral or a busy lock in between never starts the count again.
+        kinds = ('apply_deferred', 'deferred_resource', 'busy', 'staged_evaluation_deferred')
+        for index in range(limit - 1):
+            self.assertEqual(ends(kinds[index % len(kinds)])['learning_retry'], {'status': 'durable_wake_pending'})
+        self.assertEqual((len(asked), self.observed(), emitted), (limit - 1, 'open', []))
+        # The limit: no wake is asked for, the request is settled with the last result, one row says so.
+        last = ends('apply_deferred')
         self.assertNotIn('learning_retry', last)
-        self.assertEqual((len(asked), self.observed()), (2 * limit - 1, 'settled'))
+        self.assertEqual((len(asked), self.observed()), (limit - 1, 'settled'))
         self.assertEqual([(event, row['outcome'], row['reason'], row['retries']) for event, row in emitted],
-                         [('learning.cycle', 'retry_cap', 'deferred_resource', limit)])
-        self.assertEqual(self.step(), {'status': 'settled', 'outcome': 'deferred_resource'})
+                         [('learning.cycle', 'retry_cap', 'apply_deferred', limit)])
+        self.assertEqual(self.step(), {'status': 'settled', 'outcome': 'apply_deferred'})
         self.assertFalse((self.root / worker_retry.NAME).exists())
         # The next hook launch opens a new request, and the count starts over.
         self.launch()

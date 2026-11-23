@@ -3,11 +3,13 @@
 An owned worker child that ends with a retry result (``memvane.runtime.types.RETRY``:
 resources not ready, a deferred evaluation or application) leaves its request
 pending and asks for another ``learning`` wake. ``again`` counts such results in
-a row per result status in ``worker-retry.json``. At ``RETRY_RESULT_LIMIT`` the
-request is settled with that status instead (no further wake) and one
-``learning.cycle`` row says so (``retry_cap`` with the status as its reason and
-the count). The next hook launch writes a new request, and the count starts
-over. Any other result clears the count.
+a row in ``worker-retry.json``, whatever their status: resource deferrals and a
+busy lock come and go with the machine's load and must not hide an application
+or evaluation that never gets done. At ``RETRY_RESULT_LIMIT`` the request is
+settled with the last status instead (no further wake) and one
+``learning.cycle`` row says so (``retry_cap`` with that status as its reason
+and the count). The next hook launch writes a new request, and the count
+starts over. A result that is not a retry clears the count.
 """
 from __future__ import annotations
 
@@ -18,14 +20,14 @@ NAME = 'worker-retry.json'
 RETRY_RESULT_LIMIT = 288
 
 
-def _count(path, status):
+def _count(path):
     from .dataset import read_private_json
     try:
         row = read_private_json(path) if path.exists() else None
     except (OSError, ValueError, TypeError):
         row = None
-    same = isinstance(row, dict) and row.get('status') == status and type(row.get('count')) is int
-    return (row['count'] if same and row['count'] > 0 else 0) + 1
+    kept = isinstance(row, dict) and type(row.get('count')) is int
+    return (row['count'] if kept and row['count'] > 0 else 0) + 1
 
 
 def _clear(path):
@@ -41,7 +43,7 @@ def again(root, project, status, retryable):
     if not retryable:
         _clear(path)
         return False
-    count = _count(path, status)
+    count = _count(path)
     if count < RETRY_RESULT_LIMIT:
         from .local_cycle import _atomic_json
         try:
