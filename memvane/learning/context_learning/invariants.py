@@ -31,6 +31,7 @@ Rules (design appendix B-3):
 """
 from __future__ import annotations
 
+import re
 import json
 from pathlib import Path
 
@@ -140,7 +141,20 @@ def _application(root, cycles):
     if not isinstance(row, dict):
         return ['I-7 unreadable application journal']
     found = []
-    if active not in (row.get('old_pointer'), row.get('new_pointer')):
+    if row.get('phase') == 'rejected':
+        # A closed journal (a refusal, an application undone since) says nothing about what
+        # the pointer became afterwards: the pointer's own marker names the application
+        # that wrote it, whose journal is this one or an archived one.
+        marker = active.get('application') if isinstance(active, dict) else None
+        if marker is not None:
+            owner = None
+            if isinstance(marker, dict) and re.fullmatch(r'[a-f0-9]{32}', str(marker.get('id', ''))):
+                archived = root / candidate_apply.ARCHIVE / (marker['id'] + '.json')
+                owner = (row if row.get('apply_id') == marker['id']
+                         else _json(archived.read_text()) if archived.is_file() else None)
+            if not isinstance(owner, dict) or owner.get('new_pointer') != active:
+                found.append('G-7 the active pointer is not the pointer of the application it names')
+    elif active not in (row.get('old_pointer'), row.get('new_pointer')):
         found.append('G-7 the active pointer is neither pointer of the application journal')
     if row.get('phase') == 'activated':
         if active != row.get('new_pointer'):
