@@ -72,7 +72,7 @@ host route의 분류·실패 동작은 `memvane/host/README.md`를 읽는다.
 - **쓰기 반환값을 확인할지 말지는 "조용한 실패가 무엇을 잃는가"로 가른다.** 전부 확인하는 것은 과하고(노이즈이며 기존 판단을 뒤집는다) 전부 무시하는 것은 이 저장소에서 네 번 반복된 버그 클래스다. 기준 셋:
   1. **확인한다 — 작업이 유실되거나 상태가 오염되는 경로.** `stamp_verification`(유료 검수 1회를 쓰고 카드가 `generated`로 남아 영구 비가시), `record_verify_deletion`(원장 없이 삭제 = 설명 불가능한 소실, fail-closed로 삭제 자체를 막는다), `patch_frontmatter_fields`의 status 리셋(새 본문에 `verified`가 남는 stale 검증).
   2. **확인한다 — 거짓 성공 보고.** 그 쓰기가 연산의 **유일한 효과**일 때. 원장 행 하나가 전부인 기록 연산은 실패하면 아무 일도 안 했는데 성공을 출력하게 된다.
-  3. **무시한다 — 실패 방향이 안전하고 다음 회차가 재시도하는 경로.** 원자적 쓰기라 원본이 온전하고 손해가 재처리뿐인 곳: `trim_jsonl`의 로그 압축, `compact_manifest`의 `write_jsonl_atomic`, 그리고 `write_state_atomic` 계열(스냅샷·커서). **`write_state_atomic`은 애초에 반환값이 없고 실패를 예외로 던진다** — "삼킨 반환값"이 아니다. 커서 미전진이 원장 중복을 만들지 않는 이유는 커서가 아니라 `wiki_lifecycle.run`이 카드마다 다시 하는 상태 검사다(은퇴한 카드는 이미 없어 건너뛰고, 같은 source hash의 refresh는 `_recently_refreshed`가 다시 넣지 않는다).
+  3. **무시한다 — 실패 방향이 안전하고 다음 회차가 재시도하는 경로.** 원자적 쓰기라 원본이 온전하고 손해가 재처리뿐인 곳: `trim_jsonl`의 로그 압축, `compact_manifest`의 `write_jsonl_atomic`, 그리고 `write_state_atomic` 계열(스냅샷·커서). **`write_state_atomic`은 애초에 반환값이 없고 실패를 예외로 던진다** — "삼킨 반환값"이 아니다. 커서 미전진이 원장 중복을 만들지 않는 이유는 커서가 아니라 `wiki_lifecycle.run`이 카드마다 다시 하는 상태 검사다(은퇴한 카드는 이미 없어 건너뛴다. 같은 source hash의 refresh는 refresh 기록이 저장된 뒤 `REFRESH_RETRY_SECONDS`(7일) 동안 `_recently_refreshed`가 다시 넣지 않는다. 그 기록은 커서와 같은 파일에 쓰이므로 쓰기가 실패한 run의 enqueue는 다음 run이 한 번 더 넣는다).
   각 호출부에 **분류 근거를 한 줄 주석으로** 남긴다 — 다음 사람이 이 판단을 다시 하지 않게, 그리고 "전부 고쳐라" 스윕이 3번 항목을 건드리지 않게.
 ## 운영상 함정 (디버깅 시 참고)
 

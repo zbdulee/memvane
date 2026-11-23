@@ -36,6 +36,10 @@ package for Apple Silicon macOS (arm64). Preparing it downloads one pinned
 embedding model file and checks it against a fixed hash. If that download is
 refused or unavailable, ask the agent to prepare the runtime from a local copy
 of the same model file; a file with any other content is not accepted.
+Linux and Intel macOS are not supported: onboarding is refused at the provider
+review and no project is selected. The Linux CI runs the tests only; the
+checkout observation cache that keeps a recall's fixed cost low exists only on
+macOS (APFS).
 
 | Host | Installation route | Runtime support | Verification |
 |---|---|---|---|
