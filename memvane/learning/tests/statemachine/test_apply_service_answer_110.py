@@ -5,7 +5,11 @@ candidate: one of the counted failures, tried again and ended at the limit.
 Any other answer that is not an acceptance is its refusal of the candidate,
 which ends the application at once. Both leave the status word in the journal
 and in the result (``serviceStatus``); a word outside the fixed set is
-``other``. Assertions are journal rows, result fields and event counts.
+``other``. The count of failures in a row goes on when another candidate
+takes the turn, a failure that is no answer is recorded as a fixed word and
+never as its text, and the answer is kept after the pointer is written and
+across a stopped pass. Assertions are journal rows, result fields, event
+counts and the bytes of the namespace's files.
 """
 from __future__ import annotations
 
@@ -87,6 +91,57 @@ class ServiceAnswer(unittest.TestCase):
         self.assertNotIn('serviceStatus', A.read_journal(case.root))
 
 
+class TwoCandidates(unittest.TestCase):
+    """Two evaluated candidates of one namespace taking turns (review 11 F-18)."""
+
+    fixture = table.ApplyTable.fixture
+    later = table.ApplyTable.later
+
+    def second(self, case):
+        from memvane.learning.context_learning.learning_queue import LearningQueue
+        cycle = LearningQueue(case.root).plan(case.train, approval=case.stage['authorizationSha256'],
+                                              cohort='test', family='second-family', minimum=5, maximum=100)['id']
+        folder = case.root / 'cycles' / cycle
+        folder.mkdir(mode=0o700)
+        case.write(folder / 'candidate.artifact', b'candidate')
+        stage = {**case.stage, 'artifactPath': str(folder / 'candidate.artifact')}
+        with case.db(None) as db:
+            db.execute('INSERT INTO cycles VALUES(?,?,?,?,NULL)', (cycle, 'staged_evaluated', json.dumps(stage), 1.0))
+        return cycle
+
+    def test_the_failures_in_a_row_go_on_when_the_other_candidate_takes_the_turn(self):
+        case = self.fixture()
+        turns = [case.cycle, self.second(case)]
+        calls, seen = [], []
+        for index in range(A.FAILURE_LIMIT):
+            with self.later(case):
+                answer = A.apply_candidate(case.root, case.policy, turns[index % 2],
+                                           transport=answering('worker_error', calls))
+            seen.append((answer['status'], A.read_journal(case.root)['failures']))
+        self.assertEqual(seen, [('apply_deferred', count) for count in range(1, A.FAILURE_LIMIT)]
+                         + [('apply_blocked', A.FAILURE_LIMIT)])
+        self.assertEqual(len(calls), A.FAILURE_LIMIT)
+        row = A.read_journal(case.root)
+        self.assertEqual((row['phase'], row['cycle_id'], row['serviceStatus']),
+                         ('rejected', turns[(A.FAILURE_LIMIT - 1) % 2], 'worker_error'))
+        # The closed journal ends that run: the other candidate starts its own count.
+        with self.later(case):
+            answer = A.apply_candidate(case.root, case.policy, turns[A.FAILURE_LIMIT % 2],
+                                       transport=answering('worker_error', calls))
+        self.assertEqual((answer['status'], answer['failures']), ('apply_deferred', 1))
+
+    def test_the_backoff_of_one_candidates_failure_holds_for_the_other(self):
+        case = self.fixture()
+        other = self.second(case)
+        calls = []
+        first = A.apply_candidate(case.root, case.policy, case.cycle, transport=answering('worker_error', calls))
+        self.assertEqual((first['status'], len(calls)), ('apply_deferred', 1))
+        waiting = A.apply_candidate(case.root, case.policy, other, transport=answering('worker_error', calls))
+        self.assertEqual((waiting['status'], waiting['next_retry'], len(calls)),
+                         ('apply_deferred', first['next_retry'], 1))
+        self.assertEqual(A.read_journal(case.root)['cycle_id'], case.cycle)
+
+
 class WorkerPasses(workers.WorkerFixture):
     """Through the worker (default profile): how often the candidate is reported closed."""
 
@@ -139,6 +194,106 @@ class WorkerPasses(workers.WorkerFixture):
         closed = self.rejected()
         self.assertEqual(len(closed), 1, self.promotions())
         self.assertEqual(closed[0]['serviceStatus'], 'model_family_mismatch')
+
+    # -- after the pointer is written (review 11 F-19) -----------------------------------
+    def staged(self, fail):
+        """A transport that accepts until ``fail`` (``second`` prepare or ``activate``) and then errs."""
+        prepares = []
+
+        def answer(command, record):
+            if command == 'prepare':
+                prepares.append(1)
+                if fail == 'second' and len(prepares) > 1:
+                    return {'status': 'worker_error'}
+                return {'status': 'prepared', 'token': record['apply_id']}
+            return {'status': 'worker_error'}
+        return answer
+
+    def pending(self):
+        return [row for row in self.promotions() if row.get('outcome') == 'activation_pending']
+
+    def profiled(self):
+        """The profile file the pending row's project is read from."""
+        from memvane.learning.context_learning import learning_profile
+        self.write_json(self.root / learning_profile.NAME, {'proposal': self.profile})
+
+    def errs_after_the_pointer(self, fail, reason):
+        self.ready()
+        self.profiled()
+        self.transport = self.staged(fail)
+        for count in range(1, A.FAILURE_LIMIT + 1):
+            result = self.worker()['cycle']
+            self.assertEqual((result['status'], result['reason'], result['failures'],
+                              result['serviceStatus']), ('apply_blocked', reason, count, 'worker_error'))
+            self.past_backoff()
+        row = A.read_journal(self.root)
+        self.assertEqual((row['phase'], row['serviceStatus']), ('pointer_committed', 'worker_error'))
+        self.assertEqual([(event['reason'], event['serviceStatus']) for event in self.pending()],
+                         [(reason, 'worker_error')])
+        self.assertEqual(self.rejected(), [])
+
+    def test_an_error_at_the_second_prepare_is_named_in_the_pending_row(self):
+        self.errs_after_the_pointer('second', 'apply_generation_changed')
+
+    def test_an_error_at_the_activation_is_named_in_the_pending_row(self):
+        self.errs_after_the_pointer('activate', A.SERVICE_ERROR)
+
+    # -- a failure that is no answer (review 11 F-20) --------------------------------------
+    def texts(self):
+        """Every event row and every file of the namespace, as bytes."""
+        found = [json.dumps(self.recorded).encode()]
+        for path in self.root.rglob('*'):
+            if path.is_file():
+                found.append(path.read_bytes())
+        return b'\n'.join(found)
+
+    def transport_error(self, fail):
+        secret = 'fixture-free-text-37'
+        self.ready()
+        self.profiled()
+
+        def answer(command, record):
+            if command == fail:
+                raise OSError(secret + ' /private/path')
+            return {'status': 'prepared', 'token': record['apply_id']}
+        self.transport = answer
+        reasons = []
+        for _ in range(A.FAILURE_LIMIT):
+            reasons.append(self.worker()['cycle']['reason'])
+            self.past_backoff()
+        self.assertEqual(set(reasons), {A.IO_ERROR})
+        self.assertEqual(A.read_journal(self.root)['reason'], A.IO_ERROR)
+        self.assertEqual(len(self.rejected() if fail == 'prepare' else self.pending()), 1)
+        self.assertNotIn(secret.encode(), self.texts())
+        self.assertNotIn(b'/private/path', self.texts())
+
+    def test_the_text_of_an_error_at_the_prepare_reaches_no_row_and_no_file(self):
+        self.transport_error('prepare')
+
+    def test_the_text_of_an_error_at_the_activation_reaches_no_row_and_no_file(self):
+        self.transport_error('activate')
+
+    # -- a pass stopped after the journal closed (review 11 F-21) ---------------------------
+    def test_the_answer_is_named_when_a_later_pass_reports_the_closed_candidate(self):
+        from unittest import mock
+        from memvane.learning.context_learning import prequential
+
+        class Stopped(BaseException):
+            pass
+        self.ready()
+        self.transport = answering('worker_error')
+        for _ in range(A.FAILURE_LIMIT - 1):
+            self.assertEqual(self.worker()['cycle']['status'], 'apply_deferred')
+            self.past_backoff()
+        with mock.patch.object(prequential, 'record_pass', side_effect=Stopped):
+            with self.assertRaises(Stopped):
+                self.worker()
+        self.assertEqual((A.read_journal(self.root)['phase'], self.rejected()), ('rejected', []))
+        self.past_backoff()
+        self.worker()
+        closed = self.rejected()
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0]['serviceStatus'], 'worker_error')
 
 
 if __name__ == '__main__':

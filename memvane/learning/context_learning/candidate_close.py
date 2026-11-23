@@ -211,7 +211,7 @@ def unapplied(root, cycle, answer, queue, job):
     reason = str(answer.get('reason') or 'apply_blocked')[:80]
     if 'activationPending' in answer:
         if answer.get('failures') == FAILURE_LIMIT:
-            _activation_pending(root, cycle, reason)
+            _activation_pending(root, cycle, reason, answer.get('serviceStatus'))
         return
     # ``apply_incumbent_changed``: the active model is no longer the one the candidate was
     # compared with (an owner's restore): compared again, like a stale evaluation.
@@ -239,15 +239,16 @@ def unapplied(root, cycle, answer, queue, job):
         queue.apply_failed(job['id'], reason, 1)
 
 
-def _activation_pending(root, cycle, reason):
+def _activation_pending(root, cycle, reason, service_status=None):
     """One ``learning.promotion`` row when a written pointer's activation has failed the limit in a row.
 
     The application goes on being tried; the row is how the log shows that the
     learned selection is closed meanwhile. Diagnostic only: a failure is ignored.
     """
     try:
+        fields = {'serviceStatus': service_status} if isinstance(service_status, str) else {}
         prequential._emit(_project_of(root), 'learning.promotion', outcome='activation_pending', reason=reason,
-                          cycle=cycle)
+                          cycle=cycle, **fields)
     except Exception:
         pass
 

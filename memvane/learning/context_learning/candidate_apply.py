@@ -37,6 +37,25 @@ def _unaccepted(row,answer,refusal):
     status=answer.get('status') if isinstance(answer,dict) else None
     row['serviceStatus']=status if status in SERVICE_STATUSES else 'other'
     raise ValueError(SERVICE_ERROR if status=='worker_error' else refusal)
+
+# A failure whose text is not one of this module's own codes: an operating-system error's
+# message, a parser's sentence. Rows and events carry these words, never the text.
+IO_ERROR='apply_io_error'
+OTHER_ERROR='apply_error'
+
+def _code(exc):
+    """The fixed reason of a failure: a code this code raised, or the word for its kind."""
+    if isinstance(exc,OSError):return IO_ERROR
+    text=exc.args[0] if isinstance(exc,(ValueError,ResourceDeferred)) and exc.args and isinstance(exc.args[0],str) else ''
+    return text if re.fullmatch(r'[a-z][a-z0-9_]{2,79}',text) else OTHER_ERROR
+
+def recorded_status(root,cycle_id):
+    """The ``serviceStatus`` the live journal of ``cycle_id`` holds, or None; never raises."""
+    try:
+        row=read_journal(root)
+        status=row.get('serviceStatus') if row.get('cycle_id')==cycle_id else None
+        return status if status in SERVICE_STATUSES or status=='other' else None
+    except (OSError,ValueError,KeyError,TypeError,AttributeError):return None
 # The journal no longer describes this application (changed bytes, or what it was formed
 # from changed after something was committed under it): no later attempt can use it.
 UNUSABLE=('apply_journal_binding_changed','apply_intent_changed')
@@ -254,10 +273,18 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
         # ``prepared`` whose pointer was never written (the resident's pending object expires).
         uncommitted=(row is not None and row['phase'] in ('intent','prepared')
                      and read_private_json(root/'active-checkpoint.json')==row['old_pointer'])
+        carried=0
         if row and row['cycle_id']!=cycle_id:
             # Another candidate's uncommitted journal is replaced; a finished one is archived.
             if row['phase'] not in ('activated','rejected') and not uncommitted:raise ValueError('apply_other_transaction_pending')
             if not uncommitted:_archive(root,row)
+            # The backoff of those failures holds for this candidate too.
+            elif row.get('retry_at',0)>time.time():
+                return {'status':'apply_deferred','next_retry':row['retry_at'],'cycle_id':cycle_id}
+            # Its failures in a row are not this candidate's fault either (a resident that
+            # errs, a socket that fails): the count goes on, or two candidates taking turns
+            # would each start at zero for ever. A finished journal ends the run of failures.
+            if uncommitted:carried=row.get('failures',0) if type(row.get('failures',0)) is int else 0
             row=None
         if row is not None and uncommitted and row.get('retry_at',0)>time.time():
             return {'status':'apply_deferred','next_retry':row['retry_at'],'cycle_id':cycle_id}
@@ -265,7 +292,7 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
             # It is formed again from what is true now, so a re-evaluation never leaves a
             # journal that can only fail. Its count of failures is kept.
             fresh=_intent(root,policy,cycle_id)
-            if row is not None:fresh['failures']=row.get('failures',0)
+            fresh['failures']=row.get('failures',0) if row is not None else carried
             row=fresh;put(path,row);fault('intent')
         validate_candidate(root,policy,cycle_id,expected=row);_check_receipts(root,row)
         if row['phase']=='rejected':return {'status':'apply_blocked','reason':'candidate_rejected','cycle_id':cycle_id}
@@ -298,7 +325,11 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
         row['phase']='pointer_committed';put(path,row);fault('pointer_committed')
         # Reconstruct preparation if the worker restarted or its bounded slot expired.
         answer=transport('prepare',row)
-        if answer.get('status')!='prepared' or (row['token'] is not None and answer.get('token')!=row['token']):raise ValueError('apply_generation_changed')
+        if answer.get('status')!='prepared' or (row['token'] is not None and answer.get('token')!=row['token']):
+            # The answer is kept beside the reason: a resident that errs is told apart from one that moved on.
+            status=answer.get('status') if isinstance(answer,dict) else None
+            if status!='prepared':row['serviceStatus']=status if status in SERVICE_STATUSES else 'other'
+            raise ValueError('apply_generation_changed')
         row['token']=answer['token'];put(path,row)
         validate_candidate(root,policy,cycle_id,expected=row)
         answer=transport('activate',row);fault('service_activated')
@@ -310,9 +341,9 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
     except ResourceDeferred as exc:
         retry=time.time()+min(300,30*2**min(max(0,(row or {}).get('attempts',1)-1),4))
         if row is not None:row['retry_at']=retry;put(root/JOURNAL,row)
-        return {'status':'apply_deferred','reason':str(exc)[:80],'cycle_id':cycle_id,'next_retry':retry}
+        return {'status':'apply_deferred','reason':_code(exc),'cycle_id':cycle_id,'next_retry':retry}
     except (OSError,ValueError,KeyError,TypeError) as exc:
-        reason=str(exc)[:80]
+        reason=_code(exc)
         if (reason!=STALE and row is not None and row['cycle_id']==cycle_id
                 and row['phase'] not in ('activated','rejected')):
             active=read_private_json(root/'active-checkpoint.json')

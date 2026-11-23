@@ -200,7 +200,7 @@ class ApplyFailures(unittest.TestCase):
         for count in range(1, A.FAILURE_LIMIT):
             answer = self.other_failure(case)
             self.assertEqual((answer['status'], answer['reason'], answer['failures']),
-                             ('apply_deferred', 'fixture socket', count))
+                             ('apply_deferred', A.IO_ERROR, count))
             row = A.read_journal(case.root)
             self.assertEqual((row['phase'], row['failures']), ('intent', count))
             waits.append(row['retry_at'])
@@ -210,10 +210,10 @@ class ApplyFailures(unittest.TestCase):
             self.assertEqual(case.events, before)
         self.assertEqual(waits, sorted(waits))
         answer = self.other_failure(case)
-        self.assertEqual((answer['status'], answer['reason']), ('apply_blocked', 'fixture socket'))
+        self.assertEqual((answer['status'], answer['reason']), ('apply_blocked', A.IO_ERROR))
         row = A.read_journal(case.root)
         self.assertEqual((row['phase'], row['reason'], row['failures']),
-                         ('rejected', 'fixture socket', A.FAILURE_LIMIT))
+                         ('rejected', A.IO_ERROR, A.FAILURE_LIMIT))
         self.assertEqual(json.loads((case.root / 'active-checkpoint.json').read_text()), case.old)
 
     def test_an_attempt_that_works_after_failures_applies(self):
@@ -334,7 +334,7 @@ class ApplyFailures(unittest.TestCase):
             answer = self.other_failure(case)
             self.assertEqual((answer['status'], answer['failures'], answer['activationPending']),
                              ('apply_blocked', count, count >= A.FAILURE_LIMIT))
-            self.assertEqual(A.read_journal(case.root)['reason'], 'fixture socket')
+            self.assertEqual(A.read_journal(case.root)['reason'], A.IO_ERROR)
             self.assertEqual(self.phase(case), 'pointer_committed')
         with self.later(case):
             self.assertEqual(case.run_apply()['status'], 'applied')
