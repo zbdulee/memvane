@@ -362,10 +362,9 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
             deferred = isinstance(exc, ResourceDeferred)
             if deferred:
                 record_resource_defer(root, exc.report, reason=str(exc))
-            # A time limit reached after the cursor moved is one slice of the work,
-            # not a failed attempt: the next pass resumes from the cursor.
-            advanced = (not deferred and str(exc) == 'trainer_timeout'
-                        and _cursor_step(folder) > progress)
+            # A time limit or a yield after the cursor moved is one slice of the work, not a
+            # failed attempt (less work is left, however the slice ended): resumed from the cursor.
+            advanced = (deferred or str(exc) == 'trainer_timeout') and _cursor_step(folder) > progress
             deferred = deferred or advanced
             if meta is not None and start is not None:
                 telemetry_emit(root / 'job-telemetry.jsonl', 'finished',
@@ -385,11 +384,21 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
                 # A deferral gets the worker's own row; a failure names the trainer's frames.
                 _cycle_event(project, 'failed', cycle=cycle_id, reason=str(exc)[:80],
                              errorSite=getattr(exc, 'error_site', None))
-            # ``progress``: the slice advanced the cursor; the worker's count of retries starts over.
-            return {'status': 'deferred_resource' if deferred else 'failed', 'reason': str(exc)[:80],
-                    'cycle_id': cycle_id, **({'progress': True} if advanced else {})}
-    return _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,
-        trainer_factory=trainer_factory,coordination=coordination)
+            return _moved({'status': 'deferred_resource' if deferred else 'failed', 'reason': str(exc)[:80],
+                           'cycle_id': cycle_id}, advanced)
+    return _moved(_evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,
+        trainer_factory=trainer_factory,coordination=coordination), True)
+
+
+def _moved(result, advanced):
+    """``result`` with ``progress`` when the pass moved and still asks to be woken again.
+
+    A slice that advanced the cursor, or the pass that trained and staged the job and
+    whose evaluation then waits: the worker's count of retries starts over
+    (``worker_retry``). A later pass that only defers the same evaluation did not move.
+    """
+    from memvane.runtime.types import RETRY
+    return {**result, 'progress': True} if advanced and result.get('status') in RETRY else result
 
 
 def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*,trainer_factory,coordination):
@@ -407,6 +416,7 @@ def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*
     controller,(coord_fd,_)=coordination
     control={'schema':1,'root':str(controller.root),'policy':admission_policy(policy),'namespace':job['namespace'],'job_id':evaluation['id']}
     folder=root/'cycles'/cycle_id;incumbent=Path(policy['baseArtifact'])
+    from .candidate_apply import INCUMBENT_DAMAGED
     with queue.claim(evaluation['id']) as claim:
         if claim is None:
             if evaluation['status']=='waiting_quality':
@@ -427,6 +437,8 @@ def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*
         status=result['status']
         if status=='staged_evaluated':queue.finish(evaluation['id'],'completed')
         elif status=='staged_waiting_quality_cohort':queue.finish(evaluation['id'],'waiting_quality')
+        elif status=='staged_evaluation_deferred' and result.get('reason')==INCUMBENT_DAMAGED:
+            queue.finish(evaluation['id'],'blocked',INCUMBENT_DAMAGED)  # no later attempt can change those bytes
         elif status=='staged_evaluation_deferred':queue.defer(evaluation['id'],result.get('reason','resource'),failure=result.get('failure',False))
         # The evaluated rows moved under the attempt, or the approval is being replaced:
         # nothing about the candidate is decided. Asked again; renewal closes what it replaces.
@@ -515,6 +527,10 @@ def _evaluate_impl(root,policy,grant,stage,train,validation,cohort_train,*,cycle
         from .dataset import read_private_json
         from .candidate_apply import readable
         readable(root);active_anchor=read_private_json(root/'active-checkpoint.json')
+        # No evaluation against bytes that are not the pointer's: closed here, before any prediction.
+        from .candidate_apply import INCUMBENT_DAMAGED,incumbent_damaged
+        if incumbent_damaged(active_anchor):
+            return {'status':'staged_evaluation_deferred','cycle_id':cycle_id,'reason':INCUMBENT_DAMAGED,'failure':True}
         incumbent=Path(active_anchor['artifact_path'])
     try:
         require_operation(root, policy, 'quality_evaluate',

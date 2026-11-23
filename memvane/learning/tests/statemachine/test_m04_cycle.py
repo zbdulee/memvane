@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from unittest import mock
 
 from memvane.learning.context_learning import automatic_staging, learning_queue, shared
@@ -41,6 +42,10 @@ class ScriptedTrainer(FakeTrainer):
         if step == 'timeout_progress':
             self.case.advance(cwd)
             raise ValueError('trainer_timeout')
+        if step == 'yield_progress':
+            # What the trainer does after a full slice of saved groups: it yields, it did not time out.
+            self.case.advance(cwd)
+            raise automatic_staging.ResourceDeferred('trainer_failed:learning_yield', {'reason': 'learning_yield'})
         if step == 'intent_changed':
             raise ValueError('learning_train_intent_changed')
         if step == 'child_cursor_changed':
@@ -222,6 +227,67 @@ class EvaluationAndApplication(CycleFixture):
         self.worker()
         self.assertEqual((self.pointer(), self.cycle_rows()[first]), (after, 'applied'))
         self.assertEqual(self.violations(), [])
+
+    def test_the_pass_that_staged_the_cycle_is_progress_and_a_later_deferred_evaluation_is_not(self):
+        # Review 10 (W15 F-11): a job trained and staged in the pass whose evaluation then waits.
+        self.golds('v', 50, empty=10)
+        deferred = lambda *a, cycle_id, **k: {'status': 'staged_evaluation_deferred', 'cycle_id': cycle_id,
+                                              'reason': 'resource'}
+        with mock.patch.object(automatic_staging, '_evaluate_impl', side_effect=deferred):
+            first = self.attempt()
+            self.assertEqual((first['status'], first.get('progress'), self.cycle(), len(self.trained)),
+                             ('staged_evaluation_deferred', True, 'staged', 1))
+            second = self.attempt()
+            self.assertEqual((second['status'], second.get('progress'), len(self.trained)),
+                             ('staged_evaluation_deferred', None, 1))
+
+    def damage_active(self, change):
+        path = Path(self.pointer()['artifact_path'])
+        if change == 'deleted':
+            path.unlink()
+        elif change == 'symlink':
+            target = path.with_name('elsewhere.artifact')
+            path.rename(target)
+            path.symlink_to(target)
+        else:
+            path.chmod(0)
+            self.addCleanup(path.chmod, 0o600)
+
+    def closes_in_the_first_pass(self, change):
+        """A candidate is applied; the next one's evaluation meets the damaged active artifact."""
+        from memvane.learning.context_learning import candidate_apply
+        self.attempt()
+        self.golds('v', 50, empty=10)
+        self.assertEqual(self.attempt()['status'], 'applied')
+        first = self.pointer()['cycle_id']
+        self.golds('u', 120, empty=20)
+        for _ in range(3):
+            waiting = self.attempt()
+        self.assertEqual(waiting['status'], 'staged_waiting_quality_cohort', waiting)
+        second = waiting['cycle_id']
+        self.assertNotEqual(second, first)
+        self.damage_active(change)
+        self.golds('w', 120, empty=20)
+        predicted = len(self.predicted)
+        self.due_now()
+        answer = self.worker()
+        self.assertEqual((self.evaluations()[second], len(self.predicted) - predicted),
+                         (('blocked', candidate_apply.INCUMBENT_DAMAGED), 0), answer)
+        # Later passes do not evaluate it again.
+        for _ in range(2):
+            self.attempt()
+        self.assertEqual((self.evaluations()[second], len(self.predicted) - predicted),
+                         (('blocked', candidate_apply.INCUMBENT_DAMAGED), 0))
+
+    def test_a_deleted_active_artifact_closes_the_evaluation_in_the_first_pass(self):
+        # Review 10 (W13b F-22): before the evaluation, not at its third failure.
+        self.closes_in_the_first_pass('deleted')
+
+    def test_a_symlinked_active_artifact_closes_the_evaluation_in_the_first_pass(self):
+        self.closes_in_the_first_pass('symlink')
+
+    def test_an_unreadable_active_artifact_closes_the_evaluation_in_the_first_pass(self):
+        self.closes_in_the_first_pass('unreadable')
 
     def test_an_evaluated_candidate_that_cannot_be_applied_yet_is_evaluated_again_when_stale(self):
         from memvane.learning.context_learning.local_cycle import ResourceDeferred
@@ -457,6 +523,16 @@ class TrainingAttempts(CycleFixture):
                           if e['outcome'] == 'rearmed'], [(job_id, 3)])
         self.assertEqual(self.trained, [100])
         self.assertEqual((self.job()[:3], self.cycle()), ((job_id, 'staged', 0), 'staged'))
+
+    def test_a_yield_after_the_cursor_moved_is_progress_and_one_without_is_not(self):
+        # Review 10 (W14 F-11): saved groups are progress however the slice ended.
+        result = self.attempt('yield_progress')
+        self.assertEqual((result['status'], result.get('progress')), ('deferred_resource', True))
+        self.assertEqual(self.job()[1:4], ('deferred', 0, 'trainer_progress'))
+        result = self.attempt('defer')
+        self.assertEqual((result['status'], result.get('progress')), ('deferred_resource', None))
+        self.assertEqual(self.job()[1:4], ('deferred', 0, 'resource'))
+        self.assertNotIn('failed', self.outcomes())
 
     def test_a_time_limit_after_the_cursor_moved_is_a_deferral_not_a_failure(self):
         for _ in range(4):

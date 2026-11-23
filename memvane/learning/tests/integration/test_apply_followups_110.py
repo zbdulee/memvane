@@ -436,6 +436,27 @@ class FailuresBeforeAJournal(Case):
                     raise AssertionError((status, claimed))
                 self.assertFalse((case.root / candidate_close.APPLY_FAILURES).exists())
 
+    def test_a_damaged_base_model_that_is_the_active_one_closes_at_once(self):
+        # Review 10 (W13b F-23): the policy's base file is the active artifact here.
+        for change in ('deleted', 'unreadable', 'changed'):
+            with self.subTest(base_model=change):
+                case = self.fixture()
+                queue, _job = self.queue(case)
+                base = case.root / 'base.artifact'
+                if change == 'deleted':
+                    base.unlink()
+                elif change == 'unreadable':
+                    base.chmod(0)
+                    self.addCleanup(base.chmod, 0o600)
+                else:
+                    base.write_bytes(b'damaged')
+                answer = case.run_apply()
+                if (answer['status'], answer['reason']) != ('apply_blocked', A.INCUMBENT_DAMAGED):
+                    raise AssertionError(answer)
+                closed = self.fail(case, queue, answer['reason'])
+                if closed != ('blocked', A.INCUMBENT_DAMAGED):
+                    raise AssertionError(closed)
+
     def test_after_the_pointer_the_replaced_artifact_no_longer_stops_the_activation(self):
         # Third-party review T-1: the decision is made; the old model's file is not what is served.
         for change in ('damaged', 'deleted'):

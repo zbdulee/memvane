@@ -107,6 +107,11 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
     # cannot strand an application between its pointer and its activation. A source revoked
     # in that span is handled as after any finished application: the pointer does not go back.
     decided=expected is not None and current==expected['new_pointer']
+    # Before every other comparison (the base model can be the active artifact, and an
+    # evaluation of damaged bytes records their hash). Not after the decision: the pointer
+    # is the candidate's and the replaced artifact is no longer what is served, so its
+    # bytes cannot stop the activation.
+    if not decided and incumbent_damaged(expected['old_pointer'] if expected else current):raise ValueError(INCUMBENT_DAMAGED)
     if decided:
         if stage['artifactPath']!=str(artifact) or _hash(artifact)!=stage['artifactSha256']:
             raise ValueError('apply_source_or_artifact_changed')
@@ -139,15 +144,6 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
     # ``targetExact`` stays in the file and is not read here.
     if not decided and not after['exact_rate']>before['exact_rate']:raise ValueError('apply_quality_not_improved')
     incumbent=expected['old_pointer'] if expected else current
-    # Before the comparison with the evaluation: an evaluation of damaged bytes records their
-    # hash, which differs from the pointer's on every pass, and evaluating again cannot change it.
-    # Not after the decision: the pointer is the candidate's and the replaced artifact is no
-    # longer what is served, so its bytes cannot stop the activation. A file that is gone or
-    # cannot be read safely is damaged like changed bytes.
-    if not decided:
-        try:damaged=_hash(incumbent['artifact_path'])!=incumbent['artifact_sha256']
-        except (OSError,ValueError):damaged=True
-        if damaged:raise ValueError(INCUMBENT_DAMAGED)
     if metrics.get('incumbentArtifactSha256')!=incumbent['artifact_sha256']:
         raise ValueError('apply_incumbent_changed')
     if expected:
@@ -173,6 +169,11 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
                 or expected['new_receipt']!={**expected['old_receipt'],'checkpoint_sha256':digest(pointer),'createdAt':stamp}):
             raise ValueError('apply_journal_binding_changed')
     return profile,stage,incumbent
+
+def incumbent_damaged(pointer):
+    """Whether the active artifact's bytes are not the pointer's; a file that is gone or cannot be read safely is."""
+    try:return _hash(pointer['artifact_path'])!=pointer['artifact_sha256']
+    except (OSError,ValueError,KeyError,TypeError):return True
 
 def _stable(profile):
     """The profile's digest without the fields a plugin update derives again."""

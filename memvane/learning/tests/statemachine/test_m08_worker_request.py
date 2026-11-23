@@ -146,9 +146,6 @@ class WorkerRequestTable(unittest.TestCase):
         self.assertEqual((state['starts'], state['outcome']), (0, None))
 
 
-if __name__ == '__main__':
-    unittest.main()
-
     def test_a_child_that_keeps_ending_with_retry_results_settles_the_request_at_the_limit(self):
         from memvane.learning.context_learning import worker_retry
         limit = worker_retry.RETRY_RESULT_LIMIT
@@ -224,3 +221,22 @@ if __name__ == '__main__':
             with patch('memvane.runtime.api.request', return_value={'status': 'queued'}):
                 shared._settle_owned(self.root, shared.FULL_WORKER_STATE, state, {'status': status}, self.project)
             self.assertEqual((self.root / worker_retry.NAME).exists(), kept)
+
+    def test_progress_after_a_long_run_without_any_keeps_the_request(self):
+        # Review 10 (W15 F-11): progress is judged before the limit, also on the pass that would reach it.
+        from memvane.learning.context_learning import worker_retry
+        limit = worker_retry.RETRY_RESULT_LIMIT
+        self.fresh()
+        with patch('memvane.diagnostics.api.emit', side_effect=AssertionError('settled')), \
+                patch('memvane.journal.api.select_route', return_value={}):
+            for _ in range(limit - 1):
+                self.assertTrue(worker_retry.again(self.root, self.project, 'deferred_resource', True,
+                                                   {'status': 'deferred_resource'}))
+            for status in ('deferred_resource', 'staged_evaluation_deferred'):
+                moved = {'status': status, 'cycle': {'status': status, 'progress': True}}
+                self.assertTrue(worker_retry.again(self.root, self.project, status, True, moved))
+                self.assertFalse((self.root / worker_retry.NAME).exists())
+
+
+if __name__ == '__main__':
+    unittest.main()
