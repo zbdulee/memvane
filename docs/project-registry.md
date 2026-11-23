@@ -78,7 +78,7 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
 - main checkout은 자기 route 기록으로만 분류한다(`_select_route`). 연결 worktree
   분류는 git을 쓰므로 main 증명에 쓰지 않는다.
 - setup·`snapshot()` 경로에서 main 행을 확인하거나 등록할 때 유계 `git worktree list`와
-  `index_host_route.select_route`의 `worktree` 판정(같은 common git dir, 자기
+  `memvane.journal.api.select_route`의 `worktree` 판정(같은 common git dir, 자기
   route 없음, 같은 settings 정체성)으로 연결 worktree를 `worktree` 행으로 등록한다.
   성공한 목록에서 사라진 worktree만 `detached`(`released`)다. git이 답하지 못하면
   worktree 행을 바꾸지 않는다. main이 `detached`가 되면 그 install의 worktree 행도

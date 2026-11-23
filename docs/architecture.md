@@ -813,7 +813,7 @@ Reading (`skills/logs/scripts/logs.py`):
 | `vector.cache` | sync owner's arena upkeep (`memvane/sync/vector_cache.py`) | `rebuild` / `compact` / `repair` / `catchup` / `append` / `skipped` / `failed`; `rows`, `sets`, `remaining`, `deadRows`, `bytes`, `ms` (the arena's own work) |
 | `resident.adopt`, `resident.drain`, `resident.forced_exit` | `memvane/resident/resident_service.py` | `adopted`; drain `started` (`reason`: `bundle_changed`, `bundle_uninstalled`, `service_root_changed`) / `stopped`; `exited` (`cold_load_hung`) |
 | `wiki.card` | `memvane/wiki/compile/wiki_compile.py`, `memvane/wiki/compile/wiki_compile_worker.py`, `memvane/wiki/dedup/wiki_dedup_resolve.py` | `over_budget` (held back for the split; `reason`, `path`, `title`, `size`, `budget`, `method`); `over_budget_written` (written after the split attempt; `reason`, `overflow`, same fields); `unmeasured` (no selector tokenizer, written); `measure_failed` (every selector runtime failed, written; `runtimes`); `split` / `split_unavailable` (source `path`, `reason`, `requested`, `parts`, `written`); `merge_kept_separate` (keeper `path`, `kept`, `size`, `budget`, `method`) |
-| `compile.extractor`, `compile.verify_pass` | `memvane/wiki/compile/wiki_compile_worker.py` | extractor stderr as `{sha256, chars}`; verify-pass exception class and frame |
+| `compile.extractor`, `compile.verify_pass` | `memvane/wiki/engines/execution.py` (`run_extractor`), `memvane/wiki/compile/wiki_compile_worker.py` (verify pass) | extractor stderr as `{sha256, chars}`; verify-pass exception class and frame |
 
 A `recall` event's `reason` is the final outcome (`selected`,
 `no_results_after_filter`, `no_candidates`, or a refusal code) and `notes` lists
