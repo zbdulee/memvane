@@ -208,6 +208,48 @@ class WorkerRequestTable(unittest.TestCase):
                          [('learning.cycle', 'retry_cap', 'deferred_resource', limit)])
         self.assertFalse((self.root / worker_retry.NAME).exists())
 
+    def test_a_state_that_cannot_be_read_neither_moves_nor_clears_the_count(self):
+        # Review 11 (W15 F-14): the database is locked on some passes; nothing durable changes.
+        import sqlite3
+        from contextlib import contextmanager
+        from memvane.learning.context_learning import learning_queue, worker_retry
+        limit = worker_retry.RETRY_RESULT_LIMIT
+        self.fresh()
+        database = self.root / 'fixture.sqlite3'
+        with sqlite3.connect(database) as db:
+            db.execute('CREATE TABLE learning_jobs (job_id TEXT, namespace TEXT, status TEXT)')
+            db.execute('CREATE TABLE cycles (cycle_id TEXT, status TEXT)')
+            db.execute('CREATE TABLE learning_evaluations (cycle_id TEXT, namespace TEXT, status TEXT)')
+            db.execute("INSERT INTO learning_jobs VALUES ('job','scope','staged')")
+            db.execute("INSERT INTO cycles VALUES ('job','staged_evaluated')")
+            db.execute("INSERT INTO learning_evaluations VALUES ('job','scope','completed')")
+        locked = [False]
+
+        class Queue:
+            scope = 'scope'
+
+            def __init__(self, root):
+                pass
+
+            @contextmanager
+            def connect(self):
+                if locked[0]:
+                    raise sqlite3.OperationalError('database is locked')
+                db = sqlite3.connect(database)
+                try:
+                    yield db
+                finally:
+                    db.close()
+        emitted, kept = [], []
+        with patch.object(learning_queue, 'LearningQueue', Queue), \
+                patch('memvane.diagnostics.api.emit', side_effect=lambda event, **f: emitted.append((event, f))), \
+                patch('memvane.journal.api.select_route', return_value={}):
+            for index in range(1, limit + 1):
+                locked[0] = index in (1, limit - 1)  # The first read and the one before the limit fail.
+                kept.append(worker_retry.again(self.root, self.project, 'busy', True))
+        self.assertEqual((kept.count(True), kept[-1]), (limit - 1, False))
+        self.assertEqual([(row['outcome'], row['retries']) for _event, row in emitted], [('retry_cap', limit)])
+
     def test_a_result_that_is_not_a_retry_clears_the_count(self):
         from memvane.learning.context_learning import worker_retry
         self.build('open')

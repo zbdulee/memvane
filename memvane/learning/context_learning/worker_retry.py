@@ -74,7 +74,10 @@ def moved(before, after):
 def snapshot(root):
     """The durable state of the namespace's cycles, as ``moved`` compares it.
 
-    Reads only. Whatever cannot be read is left out, so it never looks like progress.
+    Reads only. ``unread`` names the parts that could not be read this time (a locked
+    database, a file being replaced): they are not a state, and ``again`` keeps what
+    was read last for them, so a failed read neither looks like progress when the next
+    read succeeds nor clears the count.
     """
     from . import candidate_apply
     from .automatic_staging import _cursor_step
@@ -83,7 +86,7 @@ def snapshot(root):
     from .learning_queue import LearningQueue
     root = Path(root)
     state = {name: {} for name in (*FORWARD, 'M7')}
-    state['groups'] = {}
+    state['groups'], state['unread'] = {}, []
     try:
         queue = LearningQueue(root)
         with queue.connect() as db:
@@ -100,22 +103,25 @@ def snapshot(root):
                 state['M5'] = dict(db.execute(
                     'SELECT cycle_id,status FROM learning_evaluations WHERE namespace=? ORDER BY rowid DESC LIMIT ?',
                     (queue.scope, SNAPSHOT_ROWS)))
-    except Exception:  # noqa: BLE001 - an unreadable table is no progress
-        pass
+    except Exception:  # noqa: BLE001 - not read: the rows and the groups of their cycles
+        state['M3'], state['M4'], state['M5'] = {}, {}, {}
+        state['unread'] += ['M3', 'M4', 'M5', 'groups']
     for cycle, status in state['M4'].items():
         if status in ('training', 'deferred', 'failed'):
             state['groups'][cycle] = _cursor_step(root / 'cycles' / cycle)
-    try:
-        row = candidate_apply.read_journal(root)
-        state['M6'] = {row['apply_id']: row['phase']}
-    except Exception:  # noqa: BLE001 - no journal, or one that cannot be read
-        pass
-    try:
-        # M7 as the pointer itself: whichever way it changed, it was written.
-        pointer = read_private_json(root / 'active-checkpoint.json')
-        state['M7'] = {'pointer': digest(pointer)}
-    except Exception:  # noqa: BLE001
-        pass
+    # A file that is not there is a state (no journal, no pointer); one that cannot be read is not.
+    for name, path in (('M6', root / candidate_apply.JOURNAL), ('M7', root / 'active-checkpoint.json')):
+        if not (path.exists() or path.is_symlink()):
+            continue
+        try:
+            if name == 'M6':
+                row = candidate_apply.read_journal(root)
+                state['M6'] = {row['apply_id']: row['phase']}
+            else:
+                # M7 as the pointer itself: whichever way it changed, it was written.
+                state['M7'] = {'pointer': digest(read_private_json(path))}
+        except Exception:  # noqa: BLE001
+            state['unread'].append(name)
     return state
 
 
@@ -145,6 +151,11 @@ def again(root, project, status, retryable):
         return False
     count, before = _saved(path)
     now = snapshot(root)
+    unread = now.pop('unread', ())
+    if unread and before is None:
+        now = None  # Nothing read before either: no state is kept, and the next read is the first.
+    for name in unread if now is not None else ():
+        now[name] = before.get(name) or {}  # What was read last stands for what could not be read.
     if before is not None and moved(before, now):
         count = 0  # The pass moved: counted from here.
     count += 1
