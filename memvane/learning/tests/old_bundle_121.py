@@ -78,20 +78,22 @@ if _raw:
 
         def listing(argv, *_args):
             return {'installed': [dict(config['codex'])]} if argv[0] == 'codex' else [dict(config['claude'])]
-        for target, name, value in ((project_scope, '_code_snapshot', snapshot),
-                                    (project_scope, 'code_identity', code),
-                                    (inference_identity, 'code_identity', code),
-                                    (host_inventory, '_project_listing', listing),
-                                    (adapter_binding, '_codex_installed', lambda *a: dict(config['codex'])),
-                                    (selector_heal, 'running_adapter',
-                                     lambda: running / 'memvane/learning/context_learning/adapter.py')):
+        hosts = ((host_inventory, '_project_listing', listing),
+                 (adapter_binding, '_codex_installed', lambda *a: dict(config['codex'])))
+        # A bundle that is a whole copy of the code keeps its real identity: only the host CLIs stand in.
+        content = () if config.get('whole_bundle') else (
+            (project_scope, '_code_snapshot', snapshot), (project_scope, 'code_identity', code),
+            (inference_identity, 'code_identity', code),
+            (selector_heal, 'running_adapter', lambda: running / 'memvane/learning/context_learning/adapter.py'))
+        for target, name, value in (*hosts, *content):
             mock.patch.object(target, name, value).start()
         if config.get('resource_ready'):
             from memvane.learning.context_learning import general_teacher
             ready = {'ready': True, 'available_mib': 10000, 'load_per_cpu': 0.1, 'total_mib': 16384}
             for mod in (shared, general_teacher):
                 mock.patch.object(mod, 'resource_report', return_value=dict(ready)).start()
-        shared.__file__ = str(running / 'memvane/learning/context_learning/shared.py')
+        if not config.get('whole_bundle'):
+            shared.__file__ = str(running / 'memvane/learning/context_learning/shared.py')
     _apply(json.loads(_raw))
 '''
 BUNDLE_PATHS = ('memvane', 'entry', 'hooks', 'package.json', '.claude-plugin', '.codex-plugin',
@@ -148,6 +150,9 @@ class EnabledInstall(RenewalFixture):
     # A write name of ``default_teacher_enable.writes`` (or 'intent'): the enable
     # stops there and its intent stays (G-3). None finishes the enable.
     enable_fault = None
+    # True when the running bundle is a whole copy of the code in a host cache
+    # (``tests/model/resident_loop.py``): hook children keep the real code identity.
+    whole_bundle = False
 
     def setUp(self):
         FixtureCase.setUp(self)
@@ -172,14 +177,7 @@ class EnabledInstall(RenewalFixture):
         self.install_id = self.decision['installId']
         self.state = self.built.state
         self.root = default_enrollment.default_namespace(self.project, self.install_id)
-        self.model = self.home / 'model'
-        for name in adapter.MODEL_FILES:
-            self.write(self.model / name, {})
-        self.write(self.model / 'rl_agent_config.json', {
-            'encoder': 'jhu-clsp/mmBERT-base', 'max_len': 1024, 'head_max_len': 256})
-        self.runtime_file = self.home / 'python'
-        self.runtime_file.write_text('synthetic interpreter', encoding='utf8')
-        self.runtime_file.chmod(0o700)
+        self.learning_runtime()
         self.version = plugin_version()
         self.host_stand_ins()
         self.root.parent.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -188,8 +186,7 @@ class EnabledInstall(RenewalFixture):
         self.assertTrue(teacher_state.write_switch(self.root, False))
         prepared = default_enrollment.prepare(self.project, self.state, self.install_id, lease_fd=-1)
         self.assertEqual(prepared['status'], 'selected', prepared)
-        self.write(self.root / 'laya-inference-manifest.json',
-                   {str(self.runtime_file): [[], file_sha(self.runtime_file)]})
+        self.inference_manifest()
         (self.root / teacher_state.SWITCH_NAME).unlink()
         self.assertTrue(default_enrollment.default_local_only(self.root, self.project, self.policy()))
         fault = self.enable_fault
@@ -215,6 +212,22 @@ class EnabledInstall(RenewalFixture):
         self.assertTrue((self.root / edit_git_migration._name(
             edit_git_migration.FIX_PREFIX, self.project)).is_file())
         self.fake_clis()
+
+    def learning_runtime(self):
+        """The interpreter and model the enrollment binds: synthetic files here."""
+        self.model = self.home / 'model'
+        for name in adapter.MODEL_FILES:
+            self.write(self.model / name, {})
+        self.write(self.model / 'rl_agent_config.json', {
+            'encoder': 'jhu-clsp/mmBERT-base', 'max_len': 1024, 'head_max_len': 256})
+        self.runtime_file = self.home / 'python'
+        self.runtime_file.write_text('synthetic interpreter', encoding='utf8')
+        self.runtime_file.chmod(0o700)
+
+    def inference_manifest(self):
+        """What the selector preparation leaves for the interpreter (the preparation is a stand-in here)."""
+        self.write(self.root / 'laya-inference-manifest.json',
+                   {str(self.runtime_file): [[], file_sha(self.runtime_file)]})
 
     def host_stand_ins(self):
         """The installed-host boundary of this process: synthetic bundles and their stand-ins."""
@@ -390,7 +403,8 @@ class EnabledInstall(RenewalFixture):
                 (stub / 'sitecustomize.py').write_text(SITECUSTOMIZE, encoding='utf8')
             env.update(PYTHONPATH='%s:%s' % (stub, bundle), MV121_CHILD=json.dumps({
                 'home': str(self.home), 'running': str(self.running), 'codex': self.codex,
-                'claude': self.claude, 'resource_ready': resource_ready}))
+                'claude': self.claude, 'resource_ready': resource_ready,
+                'whole_bundle': self.whole_bundle}))
         return env
 
     def launches(self):

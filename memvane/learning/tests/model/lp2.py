@@ -262,12 +262,12 @@ class Lp2Fixture(lp1.Lp1Fixture):
 
 
 def run(directory, *, seconds, real=True, edits=EDITS, max_passes=MAX_PASSES, clock=time.monotonic,
-        pause=time.sleep):
+        pause=time.sleep, fixture_class=None):
     """Go on from what ``directory`` holds for at most ``seconds``; the summary, or None when not ended."""
     from memvane.learning.context_learning.state_model import CYCLE_RESULTS
     directory = Path(directory).resolve()
     began = clock()
-    fixture = Lp2Fixture()
+    fixture = (fixture_class or Lp2Fixture)()
     fixture.directory, fixture.real = directory, real
     fixture.open()
     done = [row for row in fixture.notes() if 'summary' in row]
