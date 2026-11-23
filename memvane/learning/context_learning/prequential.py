@@ -668,6 +668,9 @@ def _record_promotion(root, project, grant, result):
             reason = (closed if isinstance(closed, str) and closed
                       else result.get('reason') if result.get('cycle_id') == cycle
                       and isinstance(result.get('reason'), str) else 'candidate_rejected')
+        if outcome == 'rejected' and result.get('cycle_id') == cycle and isinstance(result.get('serviceStatus'), str):
+            # The resident's answer the application ended on: a fixed status word.
+            fields['serviceStatus'] = result['serviceStatus']
         _emit(project, 'learning.promotion', outcome=outcome, reason=reason, **fields)
         seen[cycle] = snapshot
         changed = True

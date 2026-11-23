@@ -248,7 +248,7 @@ default-teacher는 gold가 `minQualityTrainCases`(100건) 전이면 job을 계�
 `exact_rate`가 incumbent보다 큰 것이다(같으면 `apply_quality_not_improved`). 정책 파일의 `targetExact`는
 파일에 남고 이 판정에 읽지 않는다. 포인터가 아직 incumbent일 때 적용을 끝내는(`rejected`와 `reason`) 것은
 판정 사유, resident가 prepare·activate 요청에 실패로 답한 것, 쓸 수 없게 된 journal, 그 밖의 실패 연속
-5회뿐이다(답을 받지 못한 요청 — 닫히는 resident, 갱신 중의 다른 번들 resident — 은 그 밖의 실패다). 그 밖의 실패는 backoff 뒤 다시 시도하고(`apply_deferred`와 `failures`), `apply_quality_stale`은
+5회뿐이다(답을 받지 못한 요청 — 닫히는 resident, 갱신 중의 다른 번들 resident — 은 그 밖의 실패다. resident가 후보를 검증·로드하다 실패한 `worker_error` 답도 후보에 대한 판단이 아니므로 그 밖의 실패 `apply_service_error`다). resident가 수락하지 않은 답의 상태 단어는 journal 행·pass 결과·`learning.promotion` `rejected` 행의 `serviceStatus`에 남는다(resident의 고정 단어 중 하나, 그 밖의 답은 `other`). 그 밖의 실패는 backoff 뒤 다시 시도하고(`apply_deferred`와 `failures`), `apply_quality_stale`은
 아무것도 정하지 않고 cycle을 `staged`로 되돌려 재평가로 간다. 포인터가 incumbent인 동안은 커밋된 것이 없어
 `intent`와 포인터를 쓰지 못한 `prepared`는 다음 시도가 새로 만든다. 포인터가 후보의 것이 된 뒤에는 판정을
 다시 하지 않고 정체성(후보 artifact의 해시, journal의 stage·profile digest와 binding)만 대조해 activation을 끝낸다.

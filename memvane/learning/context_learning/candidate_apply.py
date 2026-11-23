@@ -20,6 +20,23 @@ JUDGED=('apply_quality_regression','apply_quality_not_improved','apply_quality_b
 # ``ResourceDeferred``, and an evaluation it found stale as ``STALE`` (nothing is decided). A request that got no usable answer (a closing resident, another
 # bundle's resident during an update) is not a refusal: it is one of the other failures.
 REFUSED=('apply_prepare_failed','apply_activation_failed')
+# The resident failed while it checked or loaded the candidate (``worker_error``: an
+# exception, not an answer about the candidate). One of the other failures: tried again,
+# counted, and ended at the limit.
+SERVICE_ERROR='apply_service_error'
+# The status words a resident answers with (``inference_service._CODES``); the journal and
+# the result carry the one received as ``serviceStatus``, any other word as ``other``.
+SERVICE_STATUSES=('queue_full','deadline_expired','resource_deferred','replacement_deferred',
+    'replacement_failed','load_failed','model_family_mismatch','request_changed','request_rejected',
+    'inference_attestation_required','worker_error','version_mismatch','busy','starting',
+    'permission_denied','resource_unavailable','invalid_prediction','input_budget_exceeded',
+    'apply_quality_stale','prepared','activated')
+
+def _unaccepted(row,answer,refusal):
+    """Record what the resident answered instead of accepting, and raise the failure it is."""
+    status=answer.get('status') if isinstance(answer,dict) else None
+    row['serviceStatus']=status if status in SERVICE_STATUSES else 'other'
+    raise ValueError(SERVICE_ERROR if status=='worker_error' else refusal)
 # The journal no longer describes this application (changed bytes, or what it was formed
 # from changed after something was committed under it): no later attempt can use it.
 UNUSABLE=('apply_journal_binding_changed','apply_intent_changed')
@@ -256,12 +273,12 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
             readable(root);_finish_cycle(root,cycle_id)
             return {'status':'already_applied','cycle_id':cycle_id}
         if row.get('retry_at',0)>time.time():return {'status':'apply_deferred','next_retry':row['retry_at'],'cycle_id':cycle_id}
-        row['attempts']=row.get('attempts',0)+1;row['retry_at']=0;put(path,row)
+        row['attempts']=row.get('attempts',0)+1;row['retry_at']=0;row.pop('serviceStatus',None);put(path,row)
         current=read_private_json(root/'active-checkpoint.json')
         if current==row['old_pointer']:
             answer=transport('prepare',row);fault('service_prepared')
             if answer.get('status')==STALE:raise ValueError(STALE)
-            if answer.get('status')!='prepared' or not isinstance(answer.get('token'),str):raise ValueError('apply_prepare_failed')
+            if answer.get('status')!='prepared' or not isinstance(answer.get('token'),str):_unaccepted(row,answer,'apply_prepare_failed')
             # ``failures`` goes back to zero only at ``pointer_committed``: a failure that recurs between
             # this point and the pointer would otherwise never reach the limit (each new intent keeps the count).
             row['token']=answer['token'];row['phase']='prepared';put(path,row);fault('prepared')
@@ -285,7 +302,7 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
         row['token']=answer['token'];put(path,row)
         validate_candidate(root,policy,cycle_id,expected=row)
         answer=transport('activate',row);fault('service_activated')
-        if answer.get('status')!='activated' or answer.get('token')!=row['token']:raise ValueError('apply_activation_failed')
+        if answer.get('status')!='activated' or answer.get('token')!=row['token']:_unaccepted(row,answer,'apply_activation_failed')
         validate_candidate(root,policy,cycle_id,expected=row)
         row['phase']='activated';put(path,row);fault('activated')
         _finish_cycle(root,cycle_id)
@@ -304,7 +321,7 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
                 # Every pass tries it again; the journal says how often and why it failed.
                 row['failures']=row.get('failures',0)+1;row['reason']=reason;put(root/JOURNAL,row)
                 return {'status':'apply_blocked','reason':reason,'cycle_id':cycle_id,'failures':row['failures'],
-                        'activationPending':row['failures']>=FAILURE_LIMIT}
+                        'activationPending':row['failures']>=FAILURE_LIMIT,**_service(row)}
             if active==row['old_pointer']:
                 if reason not in JUDGED+REFUSED+UNUSABLE:
                     row['failures']=row.get('failures',0)+1
@@ -312,14 +329,19 @@ def apply_candidate(root,policy,cycle_id,*,transport=None,fault=lambda _:None):
                         retry=time.time()+min(300,30*2**min(row['failures']-1,4))
                         row['retry_at']=retry;put(root/JOURNAL,row)
                         return {'status':'apply_deferred','reason':reason,'cycle_id':cycle_id,
-                                'next_retry':retry,'failures':row['failures']}
+                                'next_retry':retry,'failures':row['failures'],**_service(row)}
                 # A judgment, the resident's refusal, an unusable journal, or the limit of other failures.
                 row['phase']='rejected';row['reason']=reason;put(root/JOURNAL,row)
             # A pointer that is neither of the journal's is someone else's change: left as it is.
-        return {'status':'apply_blocked','reason':reason,'cycle_id':cycle_id}
+        return {'status':'apply_blocked','reason':reason,'cycle_id':cycle_id,**_service(row)}
     finally:
         if pointer_fd is not None:os.close(pointer_fd)
         os.close(fd)
+
+def _service(row):
+    """``{'serviceStatus': ...}`` when the failure was the resident's answer."""
+    status=(row or {}).get('serviceStatus')
+    return {'serviceStatus':status} if isinstance(status,str) else {}
 
 def service_transport(root,policy):
     def exchange(command,row):
