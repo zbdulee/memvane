@@ -571,7 +571,7 @@ Each pass writes an `outcome: pass` row with the host waits and queued counts,
 `learning.score` rows (`caseRows`, `caseLimit`, `gold`, `candidateTrain`,
 `candidateEval`, `candidateEvalNonEmpty`, `candidateEvalEmpty`; with more than 30
 gold cases also the rank baseline `rankCases`, `rankExactRate`, `rankMicroF1`: the first
-three cards of the hybrid order against the gold, no inference), `learning.promotion`
+three cards of the hybrid order against the gold, no inference; compare only `rankMicroF1` with the selector's score, since `rankExactRate` can be 1 only when the gold has as many cards as were taken and is 0 for a gold of none or one, and `rankCases` counts every gold row while `cases` and `exactRate` count the rows the selector answered), `learning.promotion`
 rows, and `learning.cycle` rows (`trained` on training completion, or
 `deferred_resource` with inner `reason`, `deferredBy`, `availableMib`,
 `requiredMib`, `loadPerCpu`, `loadLimit` and `latchPaused`, or `blocked` with the
