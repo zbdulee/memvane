@@ -1,4 +1,5 @@
 """A real selected installation recognizes only proven linked worktrees."""
+import uuid
 import json
 
 from memvane.journal import api as journal
@@ -67,7 +68,7 @@ class WorktreeRouteBoundary(FixtureCase):
         self.assertEqual(decision['state'], 'worktree')
         with patch.object(runtime, 'request') as wake:
             answer = host.serve_selected('recall', 'claude', decision, {
-                'session_id': 'fixture', 'cwd': str(linked.root),
+                'session_id': 'fixture-' + uuid.uuid4().hex[:8], 'cwd': str(linked.root),
                 'hook_event_name': 'UserPromptSubmit', 'prompt': 'synthetic knowledge'})
         context = ((answer or {}).get('hookSpecificOutput') or {}).get('additionalContext', '')
         self.assertEqual(context, '')
@@ -89,7 +90,7 @@ class WorktreeRouteBoundary(FixtureCase):
             self.assertEqual(decision['state'], 'worktree')
             with patch.object(runtime, 'request') as wake:
                 answer = host.serve_selected('recall', 'claude', decision, {
-                    'session_id': 'fixture-published', 'cwd': str(linked.root),
+                    'session_id': 'fixture-published-' + uuid.uuid4().hex[:8], 'cwd': str(linked.root),
                     'hook_event_name': 'UserPromptSubmit', 'prompt': 'violet otter marker'})
             wake.assert_not_called()
             context = ((answer or {}).get('hookSpecificOutput') or {}).get('additionalContext', '')
@@ -104,7 +105,7 @@ class WorktreeRouteBoundary(FixtureCase):
         from memvane.wiki.workspace import api as workspace
         decision = self.install.select()
         payload = {'hook_event_name': 'SessionStart', 'cwd': str(self.project.root),
-                   'session_id': 'fixture-session'}
+                   'session_id': 'fixture-session-' + uuid.uuid4().hex[:8]}
         with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
             first = host.serve_selected('update-queued', 'claude', decision, payload)
             second = host.serve_selected('update-queued', 'claude', decision, payload)
@@ -172,7 +173,7 @@ class WorktreeRouteBoundary(FixtureCase):
         from memvane.wiki.workspace import api as workspace
         decision = self.install.select()
         payload = {'hook_event_name': 'SessionStart', 'cwd': str(self.project.root),
-                   'session_id': 'fixture-session'}
+                   'session_id': 'fixture-session-' + uuid.uuid4().hex[:8]}
         with patch.object(runtime, 'request', return_value={'status': 'queued'}):
             baseline = host.serve_selected('update-queued', 'claude', decision, payload)
             with patch.object(workspace, 'request_lifecycle', side_effect=OSError('unwritable')):
@@ -186,7 +187,7 @@ class WorktreeRouteBoundary(FixtureCase):
         from memvane.wiki.workspace import api as workspace
         decision = self.install.select()
         payload = {'hook_event_name': 'SessionStart', 'cwd': str(self.project.root),
-                   'session_id': 'fixture-session'}
+                   'session_id': 'fixture-session-' + uuid.uuid4().hex[:8]}
         with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
             host.serve_selected('update-queued', 'claude', decision, payload)
             host.serve_selected('update-queued', 'claude', decision, payload)

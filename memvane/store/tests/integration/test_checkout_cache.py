@@ -14,6 +14,117 @@ from memvane.store.tests import support as existing
 REPO = Path(__file__).resolve().parents[4]
 
 
+class GitChildren(existing.CheckoutCase):
+    """How many Git children one observation costs, on every platform (the count, not a duration)."""
+
+    def observed(self, call):
+        """``[git arguments]`` and ``[program]`` of every Git child ``call()`` started."""
+        commands, programs = [], []
+        real = view.subprocess.Popen
+
+        def started(argv, *args, **kwargs):
+            if '-c' in argv and 'log.showSignature=false' in argv:  # Only this module's own children.
+                programs.append(argv[0])
+                commands.append(argv[7:])
+            return real(argv, *args, **kwargs)
+        with mock.patch.object(view.subprocess, 'Popen', side_effect=started):
+            value = call()
+        return value, commands, programs
+
+    def test_one_full_observation_starts_twelve_git_children_and_checks_the_version_once(self):
+        repository, worktree = self.bind(self.root)
+        capture, commands, _programs = self.observed(
+            lambda: view.capture_view(str(self.root), repository, worktree, fresh=True))
+        counted = [command for command in commands if command != ['--exec-path']]
+        self.assertEqual(len(counted), 12, counted)
+        self.assertEqual(counted.count(['--version']), 1)
+        self.assertEqual(counted[0], ['--version'])
+        # The two observations still read the ref and HEAD twice each.
+        self.assertEqual(sum(command[0] == 'symbolic-ref' for command in counted), 4)
+        self.assertEqual(sum(command[:2] == ['rev-parse', '--verify'] for command in counted), 4)
+        self.assertEqual(capture['branchKey'], 'refs/heads/main')
+
+    def test_an_unsupported_git_version_is_still_refused(self):
+        repository, worktree = self.bind(self.root)
+        real = view._git
+
+        def old(args, *rest, **kwargs):
+            return (0, 'git version 2.30.0') if args == ['--version'] else real(args, *rest, **kwargs)
+        with mock.patch.object(view, '_git', side_effect=old):
+            with self.assertRaises(view.CheckoutUnavailable) as caught:
+                view.capture_view(str(self.root), repository, worktree, fresh=True)
+        self.assertEqual(caught.exception.reason, 'git_version_unsupported')
+
+    def test_git_runs_as_the_binary_the_fingerprint_proved_and_as_git_until_then(self):
+        repository, worktree = self.bind(self.root)
+        view._capture_cache.tool = None
+        _capture, commands, programs = self.observed(
+            lambda: view.capture_view(str(self.root), repository, worktree, fresh=True))
+        proved = getattr(view._capture_cache, 'tool', None)
+        if proved is None:
+            # No shim to see through (another Git on PATH, another platform, or no fingerprint here).
+            self.assertEqual(set(programs), {'git'})
+            return
+        delegated = str(proved[1])
+        self.assertTrue(delegated.endswith('/bin/git') and delegated.startswith('/'), delegated)
+        # The proof itself goes through the shim; everything after it does not.
+        self.assertEqual([program for program, command in zip(programs, commands) if command == ['--exec-path']],
+                         ['git'])
+        self.assertEqual({program for program, command in zip(programs, commands) if command != ['--exec-path']},
+                         {delegated})
+        # The proof belongs to that capture alone: a registration right after it asks ``git`` on PATH again.
+        _value, commands, programs = self.observed(lambda: view.register_repository(str(self.root)))
+        self.assertEqual((len(commands), set(programs)), (12, {'git'}))
+        # A capture whose fingerprint cannot be taken starts again from ``git``.
+        with mock.patch.object(view, '_cache_filesystem', return_value=None):
+            _capture, commands, programs = self.observed(
+                lambda: view.capture_view(str(self.root), repository, worktree, fresh=True))
+        self.assertEqual((len(commands), set(programs)), (12, {'git'}))
+
+
+    def proved(self, repository, worktree):
+        """One capture whose fingerprint proved the shim's target, or None where there is none to prove."""
+        view._capture_cache.tool = None
+        view.capture_view(str(self.root), repository, worktree, fresh=True)
+        proved = getattr(view._capture_cache, 'tool', None)
+        return None if proved is None else str(proved[1])
+
+    def test_the_proof_is_always_asked_of_the_shim_even_when_the_tool_changes_inside_a_capture(self):
+        repository, worktree = self.bind(self.root)
+        delegated = self.proved(repository, worktree)
+        if delegated is None:
+            self.skipTest('no shim to see through here')
+        real, calls = view._cache_fingerprint, []
+
+        def tool_changed(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                # ``xcode-select --switch`` between the capture's two fingerprints: the saved key no longer holds.
+                view._capture_cache.tool = (None, *view._capture_cache.tool[1:])
+            return real(*args, **kwargs)
+        with mock.patch.object(view, '_cache_fingerprint', side_effect=tool_changed):
+            _capture, commands, programs = self.observed(
+                lambda: view.capture_view(str(self.root), repository, worktree, fresh=True))
+        self.assertEqual(len(calls), 2)
+        asked = [program for program, command in zip(programs, commands) if command == ['--exec-path']]
+        self.assertEqual(asked, ['git'])
+
+    def test_a_capture_that_never_reaches_the_proof_runs_git_from_path(self):
+        repository, worktree = self.bind(self.root)
+        delegated = self.proved(repository, worktree)
+        if delegated is None:
+            self.skipTest('no shim to see through here')
+        # Straight after a proved capture, PATH's git is another one: the fingerprint stops before the proof.
+        other = self.tmp / 'git'
+        other.write_text('#!/bin/sh\n')
+        other.chmod(0o700)
+        with mock.patch.object(view.shutil, 'which', return_value=str(other)):
+            _capture, commands, programs = self.observed(
+                lambda: view.capture_view(str(self.root), repository, worktree, fresh=True))
+        self.assertNotIn(['--exec-path'], commands)
+        self.assertEqual((len(commands), set(programs)), (12, {'git'}))
+
+
 @unittest.skipUnless(sys.platform == 'darwin', 'fast path requires a known APFS timestamp contract')
 class CheckoutCacheChecks(existing.CheckoutCase):
     def setUp(self):
@@ -209,6 +320,42 @@ class CheckoutCacheChecks(existing.CheckoutCase):
         with mock.patch.object(view, '_git', wraps=view._git) as alternate_git:
             self.cap(self.root, repository, worktree)
         self.assertGreater(alternate_git.call_count, 0)
+
+    def test_records_from_another_boot_keep_the_cache(self):
+        with self.other_boot():
+            repository, worktree = self.bind(self.root)
+        live = view._directory(self.root)
+        self.assertEqual(worktree['project'], {**live, 'dev': live['dev'] + 7})
+        self.assertEqual(repository['commonGitDir']['dev'], live['dev'] + 7)
+        sealed = json.dumps([repository, worktree], sort_keys=True)
+        baseline = self.cap(self.root, repository, worktree)
+        with mock.patch.object(view, '_git', wraps=view._git) as git:
+            observed = self.cap(self.root, repository, worktree)
+        self.assertEqual(observed, baseline)
+        self.assertEqual(git.call_count, 0)
+        self.assertEqual(baseline['evidence']['project'], live)
+        self.assertEqual(json.dumps([repository, worktree], sort_keys=True), sealed)
+
+    def test_worktree_registered_after_the_device_moved_keeps_the_cache(self):
+        with self.other_boot():
+            repository = view.register_repository(str(self.root))
+        worktree = view.register_worktree(str(self.root), repository)
+        live = view._directory(self.root)
+        self.assertEqual(worktree['project'], live)
+        self.assertEqual(repository['commonGitDir']['dev'], live['dev'] + 7)
+        self.cap(self.root, repository, worktree)
+        with mock.patch.object(view, '_git', wraps=view._git) as git:
+            self.cap(self.root, repository, worktree)
+        self.assertEqual(git.call_count, 0)
+
+    def test_another_boot_record_with_a_moved_inode_is_refused(self):
+        with self.other_boot():
+            repository, worktree = self.bind(self.root)
+        moved = {**worktree, 'checkout': {**worktree['checkout'], 'ino': worktree['checkout']['ino'] + 1}}
+        self.assertIsNone(view._cache_fingerprint(str(self.root), repository, moved, time.monotonic() + 5))
+        with self.assertRaises(view.CheckoutUnavailable) as raised:
+            self.cap(self.root, repository, moved)
+        self.assertEqual(raised.exception.reason, 'worktree_binding_changed')
 
     def test_new_process_does_not_inherit_cached_proof(self):
         repository, worktree = self.bind(self.root)

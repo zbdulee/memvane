@@ -1,0 +1,267 @@
+{
+ "memvane/app/tests/integration/test_capture_supervisor.py": {
+  "sleep": 1,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "memvane/app/tests/integration/test_runtime_dispatch.py": {
+  "sleep": 2,
+  "elapsed": 0,
+  "shortTimeout": 0
+ },
+ "memvane/host/tests/integration/test_edit_recall.py": {
+  "sleep": 1,
+  "elapsed": 1,
+  "shortTimeout": 0
+ },
+ "memvane/host/tests/integration/test_host_response.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 0,
+  "eventWait": 2
+ },
+ "memvane/host/tests/integration/test_onboarding_choice_boundaries.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 4
+ },
+ "memvane/journal/tests/integration/test_writer_schema3_plan.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "memvane/learning/tests/fake_teacher_cli_121.py": {
+  "sleep": 3,
+  "elapsed": 0,
+  "shortTimeout": 0
+ },
+ "memvane/learning/tests/integration/test_context_learning_candidate_apply.py": {
+  "sleep": 1,
+  "elapsed": 1,
+  "shortTimeout": 0,
+  "eventWait": 1
+ },
+ "memvane/learning/tests/integration/test_context_learning_coordination.py": {
+  "sleep": 1,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "memvane/learning/tests/integration/test_context_learning_inference_service.py": {
+  "sleep": 9,
+  "elapsed": 2,
+  "shortTimeout": 11,
+  "eventWait": 10
+ },
+ "memvane/learning/tests/integration/test_context_learning_selector_warm.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 0,
+  "eventWait": 2
+ },
+ "memvane/learning/tests/integration/test_context_learning_transport.py": {
+  "sleep": 12,
+  "elapsed": 2,
+  "shortTimeout": 11
+ },
+ "memvane/learning/tests/integration/test_followup_124.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "memvane/learning/tests/integration/test_inference_service_119.py": {
+  "sleep": 1,
+  "elapsed": 0,
+  "shortTimeout": 0,
+  "eventWait": 5
+ },
+ "memvane/learning/tests/integration/test_learning_full_worker.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "memvane/learning/tests/integration/test_learning_hosted_service_client.py": {
+  "sleep": 1,
+  "elapsed": 0,
+  "shortTimeout": 0
+ },
+ "memvane/learning/tests/integration/test_learning_trainer_telemetry.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "memvane/learning/tests/integration/test_selector_maintenance.py": {
+  "sleep": 1,
+  "elapsed": 0,
+  "shortTimeout": 0
+ },
+ "memvane/learning/tests/integration/test_warm_lifecycle_112.py": {
+  "sleep": 2,
+  "elapsed": 0,
+  "shortTimeout": 0
+ },
+ "memvane/learning/tests/scripts/project_learning_recovery_lock.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 0,
+  "eventWait": 3
+ },
+ "memvane/learning/tests/unit/test_context_learning_evaluation_queue.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 2
+ },
+ "memvane/learning/tests/unit/test_context_learning_learning_queue.py": {
+  "sleep": 3,
+  "elapsed": 0,
+  "shortTimeout": 2
+ },
+ "memvane/provider/tests/integration/reattest_hook_e2e.py": {
+  "sleep": 1,
+  "elapsed": 0,
+  "shortTimeout": 0
+ },
+ "memvane/provider/tests/integration/test_local_provider.py": {
+  "sleep": 1,
+  "elapsed": 0,
+  "shortTimeout": 4
+ },
+ "memvane/registry/tests/integration/test_memvane_registry.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 2
+ },
+ "memvane/registry/tests/integration/test_memvane_registry_routing.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "memvane/resident/tests/integration/test_embed_resident.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 7
+ },
+ "memvane/resident/tests/integration/test_resident_service.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 3,
+  "eventWait": 8
+ },
+ "memvane/resident/tests/integration/test_service_root.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 0,
+  "eventWait": 1
+ },
+ "memvane/resident/tests/support.py": {
+  "sleep": 2,
+  "elapsed": 0,
+  "shortTimeout": 2
+ },
+ "memvane/runtime/tests/integration/test_host_bundle_handoff.py": {
+  "sleep": 2,
+  "elapsed": 0,
+  "shortTimeout": 2
+ },
+ "memvane/runtime/tests/integration/test_runtime_entrypoints.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 3
+ },
+ "memvane/runtime/tests/integration/test_runtime_resources.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "memvane/runtime/tests/integration/test_runtime_wake_queue.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "memvane/runtime/tests/unit/test_qa_model_call_budget.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "memvane/store/tests/integration/test_blob_fill.py": {
+  "sleep": 1,
+  "elapsed": 0,
+  "shortTimeout": 3
+ },
+ "memvane/store/tests/integration/test_blob_sets.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "memvane/store/tests/integration/test_read_header.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 3
+ },
+ "memvane/store/tests/integration/test_s_incremental_publish.py": {
+  "sleep": 1,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "memvane/store/tests/integration/test_view_fill_guards.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "memvane/store/tests/integration/test_view_lineage.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "memvane/store/tests/integration/test_view_vectors.py": {
+  "sleep": 0,
+  "elapsed": 2,
+  "shortTimeout": 0
+ },
+ "memvane/store/tests/support.py": {
+  "sleep": 1,
+  "elapsed": 0,
+  "shortTimeout": 0
+ },
+ "memvane/sync/tests/integration/test_schema3_sync_publish.py": {
+  "sleep": 1,
+  "elapsed": 0,
+  "shortTimeout": 0
+ },
+ "memvane/wiki/compile/tests/integration/test_claim_recovery.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 2,
+  "eventWait": 4
+ },
+ "tests/e2e/handoff_four_processes.py": {
+  "sleep": 1,
+  "elapsed": 0,
+  "shortTimeout": 3,
+  "eventWait": 1
+ },
+ "tests/e2e/onboarding_real.py": {
+  "sleep": 2,
+  "elapsed": 0,
+  "shortTimeout": 0
+ },
+ "tests/support/gc_fixture.py": {
+  "sleep": 1,
+  "elapsed": 0,
+  "shortTimeout": 0
+ },
+ "tests/support/sqlite_hot_journal.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 2
+ },
+ "tests/support/store_builder.py": {
+  "sleep": 0,
+  "elapsed": 0,
+  "shortTimeout": 1
+ },
+ "tests/support/test_support.py": {
+  "sleep": 0,
+  "elapsed": 1,
+  "shortTimeout": 0
+ }
+}

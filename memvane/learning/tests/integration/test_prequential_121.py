@@ -39,6 +39,19 @@ class Score(FixtureCase):
         self.assertNotIn('microF1', value)
         self.assertEqual((value['exactRate'], value['emptyAgree'], value['nonEmptyAgree']), (1.0, 1.0, None))
 
+    def test_the_rank_baseline_scores_the_first_three_eligible_cards_of_every_row(self):
+        # ELIGIBLE starts a, b, x0. Rows the selector did not answer count for the baseline too.
+        rows = [row([], ['a', 'b', 'x0']), row(['a'], ['a']), row([], [], selection='default_rank'),
+                row([], ['c'], selection=None)]
+        plain = prequential.score(rows, prequential.intervals([]))['base']
+        self.assertEqual({key for key in plain if key.startswith('rank')}, set())
+        value = prequential.score(rows, prequential.intervals([]), baseline=True)['base']
+        self.assertEqual((value['cases'], value['rankCases']), (2, 4))
+        self.assertAlmostEqual(value['rankExactRate'], 1 / 4)
+        self.assertAlmostEqual(value['rankMicroF1'], 2 * (3 + 1) / (4 * 3 + 5))
+        self.assertEqual({key: value[key] for key in plain}, plain)
+        self.assertEqual((prequential.BASELINE_TOP, prequential.BASELINE_MIN_GOLD), (3, 30))
+
     def test_l5_cases_group_by_application_time_and_default_rank_is_counted_apart(self):
         history = [{'cycle_id': 'cohort-one', 'appliedAtUnixMs': 2_000_000},
                    {'cycle_id': 'cohort-two', 'appliedAtUnixMs': 3_000_000}]

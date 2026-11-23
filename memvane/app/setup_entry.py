@@ -90,17 +90,110 @@ def _failure(exc):
     return result
 
 
+def _cleanup_preview(everything):
+    """``(result, digest, names)`` of what a cleanup would remove now; writes nothing."""
+    import hashlib
+    from memvane.install import api as product
+    result = product.state_cleanup(everything=everything)
+    if everything:
+        names = {'roots': sorted(row['path'] for row in result['roots'] if row['action'] == 'remove')}
+    else:
+        try:
+            from memvane.provider import api as laya_embed_runtime
+            runtime = laya_embed_runtime.collect(approve=False)
+            runtime.pop('dependencyClosure', None)
+        except Exception as exc:  # No runtime on this machine: nothing of it to collect.
+            runtime = {'status': 'unavailable', 'reason': str(exc), 'changesApplied': 0}
+        result['indexRuntime'] = runtime
+        names = {'installs': sorted(row['install'] for row in result['installs'] if row['action'] == 'remove'),
+                 'generations': sorted(row['generation'] for row in runtime.get('generations', ())
+                                       if row.get('action') in ('remove', 'remove_stale_staging'))}
+    digest = hashlib.sha256(json.dumps(names, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    result['previewSha256'] = digest
+    return result, digest, names
+
+
+def _state_cleanup(argv):
+    """``state-cleanup``: list what a cleanup would remove; remove it only when that list is approved.
+
+    Default scope: released install state roots and unused embedding runtime
+    generations. ``--all-state`` is the explicit "delete everything" request.
+    The preview prints ``previewSha256``; ``--approve-state-cleanup <that
+    value>`` removes exactly the previewed list and is refused when the list
+    has changed since.
+    """
+    parser = argparse.ArgumentParser(prog='setup.py state-cleanup')
+    parser.add_argument('--approve-state-cleanup', metavar='PREVIEW_SHA256')
+    parser.add_argument('--all-state', action='store_true')
+    args = parser.parse_args(argv)
+    approved = args.approve_state_cleanup
+    try:
+        result, digest, names = _cleanup_preview(args.all_state)
+        if approved is not None and approved != digest:
+            # The owner approved another list: nothing is removed, the current one is shown again.
+            result.update(status='rejected', reason='state_cleanup_preview_changed')
+        elif approved is not None:
+            from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
+            require_cached_plugin_for_live_write()
+            from memvane.install import api as product
+            if args.all_state:
+                result = product.state_cleanup(approve=True, everything=True, only=set(names['roots']))
+            else:
+                result = product.state_cleanup(approve=True, only=set(names['installs']))
+                try:
+                    from memvane.provider import api as laya_embed_runtime
+                    runtime = (laya_embed_runtime.collect(approve=True) if names['generations']
+                               else {'status': 'collected', 'changesApplied': 0})
+                    runtime.pop('dependencyClosure', None)
+                except Exception as exc:
+                    # The installs above are already removed: their result stands, and the
+                    # runtime half that did not run is reported beside it (never a silent zero).
+                    runtime = {'status': 'blocked', 'reason': str(exc), 'changesApplied': 0}
+                result['indexRuntime'] = runtime
+                result['changesApplied'] += runtime.get('changesApplied', 0)
+                # Either half left something behind: the whole command says so.
+                if runtime.get('status') in ('blocked', 'partial') and result['status'] == 'collected':
+                    result['status'] = 'partial'
+    except Exception as exc:
+        result = _failure(exc)
+    print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+    return 1 if result.get('status') in ('rejected', 'blocked', 'partial') else 0
+
+
+def _restore_previous_model(argv):
+    """``restore-previous-model --project P [--plan]``: go back to the model the newest application replaced.
+
+    Explicit request only. ``--plan`` shows what would be restored and writes nothing.
+    """
+    parser = argparse.ArgumentParser(prog='setup.py restore-previous-model')
+    parser.add_argument('--project', required=True)
+    parser.add_argument('--plan', action='store_true')
+    args = parser.parse_args(argv)
+    try:
+        if not args.plan:
+            from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
+            require_cached_plugin_for_live_write()
+        result = _learning_command(['restore-previous-model', '--project', args.project,
+                                    *(['--plan'] if args.plan else [])])
+    except Exception as exc:
+        result = _failure(exc)
+    print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+    if result.get('status') == 'rollback_deferred': return 75
+    return 1 if result.get('status') in ('rejected', 'rollback_blocked', 'rollback_interrupted') else 0
+
+
+_DIRECT = {'state-cleanup': _state_cleanup, 'restore-previous-model': _restore_previous_model}
+
+
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] and argv[0] in _DIRECT: return _DIRECT[argv[0]](argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('plan-learning-profile','activate-learning-profile',
-                                          'activate-learning-runtime',
-                                          'gc-index-runtime',
-                                          'plan-fresh-wiki-origin',
-                                          'index-runtime-status', 'provision-index-runtime',
-                                          'review-index-provider',
-                                          'prepare-fresh-wiki-origin',
-                                          'index-origin-status',
-                                          'index-build-status','index-build-rescan',
+                                          'activate-learning-runtime', 'gc-index-runtime',
+                                          'plan-fresh-wiki-origin', 'index-runtime-status', 'provision-index-runtime',
+                                          'review-index-provider', 'prepare-fresh-wiki-origin',
+                                          'index-origin-status', 'index-build-status','index-build-rescan',
                                           'finalize-index-origin',
                                           'activate-index-origin','recover-index-origin',
                                           'restore-index-origin',

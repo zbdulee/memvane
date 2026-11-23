@@ -95,6 +95,58 @@ def _record_deferral(root, project, policy, cycle, started):
         pass  # Diagnostic only: the cycle's own retry state is the record.
 
 
+def _record_admission_deferral(project, policy, report, reason=None):
+    """One ``learning.cycle`` row for a pass the worker's own admission put off; never raises.
+
+    The pass ends before the teacher and the cycle, so no later row would say
+    it was put off. Counts and MiB only.
+    """
+    try:
+        report = report if isinstance(report, dict) else {}
+        admission = report.get('memory_admission') if isinstance(report.get('memory_admission'), dict) else {}
+        available, load = _number(report.get('available_mib')), _number(report.get('load_per_cpu'))
+        limit, floor = _number(policy.get('maxLoadPerCpu')), _number(policy.get('minAvailableMib'))
+        if not reason:
+            reason = (admission.get('reason') if isinstance(admission.get('reason'), str) and admission['reason']
+                      else 'observation_stale' if report.get('observation_status') == 'stale'
+                      else 'cpu_pressure' if load is not None and limit is not None and load > limit
+                      else 'memory_available' if available is not None and floor is not None and available < floor
+                      else 'resource_not_ready')
+        from memvane.journal.api import select_route
+        from memvane.diagnostics.api import emit
+        emit('learning.cycle', decision=select_route(str(project), action='update'),
+             outcome='deferred_resource', reason=str(reason)[:80], deferredBy='worker_admission',
+             availableMib=available, requiredMib=floor, loadPerCpu=load, loadLimit=limit)
+    except Exception:
+        pass  # Diagnostic only: the wake's own retry is the record.
+
+
+# Cycle results that every later pass repeats until something outside the pass changes
+# (an approval, a policy, a file). Nothing else in the log would say the cycle stands still.
+HELD = ('staged_artifact_changed', 'cohort_cycle_conflict', 'evaluation_stage_unavailable',
+        'experiment_paused', 'existing_trial_requires_review', 'multilingual_policy_required',
+        'cohort_source_revoked', 'runtime_approval_required', 'synthetic_training_budget_exhausted')
+
+
+def _record_held(root, project, cycle):
+    """One ``learning.cycle`` ``held`` row when a pass first ends with a held result; never raises."""
+    try:
+        from .dataset import read_private_json
+        try:
+            before = read_private_json(Path(root) / 'project-last-status.json').get('status')
+        except (OSError, ValueError, AttributeError):
+            before = None
+        if before == cycle['status']:
+            return  # Said once: the row of the pass that first ended so stands for the rest.
+        from memvane.journal.api import select_route
+        from memvane.diagnostics.api import emit
+        emit('learning.cycle', decision=select_route(str(project), action='update'), outcome='held',
+             reason=cycle['status'], cycle=cycle.get('cycle_id'),
+             detail=str(cycle['reason'])[:80] if cycle.get('reason') else None)
+    except Exception:
+        pass  # Diagnostic only: the result itself is returned and stored.
+
+
 def run(root, project, config=None):
     from . import shared
     from memvane.settings import api as qmd_config
@@ -118,10 +170,13 @@ def run(root, project, config=None):
         _delete_unchecked_edit_cases(root,project,config)
         report=shared.resource_report(policy,detailed=True)
         if not report['ready']:
+            _record_admission_deferral(project,policy,report)
             return {'status':'deferred_resource','resources':report}
         from .local_cycle import ResourceDeferred
         try:grant=project_scope.require(root,policy,'local_train',fresh_inventory=True)
-        except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
+        except ResourceDeferred as exc:
+            _record_admission_deferral(project,policy,report,reason=str(exc))
+            return {'status':'deferred_resource','reason':str(exc)}
         kind=profile_kind(root,project,policy)
         if kind=='default-local':
             teacher={'status':'disabled_local_only'}
@@ -166,6 +221,8 @@ def run(root, project, config=None):
         cycle=shared.run_training_pending(root,project)
         if cycle.get('status')=='deferred_resource':
             _record_deferral(root,project,policy,cycle,started)
+        elif cycle.get('status') in HELD:
+            _record_held(root,project,cycle)
         if kind=='default-teacher':
             from . import prequential
             prequential.record_pass(root,project,grant,cycle)

@@ -303,3 +303,221 @@ test('the test runtime root write check flags every write form and no read', () 
   const flagged = testRootWrites(sources).map(row => row.split(':')[0]).sort();
   assert.deepEqual(flagged, writes.map((_line, i) => `w${i}`).sort());
 });
+
+// A record that outlives a boot meets a live observation by path and inode:
+// APFS can renumber the device at boot, and an immutable record compared with
+// its device number stays refused (memvane/kernel/persistent_identity.py).
+// Each site names the masked comparison it must keep and the whole comparison
+// it must not go back to. WHOLE lists the stored-against-live comparisons that
+// stay whole because the device number sits inside a digest; the kernel
+// docstring must name each of them.
+const PERSISTED = [
+  ['memvane/store/checkout/checkout_view.py', /_records_live\(\(\(worktree\['checkout'\], checkout\)/,
+    /_directory\(\w+\) != (worktree|repository)\[/],
+  ['memvane/wiki/lifecycle/git_branch_safety.py', /persistent_identity_equal\(worktree\['gitDir'\], _dir_identity\(/,
+    /_dir_identity\([^)]*\) == worktree\[|root == self\.worktree\[/],
+  ['memvane/store/view/pin_receipt.py', /persistent_identity_equal\(\s*saved\.pop\('database', None\), node, device_index=0\)/,
+    /'seal': seal, 'database': node\}\s*return/],
+  ['memvane/wiki/compile/wiki_compile_retrieval.py', /_stored_equal\(previous\[0\], identity, IDENTITY_DEVICE_INDEX\)/,
+    /previous\[0\] != identity|stored\.get\(rel\) != stamp/],
+  ['memvane/wiki/verify/wiki_verify_worker.py', /persistent_identity_equal\(fingerprint, live, device_index=0\)/,
+    /fingerprint = tuple\(marker\['fingerprint'\]\)\n\s+else:/],
+];
+const WHOLE = ['store/view/view_rows.py', 'view_store.py', 'view_reader.py'];
+
+test('records that outlive a boot meet live observations without the device number', () => {
+  for (const [path, masked, whole] of PERSISTED) {
+    const text = readFileSync(path, 'utf8');
+    assert.match(text, masked, path);
+    assert.doesNotMatch(text, whole, path);
+  }
+  const rule = readFileSync('memvane/kernel/persistent_identity.py', 'utf8');
+  for (const name of WHOLE) assert.ok(rule.includes(name), name);
+});
+
+// Bytes the product fetches by itself come from an address that cannot move
+// (a commit, a revision, an exact version) and are checked against a hash of
+// that same revision. A moving address with a pinned hash refuses every new
+// machine from the day upstream replaces the file. No check here uses the
+// network.
+const EMBED_RUNTIME = 'memvane/provider/embed_runtime.py';
+const MODEL_SHA256 = 'f470220f84b6235197541352d22f10bf00098a8242c18eaacea9c8a4add557bc';
+
+function assigned(text, name) {
+  const found = text.match(new RegExp(`^${name} = '([^']+)'`, 'm'));
+  assert.ok(found, name);
+  return found[1];
+}
+
+function modelUrl() {
+  const text = readFileSync(EMBED_RUNTIME, 'utf8');
+  const revision = assigned(text, 'MODEL_REVISION');
+  const name = assigned(text, 'MODEL_NAME');
+  const prefix = text.match(/^MODEL_URL = '([^']+)' \+ MODEL_REVISION \+ '\/' \+ MODEL_NAME$/m);
+  assert.ok(prefix, 'MODEL_URL is the address prefix, the revision and the file name');
+  return {url: `${prefix[1]}${revision}/${name}`, revision, name, sha: assigned(text, 'MODEL_SHA256')};
+}
+
+function fetchedCode() {
+  const files = productFiles();
+  const walk = dir => {
+    for (const entry of readdirSync(dir, {withFileTypes: true})) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== '__pycache__') walk(path);
+      } else if (entry.isFile() && SCANNED.has(extname(entry.name))) files.push(path);
+    }
+  };
+  walk('scripts');
+  return files;
+}
+
+test('the model download address names one upstream revision and its pinned hash', () => {
+  const {url, revision, name, sha} = modelUrl();
+  assert.match(url, new RegExp(`^https://huggingface\\.co/[\\w.-]+/[\\w.-]+/resolve/[0-9a-f]{40}/${name.replace(/\./g, '\\.')}$`));
+  assert.match(revision, /^[0-9a-f]{40}$/);
+  // The address moved to the revision this hash is of: the bytes are the same.
+  assert.equal(sha, MODEL_SHA256);
+  assert.equal(name, 'embeddinggemma-300M-Q8_0.gguf');
+});
+
+// Every ``https://`` string of product code, by kind: ``download`` (bytes the
+// product fetches: the address must not move), ``index`` (a package index used
+// only with exact versions and hashes), ``identity`` (a homepage or repository
+// name that is recorded or compared, never fetched), ``scheme`` (the scheme
+// test of the downloader). ``hf:`` names are listed too: a model URI is an
+// identity and is never handed to a resolver that downloads. Each entry is
+// ``[kind, occurrences]``; a new address, or one more occurrence of a listed
+// one, fails until it is listed.
+const ADDRESSES = {
+  [`${EMBED_RUNTIME}|https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/`]: ['download', 1],
+  [`${EMBED_RUNTIME}|https://`]: ['scheme', 1],
+  [`${EMBED_RUNTIME}|hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf`]: ['identity', 1],
+  'memvane/provider/adapters/local_embed_provider.py|hf:ggml-org/embeddinggemma-300M-GGUF/': ['identity', 1],
+  'memvane/learning/context_learning/runtime_installer.py|https://pypi.org/simple': ['index', 1],
+  'memvane/learning/context_learning/raw.py|https://github.com/NandhaKishorM/laya': ['identity', 1],
+  'memvane/learning/context_learning/adapter_binding.py|https://github.com/': ['identity', 2],
+};
+
+test('every external address in product code is listed with its kind', () => {
+  // Counted, not only listed: a listed prefix written a second time (to be
+  // completed with another path or reference) is a new address.
+  const found = {};
+  for (const file of fetchedCode()) {
+    const text = readFileSync(file, 'utf8');
+    assert.doesNotMatch(text, /http:\/\/(?!127\.0\.0\.1|localhost)/, `${file}: plain http`);
+    for (const m of text.matchAll(/(?:https:\/\/|\bhf:)[^\s'"`)\\]*/g)) {
+      found[`${file}|${m[0]}`] = (found[`${file}|${m[0]}`] || 0) + 1;
+    }
+  }
+  const listed = Object.fromEntries(Object.entries(ADDRESSES).map(([key, [, count]]) => [key, count]));
+  assert.deepEqual(Object.fromEntries(Object.entries(found).sort()), Object.fromEntries(Object.entries(listed).sort()));
+  // The one download address is completed by the pinned revision (the check above).
+  const downloads = Object.entries(ADDRESSES).filter(([, [kind]]) => kind === 'download');
+  assert.equal(downloads.length, 1);
+  assert.ok(modelUrl().url.startsWith(downloads[0][0].split('|')[1]));
+  // The package index is only ever given to an install that requires exact versions and hashes.
+  const installer = readFileSync('memvane/learning/context_learning/runtime_installer.py', 'utf8');
+  assert.match(installer, /'--require-hashes','--no-build'/);
+  assert.match(installer, /REQ_RE = re\.compile\(r'\(\[A-Za-z0-9_\.-\]\+\)==/);
+});
+
+test('no product code or lock names a moving reference', () => {
+  const moving = /\/resolve\/main\/|\/raw\/main\/|\/blob\/main\/|\/releases\/latest\b|@latest\b/;
+  const files = [...fetchedCode(), 'locks/laya-embed-runtime/package.json',
+    'locks/laya-embed-runtime/package-lock.json'];
+  for (const file of files) assert.doesNotMatch(readFileSync(file, 'utf8'), moving, file);
+});
+
+test('every package of the embedding runtime lock has an exact tarball and an integrity hash', () => {
+  const lock = JSON.parse(readFileSync('locks/laya-embed-runtime/package-lock.json', 'utf8'));
+  const packages = Object.entries(lock.packages).filter(([name]) => name !== '');
+  assert.equal(packages.length, 140);
+  for (const [name, entry] of packages) {
+    assert.match(entry.resolved || '', /^https:\/\/registry\.npmjs\.org\/.+-\d+\.\d+\.\d+[^/]*\.tgz$/, name);
+    assert.match(entry.integrity || '', /^sha512-[A-Za-z0-9+/]+=*$/, name);
+  }
+  // The manifest asks for exact versions: no range can pick another tarball.
+  const manifest = JSON.parse(readFileSync('locks/laya-embed-runtime/package.json', 'utf8'));
+  for (const [name, version] of Object.entries(manifest.dependencies || {})) {
+    assert.match(version, /^\d+\.\d+\.\d+$/, name);
+  }
+});
+
+test('documents give the model address the code downloads from', () => {
+  const {url, name} = modelUrl();
+  const documents = ['README.md'];
+  const walk = dir => {
+    for (const entry of readdirSync(dir, {withFileTypes: true})) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!['node_modules', '__pycache__', 'plans', 'superpowers'].includes(entry.name)) walk(path);
+      } else if (entry.isFile() && extname(entry.name) === '.md') documents.push(path);
+    }
+  };
+  for (const dir of ['docs', 'memvane', 'skills']) walk(dir);
+  const stated = [];
+  for (const file of documents) {
+    for (const m of readFileSync(file, 'utf8').matchAll(/https:\/\/huggingface\.co\/[^\s`)]+/g)) {
+      if (m[0].endsWith(name)) stated.push([file, m[0]]);
+    }
+  }
+  assert.deepEqual(stated.map(([file]) => file).sort(), ['docs/architecture.md', 'memvane/install/README.md']);
+  for (const [file, address] of stated) assert.equal(address, url, file);
+});
+
+// A tool that downloads on the product's behalf has no address string for the
+// list above to see. Each call site is listed with what pins it; any other
+// download-capable call in product code fails.
+const TOOL_CALLS = [
+  [EMBED_RUNTIME, /'ci', '--ignore-scripts', '--omit=dev'/, 'npm ci of the pinned lock, no lifecycle scripts'],
+  [EMBED_RUNTIME, /urllib\.request\.urlopen\(url, timeout=60\)/, 'the model download, hash-checked by its caller'],
+  ['memvane/learning/context_learning/runtime_installer.py',
+    /\[uv,'python','install',PYTHON_PIN,'--install-dir'/, 'uv python install of the exact pinned version'],
+  ['memvane/learning/context_learning/runtime_installer.py',
+    /\[uv,'pip','sync',lock,'--python',/, 'uv pip sync of the hashed lock'],
+  // The release smoke (a maintenance tool) checks the pinned model address from the smoke account.
+  ['scripts/release_smoke.py', /'curl -sIL -o \/dev\/null/, 'the header check of the pinned model address'],
+  ['scripts/release_smoke.py', /curl -sfL -o "\$f" %s/, 'the fetch of the pinned model address, hash-compared by its caller'],
+];
+const DOWNLOADERS = /https?\.(?:request|get)\(|urllib\.request\.Request|build_opener|['"]tool['"],\s*['"]install|['"](?:fetch|pull)['"]|urlopen|urlretrieve|hf_hub_download|snapshot_download|requests\.(?:get|post)|http\.client|\bcurl\b|\bwget\b|\bnpx\b|['"]clone['"]|pip['"]?,?\s*['"]?install|npm['"]?,?\s*['"]?install|['"]ci['"]|['"]python['"],\s*['"]install|['"]pip['"],\s*['"]sync|brew install/;
+// A shell script names the same calls without quotes.
+const SHELL_DOWNLOADERS = /\bgit\s+(?:fetch|pull|clone)\b|\buv\s+tool\s+install\b/;
+
+test('every call that can download is a listed, pinned call', () => {
+  const hits = [];
+  for (const file of fetchedCode()) {
+    readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+      // ``fetch(`` is the network call of JavaScript only (Python code names a local helper so).
+      if (DOWNLOADERS.test(line) || (/\.m?js$/.test(file) && /\bfetch\(/.test(line))
+        || (/\.sh$/.test(file) && SHELL_DOWNLOADERS.test(line.replace(/#.*$/, '')))) hits.push([file, index + 1, line]);
+    });
+  }
+  for (const [file, number, line] of hits) {
+    assert.ok(TOOL_CALLS.some(([listed, call]) => listed === file && call.test(line)), `${file}:${number}: ${line.trim()}`);
+  }
+  for (const [file, call, why] of TOOL_CALLS) {
+    assert.equal(hits.filter(([hit, , line]) => hit === file && call.test(line)).length, 1, why);
+  }
+  // uv fetches the interpreter from an address it holds itself: the request is an
+  // exact three-part version and the uv binary is matched by version and sha256.
+  const setup = readFileSync('memvane/learning/context_learning/runtime_setup.py', 'utf8');
+  assert.match(assigned(setup, 'PYTHON_PIN'), /^\d+\.\d+\.\d+$/);
+  const installer = readFileSync('memvane/learning/context_learning/runtime_installer.py', 'utf8');
+  assert.match(assigned(installer, 'UV_PIN'), /^\d+\.\d+\.\d+$/);
+  assert.match(installer, /startswith\('uv '\+UV_PIN\+' '\)/);
+  assert.match(installer, /def _uv_binary\(path, expected_sha,/);
+  // The sync call itself refuses a requirement without a hash, a build and an interpreter download.
+  assert.match(installer, /\[uv,'pip','sync',lock,[^\]]*'--require-hashes','--no-build'[^\]]*'--no-python-downloads'/s);
+  // The venv is made from the installed interpreter: uv may not fetch another.
+  assert.match(installer, /\[uv,'venv',[^\]]*'--no-python-downloads'/s);
+  // A model or tokenizer is only ever loaded from local files.
+  for (const file of fetchedCode().filter(path => path.endsWith('.py'))) {
+    const text = readFileSync(file, 'utf8');
+    for (const m of text.matchAll(/from_pretrained\(/g)) {
+      // The call's arguments: up to the first line that ends it.
+      const call = text.slice(m.index, text.indexOf(')\n', m.index) + 1);
+      assert.match(call, /local_files_only=True/, `${file}: ${call.slice(0, 80)}`);
+    }
+  }
+});

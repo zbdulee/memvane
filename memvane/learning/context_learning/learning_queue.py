@@ -10,6 +10,36 @@ from .contracts import digest
 from .store import canonical
 from . import resident
 
+# A job blocked by repeated trainer failures is queued again this long after
+# the block (same id and members, counters at zero). The time is kept in
+# ``retry_at``: the table has no other column for it.
+REARM_SECONDS = 86400
+REARMED_REASON = 'trainer_failed'
+# Training failures another attempt of the same job repeats exactly: the request no
+# longer is what the job's folder was started with, its rows moved, its cursor or its
+# final artifact is not what was written. Such a job is closed at once, not rearmed.
+UNREPEATABLE = ('learning_train_intent_changed', 'learning_batch_source_changed',
+                'learning_cursor_changed', 'learning_completion_uncertain')
+# A job whose trainer failures blocked it after this many failed training attempts in all
+# (over every rearm; about ten days at three a day) is closed with this reason instead
+# of being queued again. ``attempts`` counts the claims that failed or were interrupted:
+# a claim that ends deferred without a failure (a slice that advanced the cursor, a
+# resource or inference deferral) gives its count back, so progress never reaches the limit.
+ATTEMPT_LIMIT = 30
+# ``defer`` without a failure: the reason of a slice that advanced the cursor and its wait,
+# and the wait of every other deferral that ended a claim (resources, inference).
+PROGRESS, PROGRESS_SECONDS, DEFER_SECONDS = 'trainer_progress', 30, 300
+ATTEMPTS_EXHAUSTED = 'trainer_attempts_exhausted'
+# Blocks no later attempt can clear. The next plan pins other members when there are
+# any; with the same members it answers with the blocked job.
+FINAL_BLOCKS = ('source_revoked', 'already_consumed', ATTEMPTS_EXHAUSTED, *UNREPEATABLE)
+
+
+def unrepeatable(code):
+    """The ``UNREPEATABLE`` name of a failure code, with or without the trainer child's prefix; else None."""
+    bare = code[len('trainer_failed:'):] if code.startswith('trainer_failed:') else code
+    return bare if bare in UNREPEATABLE else None
+
 
 def semantic_key(row, namespace, family, *, normalize_query=False):
     sample, bodies, gold = json.loads(row[3]), json.loads(row[4]), json.loads(row[5])
@@ -63,7 +93,7 @@ class LearningQueue:
             raise ValueError('holdout_in_training')
         with self.connect() as db:
             self.schema(db)
-            old=db.execute("SELECT job_id FROM learning_jobs WHERE namespace=? AND approval=? AND cohort=? AND family=? AND status IN ('queued','running','deferred','blocked') ORDER BY rowid LIMIT 1",(self.scope,approval,cohort,family)).fetchone()
+            old=db.execute("SELECT job_id FROM learning_jobs WHERE namespace=? AND approval=? AND cohort=? AND family=? AND (status IN ('queued','running','deferred') OR (status='blocked' AND COALESCE(reason,'') NOT IN (%s))) ORDER BY rowid LIMIT 1"%','.join('?'*len(FINAL_BLOCKS)),(self.scope,approval,cohort,family,*FINAL_BLOCKS)).fetchone()
             if old:return self.get(old[0],db=db)
             unique={}
             for row in rows:unique.setdefault(semantic_key(row,self.scope,family,normalize_query=cumulative),row)
@@ -80,6 +110,9 @@ class LearningQueue:
             keys=fresh+replay
             if minimum_members is not None and len(keys)<minimum_members:return None
             job_id='cohort-'+digest(canonical([self.scope,approval,cohort,family,keys]))[:20]
+            # The same members again (a block the members caused, and nothing changed since):
+            # the id is their digest, so that job is the answer, blocked as it is.
+            if db.execute('SELECT 1 FROM learning_jobs WHERE job_id=?',(job_id,)).fetchone():return self.get(job_id,db=db)
             members=[{'key':key,'request_id':unique[key][1],'input_sha256':unique[key][2],
                       'row_sha256':digest(canonical(list(unique[key][:6]))),'fresh':key in fresh} for key in keys]
             manifest={'id':job_id,'namespace':self.scope,'approval':approval,'cohort':cohort,'family':family,'members':members}
@@ -136,9 +169,39 @@ class LearningQueue:
             job=self.get(job_id,db=db)
             if job is None:raise ValueError('learning_job_scope_invalid')
             failures=job['failures']+int(failure)
-            retry=now+min(300,30*2**min(job['attempts'],4))
-            db.execute("UPDATE learning_jobs SET status=?,failures=?,retry_at=?,reason=? WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",('blocked' if failures>=3 else 'deferred',failures,retry,reason,job_id,self.scope))
+            # Not an attempt that failed: the claim's count is given back (see ATTEMPT_LIMIT).
+            claimed=job['status']=='running'
+            attempts=job['attempts']-int(not failure and claimed and job['attempts']>0)
+            blocked=failures>=3
+            if blocked and failure and job['attempts']>=ATTEMPT_LIMIT:reason=ATTEMPTS_EXHAUSTED  # final: never rearmed
+            # A claim that ended without a failure: a slice that advanced comes back soon, any
+            # other deferral waits the ceiling (the claim found nothing it could do sooner).
+            # A failure, and a deferral before any claim (the resources were not ready: the
+            # bounded waiter of the same pass retries it), back off with the failed attempts.
+            retry=now+(REARM_SECONDS if blocked else min(300,30*2**min(job['attempts'],4)) if failure or not claimed else PROGRESS_SECONDS if reason==PROGRESS else DEFER_SECONDS)
+            db.execute("UPDATE learning_jobs SET status=?,failures=?,attempts=?,retry_at=?,reason=? WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",('blocked' if blocked else 'deferred',failures,attempts,retry,reason,job_id,self.scope))
             return self.get(job_id,db=db)
+
+    def block(self, job_id, reason):
+        """Close an open job, or one waiting to be rearmed, with ``reason`` (one of ``FINAL_BLOCKS``); the job after it."""
+        if reason not in FINAL_BLOCKS:raise ValueError('learning_block_reason_invalid')
+        with self.connect() as db:
+            self.schema(db)
+            db.execute("UPDATE learning_jobs SET status='blocked',reason=? WHERE job_id=? AND namespace=? AND (status IN ('queued','running','deferred') OR (status='blocked' AND COALESCE(reason,'') NOT IN (%s)))"%','.join('?'*len(FINAL_BLOCKS)),(reason,job_id,self.scope,*FINAL_BLOCKS))
+            return self.get(job_id,db=db)
+
+    def rearm(self, *, now=None):
+        """Queue again the jobs trainer failures blocked a day ago; their ids.
+
+        ``attempts`` is kept: it is the count of failed training attempts over all rearms.
+        """
+        now=time.time() if now is None else now
+        with self.connect() as db:
+            self.schema(db)
+            ids=[r[0] for r in db.execute("SELECT job_id FROM learning_jobs WHERE namespace=? AND status='blocked' AND reason=? AND retry_at<=? ORDER BY rowid",(self.scope,REARMED_REASON,now)).fetchall()]
+            for job_id in ids:
+                db.execute("UPDATE learning_jobs SET status='queued',owner=NULL,failures=0,retry_at=0,reason=NULL WHERE job_id=? AND namespace=? AND status='blocked'",(job_id,self.scope))
+            return ids
 
     def complete(self, job_id, *, db=None):
         if db is None:

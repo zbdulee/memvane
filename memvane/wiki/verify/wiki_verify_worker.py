@@ -54,6 +54,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.atomic_rename import fsync_dir, canonical_json_bytes
 from memvane.kernel.paths import now_iso, read_jsonl
+from memvane.kernel.persistent_identity import persistent_identity_equal
 from memvane.wiki.verify.api import supersede_compile_intent as _supersede_compile_intent, compile_intent_id as _compile_intent_id
 from memvane.wiki.workspace import api as workspace_files
 from memvane.wiki.card import types as wiki_markers
@@ -1326,7 +1327,13 @@ def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict
                 if has_marker:
                     if not _valid_cleanup_marker(job):
                         continue
+                    # The marker outlives a boot. When it names this file by
+                    # inode, size and times, carry the live tuple: the later
+                    # comparisons are all between observations of this process.
+                    live = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
                     fingerprint = tuple(marker['fingerprint'])
+                    if persistent_identity_equal(fingerprint, live, device_index=0):
+                        fingerprint = live
                 else:
                     # Reclaimed pre-crash jobs have no proof of the bytes
                     # observed before the crash; keep them for the user.

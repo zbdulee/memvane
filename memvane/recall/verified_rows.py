@@ -17,7 +17,7 @@ def _fail(code: str):
 # Values and their measurement: docs/continual-learning.md "Selector budget".
 SELECTOR_CANDIDATES = 10
 PROMPT_SELECTOR_SECONDS = 3.0
-PROMPT_PAIR_BUDGET = 24
+PROMPT_PAIR_BUDGET = 12
 HOOK_RESERVE_SECONDS = 1.0
 EDIT_PAIR_BUDGET = 91
 # The live selector refuses a prompt over this many UTF-8 bytes.
@@ -25,7 +25,8 @@ SELECTOR_PROMPT_BYTES = 65536
 
 # Selector work measured by the inference worker (``adapter.predict_loaded``),
 # the service and its client, renamed for the recall event (no field name may
-# contain "token": the event log drops it). Numbers and the device only.
+# contain "token": the event log drops it). Numbers, the device and the
+# checkpoint's hash prefix only.
 _SELECTOR_MEASURES = (('pairs', 'selectorPairs'), ('planned_pairs', 'selectorPlannedPairs'),
                       ('batches', 'selectorBatches'), ('truncated_pairs', 'selectorTruncatedPairs'),
                       ('max_batch_size', 'selectorBatchLimit'),
@@ -38,6 +39,7 @@ _SELECTOR_MEASURES = (('pairs', 'selectorPairs'), ('planned_pairs', 'selectorPla
                       ('envelope_seconds', 'selectorEnvelopeSeconds'),
                       ('initial_validation_seconds', 'selectorValidationSeconds'),
                       ('identity_seconds', 'selectorIdentitySeconds'),
+                      ('identity_reused', 'selectorIdentityReused'),
                       ('revalidation_seconds', 'selectorRevalidationSeconds'),
                       ('model_load_seconds', 'selectorLoadSeconds'),
                       ('tokenize_seconds', 'selectorPrepareSeconds'),
@@ -95,6 +97,11 @@ def _selector_measurement(trace, resources) -> None:
         device = resources.get('device')
         if isinstance(device, str) and device.split(':', 1)[0] in ('cpu', 'mps', 'cuda'):
             fields['selectorDevice'] = device.split(':', 1)[0]
+        # The artifact that scored this recall: twelve hex of its SHA-256.
+        checkpoint = resources.get('checkpoint')
+        if (isinstance(checkpoint, str) and len(checkpoint) == 12
+                and all(char in '0123456789abcdef' for char in checkpoint)):
+            fields['selectorCheckpoint'] = checkpoint
         if fields:
             trace.fields(**fields)
     except Exception:
@@ -208,6 +215,11 @@ def _serve_verified_rows(decision, settings, prompt, rows, *, top_n, title_only,
     trace.fields(selection=reason, candidates=len(rows), generation=generation)
     from memvane.recall.domain.rules import limit_selected, selection_action
     chosen, answer_limit = limit_selected(chosen, top_n)
+    if reason == 'selected':
+        # How far the selector's served choice departs from the hybrid rank:
+        # the chosen cards that are also among the three best ranked rows.
+        ranked = {row['path'] for row in rows[:3]}
+        trace.fields(rankedOverlap=sum(1 for row in chosen if row['path'] in ranked))
     # Capture sees the verified pool and what was served: the selector's
     # choice, or the ranked rows when no prepared selector answered.
     capture = (settings, rows[:15], chosen)

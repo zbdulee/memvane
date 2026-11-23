@@ -128,22 +128,10 @@ Exact trust scope (one row per host; no wildcard or "trust all"):
 | RQA-WIKI-01 | Codex | NOT RUN | | | 60 min | | |
 | RQA-WIKI-02 | Claude | NOT RUN | | | 60 min | | |
 | RQA-WIKI-02 | Codex | NOT RUN | | | 60 min | | |
-| RQA-WIKI-03 | Claude | NOT RUN | | | 45 min | | |
-| RQA-WIKI-03 | Codex | NOT RUN | | | 45 min | | |
 | RQA-RES-01 | Claude | NOT RUN | | | 45 min | | |
 | RQA-RES-01 | Codex | NOT RUN | | | 45 min | | |
 | RQA-RES-02 | Claude | NOT RUN | | | 60 min | | BLOCKED until learning approval + safe resources are recorded |
 | RQA-PLAT-01 | (cell) | NOT RUN | | | 45 min | | |
-| LI-INST | Claude | NOT RUN | | | | | |
-| LI-INST | Codex | NOT RUN | | | | | |
-| LI-MIG | (install) | NOT RUN | | | | | |
-| LI-SCOPE | Claude | NOT RUN | | | | | |
-| LI-SCOPE | Codex | NOT RUN | | | | | |
-| LI-RECOVER | (install) | NOT RUN | | | | | |
-| LI-COEXIST | (install) | NOT RUN | | | | | |
-| LI-VECTOR | (install) | NOT RUN | | | | | |
-| LI-RECALL | Claude | NOT RUN | | | | | |
-| LI-RECALL | Codex | NOT RUN | | | | | |
 
 ## 6. Per-scenario detail (repeat for each executed scenario)
 

@@ -100,6 +100,10 @@ class NewMachineProvisioning(Machine):
         self.assertEqual(runtime['modelSha256'], sha(self.model_bytes))
         self.assertEqual(runtime['nodeSha256'], sha(self.node.read_bytes()))
         self.assertEqual(self.fetches, [R.MODEL_URL])
+        # The one address asked for names the upstream revision, not a branch.
+        self.assertEqual(self.fetches, [
+            'https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/'
+            'a0f9bb7a85ab3b2b2ff2e540b91930b784518576/embeddinggemma-300M-Q8_0.gguf'])
         npm = [run for run in self.runs if run['argv'][1:2] == [str(self.npm_cli)]]
         self.assertEqual(len(npm), 1)
         self.assertEqual(npm[0]['argv'][2:4], ['ci', '--ignore-scripts'])
@@ -134,6 +138,27 @@ class NewMachineProvisioning(Machine):
                          {'node-llama-cpp': R.LLAMA_VERSION})
 
 
+    def test_changed_upstream_bytes_are_refused_and_the_local_file_still_provisions(self):
+        # What a moved upstream address did: the download succeeds with other bytes.
+        def changed(url, target):
+            self.fetches.append(url)
+            write(target, self.model_bytes + b'dense layers', 0o600)
+        with self.assertRaisesRegex(R.RuntimeUnavailable, '^laya_embed_runtime_model_sha_mismatch$'):
+            R.provision_new(approve_download=True, node=self.node, run=self.npm,
+                            fetch=changed, model_sha256=sha(self.model_bytes))
+        self.assertEqual(self.fetches, [R.MODEL_URL])
+        self.assertFalse((R.root() / 'active.json').exists())
+        self.assertEqual([path.name for path in R.root().rglob('*.gguf')], [])
+        # The same exact file given by its owner provisions with no download.
+        model = write(self.base / 'm.gguf', self.model_bytes)
+        runtime = self.provision(model_file=str(model))
+        self.assertEqual(self.fetches, [R.MODEL_URL])
+        self.assertEqual((R.select(), runtime['modelSha256']), (runtime, sha(self.model_bytes)))
+        # A local file of other bytes is refused the same way.
+        other = write(self.base / 'other.gguf', self.model_bytes + b'x')
+        with self.assertRaisesRegex(R.RuntimeUnavailable, '^laya_embed_runtime_model_sha_mismatch$'):
+            self.provision(model_file=str(other))
+
     def test_local_model_file_skips_the_download(self):
         model = write(self.base / 'm.gguf', self.model_bytes)
         runtime = self.provision(model_file=str(model))
@@ -153,6 +178,8 @@ class NewMachineProvisioning(Machine):
     def test_default_downloader_never_runs_in_tests(self):
         # The pinned URL is HTTPS and the downloader refuses anything else.
         self.assertTrue(R.MODEL_URL.startswith('https://huggingface.co/'))
+        self.assertRegex(R.MODEL_URL, r'/resolve/[0-9a-f]{40}/' + R.MODEL_NAME.replace('.', r'\.') + r'\Z')
+        self.assertIn('/resolve/' + R.MODEL_REVISION + '/', R.MODEL_URL)
         with self.assertRaisesRegex(R.RuntimeUnavailable,
                                     '^laya_embed_runtime_download_refused$'):
             R.download('http://example.invalid/model.gguf', self.base / 'x')

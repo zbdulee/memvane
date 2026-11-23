@@ -1,22 +1,32 @@
-// S1: one node test per tier of a domain's Python tests, in a fixture HOME.
+// One node test per Python test module of a domain, each in its own fixture HOME.
 //
 //   memvane/<domain>/tests/run.test.mjs:
 //     import { runDomain } from '../../../tests/support/runner.mjs';
 //     runDomain({ domain: 'store' });
 //
-// Each tier runs `python3 -B -m unittest discover -s memvane/<domain>/tests/<tier>
-// -t . -p 'test_*.py'` with a new realpath'd HOME/TMPDIR, its 0700 test
-// runtime root (MEMVANE_TEST_RUNTIME_ROOT), QMD_SETUP_GUARD_FIXTURE=1,
-// PYTHONDONTWRITEBYTECODE=1 and QMD_REAL_MODEL_TESTS empty. A child killed
-// by a signal reports it. Afterwards no process named by a pid file under
-// the HOME may still run (it is killed and the tier fails); the HOME is removed.
+// Every `test_*.py` under memvane/<domain>/tests/<tier> runs as
+// `python3 -B -m unittest <dotted module> -v` with a new realpath'd
+// HOME/TMPDIR, its 0700 test runtime root (MEMVANE_TEST_RUNTIME_ROOT),
+// QMD_SETUP_GUARD_FIXTURE=1, PYTHONDONTWRITEBYTECODE=1 and QMD_REAL_MODEL_TESTS
+// empty, so a failure names its module. A child killed by a signal reports it.
+// Afterwards no process named by a pid file under the HOME may still run (it is
+// killed and the module fails); the HOME is removed.
+//
+// A module's timeout is three times its recorded duration
+// (tests/support/durations.json, written by scripts/test_durations.py), at
+// least 60 s; 180 s without a record; all times the run's load scale
+// (timing.mjs). With MEMVANE_TEST_RESULTS set, each
+// module appends one JSON line {module, status, seconds, commit, scale} to that file.
+// With MEMVANE_TEST_PART=<k>/<n> only the modules of that part run (parts.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { appendFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { partFilter } from './parts.mjs';
 import { fixtureEnv, fixtureHome, removeTemp } from './temp.mjs';
+import { timeScale } from './timing.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -62,40 +72,121 @@ export function leftoverProcesses(home) {
   return alive;
 }
 
-// Per-tier child timeout. A domain whose slowest tier, run alone under the
-// development guard, takes more than two thirds of the default gets its own
-// value with at least 50% headroom over that measurement (S5 L13).
-export const DEFAULT_TIER_TIMEOUT_MS = 600000;
-// Measured alone (2026-11-15): sync integration 390 s, registry integration 423 s.
-export const DOMAIN_TIER_TIMEOUT_MS = {
-  registry: 900000,
-  sync: 900000,
-};
+export const MODULE_TIMEOUT_FLOOR_SECONDS = 60;
+export const MODULE_TIMEOUT_UNMEASURED_SECONDS = 180;
+export const MODULE_TIMEOUT_FACTOR = 3;
 
-export function runDomain({ domain, tiers = ['unit', 'integration'],
-  timeoutMs = DOMAIN_TIER_TIMEOUT_MS[domain] ?? DEFAULT_TIER_TIMEOUT_MS }) {
+/** Timeout in ms of a module whose recorded duration is `seconds` (undefined: not recorded). */
+export function moduleTimeoutMs(seconds, scale = 1) {
+  const base = typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0
+    ? Math.max(MODULE_TIMEOUT_FLOOR_SECONDS, seconds * MODULE_TIMEOUT_FACTOR)
+    : MODULE_TIMEOUT_UNMEASURED_SECONDS;
+  return Math.round(base * 1000 * (scale >= 1 ? scale : 1));
+}
+
+/** Recorded module durations: `{ 'memvane/<domain>/tests/<tier>/test_x.py': seconds }`. */
+export function recordedDurations(path = join(ROOT, 'tests', 'support', 'durations.json')) {
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Sorted `test_*.py` files under `dir` (recursive), as paths relative to `root`. */
+export function testModules(dir, root = ROOT) {
+  const found = [];
+  const walk = (current) => {
+    let entries;
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile() && /^test_.*\.py$/.test(entry.name)) found.push(relative(root, path));
+    }
+  };
+  walk(dir);
+  return found.sort();
+}
+
+/** The dotted unittest name of a module file: path separators become dots, `.py` is dropped. */
+export function moduleName(file) {
+  return file.replace(/\.py$/, '').split(/[\\/]/).join('.');
+}
+
+let checkout;
+
+/** The commit a result row belongs to: MEMVANE_TEST_COMMIT (CI sets the pull request head), else this checkout's HEAD. */
+export function resultCommit(env = process.env, root = ROOT) {
+  if (env.MEMVANE_TEST_COMMIT) return env.MEMVANE_TEST_COMMIT;
+  if (checkout === undefined) {
+    const r = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000 });
+    checkout = r.status === 0 && /^[0-9a-f]{40}$/.test(r.stdout.trim()) ? r.stdout.trim() : null;
+  }
+  return checkout;
+}
+
+function record(module, status, seconds) {
+  const target = process.env.MEMVANE_TEST_RESULTS;
+  if (!target) return;
+  try {
+    appendFileSync(target, `${JSON.stringify({ module, status, seconds, commit: resultCommit(),
+      scale: timeScale() })}\n`);
+  } catch { /* a result record never fails a test */ }
+}
+
+/** Run one module in a fixture HOME; throws an assertion error naming what failed. */
+export function runModule(file, { root = ROOT, timeoutMs, label = file } = {}) {
+  const fixture = fixtureHome('mvd');
+  const started = process.hrtime.bigint();
+  let status = 'fail';
+  try {
+    const r = spawnSync('python3', ['-B', '-m', 'unittest', moduleName(file), '-v'],
+      { cwd: root, encoding: 'utf8', timeout: timeoutMs, env: fixtureEnv(fixture) });
+    if (r.stderr) process.stderr.write(r.stderr.slice(-12000));
+    const left = leftoverProcesses(fixture.home);
+    for (const { pid } of left) {
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+    }
+    if (r.error && r.error.code === 'ETIMEDOUT') {
+      // Three times the recorded duration: a module that grew needs a new record.
+      assert.fail(`${label} ran past its ${Math.round(timeoutMs / 1000)} s limit `
+        + '(tests/support/durations.json; scripts/test_durations.py rewrites it from a run\'s module results)');
+    }
+    assert.ifError(r.error);
+    assert.equal(r.signal, null, `${label} killed by ${r.signal}`);
+    // Python 3.12+ exits 5 when a module holds no test yet (a skeleton).
+    const empty = r.status === 5 && /\nNO TESTS RAN\b/.test(r.stderr);
+    assert.ok(r.status === 0 || empty, `${label} exited ${r.status}`);
+    if (!empty) assert.match(r.stderr, /\nOK\b/);
+    assert.deepEqual(left, [], 'processes left running under the fixture HOME');
+    status = 'pass';
+  } finally {
+    record(file, status, Number(process.hrtime.bigint() - started) / 1e9);
+    removeTemp(fixture.home);
+  }
+}
+
+export function runDomain({ domain, tiers = ['unit', 'integration'] }) {
+  const durations = recordedDurations();
+  const inPart = partFilter(process.env.MEMVANE_TEST_PART, durations);
+  // Once per test file: the scale every wait and timeout of this run is multiplied by.
+  process.stderr.write(`[tests] ${domain}: load scale ${timeScale()}\n`);
   for (const tier of tiers) {
     const start = join('memvane', domain, 'tests', tier);
-    test(`${domain} ${tier} python tests`, { skip: !existsSync(join(ROOT, start)) && 'tier absent' }, () => {
-      const fixture = fixtureHome('mvd');
-      try {
-        const r = spawnSync('python3', ['-B', '-m', 'unittest', 'discover', '-s', start, '-t', '.',
-          '-p', 'test_*.py', '-v'], { cwd: ROOT, encoding: 'utf8', timeout: timeoutMs, env: fixtureEnv(fixture) });
-        if (r.stderr) process.stderr.write(r.stderr.slice(-12000));
-        const left = leftoverProcesses(fixture.home);
-        for (const { pid } of left) {
-          try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
-        }
-        assert.ifError(r.error);
-        assert.equal(r.signal, null, `${domain} ${tier} killed by ${r.signal}`);
-        // Python 3.12+ exits 5 when a tier holds no test yet (a skeleton).
-        const empty = r.status === 5 && /\nNO TESTS RAN\b/.test(r.stderr);
-        assert.ok(r.status === 0 || empty, `${domain} ${tier} exited ${r.status}`);
-        if (!empty) assert.match(r.stderr, /\nOK\b/);
-        assert.deepEqual(left, [], 'processes left running under the fixture HOME');
-      } finally {
-        removeTemp(fixture.home);
-      }
-    });
+    const modules = testModules(join(ROOT, start));
+    if (modules.length === 0) {
+      test(`${domain} ${tier} python tests`, { skip: 'tier absent' }, () => {});
+      continue;
+    }
+    for (const file of modules.filter(inPart)) {
+      const label = `${domain} ${tier} python ${relative(start, file)}`;
+      test(label, () => runModule(file, { timeoutMs: moduleTimeoutMs(durations[file], timeScale()), label }));
+    }
   }
 }

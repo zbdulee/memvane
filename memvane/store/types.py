@@ -13,8 +13,10 @@ MAX_BODY = 4 * 1024 * 1024
 MAX_CHUNKS = 1024
 WORK_EXCEEDED = 'vector_work_exceeded'
 DEADLINE_EXCEEDED = 'vector_deadline_exceeded'
+# The sets the vector arena does not hold yet are more than one store read may take.
+CACHE_BUILDING = 'vector_cache_building'
 DEFERRED = {WORK_EXCEEDED: 'deferred_work_budget', DEADLINE_EXCEEDED: 'deferred_deadline',
-            'fts_deadline_exceeded': 'deferred_deadline'}
+            'fts_deadline_exceeded': 'deferred_deadline', CACHE_BUILDING: 'deferred_cache_building'}
 FALLBACK_CHARS = (600, 90, 135)
 
 
@@ -80,19 +82,23 @@ class ViewStoreHandle(Protocol):
 
     def fill_status(self, handle, manifest, recipe_id, profile_id): ...
 
+    def arena_sets(self, recipe_id, profile_id, blobs=()): ...
+
+    def arena_set(self, blob, recipe_id, profile_id): ...
+
     def ensure_content(self, blob, recipe_id, profile_id, *, chunker, embedder, write_fence, deadline_seconds): ...
 
     def fill_view(self, handle, manifest, recipe_id, profile_id, *, chunker, embedder, write_fence,
                   expected_cursor, max_files=8, max_bytes=2000000, deadline_seconds=30): ...
 
     def search(self, pin, fts_query, limit, *, path_prefixes=None, excluded_paths=None,
-               deadline_seconds=2): ...
+               deadline_seconds=2, excluded_cards=None): ...
 
     def probe_terms(self, pin, fts_queries, limit, *, excluded_paths=None, deadline_seconds=2): ...
 
     def search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work=4000000,
                      deadline_seconds=2, path_prefixes=None, excluded_paths=None, timings=None,
-                     preferred_paths=None): ...
+                     preferred_paths=None, excluded_cards=None): ...
 
     def card_locations(self, pin, paths, *, deadline_seconds=2): ...
 

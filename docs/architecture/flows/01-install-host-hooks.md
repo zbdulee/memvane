@@ -63,15 +63,14 @@ flowchart TD
 
 - [`hooks/run-hook:21-34`](../../../hooks/run-hook#L21-L34): `--sandbox`나 `QMD_SANDBOX`, 또는 엔진별 sandbox·headless 변수가 있으면 plugin root 파일 처리와 모든 hook 작업보다 먼저 종료합니다. Codex의 `gate` action은 편집 차단을 유지해야 하므로 이 가드에서 제외됩니다.
 - [`hooks/run-hook:47-93`](../../../hooks/run-hook#L47-L93): payload를 임시 파일에 보관한 뒤 `entry/run.py hook-classify`으로 `legacy`·`candidate`·`preview`·`worktree`·`blocked`를 판정합니다. `candidate`·`preview`·`worktree`이면 `exec`로 셸을 `memvane/host/host_response.py serve-stdin`에 넘깁니다. 그래서 호스트 timeout이 대기 중인 셸이 아니라 작업 자체를 종료합니다. `blocked`와 그 밖의 결과는 `request refused`와 함께 `exit 3`입니다.
-- [`hooks/run-hook:55-75`](../../../hooks/run-hook#L55-L75): `legacy`는 작업 없이 exit 0입니다. `update-queued`에서만 `host/onboarding_notice.py`가 돌려준 안내(사용자용 한 줄과 거절 명령을 담은 `onboarding-answer` JSON 한 줄)를 출력합니다. 사용자가 그 세션을 건너뛰었거나(`onboarding-skip`) 그 프로젝트를 거절한(`onboarding-never`) 기록이 `~/.local/state/memvane/v1/onboarding/`에 있으면 안내를 내지 않습니다. Codex에는 `hookSpecificOutput` SessionStart JSON으로 감싸 출력합니다.
+- [`hooks/run-hook:55-75`](../../../hooks/run-hook#L55-L75): `legacy`는 작업 없이 exit 0입니다. `update-queued`에서만 `memvane/host/onboarding_notice.py`가 돌려준 안내(사용자용 한 줄과 거절 명령을 담은 `onboarding-answer` JSON 한 줄)를 출력합니다. 사용자가 그 세션을 건너뛰었거나(`onboarding-skip`) 그 프로젝트를 거절한(`onboarding-never`) 기록이 `~/.local/state/memvane/v1/onboarding/`에 있으면 안내를 내지 않습니다. Codex에는 `hookSpecificOutput` SessionStart JSON으로 감싸 출력합니다.
 - [`hooks/run-hook`](../../../hooks/run-hook): `engine=gemini`를 받아들입니다. 하지만 공식 Antigravity의 자동 posttool·index·compile은 공식 payload adapter가 생길 때까지 비활성입니다.
 - Hermes: 별도 Python plugin으로, `post_tool_call`을 관찰만 합니다. 이 문서의 `run-hook` route·enqueue·compile 경로에는 속하지 않습니다.
-- [`memvane/app/setup_entry.py:56-106`](../../../memvane/app/setup_entry.py#L56-L106): 설치자 action 목록과 `--approve-*` 승인 플래그입니다. `index-runtime-status`·`provision-index-runtime`·`gc-index-runtime`은 `--project` 없이 실행합니다.
-- [`memvane/app/setup_entry.py:131-279`](../../../memvane/app/setup_entry.py#L131-L279): index-origin 계열 action을 `install.api`에 위임합니다.
+- [`memvane/app/setup_entry.py`](../../../memvane/app/setup_entry.py)의 `main`: 설치자 action 목록과 `--approve-*` 승인 플래그이며, index-origin 계열 action을 `install.api`에 위임합니다. `index-runtime-status`·`provision-index-runtime`·`gc-index-runtime`은 `--project` 없이 실행합니다. `state-cleanup`(state 정리의 미리보기와 승인 삭제, `--project` 없음)은 같은 파일의 `_state_cleanup`이 맡습니다.
 
 ### QA 증거와 미검증
 
-- 설치 후보 QA 계약은 [release-agent-qa.md](../../release-agent-qa.md)에 있습니다. synthetic 시험 통과는 실제 호스트의 route 선택이 통과했다는 뜻이 아닙니다. 열린 QA 항목은 [TODO](../../TODO.md)에 있습니다.
-- `candidate` 경로를 실제 Claude·Codex·Gemini 호스트에서 확인하는 QA는 검증되지 않았습니다. 열린 QA 항목은 [TODO](../../TODO.md)에 있습니다.
+- 설치 후보 QA 계약은 [release-agent-qa.md](../../release-agent-qa.md)에 있습니다. synthetic 시험 통과는 실제 호스트의 route 선택이 통과했다는 뜻이 아닙니다. 열린 QA 항목은 [로드맵](../../ROADMAP.md)에 있습니다.
+- `candidate` 경로를 실제 Claude·Codex·Gemini 호스트에서 확인하는 QA는 검증되지 않았습니다. 열린 QA 항목은 [로드맵](../../ROADMAP.md)에 있습니다.
 - 공식 Antigravity 자동 경로는 payload adapter가 생기기 전까지 구현 범위 밖입니다.
 - 설치자 action을 호출하는 실제 명령 형태(래퍼와 인자 조합)는 발췌에 없어 표기하지 않았습니다.

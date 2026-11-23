@@ -129,6 +129,25 @@ def _update_hosts(root,change):
         return teacher_state.write_state(root,state)
 
 
+def _consent_read(root,project,failed):
+    """Count the consecutive passes that could not read the consent file.
+
+    The SessionStart notice reads the count; a pass that reads the file clears it.
+    """
+    from . import teacher_state
+    if not failed and not teacher_state.read_state(root)['consent']['unreadable']:return
+    seen=[]
+    def change(state):
+        row=state['consent']
+        row['unreadable']=min(row['unreadable']+1,1_000_000) if failed else 0
+        if not failed:row['lastNoticeUnixMs']=None
+        seen.append(row['unreadable'])
+    _update_hosts(root,change)  # A notice count only: an unwritten count is one pass late.
+    if failed:
+        _gt()._emit(project,'learning.teacher',outcome='deferred',reason='teacher_consent_unreadable',
+                    consentUnreadable=seen[0] if seen else None)
+
+
 def _migration_ready(root,project,key,consent):
     """§14-7 (user decision b): in an affected project every v5 edit case captured
     before the teacher grant leaves the teacher and training path.
@@ -218,7 +237,8 @@ def process_pending_default(root,project,worker_policy,*,max_cases=8,environ=Non
     try:
         grant=_gt()._scope_default(root,policy)
         consent=require_consent_v2(root,project)
-    except ResourceDeferred:
+    except ResourceDeferred as exc:
+        if str(exc)=='teacher_consent_unreadable':_consent_read(root,project,True)
         raise  # An unreadable consent file is not a withdrawal: kept answers stay.
     except ValueError as exc:
         # The scope check also reads the v2 consent; only its refusal is a status.
@@ -227,12 +247,17 @@ def process_pending_default(root,project,worker_policy,*,max_cases=8,environ=Non
         with _gt()._worker_lock(root) as locked:
             if locked:_review_parked(root,_project_key(project),'teacher_consent_required')
         return dict(result,status='consent_required',reason=str(exc))
+    _consent_read(root,project,False)
     key=_project_key(project)
     with _gt()._worker_lock(root) as locked:
         if not locked:return dict(result,status='busy')
         with _db(root) as db:
             ledger.recover(db,key)
-            db.execute("UPDATE cases SET status='pending_review',error='interrupted_external_attempt' WHERE project_root=? AND status IN ('first_running','second_running')",(str(project),))
+            interrupted=db.execute("UPDATE cases SET status='pending_review',error='interrupted_external_attempt' WHERE project_root=? AND status IN ('first_running','second_running')",(str(project),)).rowcount
+        if interrupted:
+            # The price of never paying twice: a call cut short ends its case.
+            _gt()._emit(project,'learning.teacher',outcome='pending_review',
+                        reason='interrupted_external_attempt',count=interrupted)
         if not _migration_ready(root,project,key,consent):return dict(result,status='migration_pending')
         return _default_pass(root,project,worker_policy,policy,grant,consent,key,environ,
                              max_cases,result,teacher_hosts,teacher_state)
@@ -258,12 +283,13 @@ def _default_pass(root,project,worker_policy,policy,grant,consent,key,environ,ma
         return result
     recipients={r.get('host') for r in consent.get('recipients',[]) if isinstance(r,dict)}
     now=teacher_state.now_ms();state=teacher_state.read_state(root)
-    ready={}
+    ready={};prepared=0
     for host in present:
         waiting=teacher_state.host_waiting(state,host,now)
         if host not in recipients:ready[host]={'ready':False,'reason':'teacher_consent_scope'}
         elif waiting:ready[host]={'ready':False,'reason':waiting[0] or 'teacher_host_failing','timed':True}
         else:
+            prepared+=1
             ready[host]=teacher_hosts.prepare(host,project=project,environ=environ,
                 system_prompt=INSTRUCTION_V2,read_quota=_gt().read_weekly_remaining if host=='codex' else None)
         if ready[host].get('reason')==ISOLATION:
@@ -271,7 +297,8 @@ def _default_pass(root,project,worker_policy,policy,grant,consent,key,environ,ma
                   teacherHost=host,isolation='refused',isolationDetail=ready[host].get('detail'))
     if 'codex' in ready and 'quotaRemaining' in ready['codex']:
         result['quotaRemaining']=ready['codex']['quotaRemaining']
-    counts={'calls':0,'gold':confirmed,'pendingReview':0,'requeued':0,'skippedLocal':0,'parked':0}
+    counts={'calls':0,'gold':confirmed,'pendingReview':0,'requeued':0,'skippedLocal':0,'parked':0,
+            'prepared':prepared,'startedMs':now}
 
     def queued_by_host():
         with _db(root) as db:rows=admitted(db,project,grant)
@@ -322,6 +349,9 @@ def _finish(root,project,result,status,counts,ready,queue,mark,queued_by_host,te
     _gt()._emit(project,'learning.teacher',outcome='pass',reason=status,calls=counts['calls'],
           gold=counts['gold'],pendingReview=counts['pendingReview'],requeued=counts['requeued'],
           parked=counts['parked'],
+          # Hosts this pass prepared (path, isolation, model), and how long after the pass began the
+          # first pre-send resource check ran (None: no case reached it).
+          preparedHosts=counts['prepared'],preCallMs=counts.get('preCallMs'),
           skippedLocal=counts['skippedLocal'],
           waitClaude=None if ready.get('claude',{'ready':True})['ready'] else ready['claude']['reason'],
           waitCodex=None if ready.get('codex',{'ready':True})['ready'] else ready['codex']['reason'],
@@ -380,6 +410,7 @@ def _default_case(root,project,worker_policy,grant,consent,key,environ,row,host,
               teacherHost=host,isolation='refused',isolationDetail=exc.detail)
         return None
     try:
+        counts.setdefault('preCallMs',max(0,teacher_state.now_ms()-counts['startedMs']))
         try:provider_checkpoint()
         except ResourceDeferred:return 'deferred_resource'
         if not _gt().resource_report(worker_policy)['ready']:return 'deferred_resource'

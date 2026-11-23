@@ -25,6 +25,8 @@
 - 재봉인 호환 기록 `provider-reattest.json`: schema `memvane-provider-reattest-v1`, 키 `schema`·`attested`·`current`·`attestedIdentity`·`currentIdentity`·`outcome`·`timeNs`. 정체성 키는 `modelSha256`·`tokenizer`·`chunkerSha256`·`chunkRules`·`dimension`·`metric`·`pooling`·`normalization`·`maxTokens`다. 쌍별 기록 `provider-reattest-pairs.json`: schema `memvane-provider-reattest-pairs-v1`, 최상위 키 `schema`·`records`, 각 행 키 `attested`·`current`·`attestedIdentity`·`currentIdentity`·`outcome`·`timeNs`. 쌍별 정체성은 v1 키에 `queryTemplate`·`documentTemplate`·`contextMargin`을 더한다. 각 쌍은 `worker`·`provider` SHA를 담고 최대 16행이다.
 - compile intent(`<install state root>/provenance-intents/`)의 필수 키 집합(`kind`·`viewId`·`targetPath`·`cardSha`·`expectedTargetHash`·`sourceFingerprints`·`sourceSpans`·`verifiedMode`·`verifyEngine`·`producingEngine`·`verdict_digest`·`result_digest`), 이름의 id 입력, 결과 접미사(`.consumed`·`.rejected`·`.superseded`). 추가 키는 허용한다: consumer는 필수 키만 읽고 나머지는 무시하며, `result_digest`는 필수 키로만 계산한다. 한 호스트의 verify worker가 쓴 intent를 다른 1.x 호스트의 sync가 소비한다.
 
+계약 밖의 파생물(없거나 깨지면 다시 만들거나 0부터 세고, 지워도 된다): `<install state root>/vector-cache/`(vector arena. 레코드·헤더 모양을 바꾸면 `vectorcache.types.FORMAT`을 올리고 같은 번호로 모양을 바꾸지 않는다. 더 높은 번호의 arena는 건드리지 않는다), `<install state root>/linked-reoffer.json`, 프로젝트의 `.memvane/compile/source-refresh-settled.json`, 학습 namespace의 `apply-failures.json`·`worker-retry.json`.
+
 임베딩 정체성(모델·토크나이저·chunker·차원·pooling·정규화·최대 토큰 길이·질의 및 문서 템플릿·context 여유)이 바뀌면 재빌드가 필요하다. 실행 방식만 바뀌면 백그라운드 sync owner가 정체성을 확인하고 재봉인한다.
 
 릴리스마다 직전 버전의 worker·provider SHA 쌍과 해당 코드에서 확인한 정체성을 알려진 이전 쌍 표에 넣고, 모르는 쌍은 거절한다.
@@ -38,6 +40,8 @@
 - `.codex-plugin/plugin.json` — Codex plugin metadata
 - `.claude-plugin/marketplace.json` — Claude marketplace entry
 - `.agents/plugins/marketplace.json` — Codex marketplace entry
-- `tests/plugin-manifest.test.mjs` — manifest의 `description`·`version`이 비어 있지 않은지만 단정한다(정확한 버전 일치는 검사하지 않으므로 위 목록을 손으로 맞춘다)
+- `tests/plugin-manifest.test.mjs` — 위 매니페스트와 `teacher_model_tiers.RELEASE`의 버전이 `package.json`과 같은지 단정한다
 
-`docs/plans/` 문서 안의 버전 문자열은 bump 대상이 아니다. 버전 변경 후 최소 `npm run test:focused -- tests/plugin-manifest.test.mjs`를 실행하고, 릴리스 전에는 `npm test`를 실행한다.
+제품이 받는 외부 바이트는 변하지 않는 주소와 해시로 고정한다. 주소 목록과 다운로드 호출은 `tests/structure/static.test.mjs`가 단정한다.
+
+버전 변경 후 최소 `npm run test:focused -- tests/plugin-manifest.test.mjs`를 실행하고, 릴리스 전에는 `npm test`를 실행한다.

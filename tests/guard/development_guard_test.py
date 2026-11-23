@@ -454,6 +454,135 @@ class GuardChecks(unittest.TestCase):
             state=guard.json.loads((Path(folder)/'active.json').read_text())
         self.assertEqual((state['status'],state['monitorFailures']),('passed',1))
 
+    def test_only_the_full_suite_may_ask_for_two_or_three_files_at_a_time(self):
+        for form in (['--test-concurrency=3'],['--test-concurrency','2']):
+            args=['node','--test',*form,'one.test.mjs']
+            self.assertEqual(guard.command_for('test',args,True),args)
+            with self.assertRaises(guard.GuardError):guard.command_for('test',args)
+            with self.assertRaises(guard.GuardError):guard.command_for('model-test',args,False)
+        for form in (['--test-concurrency=4'],['--test-concurrency','0'],['--test-concurrency=x']):
+            with self.assertRaises(guard.GuardError):
+                guard.command_for('test',['node','--test',*form],True)
+        self.assertEqual(guard.command_for('test',['node','--test','--test-concurrency=3','a'],True,1),
+                         ['node','--test','--test-concurrency=1','a'])
+        self.assertEqual(guard.command_for('test',['node','--test','--test-concurrency','2','a'],True,1),
+                         ['node','--test','--test-concurrency','1','a'])
+        self.assertEqual([guard.test_concurrency(c) for c in (
+            ['node','--test','--test-concurrency=3'],['node','--test','--test-concurrency','2'],
+            ['node','--test'])],[3,2,1])
+
+    def _full(self,folder,pressure,command,exclusive=True,kind='test'):
+        from types import SimpleNamespace
+        child=SimpleNamespace(pid=500,poll=lambda:0)
+        args=SimpleNamespace(kind=kind,command=command,max_seconds=60,sample_seconds=2,
+                             exclusive=exclusive)
+        with patch.object(guard,'execution_hold',return_value=False), \
+             patch.object(guard,'system_sample',return_value=dict(self.SAMPLE,pressure=pressure)), \
+             patch.object(guard,'processes',side_effect=[[],[proc(500,1,500)],[]]), \
+             patch.object(guard.subprocess,'Popen',return_value=child) as launch, \
+             patch.object(guard.time,'sleep'):
+            code=guard.run_job(args,Path(folder))
+        name='active.json' if exclusive else 'active-test-slot-0.json'
+        return code,launch,guard.json.loads((Path(folder)/name).read_text())
+
+    def test_the_full_suite_runs_three_files_at_a_time_only_under_normal_pressure(self):
+        command=['node','--test','--test-concurrency=3','one.test.mjs']
+        for pressure,applied in (('normal',3),('warning',1)):
+            with tempfile.TemporaryDirectory() as folder:
+                code,launch,state=self._full(folder,pressure,command)
+                self.assertEqual(code,0)
+                self.assertEqual(launch.call_args.args[0],
+                                 ['node','--test',f'--test-concurrency={applied}','one.test.mjs'])
+                self.assertEqual((state['testConcurrencyRequested'],state['testConcurrency'],
+                                  state['pressure']),(3,applied,pressure))
+
+    def test_a_model_test_stays_one_file_at_a_time_even_when_exclusive(self):
+        for form in (['--test-concurrency=3'],['--test-concurrency','2']):
+            args=['node','--test',*form,'one.test.mjs']
+            with self.assertRaises(guard.GuardError):guard.command_for('model-test',args,True)
+            with tempfile.TemporaryDirectory() as folder:
+                with self.assertRaises(guard.GuardError):
+                    self._full(folder,'normal',args,kind='model-test')
+                # Refused before the lease: no run record, nothing launched.
+                self.assertEqual(list(Path(folder).iterdir()),[])
+
+    def test_a_focused_test_stays_one_file_at_a_time(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(guard.GuardError):
+                self._full(folder,'normal',['node','--test','--test-concurrency=3'],exclusive=False)
+            code,launch,state=self._full(folder,'normal',['node','--test','one.test.mjs'],exclusive=False)
+            self.assertEqual(launch.call_args.args[0],['node','--test','--test-concurrency=1','one.test.mjs'])
+            self.assertEqual((state['testConcurrencyRequested'],state['testConcurrency']),(1,1))
+
+    def _samples(self,folder):
+        run=next((Path(folder)/'runs').iterdir())
+        return [guard.json.loads(line) for line in (run/'samples.jsonl').read_text().splitlines()]
+
+    def test_a_failed_observation_is_written_to_the_samples(self):
+        from types import SimpleNamespace
+        lost=guard.GuardError('monitor_unavailable')
+        alive=[proc(500,1,500)]
+        rows=iter([[],alive,alive,alive,[]])
+        samples=iter([self.SAMPLE,self.SAMPLE,lost,self.SAMPLE,self.SAMPLE])
+        def step(source):
+            value=next(source)
+            if isinstance(value,Exception):raise value
+            return value
+        polls=iter([None,None,0])
+        child=SimpleNamespace(pid=500,poll=lambda:next(polls))
+        with tempfile.TemporaryDirectory() as folder:
+            code,state=self._run(folder,lambda:step(rows),lambda:step(samples),child)
+            lines=self._samples(folder)
+        self.assertEqual((code,state['monitorFailures']),(0,1))
+        failed=[line for line in lines if line.get('monitor_failed')]
+        self.assertEqual([(line['reason'],line['owned_count']) for line in failed],
+                         [('monitor_unavailable',1)])
+        self.assertEqual(len(lines),5)
+
+    def test_five_failed_observations_in_the_last_ten_stop_the_run(self):
+        from types import SimpleNamespace
+        lost=guard.GuardError('monitor_unavailable')
+        alive=[proc(500,1,500)]
+        # Never three in a row: fail, fail, ok, repeated.
+        pattern=[lost,lost,self.SAMPLE]*3
+        samples=iter([self.SAMPLE,*pattern])
+        def sample():
+            value=next(samples)
+            if isinstance(value,Exception):raise value
+            return value
+        listed=[]
+        def rows():
+            listed.append(1)
+            return [] if len(listed)==1 else alive
+        child=SimpleNamespace(pid=500,poll=lambda:None)
+        with tempfile.TemporaryDirectory() as folder, patch.object(guard,'cleanup',return_value=True):
+            code,state=self._run(folder,rows,sample,child)
+            lines=self._samples(folder)
+        self.assertEqual((code,state['status'],state['reason'],state['monitorFailures']),
+                         (75,'stopped','monitor_unavailable',5))
+        # The baseline, then fail fail ok fail fail ok fail: the fifth failure of seven samples.
+        self.assertEqual([bool(line.get('monitor_failed')) for line in lines],
+                         [False,True,True,False,True,True,False,True])
+
+    def test_a_listed_tree_over_the_process_limit_stops_without_a_system_sample(self):
+        from types import SimpleNamespace
+        lost=guard.GuardError('monitor_unavailable')
+        crowd=[proc(500,1,500)]+[proc(600+i,500,500) for i in range(guard.Policy().max_processes)]
+        listed=[]
+        def rows():
+            listed.append(1)
+            return [] if len(listed)==1 else crowd
+        samples=iter([self.SAMPLE,lost])
+        def sample():
+            value=next(samples)
+            if isinstance(value,Exception):raise value
+            return value
+        child=SimpleNamespace(pid=500,poll=lambda:None)
+        with tempfile.TemporaryDirectory() as folder, patch.object(guard,'cleanup',return_value=True):
+            code,state=self._run(folder,rows,sample,child)
+        self.assertEqual((code,state['status'],state['reason'],state['monitorFailures']),
+                         (75,'stopped','tree_process_count',1))
+
     def test_cleanup_reads_a_failed_listing_again_and_waits_for_a_slow_exit(self):
         tree=guard.OwnedTree(500);tree.observe([proc(500,1,500),proc(501,500,501)])
         alive=[proc(500,1,500),proc(501,500,501)]

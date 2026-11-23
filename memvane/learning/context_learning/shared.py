@@ -2022,7 +2022,8 @@ def _settle_owned(root, name, state, result, project, *, handoff=False):
     from memvane.runtime.types import RETRY
     status = result.get("status") if isinstance(result, dict) else None
     status = status[:80] if isinstance(status, str) and status else "failed"
-    retry = status in RETRY
+    from .worker_retry import again  # The same retry result too many times in a row settles the request.
+    retry = again(root, project, status, status in RETRY)
     # Only a retryable result hands off; a finished cycle settles normally.
     handoff = handoff and retry
     if retry and not handoff:
@@ -2170,11 +2171,13 @@ def run_training_pending(root,project):
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return {'status':'busy'}
         if selected_profile:
-            from . import candidate_apply
+            from . import candidate_apply,candidate_rollback;candidate_rollback.resume(root)  # An owner's restore that stopped.
             path=root/candidate_apply.JOURNAL
             if path.exists() or path.is_symlink():
                 intent=candidate_apply.read_journal(root)
-                if intent['phase'] not in ('activated','rejected'):
+                # Resumed first only once its pointer is written; before that nothing is committed.
+                if (intent['phase'] not in ('activated','rejected','intent') and (intent['phase']!='prepared'
+                        or read_private_json(root/'active-checkpoint.json')!=intent.get('old_pointer'))):
                     if not profile['autoApply']:return {'status':'apply_blocked','reason':'profile_apply_disabled'}
                     return _profile_apply(root,policy,profile,{'status':'already_staged_evaluated','cycle_id':intent['cycle_id']})
                 if intent['phase']=='activated':
@@ -2225,23 +2228,25 @@ def _profile_apply(root,policy,profile,result):
             if close_judged(root,result['cycle_id'],answer,queue) is None and job is not None:
                 if answer['status']=='apply_deferred':queue.defer(job['id'],'apply_resource')
                 elif answer['status'] in ('applied','already_applied'):queue.finish(job['id'],'completed')
-                elif answer['status']=='apply_blocked':queue.finish(job['id'],'blocked')
+                elif answer['status']=='apply_blocked':
+                    from .candidate_close import unapplied
+                    unapplied(root,result['cycle_id'],answer,queue,job)
         return answer
     return result
 
 
-TEACHER_COMMANDS = ("teacher-off", "teacher-on", "restore-teacher-enable")
+TEACHER_COMMANDS = ("teacher-off", "teacher-on", "restore-teacher-enable", "restore-previous-model")
 
 
 def _teacher_command(argv):
-    """Setup skill commands: ``teacher-off|teacher-on --project P``, ``restore-teacher-enable --project P [--plan]``."""
+    """Setup skill commands: ``teacher-off|teacher-on --project P``, ``restore-teacher-enable|restore-previous-model --project P [--plan]``."""
     plan = "--plan" in argv[1:]
     rest = [item for item in argv[1:] if item != "--plan"]
-    if len(rest) != 2 or rest[0] != "--project" or (plan and argv[0] != "restore-teacher-enable"):
+    if len(rest) != 2 or rest[0] != "--project" or (plan and not argv[0].startswith("restore-")):
         raise ValueError("teacher_setup_action_invalid")
-    if argv[0] == "restore-teacher-enable":
-        from memvane.learning.default_teacher_enable import restore_project
-        return restore_project(rest[1], plan_only=plan)
+    if argv[0].startswith("restore-"):
+        from .candidate_rollback import restore_command
+        return restore_command(argv[0], rest[1], plan_only=plan)
     from .teacher_state import switch_project
     return switch_project(rest[1], argv[0] == "teacher-on")
 

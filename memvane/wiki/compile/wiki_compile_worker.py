@@ -189,7 +189,12 @@ def compact_similar_pages(root: Path, rows: list, cap_chars: int) -> list[dict]:
     return result
 
 
+# The last reason ``bounded_failure`` gave within one ``process_job_settled`` call.
+_LAST_REASON: ContextVar = ContextVar('compile_last_reason', default=None)
+
+
 def bounded_failure(action: str, job: dict, reason: str) -> dict:
+    _LAST_REASON.set(reason)
     raw_source = job.get("source")
     source = raw_source if isinstance(raw_source, dict) else {}
     return {
@@ -1364,15 +1369,85 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
     return True
 
 
+# Ends of a job that tried nothing of the pending content (a backfill or delete row
+# that won the dedup over the recover row): the event stays for the next recovery.
+_NOT_AN_ATTEMPT = frozenset(('initial_backfill_already_settled', 'initial_backfill_source_changed',
+                             'invalid_fallback_attempt_receipt', 'delete_proof_invalid', 'source_reappeared'))
+# The reasons a settlement is recorded with. ``bounded_failure`` also reports reasons that
+# do not say why the event ended (``cards_per_source_cap`` beside a finished write, an
+# engine's ``selected``): those are recorded as ``not_refreshed``.
+_SETTLING = frozenset(('not_refreshed', 'verify_inconclusive_suppressed', 'source_unreadable', 'invalid_source_scope',
+                       'unsafe_source_path', 'missing_source_path', 'missing_extractor', 'missing_candidates',
+                       'extractor_unavailable', 'writer_rejected', 'unknown_host_exhausted',
+                       'source_folder_excluded', 'already_compiled_revision'))
+
+
+def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, *,
+                        checkout=None) -> tuple[bool, bool, list[str]]:
+    """``process_job``, then settle the refresh event a finished job left unresolved.
+
+    A job that is done and not kept (``True, False``) is never tried again from
+    the queue. When the source's refresh event is still unresolved at that
+    point (no card proves the revision: the writer wrote none, the content is
+    suppressed, the source is unreadable, the extractor returned nothing), the
+    attempt for that event and that content is recorded as over. Without the
+    record the next worker pass recovers the event and repeats the same
+    attempt, extractor call included, on every pass.
+    """
+    token = _LAST_REASON.set(None)
+    try:
+        result = process_job(root, config, compile_cfg, job, checkout=checkout)
+        reason = _LAST_REASON.get()
+    finally:
+        _LAST_REASON.reset(token)
+    if result[0] and not result[1] and reason not in _NOT_AN_ATTEMPT:
+        raw_source = job.get("source")
+        rel = raw_source.get("path") if isinstance(raw_source, dict) else None
+        pending = wiki_freshness.latest_unresolved_pending(root, rel) if isinstance(rel, str) and rel else None
+        if pending is not None:
+            from memvane.wiki.compile import refresh_settlement
+            sha = job.get('_processedContentRevision')
+            if not isinstance(sha, str):
+                # The same reading as the check of the settlement: a path that leaves the root has no content.
+                sha = refresh_settlement._current_sha(root, rel)
+            # Ignored on failure (rule 3): the event only stays unsettled, the
+            # next pass tries the source once more and writes the record again.
+            refresh_settlement.settle(root, pending, sha, reason if reason in _SETTLING else 'not_refreshed')
+    return result
+
+
+def _unsettled_refreshes(root: Path) -> list[dict]:
+    from memvane.wiki.compile import refresh_settlement
+    return refresh_settlement.unsettled(root, wiki_freshness.unresolved_pending_refreshes(root))
+
+
+def _settle_unrecoverable(root: Path, pending: dict) -> None:
+    from memvane.wiki.compile import refresh_settlement
+    rel = pending.get("sourcePath")
+    if not isinstance(rel, str) or not rel or '..' in Path(rel).parts:
+        return
+    # Read as the settlement is checked (None outside the root), or it would never hold.
+    refresh_settlement.settle(root, pending, refresh_settlement._current_sha(root, rel), 'not_a_compile_source')
+
+
 def recover_pending_refreshes(root: Path, config: dict, queue: Path) -> int:
-    """Reenqueue latest unresolved sources after either cross-file crash window."""
+    """Reenqueue latest unresolved sources after either cross-file crash window.
+
+    An event whose compile attempt is settled for the current source content
+    is not recovered: recovering it repeats an attempt that already ended.
+    """
     records = []
-    for pending in wiki_freshness.unresolved_pending_refreshes(root):
+    for pending in _unsettled_refreshes(root):
         record = _source_record(
             pending.get("sourcePath"), str(root), str(root), config,
             pending.get("engine", settings_types.UNKNOWN_ENGINE),
         )
         if record is None:
+            # No longer a compile source (collection or role changed, a denied or hidden
+            # path): no job will ever try it. Settled for this content, so the worker is
+            # not woken for it on every pass. Ignored on failure (rule 3): the next pass
+            # finds it unsettled and writes the record again.
+            _settle_unrecoverable(root, pending)
             continue
         # Recovery must not make the same unresolved event perpetually young on
         # every worker retry.  Its durable pending timestamp owns debounce age.
@@ -1476,7 +1551,7 @@ def _busy_report(root: Path, queue: Path) -> dict:
     except OSError:
         waiting = True
     if not waiting:
-        waiting = bool(wiki_freshness.unresolved_pending_refreshes(root))
+        waiting = bool(_unsettled_refreshes(root))
     report = {"processed": 0, "remaining": 0, "busy": True}
     if waiting:
         report["wakeAfterSeconds"] = RUN_LOCK_BUSY_RETRY_SECS
@@ -1645,7 +1720,7 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                                      bounded_failure('deferred', job, 'checkout_unavailable'))
                         processed, preserve, queued = False, True, []
                     else:
-                        processed, preserve, queued = process_job(
+                        processed, preserve, queued = process_job_settled(
                             root, config, compile_cfg, job, checkout=checkout)
                 finally:
                     _EXTRACTOR_BUDGET.reset(budget_token)
@@ -1669,9 +1744,9 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                              stale_lines=stale_lines)
     _run_verify_pass(root, config, compile_cfg, produced_targets=verify_targets)
     if attempt_budget.get('deferred') and remaining and selected_route is not None:
-        # Re-offer the existing kind for extractor-budget continuation. A new
-        # revision alone does not reset failures; completed/staleDropped below
-        # prove productive pending to the selected execution/wake policy.
+        # Re-offer the existing kind for extractor-budget continuation. Whether the
+        # pass made progress is the selected execution's count of what is left
+        # (rows and unsettled refresh events), not anything reported here.
         from memvane.wiki.workspace import api as wiki_selected_laya
         wiki_selected_laya.request_compile(root, selected_route)
     if args.json:

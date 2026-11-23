@@ -386,35 +386,65 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
         fields.update({stage + 'Ms': round(profile[stage + 'Ns'] / 1000000, 3) for stage in _PROFILE_STAGES})
         diagnostics.emit('sync.profile', decision=decision, outcome='observed',
                          ms=(time.monotonic_ns() - started) / 1000000, **fields)
+    cache = bool(result.pop('cacheReoffer', False)) if isinstance(result, dict) else False
     result = _after_sync(decision, proof, grants, result, raw_snapshot=raw_scan.get('snapshot'))
-    vectors = [item['vector'] for item in [result, *result.get('worktrees', ())] if item.get('vector')]
-    waiting = ([v for v in vectors if v['state'] == 'provider_blocked']
-               or [v for v in vectors if v['state'] in ('pending', 'deferred')])
+    def reoffer():
+        from memvane.runtime import api as runtime_work
+        runtime_work.request('laya-sync', str(project), delay=SCHEMA3_VECTOR_REOFFER_SECONDS)
+    backlog = result.pop('linkedBacklog', None) if isinstance(result, dict) else None
+    linked = 'none'
+    if result.get('state') in ('indexed', 'unchanged'):
+        from memvane.sync import linked_reoffer
+        linked = linked_reoffer.decide(decision.get('stateRoot'), backlog)
+    return _settle_vectors(result, reoffer, linked, cache)
+
+
+def _settle_vectors(result, reoffer, linked='none', cache=False):
+    """The pass result after its views' vectors and waiting linked views are weighed.
+
+    ``reoffer()`` asks for the same wake again shortly and raises when it
+    cannot. ``linked`` is ``linked_reoffer.decide`` for the pass's waiting
+    linked views: ``offer`` (a waiting view was not reached or has less left
+    than before), ``capped`` (offered too often without less to do) or ``none``.
+    ``cache``: the vector arena's catch-up appended rows this pass and sets
+    are left (``vector_cache.finish``).
+
+    A published main view is a success whatever linked views wait for. The
+    pass fails only for the main view's own unfinished vectors, a provider
+    defect of the install (whichever view met it), or a capped linked wait.
+    """
     main = result.get('vector') or {}
-    progressed = (main.get('state') == 'pending' and main.get('progress', 0) > 0
-                  and waiting and waiting[0] is main)
-    blocked = [v for v in vectors if v['state'] == 'provider_blocked']
-    if (result.get('state') in ('indexed', 'unchanged') and not blocked
-            and (progressed or result.get('linkedReoffer'))):
-        # The main view's vectors moved this pass (or it published them and
-        # a linked view waits for the budget): ACK (not a counted failure)
-        # and offer the same wake again shortly, so the fill goes on with a
-        # warm worker instead of waiting for the next edit. An offer
-        # failure leaves the next natural wake to go on.
+    views = [main, *(item.get('vector') or {} for item in result.get('worktrees', ()))]
+    # A provider defect is the install's, whichever view met it.
+    blocked = [v for v in views if v.get('state') == 'provider_blocked']
+    progressed = main.get('state') == 'pending' and main.get('progress', 0) > 0
+    published = result.get('state') in ('indexed', 'unchanged')
+    main_waits = main.get('state') in ('pending', 'deferred')
+    if published and not blocked and (progressed or ((linked == 'offer' or cache) and not main_waits)):
+        # The main view's vectors moved this pass, a waiting linked view has less
+        # left to do, or the vector arena is catching up: ACK (not a counted failure) and offer the same wake
+        # again shortly, so the work goes on with a warm worker instead of
+        # waiting for the next edit.
         try:
-            from memvane.runtime import api as runtime_work
-            runtime_work.request('laya-sync', str(project), delay=SCHEMA3_VECTOR_REOFFER_SECONDS)
+            reoffer()
             result = {**result, 'vectorReoffer': True}
         except Exception:
-            result = {**result, 'state': 'pending', 'reason': main.get('reason')}
-    elif result.get('state') in ('indexed', 'unchanged') and waiting:
+            # Unchecked for a linked view's offer: the pass published the main
+            # view and the next sync request reaches the linked ones. The main
+            # view's own unfinished vectors keep the wake instead.
+            if progressed:
+                result = {**result, 'state': 'pending', 'reason': main.get('reason')}
+    elif published and (blocked or main_waits):
         # The lexical generations are published and discovery ran; the
-        # wake stays until the views' vector generations are published,
-        # or ends ``blocked`` on a provider defect of the install.
-        state = 'blocked' if waiting[0]['state'] == 'provider_blocked' else waiting[0]['state']
-        result = {**result, 'state': state, 'reason': waiting[0].get('reason')}
-        if state == 'pending' and waiting[0] is main and main.get('progress', 0) > 0:
-            result['progressKind'] = 'vector'
+        # wake stays until the main view's vector generation is published,
+        # or ends ``blocked`` on a provider defect of the install. A linked
+        # view's unfinished vectors are ``linkedWaiting``, not a failed pass.
+        first = blocked[0] if blocked else main
+        result = {**result, 'state': 'blocked' if blocked else main['state'], 'reason': first.get('reason')}
+    elif published and linked == 'capped':
+        # Offered again and again with no less left to do: from here the wait
+        # is a counted failure, bounded by the backoff and the retry cap.
+        result = {**result, 'state': 'pending', 'reason': 'schema3_linked_pending'}
     detail = _schema3_vector_detail(result)
     if detail:
         result = {**result, 'detail': detail}
@@ -475,6 +505,8 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
                 vectors['rawScan'] = raw_scan
                 vectors['profile'] = profile
                 result, proof = _publish_schema3(decision, proof, writer, vectors)
+                if vectors.get('cacheReoffer'):
+                    result = {**result, 'cacheReoffer': True}
             from memvane.journal.api import resettle_selection
             status, proof = resettle_selection(decision, owner)
             if status != 'unchanged':
@@ -527,6 +559,8 @@ def _publish_schema3(decision, proof, writer, vectors=None):
         identity = store_api.store_identity(store)
         if (identity['incarnation'], identity['policy_digest']) != (info['incarnation'], info['policy_digest']):
             raise IndexContractError('schema3_store_changed')
+        from memvane.sync import vector_cache
+        vector_cache.begin(store, info['path'], vectors)
         marks = {}
         result = _publish_schema3_view(store, writer, decision, proof, info['worktree_id'],
                                        info['worktree_binding'], deadline, marks, vectors,
@@ -562,9 +596,13 @@ def _publish_schema3(decision, proof, writer, vectors=None):
                 outcome = {**outcome, 'state': 'held'}
             if outcome['state'] == 'indexed':
                 gc_worktrees.append(worktree_id)
+            progress = outcome.get('ingestProgress') or {}
             linked.append({'root': str(project), **{k: outcome[k] for k in
                            ('state', 'reason', 'generation', 'ingested', 'pending', 'vector', 'provenance')
-                           if k in outcome}})
+                           if k in outcome},
+                           # Cards this view still has to ingest (its store observation), when the pass counted them.
+                           **({'remaining': progress['total'] - progress['done']}
+                              if outcome['state'] in ('pending', 'deferred') and 'total' in progress else {})})
         # Keep the existing owner and writer proof until every view succeeds.
         # A live SQLite reader can defer maintenance until a later publication.
         if all(item['state'] in ('indexed', 'unchanged') for item in linked):
@@ -585,29 +623,66 @@ def _publish_schema3(decision, proof, writer, vectors=None):
                         raise
                     break
     finally:
-        store.close()
+        try:
+            from memvane.sync import vector_cache
+            # Read by ``_run_schema3``: the arena's catch-up moved and has more to do.
+            vectors['cacheReoffer'] = vector_cache.finish(vectors, decision)
+        finally:
+            store.close()
     proof = marks.get('proof', proof)
     if not linked:
         return result, proof
     result = {**result, 'worktrees': linked}
     if result['state'] == 'unchanged' and any(item['state'] == 'indexed' for item in linked):
         result['state'] = 'indexed'
-    main = result.get('vector') or {}
-    advanced = ((main.get('state') == 'pending' and main.get('progress', 0) > 0)
-                or main.get('state') == 'published')
-    budget = [item for item in linked if item['state'] == 'pending'
-              and item.get('reason') == 'schema3_pass_budget']
-    # While the main view's vectors move (or this pass published them), a
-    # linked view held only by this pass's budget does not make the pass a
-    # failure: the re-offered wake (``_run_sync``) runs the next pass, which
-    # reaches it.
-    if advanced and budget:
-        result['linkedReoffer'] = True
-    if any(item['state'] in ('pending', 'deferred') and not (advanced and item in budget) for item in linked):
-        result['state'] = 'pending'
-        result.setdefault('reason', 'schema3_linked_pending')
-        result.pop('progressKind', None)
+    waiting, backlog = _linked_waiting(linked)
+    if waiting:
+        # The main view is published: the pass is a success whatever the
+        # linked views still wait for, and only a main failure counts a retry.
+        result['linkedWaiting'] = waiting
+    if backlog is not None:
+        # ``_run_sync`` weighs it against the pass before (``linked_reoffer``) and drops the key.
+        result['linkedBacklog'] = backlog
     return result, proof
+
+
+def _linked_waiting(linked):
+    """``(summary, backlog)`` of a pass's linked views.
+
+    ``summary`` counts the views left without a current generation
+    (``waiting``: the view or its vectors are ``pending``/``deferred``;
+    ``held``: refused until its checkout changes) by reason, None when every
+    view is current. ``backlog`` describes the waiting ones for the re-offer
+    decision: how many wait, how many of them the pass did not reach
+    (``schema3_pass_budget``) and what each still has to ingest or to fill
+    with vectors (``remaining`` by root, and by ``<root>#vector``, where the
+    pass counted it); None when none waits.
+    """
+    summary = {'waiting': 0, 'held': 0, 'reasons': {}}
+    backlog = {'views': 0, 'unreached': 0, 'remaining': {}}
+    for item in linked:
+        vector = item.get('vector') or {}
+        if item['state'] == 'held':
+            kind, reason = 'held', item.get('reason')
+        elif item['state'] in ('pending', 'deferred'):
+            kind, reason = 'waiting', item.get('reason')
+        elif vector.get('state') in ('pending', 'deferred'):
+            kind, reason = 'waiting', vector.get('reason')
+        else:
+            continue
+        reason = reason if isinstance(reason, str) and reason else 'unlabeled'
+        summary[kind] += 1
+        summary['reasons'][reason] = summary['reasons'].get(reason, 0) + 1
+        if kind == 'waiting':
+            backlog['views'] += 1
+            backlog['unreached'] += reason == 'schema3_pass_budget'
+            if type(item.get('remaining')) is int and item['remaining'] >= 0:
+                backlog['remaining'][item['root']] = item['remaining']
+            if type(vector.get('remaining')) is int and vector['remaining'] >= 0:
+                # A published view whose vector fill goes on: its targets left count as well.
+                backlog['remaining'][item['root'] + '#vector'] = vector['remaining']
+    return ((summary if summary['waiting'] or summary['held'] else None),
+            (backlog if backlog['views'] else None))
 
 
 def _schema3_linked_projects(decision, deadline):
@@ -844,7 +919,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             generation = _profile_call(profile, 'publish', store.prepare_generation, handle, manifest, expected_head=head,
                                        vector_spec=vectors['spec'], deadline=deadline)
             writer.validate()
-            _profile_call(profile, 'publish', store.publish_generation, handle, generation, expected_head=head, deadline=deadline)
+            _publish_generation(vectors, store, handle, generation, manifest, head, deadline)
             vector = dict(vector, state='published', publishMs=int((time.monotonic() - started) * 1000))
             return {'state': 'indexed', 'storeFormat': 'schema3', 'generation': generation,
                     'ingested': 0, 'removed': 0, 'pending': 0, 'skipped': skipped,
@@ -921,7 +996,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             # progress is the next pass's carry.
             return _staged_vector_result(store, writer, proof, marks, handle, baseline, vectors, deadline,
                                          head, generation, ingested, len(removed), pending, skipped, provenance, window)
-        _profile_call(profile, 'publish', store.publish_generation, handle, generation, expected_head=head, deadline=deadline)
+        _publish_generation(vectors, store, handle, generation, manifest, head, deadline)
         if vector['state'] == 'lexical_first':
             generation, vector = _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest,
                                                               vectors, deadline, window=window)
@@ -1024,6 +1099,14 @@ def _schema3_rows_covered(store, manifest, sealed, vectors, changed_blobs):
     return {'state': 'complete', 'filled': 0, 'cacheHits': len(blobs), 'targets': len(manifest['members'])}
 
 
+def _publish_generation(vectors, store, handle, generation, manifest, head, deadline):
+    """Publish a prepared generation, after the vector arena holds the sets it makes visible."""
+    from memvane.sync import vector_cache
+    vector_cache.before_publish(vectors, store, manifest)
+    _profile_call(vectors.get('profile'), 'publish', store.publish_generation, handle, generation,
+                  expected_head=head, deadline=deadline)
+
+
 def _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest, vectors, deadline, *, window=False):
     """After a row-format lexical publication: fill the new head and seal its vector generation.
 
@@ -1038,7 +1121,7 @@ def _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest, 
     generation = _profile_call(vectors.get('profile'), 'publish', store.prepare_generation, handle, manifest,
                                expected_head=head, vector_spec=vectors['spec'], deadline=deadline)
     writer.validate()
-    _profile_call(vectors.get('profile'), 'publish', store.publish_generation, handle, generation, expected_head=head, deadline=deadline)
+    _publish_generation(vectors, store, handle, generation, manifest, head, deadline)
     return generation, vector
 
 

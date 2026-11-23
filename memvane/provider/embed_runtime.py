@@ -825,8 +825,8 @@ def _reactivate(generation, manifest, closure, home, files=None):
 MIN_NODE_MAJOR = 22
 NODE_MAJORS = (22, 24, 26)
 LOCK_DIR = Path(__file__).resolve().parents[2] / 'locks' / 'laya-embed-runtime'
-MODEL_URL = ('https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/'
-             + MODEL_NAME)
+MODEL_REVISION = 'a0f9bb7a85ab3b2b2ff2e540b91930b784518576'  # the upstream commit MODEL_SHA256 hashes; never a moving ref
+MODEL_URL = 'https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/' + MODEL_REVISION + '/' + MODEL_NAME
 MAX_MODEL_BYTES = 2 * 1024 * 1024 * 1024
 NPM_SECONDS = 1800
 VERSION = re.compile(r'v?([0-9]+)\.([0-9]+)\.([0-9]+)\Z')

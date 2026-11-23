@@ -65,11 +65,11 @@ flowchart TD
 - [`memvane/learning/context_learning/training_cursor.py:13-33`](../../../memvane/learning/context_learning/training_cursor.py#L13-L33): request·artifact hash에 고정된 완료 영수증입니다. publish 작업은 아닙니다.
 - [`memvane/learning/context_learning/training_cursor.py:49-111`](../../../memvane/learning/context_learning/training_cursor.py#L49-L111): 두 head slot과 `group-plan.json`·`cursor.json`을 사용합니다. 그래서 쓰기가 중단되어도 커밋된 head를 덮어쓰지 않습니다.
 - [`memvane/learning/context_learning/training_cursor.py:114-115`](../../../memvane/learning/context_learning/training_cursor.py#L114-L115): 완전히 커밋된 cursor만 모델 실행 없이 완료로 처리합니다.
-- [`memvane/app/setup_entry.py:395`](../../../memvane/app/setup_entry.py#L395), [`memvane/app/setup_entry.py:435-439`](../../../memvane/app/setup_entry.py#L435-L439): learning profile action과 `--learning-choice`(`preserve`·`local-auto-apply`·`local-staged`·`off`)입니다.
+- [`memvane/app/setup_entry.py`](../../../memvane/app/setup_entry.py)의 `main`: learning profile action과 `--learning-choice`(`preserve`·`local-auto-apply`·`local-staged`·`off`)입니다.
 - [`memvane/runtime/runtime_work.py:37-57`](../../../memvane/runtime/runtime_work.py#L37-L57): coordinator의 실제 구현은 `context_learning.resource_coordination`에 있습니다. foreground demand 표시는 compute lock을 잡지 않습니다.
 
 ### QA 증거와 미검증
 
-- 학습 자원 QA 계약(`RQA-RES-02`)은 [release-agent-qa.md](../../release-agent-qa.md)에 있습니다. 실제 학습 실행은 검증되지 않았고, 학습 결과가 recall에 반영되는지도 검증되지 않았습니다. 열린 항목은 [TODO](../../TODO.md)의 「학습 runtime」 절에 있습니다.
+- 학습 자원 QA 계약(`RQA-RES-02`)은 [release-agent-qa.md](../../release-agent-qa.md)에 있습니다. 실제 학습 실행은 검증되지 않았고, 학습 결과가 recall에 반영되는지도 검증되지 않았습니다. 열린 항목은 [로드맵](../../ROADMAP.md)에 있습니다.
 - checkpoint 선택 pointer(`live_select`) 코드는 이 문서의 설명 범위 밖이라 도표에서 노드 하나로 표시했습니다.
 - learning profile action과 `project-learning-setup.json`이 어떻게 연결되는지는 발췌로 확인하지 못했습니다. 그래서 도표에서 점선으로 표시했습니다.

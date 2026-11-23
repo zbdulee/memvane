@@ -57,13 +57,22 @@ class RealLaya(unittest.TestCase):
         edit = report['edit']
         self.assertEqual(edit['query_chunks'], 4)
         self.assertGreaterEqual(edit['card_chunks_max'], 2)
-        self.assertEqual((edit['pairs'], edit['planned_pairs']), (24, 24))
+        # The shipped prompt budget of 12 pairs, and the same case with 20.
+        self.assertEqual((edit['pairs'], edit['planned_pairs']), (12, 12))
         self.assertGreater(edit['dropped_pairs'], 0)
+        wide = report['edit_wide']
+        self.assertEqual((wide['pairs'], wide['planned_pairs']), (20, 20))
+        self.assertEqual(edit['dropped_pairs'] - wide['dropped_pairs'], 8)
+        self.assertTrue(len(wide['selected_ids']) <= 3)
         self.assertEqual(edit['truncated_pairs'], 0)
         self.assertLessEqual(edit['pair_len_max'], 2048)
         self.assertTrue(len(report['edit_selected_ids']) <= 3)
         self.assertIs(report['edit_deterministic'], True)
         self.assertEqual(report['edit_trained'], {'schema_version': 1, 'status': 'trained'})
+        # The measured pair budgets side by side (12 shipped, 20 wide): counts, seconds and choices.
+        print(json.dumps({'pairBudget': {'edit': edit, 'edit_wide': wide,
+                                         'edit_selected_ids': report['edit_selected_ids']}}, sort_keys=True),
+              flush=True)
         # Moved as-is from the old wrapper; a wall-clock bound (timing-flaky-deferred list).
         self.assertLess(report['heavy_pairing_seconds'], 1)
 

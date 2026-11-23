@@ -46,7 +46,9 @@ def _sqlite_interrupted(exc):
     return exc.args == ('interrupted',)
 
 
-def _query(query, limit, prefixes, exclusions, seconds):
+def _query(query, limit, prefixes, exclusions, seconds, cards=None):
+    from memvane.store.view.view_vectors import card_pairs
+    card_pairs(cards, 'fts_filter_invalid')
     if (not isinstance(query, str) or not query or type(limit) is not int
             or not 1 <= limit <= 100 or type(seconds) not in (int, float)):
         v.fail('fts_query_invalid')
@@ -201,9 +203,10 @@ class ReaderMixin:
         return 'stale_snapshot' if code == 0 else 'lineage_changed'
 
     def search(self, pin, fts_query, limit, *, path_prefixes=None, excluded_paths=None,
-               deadline_seconds=2):
+               deadline_seconds=2, excluded_cards=None):
         return self._rows_search(pin, fts_query, limit, path_prefixes=path_prefixes,
-                                 excluded_paths=excluded_paths, deadline_seconds=deadline_seconds)
+                                 excluded_paths=excluded_paths, deadline_seconds=deadline_seconds,
+                                 excluded_cards=excluded_cards)
 
     def probe_terms(self, pin, fts_queries, limit, *, excluded_paths=None, deadline_seconds=2):
         """``[(hit count up to limit, best bm25 score or None), ...]`` of each query, in order.

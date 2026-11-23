@@ -17,20 +17,30 @@ completion evidence exists.
 
 `npm test` and `npm run test:focused -- memvane/DOMAIN/tests/run.test.mjs` (or
 `tests/PATH.test.mjs`) route through
-`scripts/development_guard.py`, force `node --test --test-concurrency=1`, and
-preserve the existing QMD fixture/log isolation. Backup and hash work must use
+`scripts/development_guard.py` and preserve the existing QMD fixture/log isolation. Backup and hash work must use
 `npm run dev:guard -- --kind backup -- COMMAND ...` or `--kind hash`.
 The wrapper launches an argv directly, never constructs a shell command.
-`npm test` runs three exclusive guarded parts (`test:part1` sync, registry,
-host; `test:part2` journal, store, learning, recall; `test:part3` the rest),
-each with a 1,800-second budget. Focused checks keep the wrapper's 900-second
-default; run the sync and registry runners in separate focused runs. CI runs
-`npm run test:partN` as three jobs per Node version.
+A focused or model test runs one test file at a time
+(`node --test --test-concurrency=1`, forced). The full suite asks for three:
+the guard runs three files at a time when the memory pressure of its baseline
+sample is `normal` and one at a time otherwise, without refusing the run. The
+run state records `testConcurrencyRequested`, `testConcurrency` and `pressure`.
+CI asks for one (`MEMVANE_TEST_CONCURRENCY=1`) and splits the suite by shard.
+`npm test` runs four exclusive guarded parts (`test:part1` to `test:part4`),
+each with a 1,800-second budget. `scripts/test_part.mjs <k>/<n>` runs one
+part: the Python test modules are spread over the parts by their recorded
+durations (`tests/support/durations.json`, longest first to the part with the
+smallest load), and the last part also runs every other node test file.
+`node scripts/test_part.mjs --plan` prints the recorded seconds of each part;
+a structure test keeps every part at 1,200 seconds or less. Focused checks
+keep the wrapper's 900-second default; run the sync and registry runners in
+separate focused runs. CI runs `npm run test:partN` as four jobs per Node
+version.
 
 Ordinary mock, regression and integration tests (`--kind test`, including CI),
 remote review (`--kind review`) and hash or staging work (`--kind hash`) do not
 use model-work OS pressure, CPU/RSS, relative headroom, swap or system-load
-admission limits. They retain the global lease, file concurrency1, finite wall
+admission limits. They retain the global lease, the file concurrency above, finite wall
 time, a process-count limit, verified ownership and abnormal-child cleanup.
 Actual model-loading/training tests must use `--kind model-test`; an explicit
 calibration envelope also always retains resource limits. This development-test
@@ -108,8 +118,11 @@ receive TERM, followed by KILL if still alive. No user application, process name
 unverified process group or existing session is terminated.
 
 A run stops with `monitor_unavailable` only after three observations in a row
-fail (`MONITOR_FAILURE_LIMIT`); one slow `ps` or `memory_pressure` under load
-skips that sample, and the state records the total as `monitorFailures`. The
+fail (`MONITOR_FAILURE_LIMIT`) or five of the last ten do; one slow `ps` or
+`memory_pressure` under load skips that sample, and the state records the total
+as `monitorFailures`. A failed observation is one line of `samples.jsonl`
+(`monitor_failed: true` with its reason). When the process list was read and
+only the system sample failed, the process-count limit is still judged. The
 wall-time budget and a stop request still count on a failed sample. Whatever
 stops a run, cleanup signals the owned tree, reads a failed process listing
 again, and after KILL keeps reading until the tree is gone or 30 seconds pass;

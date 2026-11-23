@@ -70,13 +70,20 @@ long_prompt = ''.join('%d번 합성 질문: 모터 드라이버 배선과 전원
                       for i in range(120))
 edit_case = {'request_id': 'real-edit', 'prompt': long_prompt, 'candidates': candidates}
 edit_case['input_sha256'] = digest(canonical(edit_case))
-chunk_timing = {}
-edit_result = adapter.predict_loaded(*edit, {
-    'schema_version': 1, 'artifact_path': '', 'model_input_view': adapter.EDIT_INPUT_VIEW,
-    'query_lane': 'prompt', 'pair_budget': 24, 'cases': [edit_case]}, timing=chunk_timing)
-edit_again = adapter.predict_loaded(*edit, {
-    'schema_version': 1, 'artifact_path': '', 'model_input_view': adapter.EDIT_INPUT_VIEW,
-    'query_lane': 'prompt', 'pair_budget': 24, 'cases': [edit_case]})
+# The shipped prompt pair budget (``memvane.recall.verified_rows.PROMPT_PAIR_BUDGET``) and
+# the wider one that scores the first and the last query chunk against every card.
+SHIPPED_BUDGET, WIDE_BUDGET = 12, 20
+
+
+def prompt_request(budget):
+    return {'schema_version': 1, 'artifact_path': '', 'model_input_view': adapter.EDIT_INPUT_VIEW,
+            'query_lane': 'prompt', 'pair_budget': budget, 'cases': [edit_case]}
+
+
+chunk_timing, wide_timing = {}, {}
+edit_result = adapter.predict_loaded(*edit, prompt_request(SHIPPED_BUDGET), timing=chunk_timing)
+edit_again = adapter.predict_loaded(*edit, prompt_request(SHIPPED_BUDGET))
+wide_result = adapter.predict_loaded(*edit, prompt_request(WIDE_BUDGET), timing=wide_timing)
 import tempfile
 with tempfile.TemporaryDirectory(prefix='qmd-real-edit-') as temporary:
     gold = {**edit_case, 'selected_ids': [candidates[0]['id']]}
@@ -97,5 +104,9 @@ print(json.dumps({'heavy_pairing_seconds': round(heavy_seconds, 3), 'probes': pr
                       'planned_pairs', 'dropped_pairs', 'truncated_pairs', 'pair_len_max',
                       'forward_seconds')},
                   'edit_selected_ids': edit_result['predictions'][0]['selected_ids'],
+                  'edit_wide': {'pairs': wide_timing.get('pairs'), 'planned_pairs': wide_timing.get('planned_pairs'),
+                                'dropped_pairs': wide_timing.get('dropped_pairs'),
+                                'forward_seconds': wide_timing.get('forward_seconds'),
+                                'selected_ids': wide_result['predictions'][0]['selected_ids']},
                   'edit_deterministic': edit_result == edit_again,
                   'edit_trained': trained}))

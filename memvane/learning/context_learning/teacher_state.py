@@ -5,7 +5,8 @@ teacher, transport or learning-database module (structure test X-1).
 
 Files (namespace root, 0600):
 - ``teacher-host-state.json``: per-host waits, circuit breaker, queued counts,
-  notice times, and the default-teacher enable failure counter.
+  notice times, the default-teacher enable failure counter, and the count of
+  consecutive passes that could not read the consent file.
 - ``teacher-switch.json``: the setup skill's ``teacher-off``/``teacher-on``, the only off switch.
 - ``project-teacher-enable.json``: the enable transaction intent (presence only here).
 """
@@ -39,6 +40,8 @@ FAILURE_LIMIT = 3
 NOTICE_SECONDS = 7 * 86400
 LONG_REST_SECONDS = 86400
 INTENT_NOTICE_SECONDS = 600
+# Consecutive passes that could not read the consent file before a session says so.
+CONSENT_UNREADABLE_LIMIT = 5
 
 
 def _private_read(path, limit=MAX_STATE_BYTES):
@@ -68,7 +71,8 @@ def _host_skeleton():
 
 def empty_state():
     return {'schema': STATE_SCHEMA, 'hosts': {host: _host_skeleton() for host in HOSTS},
-            'enable': {'failures': 0, 'reason': None, 'pluginVersion': None}}
+            'enable': {'failures': 0, 'reason': None, 'pluginVersion': None},
+            'consent': {'unreadable': 0, 'lastNoticeUnixMs': None}}
 
 
 def _normalize(value):
@@ -97,6 +101,11 @@ def _normalize(value):
     for key in ('reason', 'pluginVersion'):
         if isinstance(enable.get(key), str) and len(enable[key]) <= 80:
             result['enable'][key] = enable[key]
+    consent = value.get('consent') if isinstance(value.get('consent'), dict) else {}
+    if type(consent.get('unreadable')) is int and 0 <= consent['unreadable'] <= 1_000_000:
+        result['consent']['unreadable'] = consent['unreadable']
+    if type(consent.get('lastNoticeUnixMs')) is int and consent['lastNoticeUnixMs'] > 0:
+        result['consent']['lastNoticeUnixMs'] = consent['lastNoticeUnixMs']
     return result
 
 
@@ -222,6 +231,8 @@ _NOTICE_NAMES = {'claude': ('Claude', 'Claude Code CLI(claude)'), 'codex': ('Cod
 ENABLE_NOTICE = ('[memvane] 학습 설정 전환이 끝나지 않아 학습과 선택 모델이 멈췄습니다. '
                  'setup skill로 학습 설정 복구를 요청하세요.')
 # No intent left: the enable requests stopped after repeated failures; nothing is fenced.
+CONSENT_NOTICE = ('[memvane] 학습 동의 파일을 계속 읽지 못해 학습 라벨링이 멈춰 있습니다. '
+                  'memvane:logs로 확인하세요. 검색과 수집은 계속됩니다.')
 ENABLE_DEFERRED_NOTICE = ('[memvane] 학습 설정 전환이 미뤄졌습니다. 검색과 수집은 계속됩니다. '
                           'setup skill로 학습 설정 상태를 확인하세요.')
 
@@ -249,13 +260,22 @@ def _host_notice(row, host, now):
     return reason, line
 
 
+def _consent_notice(state, now):
+    """True when the unreadable-consent line is due (seven days apart)."""
+    row = state['consent']
+    if row['unreadable'] < CONSENT_UNREADABLE_LIMIT:
+        return False
+    last = row['lastNoticeUnixMs']
+    return last is None or cooldown.window_elapsed(last / 1000, now / 1000, NOTICE_SECONDS)
+
+
 def session_notices(root, host, plugin_version, now=None):
     """SessionStart lines for the session host from the namespace state files only.
 
     Reads ``teacher-host-state.json`` and the enable intent's presence; starts
     no process and opens no database. The unfinished-enable line repeats every
-    session. A seven-day host line is returned only after its notice time is
-    written under the state lock.
+    session. A seven-day line (a host's, or the unreadable consent file's) is
+    returned only after its notice time is written under the state lock.
     """
     if host not in HOSTS:
         return []
@@ -269,19 +289,24 @@ def session_notices(root, host, plugin_version, now=None):
         lines.append(ENABLE_DEFERRED_NOTICE)
     elif enable_requests_stopped(state, plugin_version) and not teacher_off(root):
         lines.append(ENABLE_NOTICE)
-    if _host_notice(state['hosts'][host], host, now) is None:
+    consent = _consent_notice(state, now) and not teacher_off(root)
+    if _host_notice(state['hosts'][host], host, now) is None and not consent:
         return lines
     with locked(root) as held:
         if not held:
             return lines
         state = read_state(root)
+        pending = []
+        if consent and _consent_notice(state, now):
+            state['consent']['lastNoticeUnixMs'] = now
+            pending.append(CONSENT_NOTICE)
         due = _host_notice(state['hosts'][host], host, now)
-        if due is None:
-            return lines
-        state['hosts'][host]['lastNoticeUnixMs'][due[0]] = now
+        if due is not None:
+            state['hosts'][host]['lastNoticeUnixMs'][due[0]] = now
+            pending.append(due[1])
         # The stamp is the seven-day limit: an unwritten stamp would repeat the line every session.
-        if write_state(root, state):
-            lines.append(due[1])
+        if pending and write_state(root, state):
+            lines.extend(pending)
     return lines
 
 

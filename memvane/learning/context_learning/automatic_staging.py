@@ -7,6 +7,7 @@ An insufficient validation cohort leaves a hash-pinned trained artifact staged.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import time
 
@@ -122,6 +123,18 @@ def _cycle_event(project, outcome, **fields):
         pass  # Diagnostic only: the cycle row and the job telemetry are the record.
 
 
+def _blocked_result(root, grant, job):
+    """The pass result of a blocked job, with the ``learning.cycle`` row that makes the stop visible.
+
+    A blocked job answers every later pass the same way and no retry follows
+    (``learning_retry``), so without this row the cycle stops with nothing in the log.
+    """
+    _cycle_event(_project(root, grant), 'blocked', cycle=job['id'],
+                 reason=str(job['reason'])[:80] if job.get('reason') else None, failures=job.get('failures'))
+    return {'status': 'staged_source_revoked' if job['reason'] == 'source_revoked' else 'learning_job_blocked',
+            'cycle_id': job['id']}
+
+
 def job_family(policy):
     """A job's family: trainer interpreter, model identity, base artifact and input view."""
     from .adapter import EDIT_INPUT_VIEW, model_identity
@@ -132,7 +145,7 @@ def job_family(policy):
 def _prepare_staged(root,policy,grant):
     from .shared import _db, _case_active
     from .adapter import EDIT_INPUT_VIEW, model_identity
-    from .learning_queue import LearningQueue
+    from .learning_queue import FINAL_BLOCKS, LearningQueue
     root = Path(root)
     from memvane.learning import project_learning_setup
     synthetic=project_learning_setup.synthetic_local_only(root,_project(root,grant),policy)
@@ -180,6 +193,11 @@ def _prepare_staged(root,policy,grant):
         if not profile['localTrain']:return {'status':'disabled'}
         minimum=profile['minFreshTrainCases']
     queue=LearningQueue(root)
+    if not synthetic:
+        # A job that trainer failures blocked a day ago gets its attempts back.
+        for job_id in queue.rearm():
+            # ``attempts``: every training attempt of this job so far, over all rearms.
+            _cycle_event(_project(root,grant),'rearmed',cycle=job_id,attempts=(queue.get(job_id) or {}).get('attempts'))
     if synthetic:
         with queue.connect() as db:
             queue.schema(db)
@@ -212,10 +230,15 @@ def _prepare_staged(root,policy,grant):
     try: train=queue.rows(job,cohort_train)
     except ValueError:
         if frozen is not None:prequential.close(root,job['id'],'source_revoked')
+        elif job['status']!='blocked' or job.get('reason') not in FINAL_BLOCKS:
+            # A member row is gone before the job trained: the job can never train, so a
+            # job waiting to be rearmed has nothing to wait for either. It is closed with
+            # the reason, and the next plan pins the members that remain.
+            queue.block(job['id'],'source_revoked')
+            _cycle_event(_project(root,grant),'blocked',cycle=job['id'],reason='source_revoked',failures=job.get('failures'))
         return {'status':'staged_source_revoked','cycle_id':job['id']}
     if sequential:validation=prequential.split(cohort_train,job)
-    if job['status']=='blocked':
-        return {'status':'staged_source_revoked' if job['reason']=='source_revoked' else 'learning_job_blocked','cycle_id':job['id']}
+    if job['status']=='blocked':return _blocked_result(root,grant,job)
     if synthetic and sum(len(json.loads(row[3])['candidates']) for row in train)>100:
         return {'status':'synthetic_training_budget_exhausted'}
     return root,queue,job,train,validation,cohort_train
@@ -276,6 +299,7 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
     else:
         meta = None
         start = None
+        progress = _cursor_step(folder)
         try:
             require_operation(root, policy, 'local_train',
                               approval_sha256=grant_sha)
@@ -338,6 +362,10 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
             deferred = isinstance(exc, ResourceDeferred)
             if deferred:
                 record_resource_defer(root, exc.report, reason=str(exc))
+            # A time limit or a yield after the cursor moved is one slice of the work, not a
+            # failed attempt (less work is left, however the slice ended): resumed from the cursor.
+            advanced = (deferred or str(exc) == 'trainer_timeout') and _cursor_step(folder) > progress
+            deferred = deferred or advanced
             if meta is not None and start is not None:
                 telemetry_emit(root / 'job-telemetry.jsonl', 'finished',
                     status='failure', run_ms=(time.monotonic() - start) * 1000,
@@ -348,7 +376,10 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
                     ('deferred' if deferred else 'failed', canonical({'reason': str(exc)[:80],
                                 'authorizationSha256': grant_sha,
                                 'trainEvidenceSha256': train_sha}), cycle_id))
-            queue.defer(cycle_id,'resource' if deferred else 'trainer_failed',failure=not deferred)
+            from .learning_queue import unrepeatable
+            final=None if deferred else unrepeatable(str(exc)[:80])
+            if final:queue.block(cycle_id,final)  # the same again: closed, not rearmed
+            else:queue.defer(cycle_id,'trainer_progress' if advanced else 'resource' if deferred else 'trainer_failed',failure=not deferred)
             if not deferred:
                 # A deferral gets the worker's own row; a failure names the trainer's frames.
                 _cycle_event(project, 'failed', cycle=cycle_id, reason=str(exc)[:80],
@@ -374,6 +405,7 @@ def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*
     controller,(coord_fd,_)=coordination
     control={'schema':1,'root':str(controller.root),'policy':admission_policy(policy),'namespace':job['namespace'],'job_id':evaluation['id']}
     folder=root/'cycles'/cycle_id;incumbent=Path(policy['baseArtifact'])
+    from .candidate_apply import INCUMBENT_DAMAGED
     with queue.claim(evaluation['id']) as claim:
         if claim is None:
             if evaluation['status']=='waiting_quality':
@@ -394,8 +426,13 @@ def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*
         status=result['status']
         if status=='staged_evaluated':queue.finish(evaluation['id'],'completed')
         elif status=='staged_waiting_quality_cohort':queue.finish(evaluation['id'],'waiting_quality')
+        elif status=='staged_evaluation_deferred' and result.get('reason')==INCUMBENT_DAMAGED:
+            queue.finish(evaluation['id'],'blocked',INCUMBENT_DAMAGED)  # no later attempt can change those bytes
         elif status=='staged_evaluation_deferred':queue.defer(evaluation['id'],result.get('reason','resource'),failure=result.get('failure',False))
-        else:queue.finish(evaluation['id'],'blocked')
+        # The evaluated rows moved under the attempt, or the approval is being replaced:
+        # nothing about the candidate is decided. Asked again; renewal closes what it replaces.
+        elif status in ('staged_cohort_changed','staged_authorization_expired'):queue.defer(evaluation['id'],status)
+        else:queue.finish(evaluation['id'],'blocked',status)
         return result
 
 
@@ -479,6 +516,10 @@ def _evaluate_impl(root,policy,grant,stage,train,validation,cohort_train,*,cycle
         from .dataset import read_private_json
         from .candidate_apply import readable
         readable(root);active_anchor=read_private_json(root/'active-checkpoint.json')
+        # No evaluation against bytes that are not the pointer's: closed here, before any prediction.
+        from .candidate_apply import INCUMBENT_DAMAGED,incumbent_damaged
+        if incumbent_damaged(active_anchor):
+            return {'status':'staged_evaluation_deferred','cycle_id':cycle_id,'reason':INCUMBENT_DAMAGED,'failure':True}
         incumbent=Path(active_anchor['artifact_path'])
     try:
         require_operation(root, policy, 'quality_evaluate',
@@ -562,8 +603,35 @@ def _closed(root,cycle_id):
     return evaluation is not None and evaluation['status']=='blocked'
 
 
+def _cursor_step(folder):
+    """Committed optimizer groups of the training cursor under ``folder``; -1 without one."""
+    from .dataset import read_private_json
+    path=folder/'resume/cursor.json'
+    try:
+        step=read_private_json(path).get('next_group') if path.exists() else None
+    except (OSError,ValueError,AttributeError):
+        return -1
+    return step if type(step) is int else -1
+
+
+def _set_aside(artifact):
+    """Move a final artifact no record vouches for to a name nothing reads.
+
+    Kept, not deleted: the bytes stay for review. Returns the new path.
+    """
+    artifact=Path(artifact)
+    if artifact.is_symlink() or not artifact.is_file():raise ValueError('learning_completion_uncertain')
+    target=artifact.with_name(artifact.name+'.uncertain-'+_hash(artifact)[:12])
+    os.replace(artifact,target)
+    # Only the newest one is kept: a trainer that keeps stopping here adds no file per stop.
+    for older in artifact.parent.glob(artifact.name+'.uncertain-*'):
+        if older!=target and older.is_file() and not older.is_symlink():older.unlink()
+    return target
+
+
 def _train_once(trainer,request,folder):
-    """A durable completion is reused; uncertain final artifacts never retrain."""
+    """A durable completion is reused. A final artifact without one is set aside:
+    a finished cursor restores it from its head, anything else trains again."""
     from .dataset import read_private_json
     from .local_cycle import _atomic_json
     from .training_cursor import request_identity, completion,recover_completed
@@ -579,8 +647,15 @@ def _train_once(trainer,request,folder):
     cursor_path=folder/'resume/cursor.json'
     if cursor_path.exists() or cursor_path.is_symlink():
         with preparation():
-            if recover_completed(request):return {'schema_version':1,'status':'trained'},{'recovered_cursor':True}
-    if Path(request['artifact_path']).exists() or Path(request['artifact_path']).is_symlink():raise ValueError('learning_completion_uncertain')
+            try:recovered=recover_completed(request)
+            except ValueError as exc:
+                # The cursor is complete and the final bytes are not its head.
+                if str(exc)!='learning_completion_uncertain':raise
+                _set_aside(request['artifact_path'])
+                recovered=recover_completed(request)
+            if recovered:return {'schema_version':1,'status':'trained'},{'recovered_cursor':True}
+    if Path(request['artifact_path']).exists() or Path(request['artifact_path']).is_symlink():
+        _set_aside(request['artifact_path'])
     answer,resources=trainer.call('train',request,folder/'train.json',cwd=folder)
     if answer!={'schema_version':1,'status':'trained'}:raise ValueError('invalid_shared_train_result')
     from .training_cursor import record_completion

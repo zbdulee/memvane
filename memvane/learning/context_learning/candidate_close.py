@@ -195,3 +195,103 @@ def close_judged(root, cycle, answer, queue):
     for other in older:
         queue.reject(other, 'superseded_by_judged')
     return judged
+
+
+def unapplied(root, cycle, answer, queue, job):
+    """An application that was refused without judging the candidate.
+
+    A stale evaluation decides nothing: the cycle is evaluated again by the next
+    pass. A failure under a journal whose pointer is written is counted there.
+    Any other failure has no journal to count it (it happened before one
+    existed): it is counted in ``apply-failures.json``, and at the limit the
+    evaluation closes with the reason so that the next job can be planned.
+    """
+    from .candidate_apply import FAILURE_LIMIT, INCUMBENT_DAMAGED, STALE
+    from .shared import _db
+    reason = str(answer.get('reason') or 'apply_blocked')[:80]
+    if 'activationPending' in answer:
+        if answer.get('failures') == FAILURE_LIMIT:
+            _activation_pending(root, cycle, reason, answer.get('serviceStatus'))
+        return
+    # ``apply_incumbent_changed``: the active model is no longer the one the candidate was
+    # compared with (an owner's restore): compared again, like a stale evaluation.
+    if reason in (STALE, 'apply_incumbent_changed'):
+        with _db(root) as db:
+            db.execute("UPDATE cycles SET status='staged' WHERE cycle_id=? AND status='staged_evaluated'", (cycle,))
+        queue.refresh(cycle)
+        return
+    queue.finish(job['id'], 'blocked', reason)
+    if reason == INCUMBENT_DAMAGED:
+        # No pass can change the active artifact's bytes and an evaluation against them
+        # decides nothing: closed here, never evaluated again. The closed evaluation is
+        # reported once as ``learning.promotion`` ``rejected`` with this reason. The owner's
+        # way out is ``restore-previous-model`` or a repaired artifact.
+        queue.apply_failed(job['id'], reason, 1)
+        return
+    # Counted beside the evaluation, not on it: a re-evaluation (new gold) starts the
+    # evaluation's own count again and must not forget how often the application failed.
+    count = _count_failure(root, cycle, reason)
+    if count is None:
+        # The count could not be kept beside the evaluation: counted on its row, so that
+        # the limit is still reached (a re-evaluation starts this count again).
+        queue.apply_failed(job['id'], reason, FAILURE_LIMIT)
+    elif count >= FAILURE_LIMIT:
+        queue.apply_failed(job['id'], reason, 1)
+
+
+def _activation_pending(root, cycle, reason, service_status=None):
+    """One ``learning.promotion`` row when a written pointer's activation has failed the limit in a row.
+
+    The application goes on being tried; the row is how the log shows that the
+    learned selection is closed meanwhile. Diagnostic only: a failure is ignored.
+    """
+    try:
+        fields = {'serviceStatus': service_status} if isinstance(service_status, str) else {}
+        prequential._emit(_project_of(root), 'learning.promotion', outcome='activation_pending', reason=reason,
+                          cycle=cycle, **fields)
+    except Exception:
+        pass
+
+
+def _project_of(root):
+    from .dataset import read_private_json
+    from .learning_profile import NAME
+    return read_private_json(Path(root) / NAME)['proposal']['projectRoot']
+
+
+APPLY_FAILURES = 'apply-failures.json'
+APPLY_FAILURES_SCHEMA = 'memvane-apply-failures-v1'
+
+
+def _count_failure(root, cycle, reason):
+    """One more failed application of ``cycle`` before any journal; the count in a row.
+
+    ``apply-failures.json`` (0600) is a cache: missing or unreadable counts from
+    zero and the write replaces it whole. Only cycles still open as candidates
+    are kept, so it never outgrows them. None when the count could not be
+    written: the caller counts that failure on the evaluation row instead.
+    """
+    from .dataset import read_private_json
+    from .local_cycle import _atomic_json
+    from .shared import _db
+    root = Path(root)
+    path = root / APPLY_FAILURES
+    try:
+        saved = read_private_json(path)
+        rows = saved['cycles'] if saved.get('schema') == APPLY_FAILURES_SCHEMA else {}
+        rows = {key: value for key, value in rows.items()
+                if isinstance(key, str) and isinstance(value, dict) and type(value.get('failures')) is int}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        rows = {}
+    with _db(root) as db:
+        still = {row[0] for row in db.execute("SELECT cycle_id FROM cycles WHERE status IN ('staged','staged_evaluated')")}
+    count = rows.get(cycle, {}).get('failures', 0) + 1
+    kept = {key: value for key, value in rows.items() if key in still and key != cycle}
+    from .candidate_apply import FAILURE_LIMIT
+    if count < FAILURE_LIMIT:  # At the limit the candidate closes: its entry goes.
+        kept[cycle] = {'failures': count, 'reason': reason}
+    try:
+        _atomic_json(path, {'schema': APPLY_FAILURES_SCHEMA, 'cycles': kept})
+    except OSError:
+        return None
+    return count

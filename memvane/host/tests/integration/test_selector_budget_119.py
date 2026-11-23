@@ -117,9 +117,13 @@ def child_patches(raw):
 
 
 class _Identity:
-    last_timing = {'identity_seconds': 0.0}
+    last_timing = {'identity_seconds': 0.0, 'identity_reused': 1}
 
-    def verify(self, _state, _argv, _view):
+    def __init__(self):
+        self.reuse = []
+
+    def verify(self, _state, _argv, _view, *, reuse=False):
+        self.reuse.append(reuse)
         return {'runtime_identity_sha256': 'r' * 64, 'base_model_sha256': 'b' * 64}
 
 
@@ -134,6 +138,7 @@ class Service:
         from memvane.learning.tests.unit.test_context_learning_chunked_pairing import (
             EDIT, FAKE_TORCH, TableModel)
         self.service = service
+        self.identity = _Identity()
         self.forwards = []
         self.closed_seen = 0
         self.entered = threading.Event()
@@ -185,7 +190,7 @@ class Service:
                 mock.patch.dict(os.environ),
                 mock.patch.object(service, '_signature', return_value=SIGNATURE),
                 mock.patch.object(service, 'has_evidence', return_value=True),
-                mock.patch.object(service, '_IDENTITY_CACHE', _Identity()),
+                mock.patch.object(service, '_IDENTITY_CACHE', self.identity),
                 mock.patch.object(adapter_binding, 'inference_argv',
                                   side_effect=lambda argv, *_a, **_k: list(argv)),
                 mock.patch.object(adapter_binding, 'attested_adapter', return_value='0' * 64),
@@ -323,6 +328,10 @@ class PromptLane(SelectorEntry):
                 self.assertEqual(row['selection'], 'selected', row)
                 self.assertIn('zqheronx', self.context(out))
                 self.assertEqual((row['selectorLane'], row['selectorCandidates']), ('prompt', 1))
+                # The worker's reuse mark reaches the recall event.
+                self.assertEqual(row['selectorIdentityReused'], 1)
+                # The artifact that scored the recall is named on its row.
+                self.assertEqual(row['selectorCheckpoint'], hashlib.sha256(b'fixture head').hexdigest()[:12])
                 self.assertLessEqual(row['selectorQueryChunks'], 4)
                 self.assertEqual(row['selectorQueryChunks'], 4)
                 self.assertGreater(row['selectorDroppedQuery'], 0)
@@ -331,7 +340,10 @@ class PromptLane(SelectorEntry):
                 self.assertEqual(chosen['reason'], 'selected')
                 self.assert_numeric_measures(row, chosen['resources'])
         self.assertEqual([(f['lane'], f['pair_budget'], f['prompt_chars']) for f in service.forwards],
-                         [('prompt', 24, 20000)] * 2)
+                         [('prompt', 12, 20000)] * 2)
+        # Every validation of a recall (lane) request asks for the reuse window.
+        self.assertTrue(service.identity.reuse)
+        self.assertEqual(set(service.identity.reuse), {True})
 
     def assert_numeric_measures(self, row, resources):
         from memvane.recall import verified_rows
@@ -356,7 +368,7 @@ class PromptLane(SelectorEntry):
                              name)
         selector = {key: value for key, value in row.items() if key.startswith('selector')}
         strings = {key for key, value in selector.items() if not type(value) in (int, float)}
-        self.assertLessEqual(strings, {'selectorLane', 'selectorDevice'}, selector)
+        self.assertLessEqual(strings, {'selectorLane', 'selectorDevice', 'selectorCheckpoint'}, selector)
 
     def test_a_stalled_prompt_selector_serves_the_ranked_rows(self):
         # Item 18: the service holds the request past the lane budget.
@@ -449,6 +461,7 @@ class EditLane(SelectorEntry):
                 self.assertEqual(code, 0, err)
                 [row] = self.rows('recall.edit', session)
                 self.assertEqual(row['selection'], 'selector', row)
+                self.assertEqual(row['selectorCheckpoint'], hashlib.sha256(b'fixture head').hexdigest()[:12])
                 [choose] = [r for r in self.child_log('choose') if r['lane'] == 'edit'][-1:]
                 self.assertEqual((choose['pair_budget'], choose['skip_busy']), (91, True))
                 self.assertGreater(choose['prompt_chars'], 2000)

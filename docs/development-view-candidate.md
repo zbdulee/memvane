@@ -182,7 +182,7 @@ deadline을 확인하며 float32 바이트를 double로 넓혀 chunk별 cosine�
 기본 4,000,000이다. 필터를 통과한 고유 blob의 `chunk_count × dimension`
 합계를 계산하고 모든 set·행 digest를 검증한다.
 
-recall의 semantic 단계는 최대 1초이며 상한 초과·시간 초과에도 lexical
+recall의 semantic 단계는 최대 2초(프롬프트·편집 recall 공통, 남은 시간이 더 짧으면 그만큼)이며 상한 초과·시간 초과에도 lexical
 후보와 selector를 유지한다. recall 이벤트의 `vectorKernel`·`vectorSource`,
 `vectorRows`·`vectorVerified`, `vectorLoadMs`·`vectorScanMs`·`vectorVerifyMs`가
 사용 경로와 비용을 나타낸다. 기존 `vectorReadMs`·`vectorUnpackMs`·`vectorDotMs`도
@@ -193,6 +193,7 @@ recall의 semantic 단계는 최대 1초이며 상한 초과·시간 초과에�
 `query_vector=None`이면 lexical 결과와 빈 semantic 목록, `provider_absent` 상태를
 반환한다. query가 있어도 lexical-only 세대이면 `lexical_only`다.
 semantic 검색 성공은 `complete`, 명시적 work 예산 초과는 `deferred_work_budget`,
+vector arena가 덮지 못한 set의 store 읽기가 상한을 넘으면 `deferred_cache_building`,
 semantic 시간 초과는 `deferred_deadline`이며 이미 완료한 lexical 결과를 유지한다.
 잘못된 profile·query·pin, seal/set 손상과 checkout 변경은 semantic defer로 숨기지 않고 거절한다.
 
@@ -258,11 +259,11 @@ deadline은 SQL progress handler와 유한한 검증 순회에 적용하며 실�
 
 `BlobStoreError.reason`은 원문 없는 거절 코드다. 주요 코드는
 `view_preparing`, `view_handle_invalid`, `view_pin_invalid`, `view_store_closed`,
-`checkout_changed`, `view_head_conflict`, `generation_unsealed`,
+`checkout_changed`, `view_head_conflict`,
 `generation_seal_mismatch`, `fts_storage_mismatch`, `fts_query_invalid`,
 `fts_deadline_exceeded`, `vector_coverage_incomplete`, `vector_rows_mismatch`,
 `vector_coverage_absent`, `vector_profile_mismatch`, `vector_query_invalid`,
-`vector_work_exceeded`, `vector_deadline_exceeded`다.
+`vector_work_exceeded`, `vector_cache_building`, `vector_deadline_exceeded`다.
 거절 뒤 다른 view로 우회하는 API는 없다.
 
 검증 성공은 store의 구조·일관성에 한정된다. `pin_view`는 head의 구조와 FTS commitment를 확인하고, 이후 store에 commit이 있으면 검색 전에 다시 검증한다. 형식 4의 `verify_views`는 구현되지 않아 `row_format_unsupported`로 거절한다.

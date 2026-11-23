@@ -59,7 +59,7 @@ class Checks(unittest.TestCase):
   a=own.ensure('own','stage','validation');b=foreign.ensure('foreign','stage','validation')
   self.assertEqual([row['id'] for row in own.pending()],[a['id']])
   self.assertIsNone(own.get(b['id']))
-  own.finish(b['id'],'blocked');own.refresh('foreign')
+  own.finish(b['id'],'blocked','fixture_closed');own.refresh('foreign')
   with own.claim(b['id']) as denied:self.assertIsNone(denied)
   self.assertEqual(foreign.get(b['id'])['status'],'queued')
   with self.assertRaisesRegex(ValueError,'evaluation_job_scope_invalid'):own.defer(b['id'],'memory')
@@ -83,7 +83,7 @@ class Checks(unittest.TestCase):
   with q.claim(job['id'],now=100) as fd:
    self.assertIsInstance(fd,int);q.finish(job['id'],'completed')
   q.defer(job['id'],'memory_reserve',now=100)
-  q.finish(job['id'],'waiting_quality');q.finish(job['id'],'blocked')
+  q.finish(job['id'],'waiting_quality');q.finish(job['id'],'blocked','fixture_closed')
   self.assertEqual(q.get(job['id'])['status'],'completed')
   self.assertEqual(q.pending(now=float('inf')),[])
   q.refresh('cycle');self.assertEqual(q.get(job['id'])['status'],'queued')

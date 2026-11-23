@@ -29,6 +29,10 @@ def _top_statements(body):
             yield node
 
 
+# Domains whose line ceiling is not 8,000 (tests/structure/README.md says why).
+_DOMAIN_LINES = {'store': 8100}
+
+
 def _symbol_table(tree):
     result = set()
     for node in _top_statements(tree.body):
@@ -242,8 +246,12 @@ _TEST_G1_EXCEPTIONS = {
     ('tests/e2e/handoff_four_processes.py', 'memvane.resident.resident_service'): 'two-bundle resident handoff boundary',
     ('tests/e2e/handoff_four_processes.py', 'memvane.resident.tests.support'): 'model-free owned worker fixture',
     ('memvane/resident/tests/model/resident_embed_smoke.py', 'memvane.provider.runtime_digests'): 'prevent live digest-cache writes during real-model smoke',
+    ('tests/e2e/checkout_cache_e2e.py', 'memvane.store.checkout.checkout_view'): 'records sealed under another boot device number',
     ('tests/e2e/sync_profile_scale.py', 'memvane.store.tests.support'): 'synthetic row store fixture',
     ('tests/e2e/sync_profile_scale.py', 'memvane.sync.product_sync_worker'): 'measured sync fill path',
+    # The learning wake's transition table drives the queue and the dispatcher that own the row.
+    ('memvane/learning/tests/statemachine/test_m09_wake.py', 'memvane.runtime.runtime_work'): 'the wake row writers of the learning kind',
+    ('memvane/learning/tests/statemachine/test_m09_wake.py', 'memvane.runtime.runtime_wake_policy'): 'the retry cap of the learning kind',
     # Reattestation E2E drives the real resident with a model-free socket worker.
     ('memvane/provider/tests/integration/reattest_hook_e2e.py', 'memvane.resident.resident_service'): 'resident adoption boundary',
     ('memvane/provider/tests/integration/reattest_hook_e2e.py', 'memvane.resident.tests.support'): 'synthetic resident worker',
@@ -1169,7 +1177,7 @@ def inspect(config, baseline=None):
         if path.startswith('memvane/') and path in files:
             domain_lines[files[path]['context']] += lines
     for domain, lines in domain_lines.items():
-        if domain not in ('kernel', 'learning') and lines > 8000:
+        if domain not in ('kernel', 'learning') and lines > _DOMAIN_LINES.get(domain, 8000):
             issues['G4'].append(f'{domain}:lines:{lines}')
     old = baseline or {}
     for kind, ceiling in (('file_sizes', 800), ('function_sizes', 150)):

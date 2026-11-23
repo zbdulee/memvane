@@ -6,6 +6,7 @@
 // or writes the account home.
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { TIME_SCALE_ENV, timeScale } from './timing.mjs';
 
 const PAUSE = new Int32Array(new SharedArrayBuffer(4));
 
@@ -39,6 +40,8 @@ export function fixtureEnv({ home, runtime }, extra = {}) {
     ...env, HOME: home, TMPDIR: home, XDG_RUNTIME_DIR: runtime, MEMVANE_TEST_RUNTIME_ROOT: runtime,
     QMD_SETUP_GUARD_FIXTURE: '1', PYTHONDONTWRITEBYTECODE: '1', QMD_REAL_MODEL_TESTS: '', QMD_RECALL_LOG: '',
     GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_TERMINAL_PROMPT: '0',
+    // The load scale of this run, for the waits and timeouts of tests/support.
+    [TIME_SCALE_ENV]: String(timeScale()),
     ...extra,
   };
 }

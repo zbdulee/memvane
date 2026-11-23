@@ -3,9 +3,7 @@ import copy
 from contextlib import contextmanager
 from contextvars import ContextVar
 import math
-import json
 from pathlib import Path
-import subprocess
 import time
 
 from memvane.journal import api as journal
@@ -19,12 +17,27 @@ _PROVIDER_ERRORS=frozenset(('provider_unavailable','provider_identity_mismatch',
     'provider_artifact_hash_mismatch','provider_model_not_gguf','vector_profile_mismatch'))
 
 
-def _fused_sources(lexical, nearest, timings):
+def _session_excluded(name):
+    """This view's pairs of the cards the session already holds, or None.
+
+    They leave both lanes; the next ranks fill their places.
+    """
+    from memvane.recall.recall_scope import session_exclusions
+    return [[path[len(name)+1:],sha] for path,sha in session_exclusions() if path.startswith(name+'/')] or None
+
+
+def _fused_sources(lexical, nearest, timings, emptied=None):
     from memvane.recall.domain.rules import _fuse_verified_lists
+    if (emptied is not None and emptied[3] and timings is not None and not any(lexical) and not nearest
+            and 'sessionExcludedHits' not in timings):
+        store, pin, queries, excluded, status, deadline = emptied
+        timings['sessionExcludedHits'] = _excluded_hits(store, pin, queries, excluded, status, timings, deadline)
     lists = lexical + ([] if nearest is None else [nearest])
     rows = _fuse_verified_lists(lists, max_rows=15) if any(lists) else []
     if timings is not None:
         semantic = {row['path'] for row in nearest or []}
+        timings['semanticOnly'] = sorted(semantic - {row['path'] for lane in lexical for row in lane})
+        timings['semanticCosine'] = {row['path']: round(row['score'], 4) for row in nearest or []}
         timings['semanticSources'] = {row['path']: timings.get('vectorSource', 'python')
                                      if row['path'] in semantic else 'lexical' for row in rows}
     return rows
@@ -95,67 +108,65 @@ def _vector_proof(authority,snapshot,decision,provider,deadline):
     return proof
 
 
-def _provider_vector(provider,prompt,budget):
-    """Use the existing provider in a child with an absolute completion bound."""
+def _provider_vector(provider,prompt,budget,chunks=True):
+    """``(vectors, requested)`` from the existing provider, asked in this process with an absolute bound.
+
+    A long prompt comes back as up to four window vectors (``provider.api.query_vectors``).
+    """
     from memvane.kernel.errors import IndexContractError
-    from memvane.provider.api import query_embed_child_argv
-    deadline=time.monotonic()+budget
-    payload=json.dumps({'manifest':provider.manifest,'prompt':prompt,'timeout':budget,
-                        'allowed':sorted(_PROVIDER_ERRORS)},
-                       ensure_ascii=True,separators=(',',':'))
-    child=subprocess.Popen(query_embed_child_argv(),
-                           stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    from memvane.provider.api import query_vectors
     try:
-        remaining=deadline-time.monotonic()
-        if remaining<=0:raise subprocess.TimeoutExpired(child.args,budget)
-        out,_err=child.communicate(payload,timeout=remaining)
-    except BaseException as exc:
-        if child.poll() is None:
-            try:child.kill()
-            except ProcessLookupError:pass
-        child.communicate()
-        if isinstance(exc,subprocess.TimeoutExpired):
-            raise IndexContractError('provider_unavailable') from exc
+        vectors,requested=query_vectors(provider,prompt,budget,chunks=bool(chunks),allowed=_PROVIDER_ERRORS)
+    except IndexContractError:
         raise
-    if child.returncode!=0:
-        raise IndexContractError('provider_process_failed')
-    if len(out)>1000000:
+    except Exception as exc:  # noqa: BLE001 - whatever the round trip raised, the recall goes on without a vector
+        raise IndexContractError('provider_process_failed') from exc
+    if (type(vectors) is not list or not 1<=len(vectors)<=4 or type(requested) is not int
+            or not len(vectors)<=requested<=64):
         raise IndexContractError('provider_result_invalid')
-    try:
-        result=json.loads(out)
-        if isinstance(result,dict) and set(result)=={'vector'}:
-            return result['vector']
-        if isinstance(result,dict) and set(result)=={'error'} and result['error'] in _PROVIDER_ERRORS:
-            raise IndexContractError(result['error'])
-    except (TypeError,ValueError) as exc:
-        if isinstance(exc,IndexContractError):raise
-        raise IndexContractError('provider_result_invalid') from exc
-    raise IndexContractError('provider_result_invalid')
+    return vectors,requested
+
+
+def _vector_key(vector):
+    """One query vector or a list of them as a tuple of tuples."""
+    several=type(vector) in (list,tuple) and vector and type(vector[0]) in (list,tuple)
+    return tuple(tuple(item) for item in (vector if several else [vector]))
 
 
 @contextmanager
-def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline):
-    """Bind one provider result to the live v6 snapshot and calling context."""
+def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline,info=None):
+    """Bind one provider result to the live v6 snapshot and calling context.
+
+    Yields one query vector, or a list of them for a prompt asked as windows.
+    ``info`` receives ``queryChunks`` (vectors answered) and ``queryChunksRequested``.
+    """
     from memvane.store.api import query_values
     from memvane.kernel.errors import IndexContractError
     proof=_vector_proof(authority,snapshot,decision,provider,deadline)
     remaining=min(2,deadline-time.monotonic())
     if remaining<=0:raise ValueError('reader_snapshot_deadline')
     try:
-        vector=_provider_vector(provider,prompt,remaining)
+        # An edit recall asks its query whole, as before: its pool is a learning case.
+        from memvane.recall.recall_scope import edit_recall
+        vectors,requested=_provider_vector(provider,prompt,remaining,chunks=edit_recall() is None)
     except IndexContractError as exc:
-        if str(exc) not in ('provider_unavailable','provider_identity_mismatch',
+        # ``provider_process_failed``: whatever else the round trip raised. The recall goes on without a vector.
+        if str(exc) not in ('provider_unavailable','provider_identity_mismatch','provider_process_failed',
                             'provider_result_invalid','provider_socket_invalid','provider_socket_changed'):
             raise
         if _vector_proof(authority,snapshot,decision,provider,deadline)!=proof:
             raise ValueError('reader_vector_caller_unproved')
         yield None
         return
-    query_values(vector)
+    for vector in vectors:
+        query_values(vector)
+    if info is not None:
+        info.update(queryChunks=len(vectors),queryChunksRequested=requested)
+    vector=vectors[0] if len(vectors)==1 else [list(item) for item in vectors]
     if _vector_proof(authority,snapshot,decision,provider,deadline)!=proof:
         raise ValueError('reader_vector_caller_unproved')
     active=[True]
-    entry=(authority,snapshot,copy.deepcopy(decision),provider,prompt,tuple(vector),deadline,copy.deepcopy(proof),active)
+    entry=(authority,snapshot,copy.deepcopy(decision),provider,prompt,_vector_key(vector),deadline,copy.deepcopy(proof),active)
     token=_approved_vectors.set((*_approved_vectors.get(),entry))
     try:
         yield list(vector)
@@ -215,6 +226,9 @@ def _reader_remaining(deadline):
 
 
 NEED_SWITCH = 'MEMVANE_NEED_SIGNALS'
+# The exact semantic search of one recall (prompt or edit) ends after this long, or
+# earlier when the recall has less time left; an unfinished one serves lexical rows.
+SEMANTIC_DEADLINE_SECONDS = 2.0
 NEED_ATOMS = 8
 NEED_BUDGET_SECONDS = .15
 NEED_READER_RESERVE_SECONDS = 2.0
@@ -292,6 +306,49 @@ def _lexical_signals(timings, queries, lexical):
         pass
 
 
+def _atom_fallback(store, pin, queries, lexical, shaped, excluded, query_vector, timings, deadline):
+    """The lexical lists, or single-term lists when a cold provider left the conjunctive query empty.
+
+    A query the session exclusions emptied is not widened: its answer is the
+    cards the session already holds, and a card matching one term only is not
+    what was asked for. The count of those cards is kept for the empty reason.
+    """
+    from memvane.recall.types import HYBRID_LIST_LIMIT
+    if query_vector is not None or any(lexical):
+        return lexical
+    if excluded:
+        hits = _excluded_hits(store, pin, queries, excluded, 'provider_absent', {}, deadline)
+        if hits:
+            if timings is not None:
+                timings['sessionExcludedHits'] = hits
+            return lexical
+    atoms = list(dict.fromkeys(atom for query in queries for atom in query.split(' AND ') if atom))[:3]
+    if len(atoms) > 1:
+        return [shaped(store.search(pin, atom, HYBRID_LIST_LIMIT, deadline_seconds=_reader_remaining(deadline),
+                                    excluded_cards=excluded)) for atom in atoms]
+    return lexical
+
+
+def _excluded_hits(store, pin, queries, excluded, status, timings, deadline):
+    """How many candidates of an empty recall the session exclusions removed.
+
+    Asked only when both lanes came back empty: the lexical queries once more
+    without the exclusions (their rows that are excluded pairs), plus the
+    eligible cards the exact filter dropped when the semantic search completed
+    (an exact lane has no score floor, so its empty list is all exclusions).
+    """
+    from memvane.recall.types import HYBRID_LIST_LIMIT
+    from memvane.store.types import BlobStoreError
+    pairs, hits = {(path, sha) for path, sha in excluded}, 0
+    try:
+        for query in queries:
+            hits += sum((row['path'], row['blob_sha']) in pairs for row in store.search(
+                pin, query, HYBRID_LIST_LIMIT, deadline_seconds=_reader_remaining(deadline)))
+    except (BlobStoreError, ValueError):
+        pass  # A count that could not be read leaves the recall's own empty reason.
+    return hits + (timings.get('vectorExcluded', 0) if status == 'complete' else 0)
+
+
 def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,snapshot,decision,
                              provider,authority,linked=None,timings=None):
     """Read the journal-selected schema3 endpoint at its current view head.
@@ -323,11 +380,12 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
     valid=None
     if query_vector is not None:
         from memvane.store.api import query_values
-        query_values(query_vector)
+        for item in _vector_key(query_vector):
+            query_values(item)
         valid=[entry for entry in _approved_vectors.get()
                if entry[0] is authority and authority is endpoint and entry[1] is None
                and entry[2]==decision and entry[3] is provider and entry[4]==prompt
-               and entry[5]==tuple(query_vector) and entry[8][0] and time.monotonic()<entry[6]]
+               and entry[5]==_vector_key(query_vector) and entry[8][0] and time.monotonic()<entry[6]]
         if not valid:
             raise ValueError('reader_vector_caller_unproved')
         deadline=min(deadline,valid[-1][6])
@@ -377,18 +435,14 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                     answer.append({'scope':decision['scopeId'],'generation':pin.gen_id,'path':full,
                                    'hash':row['blob_sha'],'body':row['body'],'score':row['score']})
                 return answer
+            excluded=_session_excluded(name)
             started = time.monotonic()
             try:
-                lexical=[shaped(store.search(pin, query, HYBRID_LIST_LIMIT, deadline_seconds=_reader_remaining(deadline)))
+                lexical=[shaped(store.search(pin, query, HYBRID_LIST_LIMIT, deadline_seconds=_reader_remaining(deadline), excluded_cards=excluded))
                          for query in queries]
                 if timings is not None:
                     _lexical_signals(timings, queries, lexical)
-                if query_vector is None and not any(lexical):
-                    # A cold provider can leave the conjunctive query empty.
-                    atoms = list(dict.fromkeys(atom for query in queries for atom in query.split(' AND ') if atom))[:3]
-                    if len(atoms)>1:
-                        lexical=[shaped(store.search(pin, atom, HYBRID_LIST_LIMIT, deadline_seconds=_reader_remaining(deadline)))
-                                 for atom in atoms]
+                lexical=_atom_fallback(store,pin,queries,lexical,shaped,excluded,query_vector,timings,deadline)
             finally:
                 if timings is not None:
                     timings['lexicalMs'] = round((time.monotonic() - started) * 1000, 3)
@@ -409,15 +463,15 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                     nearest=shaped(store.search_exact(pin,query_vector,HYBRID_LIST_LIMIT,
                                                       profile_id=vector['profile_id'],
                                                       max_float_work=6000000,
-                                                      deadline_seconds=min(1.0, remaining), timings=timings,
-                                                      preferred_paths=preferred))
+                                                      deadline_seconds=min(SEMANTIC_DEADLINE_SECONDS, remaining), timings=timings,
+                                                      preferred_paths=preferred, excluded_cards=excluded))
                 except (BlobStoreError, ValueError) as exc:
                     status = _semantic_error_status(exc, timings)
                 finally:
                     if timings is not None:
                         timings['semanticMs'] = round((time.monotonic() - started) * 1000, 3)
 
-            rows = _fused_sources(lexical, nearest, timings)
+            rows = _fused_sources(lexical, nearest, timings, emptied=(store, pin, queries, excluded, status, deadline))
             started = time.monotonic()
             try:
                 spans = _card_spans(store, pin, rows, name, status, deadline)

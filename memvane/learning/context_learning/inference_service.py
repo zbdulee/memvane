@@ -88,8 +88,10 @@ def _forward(loaded, job, *, limits, timing, cancelled):
 class GenerationEngine:
     """Serial owner: candidate object cannot mutate the incumbent reference."""
     def __init__(self, *, load=_load, forward=_forward,
-                 admission=resident._admission, rss=_rss_mib):
+                 admission=resident._admission, rss=_rss_mib, end_reuse=None):
         self.load, self.forward, self.admission, self.rss = load, forward, admission, rss
+        # Ends the identity reuse window (inference_identity.reuse_window).
+        self.end_reuse = end_reuse or (lambda: _IDENTITY_CACHE.end_reuse())
         self.active = None
         self.footprint_mib = None
         self.pending = None
@@ -110,7 +112,7 @@ class GenerationEngine:
             if self.pending[0]!=token:raise ServiceFailure('busy')
             if self._pending_key(revalidate())!=key or cancelled():raise ServiceFailure('request_changed')
             return token
-        candidate=GenerationEngine(load=self.load,forward=self.forward,admission=self.admission,rss=self.rss)
+        candidate=GenerationEngine(load=self.load,forward=self.forward,admission=self.admission,rss=self.rss,end_reuse=self.end_reuse)
         candidate.active=self.active;candidate.footprint_mib=self.footprint_mib
         candidate.run(job,cancelled=cancelled,revalidate=revalidate)
         self.pending=(token,key,candidate.active,candidate.footprint_mib,job['deadline'])
@@ -232,6 +234,10 @@ class GenerationEngine:
                 if math.isfinite(current) and current <= job['policy']['maxRssMib']:
                     self.active, self.footprint_mib = warm
                     self.cached_load = (job['generation'], timing['model_load_seconds'])
+                    # This load was not swept after it (the request ended
+                    # first): the request that uses the model sweeps, even
+                    # inside the reuse window.
+                    self.end_reuse()
             raise
         if pending is not None:
             self.active = pending
@@ -266,7 +272,9 @@ _CODES = {'queue_full', 'deadline_expired', 'resource_deferred', 'replacement_de
           'replacement_failed', 'load_failed', 'model_family_mismatch',
           'request_changed', 'request_rejected', 'inference_attestation_required',
           'worker_error', 'version_mismatch', 'busy', 'starting', 'permission_denied',
-          'resource_unavailable', 'invalid_prediction', 'input_budget_exceeded'}
+          'resource_unavailable', 'invalid_prediction', 'input_budget_exceeded',
+          # An application whose evaluation went stale between the worker's check and this one.
+          'apply_quality_stale'}
 
 
 @lru_cache(maxsize=1)
@@ -719,7 +727,9 @@ def _validate_request(envelope):
     identity_started = time.perf_counter()
     identity_timing = {}
     if has_evidence(state):
-        verified = _IDENTITY_CACHE.verify(state, argv, view)
+        # Only a recall request names its lane; the synthetic warm-up request
+        # (no lane) and apply (_validate_apply) are swept every time.
+        verified = _IDENTITY_CACHE.verify(state, argv, view, reuse='query_lane' in request)
         identity_timing = dict(_IDENTITY_CACHE.last_timing)
     else:
         trainer = VerifiedLayaTrainer(argv, max_seconds=policy['timeoutSeconds'],
@@ -786,7 +796,10 @@ def _validate_apply(envelope):
     record=application.read_journal(state)
     if record['namespace_root']!=str(state) or record['apply_id']!=envelope['apply_id']:raise ServiceFailure('request_changed')
     policy=shared_policy(state)
-    profile,stage,_=application.validate_candidate(state,policy,record['cycle_id'],expected=record)
+    try:profile,stage,_=application.validate_candidate(state,policy,record['cycle_id'],expected=record)
+    except ValueError as exc:
+        if str(exc)==application.STALE:raise ServiceFailure(application.STALE) from exc
+        raise
     application._check_receipts(state,record)
     if envelope['command']=='apply_activate' and (record['phase']!='pointer_committed'
             or read_private_json(state/'active-checkpoint.json')!=record['new_pointer']):raise ServiceFailure('request_changed')

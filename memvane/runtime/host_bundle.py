@@ -20,6 +20,7 @@ from memvane.kernel.memvane_version import version_key
 
 _RETIRE_CHECKS = {}
 _BACKGROUND_INVENTORY = {'until': 0.0, 'root': None}
+UNINSTALLED_GRACE_SECONDS = 300
 
 _SEGMENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z')
 
@@ -70,6 +71,23 @@ class BundleIdentity:
 
     def preferred_background(self):
         return self.preferred(background=True)
+
+    def uninstalled(self):
+        """No host has MemVane enabled, and has not for the grace: background processes end, no successor.
+
+        An unreadable inventory never says so, and the grace outlasts the gap
+        between a host removing one version and installing the next.
+        """
+        if os.environ.get('MEMVANE_TEST_RUNTIME_ROOT') or os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1':
+            return False
+        try:
+            # An intact bundle outside the host roots this process resolves was not judged by that inventory.
+            if self.intact() and not _under_host_root(self.root):
+                return False
+            absent = background_absent_seconds()
+        except Exception:
+            return False
+        return absent is not None and absent >= UNINSTALLED_GRACE_SECONDS
 
     def preferred(self, *, background=False):
         """Equal-version host copies may share a resident; older ones may not."""
@@ -247,14 +265,23 @@ def _hermes_enabled(home):
     return enabled and not disabled
 
 
-def latest_installed(*, home=None):
+def _inventory(home=None):
+    """``(enabled bundles, certain)``; ``(None, False)`` when a host record could not be read.
+
+    ``certain`` is what "no host has MemVane enabled" may rest on. It is False
+    whenever a record leaves room for an enabled bundle this listing did not
+    show: Codex's own config enables MemVane but its listing named none (the
+    ``codex`` executable is not on this process's PATH), or Claude lists
+    MemVane installed but not enabled from ``/`` (a project or local scope
+    enables it per project). Only a removed plugin is certainly off there.
+    """
     home = Path.home() if home is None else Path(home)
     codex = Path(os.environ.get('CODEX_HOME') or home / '.codex')
     claude = Path(os.environ.get('CLAUDE_CONFIG_DIR') or home / '.claude')
     hermes_home = Path(os.environ.get('HERMES_HOME') or home / '.hermes')
     if not all(path.is_absolute() for path in (home, codex, claude, hermes_home)):
-        return None
-    found = []
+        return None, False
+    found, certain = [], True
     try:
         inventory = _codex_inventory(home)
         rows = inventory['installed']
@@ -266,8 +293,10 @@ def latest_installed(*, home=None):
                 item = _candidate(codex, row.get('marketplaceName'), row.get('version'), 'codex')
                 if item:
                     found.append(item)
+        if not found:
+            certain = _codex_config_off(codex)
     except (OSError, ValueError, KeyError, TypeError, UnicodeError, subprocess.TimeoutExpired):
-        return None
+        return None, False
     try:
         inventory = _read_json(claude / 'plugins' / 'installed_plugins.json')
         plugins = inventory['plugins']
@@ -288,6 +317,7 @@ def latest_installed(*, home=None):
             if type(row.get('enabled')) is not bool:
                 raise ValueError('bundle_inventory_invalid')
             if not row['enabled']:
+                certain = False  # Installed: a project may enable what this listing from ``/`` shows off.
                 continue
             rows = plugins.get(name)
             if not isinstance(rows, list) or len(rows) > 128:
@@ -305,7 +335,7 @@ def latest_installed(*, home=None):
     except FileNotFoundError:
         pass  # Claude is not installed.
     except (OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError):
-        return None
+        return None, False
     try:
         hermes = hermes_home.resolve(strict=True)
         if not _hermes_enabled(hermes):
@@ -321,10 +351,24 @@ def latest_installed(*, home=None):
     except FileNotFoundError:
         pass  # Hermes is not installed.
     except (OSError, ValueError, TypeError, AttributeError, UnicodeError):
-        return None
+        return None, False
+    return found, certain
+
+
+def _codex_config_off(codex):
+    """Whether Codex's own config enables no MemVane plugin (no config: Codex is not set up)."""
+    try:
+        return not _codex_enabled_markets(codex)
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError, TypeError, UnicodeError):
+        return False
+
+
+def latest_installed(*, home=None):
+    found, readable = _inventory(home)
+    _BACKGROUND_INVENTORY['readable'] = readable
     return max(found, key=lambda item: (item[0], str(item[1])))[1] if found else None
-
-
 
 
 def _codex_enabled_markets(codex):
@@ -417,12 +461,32 @@ def background_installed():
     now = time.monotonic()
     stamp = _inventory_stamp()
     if now >= _BACKGROUND_INVENTORY['until'] or stamp != _BACKGROUND_INVENTORY.get('stamp'):
+        _BACKGROUND_INVENTORY['readable'] = False
         try:
             root = latest_installed()
         except (OSError, ValueError, TypeError, KeyError, AttributeError, UnicodeError, subprocess.TimeoutExpired):
             root = None
-        _BACKGROUND_INVENTORY.update(root=root, stamp=stamp, until=time.monotonic() + 3600)
+        # Every host record was read and none enables MemVane: the absence is timed from its first sight.
+        since = (None if root is not None or _BACKGROUND_INVENTORY['readable'] is not True else
+                 _BACKGROUND_INVENTORY.get('absentSince') or time.monotonic())
+        _BACKGROUND_INVENTORY.update(root=root, stamp=stamp, absentSince=since, until=time.monotonic() + 3600)
     return _BACKGROUND_INVENTORY['root']
+
+
+def _under_host_root(root):
+    home = Path.home()
+    bases = (Path(os.environ.get('CODEX_HOME') or home / '.codex') / 'plugins' / 'cache',
+             Path(os.environ.get('CLAUDE_CONFIG_DIR') or home / '.claude') / 'plugins' / 'cache',
+             Path(os.environ.get('HERMES_HOME') or home / '.hermes') / 'plugins')
+    root = Path(root).resolve()
+    return any(base.resolve() in root.parents for base in bases)
+
+
+def background_absent_seconds():
+    """How long every readable host record has enabled no MemVane bundle; None while one may be installed."""
+    background_installed()
+    since = _BACKGROUND_INVENTORY.get('absentSince')
+    return None if since is None else time.monotonic() - since
 
 
 def _inventory_stamp():

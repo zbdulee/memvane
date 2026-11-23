@@ -106,6 +106,7 @@ class TeacherNotice(FixtureCase):
     def teacher_lines(self, lines):
         return [line for line in lines if line in (CLI_CLAUDE, CLI_CODEX, REST_CODEX,
                                                     REST_CLAUDE_MODEL, ENABLE,
+                                                    teacher_state.CONSENT_NOTICE,
                                                     teacher_state.ENABLE_DEFERRED_NOTICE)]
 
     def test_e2_missing_cli_notice_once_per_host_and_reason_for_seven_days(self):
@@ -154,6 +155,32 @@ class TeacherNotice(FixtureCase):
                       waitingSinceUnixMs=now - 30 * HOUR_MS)
         self.assertEqual(self.teacher_lines(self.hook('claude')), [REST_CLAUDE_MODEL])
         self.assertEqual(self.teacher_lines(self.hook('claude')), [])
+
+    def set_consent(self, **row):
+        state = teacher_state.read_state(self.root)
+        state['consent'].update(row)
+        self.assertTrue(teacher_state.write_state(self.root, state))
+
+    def test_unreadable_consent_is_announced_at_the_limit_once_in_seven_days(self):
+        line, limit = teacher_state.CONSENT_NOTICE, teacher_state.CONSENT_UNREADABLE_LIMIT
+        self.set_consent(unreadable=limit - 1)
+        self.assertEqual(self.teacher_lines(self.hook('claude')), [])
+        self.set_consent(unreadable=limit)
+        self.assertEqual(self.teacher_lines(self.hook('claude')), [line])
+        for host in ('claude', 'codex'):
+            self.assertEqual(self.teacher_lines(self.hook(host)), [])
+        stamp = teacher_state.read_state(self.root)['consent']['lastNoticeUnixMs']
+        self.set_consent(lastNoticeUnixMs=stamp - 8 * 24 * HOUR_MS)
+        # With a host line due in the same session both are stamped and shown.
+        self.set_host('codex', reason=teacher_state.UNAVAILABLE, queued=1)
+        self.assertEqual(self.teacher_lines(self.hook('codex')), [line, CLI_CODEX])
+        self.assertEqual(self.teacher_lines(self.hook('codex')), [])
+
+    def test_unreadable_consent_is_not_announced_while_the_teacher_is_off(self):
+        self.set_consent(unreadable=teacher_state.CONSENT_UNREADABLE_LIMIT)
+        self.assertTrue(teacher_state.write_switch(self.root, False))
+        self.assertEqual(self.teacher_lines(self.hook('claude')), [])
+        self.assertIsNone(teacher_state.read_state(self.root)['consent']['lastNoticeUnixMs'])
 
     def test_quota_provider_and_breaker_waits_are_never_announced(self):
         now = teacher_state.now_ms()

@@ -12,6 +12,7 @@
     "journal": 4,
     "resident": 6,
     "registry": 5,
+    "vectorcache": 2,
     "wiki/workspace": 5,
     "learning": 5,
     "wiki/intake": 6,
@@ -37,6 +38,11 @@
     "memvane/learning/context_learning/inference_timing.py": {"context": "learning", "layer": "adapter", "pinned": false},
     "memvane/learning/context_learning/warm_lifecycle.py": {"context": "learning", "layer": "adapter", "pinned": false},
     "memvane/host/session_notice.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/host/session_cards.py": {
       "context": "host",
       "layer": "adapter",
       "pinned": false
@@ -356,6 +362,36 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/vectorcache/__init__.py": {
+      "context": "vectorcache",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/vectorcache/api.py": {
+      "context": "vectorcache",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/vectorcache/arena.py": {
+      "context": "vectorcache",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/vectorcache/scan.py": {
+      "context": "vectorcache",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/vectorcache/writer.py": {
+      "context": "vectorcache",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/vectorcache/types.py": {
+      "context": "vectorcache",
+      "layer": "domain",
+      "pinned": false
+    },
     "memvane/kernel/atomic_rename.py": {
       "context": "kernel",
       "layer": "adapter",
@@ -476,6 +512,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/learning/context_learning/candidate_rollback.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/learning/context_learning/capabilities.py": {
       "context": "learning",
       "layer": "adapter",
@@ -537,6 +578,21 @@
       "pinned": false
     },
     "memvane/learning/context_learning/general_gold_ledger.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/state_model.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/invariants.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/worker_retry.py": {
       "context": "learning",
       "layer": "adapter",
       "pinned": false
@@ -871,7 +927,7 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/provider/query_embed_child.py": {
+    "memvane/provider/query_vectors.py": {
       "context": "provider",
       "layer": "adapter",
       "pinned": false
@@ -1321,6 +1377,16 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/sync/linked_reoffer.py": {
+      "context": "sync",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/sync/vector_cache.py": {
+      "context": "sync",
+      "layer": "application",
+      "pinned": false
+    },
     "memvane/sync/compile_intents.py": {
       "context": "sync",
       "layer": "application",
@@ -1412,6 +1478,11 @@
       "pinned": false
     },
     "memvane/wiki/compile/api.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/compile/refresh_settlement.py": {
       "context": "wiki/compile",
       "layer": "adapter",
       "pinned": false
@@ -1707,6 +1778,11 @@
       "pinned": false
     },
     "memvane/install/locks.py": {
+      "context": "install",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/install/state_cleanup.py": {
       "context": "install",
       "layer": "adapter",
       "pinned": false

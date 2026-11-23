@@ -110,7 +110,11 @@ class TeacherSwitchWorker(EnabledInstall):
                 (general_teacher, 'process_pending_default', self.teacher),
                 (shared, 'run_training_pending', self.cycle),
                 (shared, 'resource_report', mock.Mock(side_effect=lambda *a, **k:
-                                                      dict(ready, observed_at_mono=time.monotonic())))):
+                                                      dict(ready, observed_at_mono=time.monotonic()))),
+                # The teacher reads its own binding of resource_report: without this the
+                # pre-send check samples the machine the test runs on.
+                (general_teacher, 'resource_report', mock.Mock(side_effect=lambda *a, **k:
+                    dict(ready, observed_at_mono=time.monotonic())))):
             self.patches.enter_context(mock.patch.object(target, name, value))
 
     def run_project(self):

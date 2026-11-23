@@ -99,7 +99,8 @@ class Explicit(ApplyCounter):
                                                      'cycle_id': cycle_id}
         with mock.patch.object(candidate_apply, 'apply_candidate', side_effect=stale) as apply:
             cycle = self.worker()['cycle']['cycle_id']
-            self.assertEqual(self.evaluation(cycle)[0], 'completed')
+            # 1.1.0: not closed, and queued again so the next pass evaluates it afresh.
+            self.assertEqual(self.evaluation(cycle)[0], 'queued')
             self.worker()
         self.assertEqual([c.args[2] for c in apply.call_args_list], [cycle, cycle])
 

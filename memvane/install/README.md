@@ -13,7 +13,7 @@ live `v1/`에 쓰는 setup·writer·wake 큐·sync owner lock·resident service�
 
 설치 기록(provider attestation, journal, 프로젝트의 `route.json`·`selection.json`)은 옆 파일에 완성해 fsync한 뒤 덮어쓰지 않는 rename으로 게시한다. 중단된 생성은 기록을 남기지 않고, 같은 단계의 재실행이 남은 조각을 지우고 다시 만든다.
 
-새 머신의 Laya embed runtime은 `setup_entry.py provision-index-runtime --approve-index-runtime-download`가 만든다(`memvane/provider/embed_runtime.py`). Node는 `PATH`를 먼저 보고 mise/fnm/nvm/volta/asdf/Homebrew/system 설치 순으로 찾되 메이저 22/24/26의 실제 바이너리만 받는다(버전 매니저 shim은 거절). `locks/laya-embed-runtime`(node-llama-cpp 3.18.1 + prebuilt `@node-llama-cpp/mac-arm64-metal`)를 `npm ci --ignore-scripts`로 설치하고, GGUF는 `https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf`에서 받아 sha256 `f470220f84b6235197541352d22f10bf00098a8242c18eaacea9c8a4add557bc`과 일치할 때만 채택한다(`--provider-model-file`로 같은 GGUF의 로컬 사본 지정). 결과는 `~/.local/state/memvane/v1/embed-runtime`의 세대 디렉터리와 `active.json`·`previous.json`이다. `gc-index-runtime`은 active·previous·`~/.local/state/memvane/v1/installs/*/provider-attestation.json`이 가리키지 않는 세대를 나열하고 `--approve-index-runtime-gc`가 있을 때만 지운다(attestation의 과거 `profileDependencyClosure` 행은 보지 않는다).
+새 머신의 Laya embed runtime은 `setup_entry.py provision-index-runtime --approve-index-runtime-download`가 만든다(`memvane/provider/embed_runtime.py`). Node는 `PATH`를 먼저 보고 mise/fnm/nvm/volta/asdf/Homebrew/system 설치 순으로 찾되 메이저 22/24/26의 실제 바이너리만 받는다(버전 매니저 shim은 거절). `locks/laya-embed-runtime`(node-llama-cpp 3.18.1 + prebuilt `@node-llama-cpp/mac-arm64-metal`)를 `npm ci --ignore-scripts`로 설치하고, GGUF는 `https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/a0f9bb7a85ab3b2b2ff2e540b91930b784518576/embeddinggemma-300M-Q8_0.gguf`에서 받아 sha256 `f470220f84b6235197541352d22f10bf00098a8242c18eaacea9c8a4add557bc`과 일치할 때만 채택한다(`--provider-model-file`로 같은 GGUF의 로컬 사본 지정). 결과는 `~/.local/state/memvane/v1/embed-runtime`의 세대 디렉터리와 `active.json`·`previous.json`이다. `gc-index-runtime`은 active·previous·`~/.local/state/memvane/v1/installs/*/provider-attestation.json`이 가리키지 않는 세대를 나열하고 `--approve-index-runtime-gc`가 있을 때만 지운다(attestation의 과거 `profileDependencyClosure` 행은 보지 않는다).
 
 
 ### 이름과 내부 명명
@@ -29,6 +29,16 @@ live `v1/`에 쓰는 setup·writer·wake 큐·sync owner lock·resident service�
 런타임 선택은 provider·worker 파일과 모델·런타임 정체성을 확인한다.
 
 `runtime_wake_cancel.py`는 프로젝트의 `laya-sync` 빌드 wake 행을 읽기 전용으로 보여 준다(`build-wake-status`). 큐 읽기는 runtime api `wake_cancel_status`가 한다. 1.0에는 wake 행을 지우는 취소 명령이 없다.
+
+## state 정리
+
+`state_cleanup.py`(`install.api.state_cleanup`, setup action `state-cleanup`)는 사용자 state의 미리보기와 승인 삭제를 맡는다. 미리보기는 아무것도 쓰지 않는다. setup 진입점은 미리보기의 삭제 대상 목록으로 `previewSha256`을 내고, 승인(`--approve-state-cleanup <previewSha256>`)은 지금의 목록이 그 값과 같을 때만 지운다(다르면 `state_cleanup_preview_changed`로 거절하고 지금의 미리보기를 낸다). 삭제 함수는 승인된 목록(`only`)에 없는 대상을 `not_previewed`로 남긴다.
+
+- 기본 범위는 `installs/`의 설치 state root다. 설치의 `route.json`이 가리키는 프로젝트 폴더가 있고 그 폴더의 `route.json`·`selection.json`이 이 state root를 가리키지 않으며 `initial-builds` 포인터도 없을 때만 `remove released`다. 프로젝트의 `route.json`(`stateRoot`)이나 `selection.json`(`installId`)이 이 설치를 가리키면 `selected`이고(빌드 포인터는 온보딩 뒤에도 남는다), 프로젝트 포인터 없이 빌드 포인터만 가리키면 `building`이다. `selected`, `building`, `project_unreachable`(프로젝트 폴더가 없다. 분리된 볼륨일 수 있다), `pointer_unreadable`, `build_pointer_unreadable`, `unrecognized`는 남긴다.
+- 삭제는 그 설치의 `install_lock`과 sync owner를 비대기로 잡고 분류를 다시 확인한 뒤 `installs/.removing-<id>`로 rename하고 `kernel/safe_rmtree`로 지운다(`vector-cache/`는 설치와 함께 sync owner 아래에서 사라진다). lock을 잡지 못하면 `busy`로 남기고, 지우다 멈춘 `.removing-*`은 다음 실행이 지운다.
+- `everything=True`는 사용자가 전부 삭제를 명시해 요청했을 때만 쓰는 범위다. 지우다 멈춘 tree는 루트 옆에 `memvane.removing-<pid>`로 남고 다음 실행의 목록에 `interrupted_removal`로 올라 지워진다. state(`~/.local/state/memvane`)·지원·캐시 루트가 본인 소유의 실제 디렉터리일 때만 rename 뒤 지운다. resident service는 service root가 사라져 스스로 drain한다.
+- 삭제가 유일한 효과이므로 남은 것은 `failed`에 사유와 함께 싣고 `partial`로 끝낸다. 프로젝트의 `.memvane/`과 `~/.config/memvane`은 어느 범위에서도 건드리지 않는다.
+- 임베딩 runtime 세대 정리(`provider.api.collect`)는 app 층의 setup 진입점이 같은 결과의 `indexRuntime`에 합친다.
 
 ## 온보딩 use case
 

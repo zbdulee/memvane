@@ -135,8 +135,11 @@ class PolicyDecisions(unittest.TestCase):
         preparing = policy.DispatchFailure('target_preparing')
         self.assertFalse(policy.settle(cap * 3, done=False, error=preparing, now=10,
                                        kind='laya-sync')['ack'])
-        # Other kinds keep their own retry semantics.
-        for kind in ('learning', 'auto', None):
+        # A learning wake has its own, longer cap; the other kinds have none.
+        learning = policy.LEARNING_RETRY_CAP_ATTEMPTS
+        self.assertFalse(policy.settle(learning - 2, done=False, now=10, kind='learning')['ack'])
+        self.assertEqual(policy.settle(learning - 1, done=False, now=10, kind='learning')['drop'], 'retry_cap')
+        for kind in ('auto', None):
             self.assertFalse(policy.settle(cap * 3, done=False, now=10, kind=kind)['ack'])
 
     def test_a_missing_target_backs_off_until_it_stayed_missing_for_a_day(self):

@@ -8,8 +8,9 @@ One process keeps three results it would otherwise recompute per request:
 code file hashes by stat stamp (``cached_file_sha``), the loaded modules it
 has already placed inside the runtime roots (``_module_scope``), and, for a
 request that loaded no model, the runtime stat sweep of its own initial
-validation (``light_revalidation``). The sweep still runs at every request's
-initial validation and around every model load.
+validation (``light_revalidation``). A recall request's initial validation
+stands on a sweep at most ``IDENTITY_REUSE_SECONDS`` old (``reuse_window``);
+any other initial validation (warm-up, apply) and every model load is swept.
 """
 from __future__ import annotations
 from contextlib import contextmanager
@@ -96,6 +97,28 @@ def light_revalidation():
         yield
     finally:
         _LIGHT.reset(token)
+
+
+# A recall request's initial validation may stand on the runtime stat sweep of
+# an earlier validation in this process for this long.
+IDENTITY_REUSE_SECONDS = 5.0
+_REUSE = contextvars.ContextVar('memvane_identity_reuse', default=False)
+
+
+@contextmanager
+def reuse_window():
+    """The initial validation of one ordinary request.
+
+    Inside it ``IdentityCache.verify(..., reuse=True)`` skips the runtime stat
+    sweep and the module scope check while a sweep of the same generation is
+    at most ``IDENTITY_REUSE_SECONDS`` old. The revalidations of the same
+    request run outside it, so a model load is still swept after it.
+    """
+    token = _REUSE.set(True)
+    try:
+        yield
+    finally:
+        _REUSE.reset(token)
 
 
 def _private_state(state):
@@ -303,16 +326,37 @@ class IdentityCache:
         self.content = {}
         self.receipts = {}
         self.last_timing = {}
+        self.clock = time.monotonic
+        # Start of the last validation whose runtime sweep passed; a reused
+        # or light validation never moves it, a failed one clears it.
+        self.swept_at = None
 
-    def verify(self, state, argv, view):
+    def verify(self, state, argv, view, *, reuse=False):
+        """``reuse``: this caller's initial validation may stand on a recent
+        sweep (``reuse_window``). Apply and warm-up never pass it."""
+        try:
+            return self._verify(state, argv, view, reuse)
+        except BaseException:
+            self.swept_at = None
+            raise
+
+    def end_reuse(self):
+        """The next validation sweeps: what follows no longer stands on the last sweep."""
+        self.swept_at = None
+
+    def _verify(self, state, argv, view, reuse):
         started = time.perf_counter()
+        began = self.clock()
         receipt = admit(state, argv, view)
         if receipt is None: raise ValueError('inference_identity_required')
         if receipt['code_sha256'] != self.code_at_start:
             raise ValueError('inference_identity_changed')
         roots = [*runtime_roots(), Path(argv[2]).resolve()]
         key = receipt['manifest_sha256']
-        light = _LIGHT.get() and self.generation == key and key in self.content
+        cached = self.generation == key and key in self.content
+        reused = bool(reuse and _REUSE.get() and cached and self.swept_at is not None
+                      and 0 <= began - self.swept_at <= IDENTITY_REUSE_SECONDS)
+        light = bool(_LIGHT.get() and cached) or reused
         if not light:
             _module_scope(runtime_roots())
         if (receipt['roots'] != [str(p) for p in roots] or argv[0] != sys.executable
@@ -349,9 +393,11 @@ class IdentityCache:
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError('inference_identity_changed')
         # Full receipt/approval/scope are re-read at each admission above.
+        if not light:
+            self.swept_at = began
         self.last_timing = {'identity_seconds': round(time.perf_counter()-started,6),
                             'identity_cache_hit': hit, 'identity_light': light,
-                            'metadata_subprocesses': 0}
+                            'identity_reused': int(reused), 'metadata_subprocesses': 0}
         return {**receipt['verified'], 'runtime_identity_sha256': _sha([
             receipt['verified']['runtime_identity_sha256'], key,
             receipt['device'], receipt['code_sha256']])}

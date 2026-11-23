@@ -10,6 +10,7 @@ The lifecycle checks stop one step at an arbitrary durable point (a raised
 epochs, record phases, files and route states; none reads a wall clock.
 """
 from __future__ import annotations
+import uuid
 
 from contextlib import closing, redirect_stdout
 import io
@@ -190,7 +191,7 @@ class FixtureOnboarding(FixtureCase):
         decision = select_route(str(self.project), action='recall')
         self.assertEqual(decision.get('state'), 'candidate', decision)
         served = serve_selected('recall', 'claude', decision, {
-            'session_id': 's5-fixture', 'cwd': str(self.project), 'hook_event_name': 'UserPromptSubmit',
+            'session_id': 's5-fixture-' + uuid.uuid4().hex[:8], 'cwd': str(self.project), 'hook_event_name': 'UserPromptSubmit',
             'prompt': prompt})
         return ((served or {}).get('hookSpecificOutput') or {}).get('additionalContext', '')
 

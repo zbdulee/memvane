@@ -1,15 +1,18 @@
 # Release agent QA gate
 
-Every version release must pass this agent-executed QA gate on the **final
-installed candidate**. The gate does not rerun unit tests. It is a set of
+This is the contract of the full run (Q6 of the
+[release checklist](release.md)): an agent-executed QA of the **final
+installed version**, performed for every minor version. It does not block a
+merge or a release; the checks that do are P1 to P6 of the checklist, and the
+per-release smoke is its RS-core. The run does not rerun unit tests. It is a set of
 reproducible scenarios that an operator agent performs in fresh, real Claude
 Code and Codex host sessions, against disposable synthetic fixtures. Each
 scenario captures objective evidence. Record each run with
 [the run record template](templates/release-agent-qa-run.md). The
 [release checklist](release.md) links here.
 
-Open QA items, including the user-deferred assertions, are tracked in
-[TODO.md](TODO.md).
+Open QA items, including the user-deferred assertions, are tracked in the
+[roadmap](ROADMAP.md).
 The [architecture flow charts](architecture/flows/README.md) explain the
 implemented paths and boundaries; they are not L1 verdicts.
 
@@ -911,6 +914,15 @@ The controlled late-worker barrier is unavailable. Mark Part B `BLOCKED` until a
 
 For each installed candidate, verify reviewed provider and worker digests, fresh onboarding, published wiki-only recall, linked worktree isolation, sync after edits and removals, and restore followed by a new onboarding plan. A real-model run uses the model-test resource guard. Record unavailable checks as `NOT RUN` or `BLOCKED`; fixture results do not substitute for a real-model run.
 
+### 1.1 maintenance checks
+
+Run each on the installed candidate with the fixture account; record a check that cannot run as `NOT RUN` or `BLOCKED`.
+
+- **State cleanup.** Onboard two fixture projects and release one. The `state-cleanup` preview lists only the released install as `remove`, writes nothing and returns a `previewSha256`; the approved run with that digest removes exactly that install and leaves the selected one, the project's `.memvane/` folder and `~/.config/memvane` unchanged. An approval with another digest removes nothing.
+- **Previous model.** In a project whose selector has an applied candidate, `restore-previous-model --plan` reports `rollback_planned` with the applied cycle and writes nothing; the run without `--plan` reports `restored`, the active pointer is the previous model's, recall still serves, and a second `--plan` reports `already_restored` with the same cycle (or `rollback_planned` for the application before it, when the restored model was itself an applied one). A project with no applied candidate reports `nothing_to_restore`.
+- **Learning check.** `memvane:logs` with the learning check on that project reads without writing and reports `0 violation(s)` before the restore and after it, once the next learning pass has run (a count right after the restore is checked again after that pass before it is read as damage).
+- **No host enabled.** After MemVane is removed from every host (disabled in Codex), no MemVane background process is left within ten minutes and none is started again; reinstalling starts them on the next hook.
+
 ## 10. Domain ownership
 
 Scenarios respect domain ownership. Two rules apply:
@@ -949,7 +961,7 @@ Scenarios respect domain ownership. Two rules apply:
 | Changed paths | Rerun in addition to core smoke |
 |---|---|
 | `memvane/host/host_response.py`, `memvane/store/view/view_reader.py`, `memvane/wiki/card/wiki_freshness.py`, `skills/query/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-02 |
-| `memvane/sync/sync_owner_lock.py`, `memvane/sync/product_sync_worker.py`, `skills/update/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-03 |
+| `memvane/runtime/sync_owner_lock.py`, `memvane/sync/product_sync_worker.py`, `skills/update/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-03 |
 | `memvane/wiki/**`, `skills/wiki-*/**`, `agents/**` | WIKI-01..03 |
 | `memvane/learning/**` | RES-01, RES-02 |
 | `memvane/app/setup_entry.py`, `memvane/provider/embed_runtime.py`, `locks/**`, `skills/setup/**` | INST-01..04, PLAT-01 |

@@ -40,3 +40,29 @@ test('Codex hooks-codex.json — CLAUDE_PLUGIN_ROOT 사용 (모든 codex 플러�
   assert.match(m, /apply_patch/, 'codex 편집 tool 이름 포함');
   assert.ok(!/MultiEdit|NotebookEdit/.test(m), 'Claude 전용 이름 제거');
 });
+
+test('모든 매니페스트와 teacher tier 표의 버전이 package.json과 같다', () => {
+  const version = read('package.json').version;
+  assert.match(version, /^\d+\.\d+\.\d+$/);
+  const entry = (path) => {
+    const plugins = read(path).plugins.filter((plugin) => plugin.name === 'memvane');
+    assert.equal(plugins.length, 1, path);
+    return plugins[0].version;
+  };
+  const yaml = readFileSync('plugin.yaml', 'utf8').match(/^version:\s*"?([^"\s]+)"?\s*$/m);
+  const tiers = readFileSync('memvane/learning/context_learning/teacher_model_tiers.py', 'utf8')
+    .match(/^RELEASE = '([^']+)'$/m);
+  assert.deepEqual({
+    'plugin.json': read('plugin.json').version,
+    'plugin.yaml': yaml && yaml[1],
+    '.claude-plugin/plugin.json': read('.claude-plugin/plugin.json').version,
+    '.codex-plugin/plugin.json': read('.codex-plugin/plugin.json').version,
+    '.claude-plugin/marketplace.json': entry('.claude-plugin/marketplace.json'),
+    '.agents/plugins/marketplace.json': entry('.agents/plugins/marketplace.json'),
+    'teacher_model_tiers.RELEASE': tiers && tiers[1],
+  }, {
+    'plugin.json': version, 'plugin.yaml': version, '.claude-plugin/plugin.json': version,
+    '.codex-plugin/plugin.json': version, '.claude-plugin/marketplace.json': version,
+    '.agents/plugins/marketplace.json': version, 'teacher_model_tiers.RELEASE': version,
+  });
+});

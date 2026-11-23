@@ -8,9 +8,9 @@ MemVane은 프로젝트 안의 문서, 메모, wiki를 자동으로 찾아서
 
 지원 에이전트:
 
-- Claude Code
-- Codex
-- Hermes Agent
+- Claude Code (매 출시 검증)
+- Codex (매 출시 검증)
+- Hermes Agent (미검증)
 
 설치 후 사용자는 터미널 명령을 외우지 않아도 됩니다. 프로젝트 온보딩,
 인덱스 갱신, recall 진단 같은 작업은 에이전트에게 자연어로 요청하면
@@ -32,13 +32,20 @@ compile or learning work; their SessionStart shows one short onboarding notice
 current session or decline it for the project; an explicit onboarding request
 turns it back on.
 The local embedding runtime uses Node 22, 24 or 26 and a prebuilt native
-package for Apple Silicon macOS (arm64).
+package for Apple Silicon macOS (arm64). Preparing it downloads one pinned
+embedding model file and checks it against a fixed hash. If that download is
+refused or unavailable, ask the agent to prepare the runtime from a local copy
+of the same model file; a file with any other content is not accepted.
+Linux and Intel macOS are not supported: onboarding is refused at the provider
+review and no project is selected. The Linux CI runs the tests only; the
+checkout observation cache that keeps a recall's fixed cost low exists only on
+macOS (APFS).
 
-| Host | Installation route | Runtime support |
-|---|---|---|
-| Claude Code | Claude plugin marketplace | recall, update, gate, post-edit sync, wiki compile |
-| Codex | Codex plugin marketplace | recall, update, gate, post-edit sync, wiki compile |
-| Hermes Agent | Hermes plugin install | recall, update, gate, post-edit sync, wiki compile |
+| Host | Installation route | Runtime support | Verification |
+|---|---|---|---|
+| Claude Code | Claude plugin marketplace | recall, update, gate, post-edit sync, wiki compile | verified on every release |
+| Codex | Codex plugin marketplace | recall, update, gate, post-edit sync, wiki compile | verified on every release |
+| Hermes Agent | Hermes plugin install | recall, update, gate, post-edit sync, wiki compile | not verified |
 
 For data handling, including the optional wiki-compile path, see
 [docs/privacy.md](docs/privacy.md). For commands and Korean-language setup,
@@ -110,6 +117,38 @@ Codex는 `codex plugin marketplace upgrade memvane-marketplace` 후
 사용합니다. 제거는 플러그인 설치 해제이며 프로젝트 데이터 복구가 아닙니다.
 Codex 설치는 다른 프로젝트에도 영향을 줄 수 있으므로 제거 전에 사용 범위를
 확인하세요.
+
+### 디스크·메모리 사용량과 제거
+
+MemVane은 프로젝트 밖의 사용자 디렉터리에 state를 둡니다. 아래 크기는 한 Mac에서
+잰 값이며 프로젝트 수와 문서량에 따라 달라집니다.
+
+| 항목 | 위치 | 크기 |
+|---|---|---|
+| 임베딩 런타임(모델 포함) | `~/.local/state/memvane/v1/embed-runtime` | 약 0.5GB |
+| 프로젝트별 색인(설치 하나) | `~/.local/state/memvane/v1/installs/<id>` | 수십~수백 MB |
+| 로컬 학습 런타임(학습을 켠 경우) | `~/Library/Application Support/memvane` | 약 1.4GB |
+| 상주 프로세스 메모리 | 임베딩 모델을 올린 동안 | 약 1GB |
+
+상주 프로세스는 첫 세션이 시작하고, MemVane을 쓰는 호스트가 하나도 없으면 스스로
+끝납니다. 모든 호스트에서 플러그인을 제거하면(Codex는 끄기만 해도) 10분 안에 MemVane
+프로세스가 남지 않습니다. Claude Code에서 끄기만 한 설치는 프로젝트별로 다시 켜질 수
+있어 상주 프로세스를 끝내지 않습니다.
+state와 대기 중인 작업 기록은 그대로 남으며, 다시 설치하면 이어서 씁니다.
+
+state를 정리할 때는 에이전트에게 요청합니다.
+
+- `MemVane state 정리해줘.` — 지울 대상의 목록과 크기를 먼저 보여 주고, 승인하면
+  어느 프로젝트도 선택하지 않는 설치 디렉터리와 쓰지 않는 임베딩 런타임 세대만
+  지웁니다. 선택된 프로젝트의 색인은 지우지 않습니다.
+- `MemVane state 전부 삭제해줘.` — 선택된 프로젝트의 색인, 학습 데이터, 런타임을
+  포함한 사용자 state 전체를 지웁니다. 이 말로 직접 요청했을 때만 합니다. 플러그인
+  제거 전에 요청하세요.
+
+어느 경우에도 프로젝트의 `.memvane/` 폴더(위키, 설정)는 지우지 않습니다. 플러그인을
+이미 제거했다면 위 표의 `~/.local/state/memvane`, `~/Library/Application Support/memvane`,
+`~/Library/Caches/memvane` 디렉터리(삭제가 중단됐다면 그 옆의 `memvane.removing-*`)를
+직접 지워도 됩니다.
 
 ### 프로젝트 폴더 `.memvane/`
 
@@ -298,6 +337,8 @@ adapter에서는 `low` 요청과 지원 불가 사실을 기록하며 실제 적
 | `이 질문에 어떤 문서가 recall되는지 확인해줘.` | recall 결과 확인 |
 | `인덱스 새로고침해줘.` | 선택된 색인의 전체 스캔 동기화 큐잉 |
 | `MemVane 임베딩 런타임 상태 보여줘.` | 임베딩 런타임 확인·준비·정리 |
+| `MemVane 학습 모델을 이전 것으로 되돌려줘.` | 가장 최근에 적용된 선택 모델을 그 앞의 모델로 되돌림(미리보기 후 실행) |
+| `MemVane state 정리해줘.` | 쓰지 않는 설치 state와 런타임 세대의 목록 확인 후 승인 삭제 |
 | `MemVane 로그 보여줘.` / `왜 recall이 비었는지 로그 확인해줘.` | 설치 이벤트 로그 요약(recall·오류·동기화) |
 
 ## 문제 해결

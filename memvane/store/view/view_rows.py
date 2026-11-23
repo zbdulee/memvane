@@ -1107,10 +1107,10 @@ class RowsMixin:
                                      verified=record['verified'], ordinal=head.ordinal)
         return pin
 
-    def _rows_search(self, pin, fts_query, limit, *, path_prefixes, excluded_paths, deadline_seconds):
+    def _rows_search(self, pin, fts_query, limit, *, path_prefixes, excluded_paths, deadline_seconds, excluded_cards=None):
         import sqlite3
         from memvane.store.view.view_reader import _query, _remaining
-        deadline = _query(fts_query, limit, path_prefixes, excluded_paths, deadline_seconds)
+        deadline = _query(fts_query, limit, path_prefixes, excluded_paths, deadline_seconds, excluded_cards)
         record = self._pinned(pin)
         _remaining(deadline)
         entry = record['entry']
@@ -1137,6 +1137,9 @@ class RowsMixin:
             if excluded_paths:
                 conditions.append('c.path NOT IN (' + ','.join('?' for _ in excluded_paths) + ')')
                 args.extend(excluded_paths)
+            if excluded_cards:
+                conditions.append('(c.path,c.blob_sha) NOT IN (VALUES ' + ','.join('(?,?)' for _ in excluded_cards) + ')')
+                args.extend(item for pair in excluded_cards for item in pair)
             extra = ''.join(' AND ' + clause for clause in conditions)
             args.append(limit)
             try:
@@ -1339,14 +1342,14 @@ class RowsMixin:
                     deferred=deferred)
 
     def _rows_search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work, deadline_seconds,
-                           path_prefixes, excluded_paths, timings=None, preferred_paths=None):
+                           path_prefixes, excluded_paths, timings=None, preferred_paths=None, excluded_cards=None):
         """Exact max-cosine over the pinned head's eligible cards and the sealed spec's sets."""
         from memvane.store.view import view_vectors as vectors
         vectors._check_preferred(preferred_paths)
         deadline = time.monotonic() + vectors.options(limit, max_float_work, deadline_seconds,
-                                                      path_prefixes, excluded_paths)
+                                                      path_prefixes, excluded_paths, excluded_cards)
         v.identifier(profile_id)
-        query = vectors.query_values(query_vector)
+        query, dropped = vectors.query_list(query_vector), vectors.card_pairs(excluded_cards, 'vector_filter_invalid')
         record = self._pinned(pin)
         entry = record['entry']
         vectors._left(deadline);started = vectors.clock()
@@ -1365,12 +1368,14 @@ class RowsMixin:
                 v.fail('vector_profile_mismatch')
             recipe_id = generation['recipe_id']
             dimension = self._profile(profile_id)['dimension']
-            if len(query) != dimension:
+            if any(len(item) != dimension for item in query):
                 v.fail('vector_query_invalid')
             vectors.mark(timings, 'vectorOpenMs', started);started = vectors.clock()
-            cards = [row for row in self._rows_open(db, pin.view_id, head.ordinal) if row['eligible']
+            every = [row for row in self._rows_open(db, pin.view_id, head.ordinal) if row['eligible']
                      and _path_allowed(row['path'], path_prefixes, excluded_paths)]
-            heads = self._rows_coverage(db, cards, generation, full=False, deadline=deadline)
+            cards = [row for row in every if (row['path'], row['blob_sha']) not in dropped]
+            from memvane.store.view import view_accel_search
+            heads = view_accel_search.heads(self, db, cards, generation, deadline)
             groups = {}
             for row in cards:
                 groups.setdefault(row['blob_sha'], []).append(row)
@@ -1382,9 +1387,8 @@ class RowsMixin:
                          vectorRows=0, vectorVerified=0, vectorScanBlocks=0,
                          vectorLoadMs=0.0, vectorScanMs=0.0, vectorVerifyMs=0.0,
                          vectorReadMs=0.0, vectorUnpackMs=0.0, vectorDotMs=0.0)
-            stats['vectorKernelUnavailable'] = native is None and vector_accel.requested()
+            stats['vectorKernelUnavailable'] = native is None and vector_accel.requested();stats['vectorExcluded'] = len(every) - len(cards)
             if native is not None:
-                from memvane.store.view import view_accel_search
                 top = view_accel_search.search(self, db, groups, heads, recipe_id, profile_id,
                                               dimension, query, limit, deadline, stats, native)
             else:

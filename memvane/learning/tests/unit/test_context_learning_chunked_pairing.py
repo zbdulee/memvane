@@ -200,8 +200,8 @@ class PairBudget(unittest.TestCase):
                               for i in kept], order[:budget])
             self.assertEqual(counted['dropped_pairs'], len(order) - budget)
 
-    def test_the_prompt_tail_is_scored_within_the_shipped_budget(self):
-        # Ten candidates, four query chunks and the prompt lane's 24 pairs:
+    def test_the_prompt_tail_is_scored_within_a_budget_of_twenty_four_pairs(self):
+        # Ten candidates, four query chunks and 24 pairs (the shipped prompt budget is 12):
         # after the ten first-chunk pairs the tail chunk goes to every card.
         prompt = sentences('질문', 300) + ' 마지막 요청: 배선을 알려줘'
         bodies = ['# 카드 %d\n짧은 본문.' % i for i in range(10)]

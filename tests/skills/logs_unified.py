@@ -116,6 +116,25 @@ class UnifiedLogs(FixtureCase):
         self.assertIn('target_child_failed', text)
         self.assertNotIn('target_deferred', text)
 
+    def test_slo_view_is_one_block_per_install(self):
+        code, out, err = self.run_logs('--all', '--slo', '--hours', '1000000')
+        self.assertEqual(code, 0, err)
+        blocks = [line for line in out.splitlines() if line.startswith('slo install=')]
+        self.assertEqual([line.split()[1] for line in blocks],
+                         ['install=install-synthetic-%d' % i for i in range(9)])
+        for target, line in zip(self.targets, blocks):
+            self.assertIn('root=' + target['root'], line)
+        for name in ('hook', 'sync', 'failed', 'identity'):
+            self.assertEqual(out.count(f'  slo {name}: '), 9, name)
+        self.assert_no_raw(out)
+        code, out, err = self.run_logs('--all', '--slo', '--hours', '1000000', '--json')
+        self.assertEqual(code, 0, err)
+        rows = [row['slo'] for row in self.json_rows(out) if 'slo' in row]
+        self.assertEqual(sorted({row['install'] for row in rows}),
+                         ['install-synthetic-%d' % i for i in range(9)])
+        self.assertEqual({row['root'] for row in rows}, {target['root'] for target in self.targets})
+        self.assert_no_raw(out)
+
     def setUp(self):
         super().setUp()
         saved = os.environ.get('XDG_CONFIG_HOME')

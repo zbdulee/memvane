@@ -5,14 +5,28 @@ on:
     branches: [main]
   pull_request:
 
+# One run per ref at a time: the run in progress finishes, and a newer push
+# replaces only the run still queued behind it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # One test file at a time on a runner; the suite is split by shard instead.
+  MEMVANE_TEST_CONCURRENCY: 1
+  # Module results of the run (tests/support/runner.mjs), for scripts/test_flaky_report.py.
+  # A pull request run names its head commit, not the merge commit.
+  MEMVANE_TEST_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+
 jobs:
+  # Linux: a pull request runs Node 22 only; a push to main runs every Node version.
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        node-version: [22, 24, 26]
-        shard: [1, 2, 3]
+        node-version: ${{ github.event_name == 'pull_request' && fromJSON('[22]') || fromJSON('[22, 24, 26]') }}
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,4 +42,57 @@ jobs:
           python3 --version
           bash --version
       - name: Run deterministic tests
+        env:
+          MEMVANE_TEST_RESULTS: ${{ runner.temp }}/module-results.jsonl
         run: npm run test:part${{ matrix.shard }}
+      - name: Keep module results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-results-ubuntu-node${{ matrix.node-version }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/module-results.jsonl
+          if-no-files-found: ignore
+
+  # The product's platform: macOS arm64 with the system Python 3.9 that hooks run.
+  test-macos:
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Use the system Python 3.9
+        run: |
+          version="$(/usr/bin/python3 --version)"
+          echo "$version"
+          case "$version" in
+            "Python 3.9."*) ;;
+            *) echo "/usr/bin/python3 is not Python 3.9" >&2; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/system-python"
+          ln -s /usr/bin/python3 "$RUNNER_TEMP/system-python/python3"
+          echo "$RUNNER_TEMP/system-python" >> "$GITHUB_PATH"
+      - name: Verify runtime prerequisites
+        run: |
+          uname -m
+          node --version
+          python3 --version
+          test "$(python3 -c 'import sys; print(sys.version_info[:2])')" = "(3, 9)"
+          bash --version
+      - name: Run deterministic tests
+        env:
+          MEMVANE_TEST_RESULTS: ${{ runner.temp }}/module-results.jsonl
+        run: npm run test:part${{ matrix.shard }}
+      - name: Keep module results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-results-macos-${{ matrix.shard }}
+          path: ${{ runner.temp }}/module-results.jsonl
+          if-no-files-found: ignore

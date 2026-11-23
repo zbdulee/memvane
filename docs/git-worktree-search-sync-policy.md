@@ -109,8 +109,8 @@ worktree는 자기 cwd 기준 분류를 그대로 따른다.
 - 읽기 실패, 권한 거부, 일시적 I/O 오류는 파일 삭제의 증거가 아니다. 해당
   경로의 이전 view를 유지하고 오류를 드러낸 뒤 재시도한다. 읽을 수 있는
   collection 스캔에서 파일 부재가 확인되면 현재 view에서 제외한다. schema3: sync는
-  대량 삭제를 `schema3_mass_removal_held`로 보류하고, raw 관측이 상한을 넘거나 실패하면
-  manifest `sources`를 비운 채 위키 게시를 계속한다.
+  삭제된 카드를 디스크 상태에 따라 색인에서 제거하고 카드 파일은 건드리지 않는다. raw 관측이
+  상한을 넘거나 실패하면 manifest `sources`를 비운 채 위키 게시를 계속한다.
 
 view store는 checkout별 게시 세대와 content set 재사용 키를 가진다. 공유
 set GC, raw 즉시 검색, 공유 위키의 완전한 의존성 판정은 구현돼 있지 않다.

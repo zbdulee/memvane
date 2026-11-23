@@ -60,12 +60,17 @@ class EnrolledWarm(FixtureCase):
         stack.enter_context(mock.patch.object(selector_heal, '_service_identity', return_value=[1, 2, 3, 'fixture']))
         stack.enter_context(mock.patch('memvane.learning.context_learning.local_cycle.VerifiedLayaTrainer.validate_prediction',
                                        return_value=self.verified))
-        stack.enter_context(mock.patch.object(inference_service._IDENTITY_CACHE, 'verify', return_value=self.verified))
+        self.verify = stack.enter_context(
+            mock.patch.object(inference_service._IDENTITY_CACHE, 'verify', return_value=self.verified))
 
     def test_enrollment_pointer_passes_real_warm_validator_and_live_selector(self):
         active = self.namespace()
         self.transport()
-        self.assertEqual(selector_heal.warm(self.project, state=self.state)['status'], 'selector_warm')
+        # With inference evidence the worker validates through the identity cache.
+        with mock.patch.object(inference_service, 'has_evidence', return_value=True):
+            self.assertEqual(selector_heal.warm(self.project, state=self.state)['status'], 'selector_warm')
+        # The warm-up request names no lane: its validation is swept every time.
+        self.assertEqual([call.kwargs for call in self.verify.call_args_list], [{'reuse': False}])
         body = '---\ntitle: Cobalt\n---\n# Cobalt\nThe synthetic marker is cobalt.\n'
         selected, reason, _ = live_select.choose(self.state, 'Which marker?', [
             {'id': 'wiki/cobalt.md', 'revision_sha256': hashlib.sha256(body.encode()).hexdigest(),

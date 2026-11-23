@@ -12,9 +12,10 @@ from contextlib import closing
 import json
 import os
 import sqlite3
+from pathlib import Path
 import struct
+import subprocess
 import sys
-import threading
 import unittest
 from unittest import mock
 
@@ -22,10 +23,12 @@ from memvane.journal.types import JournalEvidenceError
 from memvane.recall import api as recall_api
 from memvane.recall.types import HostResponseError
 from memvane.recall.tests.support import NOTE, RecallInstallCase
+from tests.support.case import scaled
 from tests.support.project import settle_index
 from tests.support.sqlite_hot_journal import kill_mid_write
 
 HOSTS = ('claude', 'codex', 'hermes')
+REPOSITORY = Path(__file__).resolve().parents[4]
 PROMPT = 'what marker does the heron protocol keep?'
 _OPENED = []
 
@@ -289,7 +292,7 @@ class Schema3Recall(RecallInstallCase):
         observed = []
         def slow_exact(_pin, _vector, _limit, **kwargs):
             observed.append((sum(sizes), kwargs['deadline_seconds'], kwargs['max_float_work']))
-            if kwargs['deadline_seconds'] <= 1.0:
+            if kwargs['deadline_seconds'] <= 2.0:
                 raise BlobStoreError('vector_deadline_exceeded')
             return []
         selected = []
@@ -312,8 +315,59 @@ class Schema3Recall(RecallInstallCase):
         self.assertEqual(event['outcome'], 'served')
         self.assertEqual(event['semantic'], 'deferred_deadline')
         self.assertEqual(observed[0][0], 18412)
-        self.assertLessEqual(observed[0][1], 1.0)
+        self.assertEqual(observed[0][1], 2.0)
         self.assertEqual(observed[0][2], 6000000)
+
+    def git_children(self, call):
+        """The Git children ``call()`` started: the checkout observation's own (by their fixed arguments)."""
+        import subprocess
+        real, seen = subprocess.Popen, []
+
+        def started(argv, *args, **kwargs):
+            if isinstance(argv, list) and 'log.showSignature=false' in argv:
+                seen.append(argv[7:])
+            return real(argv, *args, **kwargs)
+        with mock.patch('subprocess.Popen', side_effect=started):
+            call()
+        return seen
+
+    def test_one_recall_starts_a_bounded_number_of_git_children(self):
+        # A checkout observation is twelve Git children. Where the observation cache holds
+        # (macOS on APFS) a recall of an unchanged checkout in a warm process starts none; without
+        # the cache (Linux) every observation of the recall pays them again.
+        self.install.provider.admit_queries()
+        for _ in range(2):
+            started = [command for command in self.git_children(lambda: self.recall(PROMPT))
+                       if command != ['--exec-path']]
+            observations, rest = divmod(len(started), 12)
+            self.assertEqual(rest, 0, started)
+            self.assertEqual(started.count(['--version']), observations)
+            self.assertLessEqual(observations, 18, len(started))
+            if sys.platform != 'darwin':
+                self.assertGreaterEqual(observations, 1)
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'the observation cache needs macOS on APFS')
+    def test_a_cold_thread_observes_the_checkout_once_and_a_warm_one_not_at_all(self):
+        # The observation cache is per thread: a new thread is what a new hook process is.
+        import threading
+        self.install.provider.admit_queries()
+        counts, errors = [], []
+
+        def two_recalls():
+            try:
+                for _ in range(2):
+                    counts.append(self.git_children(lambda: self.recall(PROMPT)))
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                errors.append(exc)
+        thread = threading.Thread(target=two_recalls)
+        thread.start()
+        thread.join(scaled(120))
+        self.assertEqual((errors, len(counts)), ([], 2))
+        cold, warm = counts
+        # One observation (twelve children) and, behind the macOS shim, at most the one proof of its target.
+        self.assertEqual(len([command for command in cold if command != ['--exec-path']]), 12, cold)
+        self.assertLessEqual(cold.count(['--exec-path']), 1)
+        self.assertEqual(warm, [])
 
     def test_recall_event_records_stage_times_without_prompt_or_body(self):
         self.install.provider.admit_queries()
@@ -326,11 +380,28 @@ class Schema3Recall(RecallInstallCase):
         for field in ('vectorReadMs', 'vectorUnpackMs', 'vectorDotMs'):
             self.assertIsInstance(event.get(field), (int, float), field)
             self.assertGreaterEqual(event[field], 0)
+        # The route proof says where its time went, by fixed stage names only.
+        stages = event['routeProofStages']
+        self.assertEqual(list(stages), ['route', 'records', 'attestation', 'provider', 'recheck'])
+        self.assertTrue(all(type(value) in (int, float) and value >= 0 for value in stages.values()), stages)
         self.assertNotIn(PROMPT, json.dumps(event))
         self.assertNotIn(NOTE, json.dumps(event))
         self.assertIn(event['pinVerified'], ('receipt', 'full'))
         _context, _err, repeated = self.recall(PROMPT)
         self.assertEqual(repeated['pinVerified'], 'receipt')
+
+    def test_an_unexpected_failure_of_the_query_round_trip_serves_lexical_rows(self):
+        # Whatever the round trip raised (a thread that could not start, a bug): the recall goes on.
+        from memvane.provider import api as provider_api
+        self.install.provider.admit_queries()
+        reads, patch = self.observed_reads()
+        with patch, mock.patch.object(provider_api, 'query_vectors',
+                                      side_effect=RuntimeError("can't start new thread")) as asked:
+            context, _err, event = self.recall(PROMPT)
+        self.assertEqual(asked.call_count, 1)
+        self.assertIn('zqheronx', context)
+        self.assertEqual([(vector, result.semantic_status) for vector, result in reads], [(None, 'provider_absent')])
+        self.assertEqual(event['outcome'], 'served')
 
     def test_a_cold_provider_serves_lexical_rows_and_wakes_the_owner_once(self):
         self.install.provider.admit_queries()
@@ -405,32 +476,17 @@ class Schema3Recall(RecallInstallCase):
         self.write_card('heron')
         self.write_card('glacier')
         self.fixture.commit('second card')
-        done = threading.Event()
-        errors, published = [], []
-
-        def publish():
-            from memvane.store import api as store_api
-            real_open = store_api.open_store
-            class RecordedStore:
-                def __init__(self, base): self.base = base
-                def __getattr__(self, name): return getattr(self.base, name)
-                def publish_generation(self, handle, gen_id, **kwargs):
-                    result = self.base.publish_generation(handle, gen_id, **kwargs)
-                    published.append(gen_id)
-                    return result
-            try:
-                with mock.patch.object(store_api, 'open_store',
-                                       side_effect=lambda *a, **kw: RecordedStore(real_open(*a, **kw))):
-                    self.install.settle()
-            except BaseException as exc:  # noqa: BLE001 - reported below
-                errors.append(exc)
-            finally:
-                done.set()
-        worker = threading.Thread(target=publish)
-        worker.start()
+        # The publish runs in its own process, as the sync worker does beside a hook's recall.
+        out = self.tmp / 'publish.json'
+        worker = subprocess.Popen(
+            [sys.executable, '-B', '-m', 'memvane.recall.tests.publish_driver', str(self.project),
+             str(self.install.journal), str(out)],
+            cwd=str(REPOSITORY), env=dict(os.environ), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (worker.poll() is None and worker.terminate(), worker.wait(), worker.stderr.close()))
         seen = []
         try:
-            while not done.is_set() and len(seen) < 50:
+            while worker.poll() is None and len(seen) < 50:
                 try:
                     context, _err, event = self.recall(PROMPT)
                 except HostResponseError as exc:
@@ -449,8 +505,11 @@ class Schema3Recall(RecallInstallCase):
                     self.assertEqual(self.generation(context), event['generation'])
                 seen.append(self.generation(context) if context else None)
         finally:
-            worker.join(120)
-        self.assertEqual(errors, [])
+            code = worker.wait(timeout=scaled(120))
+        report = json.loads(out.read_text(encoding='utf-8')) if out.exists() else {'error': worker.stderr.read()}
+        # A failure names the SQLite in use and the exception's args and errno.
+        self.assertEqual((code, report.get('error')), (0, None), report)
+        published = report['published']
         new = self.generation(self.recall(PROMPT)[0])
         self.assertNotEqual(new, old)
         self.assertIn(new, published)

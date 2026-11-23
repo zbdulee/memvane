@@ -75,7 +75,24 @@ class ServeVerifiedRows(unittest.TestCase):
         self.assertIs(answer.decision, DECISION)
         self.assertTrue(answer.own_view)
         self.assertEqual(events, [('fields', {'selection': 'selected', 'candidates': 6,
-                                              'generation': 'gen-1'})])
+                                              'generation': 'gen-1'}),
+                                  ('fields', {'rankedOverlap': 3})])
+
+    def test_ranked_overlap_counts_served_cards_among_the_three_best_ranked(self):
+        # Served c4, c1, c5 (the fourth choice is past the limit): only c1 is in c0..c2.
+        _answer, events, _checked, _found = self.serve(
+            lambda found: ([found[4], found[1], found[5], found[0]], 'selected', None))
+        self.assertEqual(events[1], ('fields', {'rankedOverlap': 1}))
+        _answer, events, _checked, _found = self.serve(
+            lambda found: ([found[3]], 'selected', None))
+        self.assertEqual(events[1], ('fields', {'rankedOverlap': 0}))
+
+    def test_ranked_fallback_and_empty_pool_record_no_overlap(self):
+        for selected, count in ((lambda found: (found, 'ranked', 'laya_selector_timeout'), 6),
+                                (lambda found: ([], 'no_candidates', None), 0)):
+            _answer, events, _checked, _found = self.serve(selected, count=count)
+            self.assertFalse([fields for kind, fields in events
+                              if kind == 'fields' and 'rankedOverlap' in fields])
 
     def test_ranked_rows_keep_hybrid_rank_and_name_their_fallback(self):
         answer, _events, _checked, found = self.serve(
@@ -88,7 +105,8 @@ class ServeVerifiedRows(unittest.TestCase):
         answer, events, checked, found = self.serve(lambda found: ([], 'selected', None))
         self.assertEqual((answer.rows, checked), ((), []))
         self.assertEqual(answer.capture, ({'topN': 5}, found, []))
-        self.assertEqual(events[1:], [('note', 'laya_selector_selected_zero')])
+        self.assertEqual(events[1:], [('fields', {'rankedOverlap': 0}),
+                                      ('note', 'laya_selector_selected_zero')])
 
     def test_no_candidates_is_the_final_reason(self):
         answer, events, _checked, _found = self.serve(

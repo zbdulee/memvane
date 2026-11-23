@@ -341,7 +341,8 @@ def _state_dir(state_root, *, create):
 
 
 def _empty():
-    return {'v': 1, 'cards': [], 'edits': []}
+    from memvane.host import session_cards
+    return session_cards.loaded(None)
 
 
 def _load(fd) -> dict:
@@ -356,19 +357,23 @@ def _load(fd) -> dict:
         row = json.loads(data.decode('utf-8')) if data else _empty()
     except (UnicodeError, ValueError):
         return _empty()
-    if (not isinstance(row, dict) or not isinstance(row.get('cards'), list)
-            or not isinstance(row.get('edits'), list)):
-        return _empty()
-    cards = [card for card in row['cards'] if isinstance(card, list) and len(card) == 2
-             and all(isinstance(item, str) for item in card)]
-    edits = [value for value in row['edits'] if type(value) in (int, float)]
-    return {'v': 1, 'cards': cards[-MAX_SESSION_CARDS:], 'edits': edits[-THROTTLE_PER_HOUR:]}
+    from memvane.host import session_cards
+    row = session_cards.loaded(row)
+    row['edits'] = row['edits'][-THROTTLE_PER_HOUR:]
+    return row
 
 
 def _save(fd, row: dict) -> None:
-    row = {'v': 1, 'cards': row['cards'][-MAX_SESSION_CARDS:],
-           'edits': row['edits'][-THROTTLE_PER_HOUR:], 'updated': time.time()}
+    from memvane.host import session_cards
+    row = {**session_cards.dumped(row), 'edits': row['edits'][-THROTTLE_PER_HOUR:], 'updated': time.time()}
     data = json.dumps(row, separators=(',', ':'), ensure_ascii=True).encode('utf-8')
+    # A file past the bound reads as empty and idle, and the sweep removes it with the edit
+    # throttle: the oldest pairs go until it fits (long non-ASCII paths take six bytes a character).
+    while len(data) > MAX_SESSION_BYTES and row['cards']:
+        drop = max(1, len(row['cards']) // 4)
+        for key in ('cards', 'at', 'by'):
+            row[key] = row[key][drop:] if len(row[key]) >= drop else []
+        data = json.dumps(row, separators=(',', ':'), ensure_ascii=True).encode('utf-8')
     os.lseek(fd, 0, os.SEEK_SET)
     os.ftruncate(fd, 0)
     view = memoryview(data)
@@ -407,11 +412,16 @@ def session_state(decision: dict, session: str):
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 raise Skip('session_busy') from None
+            from memvane.host import session_cards
             row = _load(fd)
-            yield row, lambda: _save(fd, row)
+            # A compaction or clear seen under this lock starts the pairs over; its
+            # markers go once this holder has written the record.
+            markers = session_cards.apply_resets(dfd, _session_key(session) + '.json', row)
+            yield row, lambda: (_save(fd, row), session_cards.clear_markers(dfd, markers))
         finally:
             os.close(fd)
         _sweep(dfd)
+        session_cards.sweep_markers(dfd, time.time())
     finally:
         os.close(dfd)
 
@@ -460,24 +470,9 @@ def throttled(row: dict, now: float) -> bool:
 
 
 def remember_cards(decision: dict, payload: dict, rows) -> None:
-    """Record cards a prompt recall injected, so edit recall skips them; silent."""
-    try:
-        from memvane.diagnostics.api import session_id
-        session = session_id(payload)
-        if session is None or not rows:
-            return
-        with session_state(decision, session) as (row, save):
-            seen = {tuple(card) for card in row['cards']}
-            for item in rows:
-                card = [item['path'], item['hash']]
-                if tuple(card) not in seen:
-                    row['cards'].append(card)
-                    seen.add(tuple(card))
-            save()
-    except BaseException as exc:  # noqa: BLE001 - never alters the recall answer
-        from memvane.kernel.hook_budget import HookDeadlineExceeded
-        if not isinstance(exc, (Exception, HookDeadlineExceeded)):
-            raise
+    """Record cards a prompt recall injected (``session_cards.remember``); its state, never raises."""
+    from memvane.host import session_cards
+    return session_cards.remember(decision, payload, rows)
 
 
 # ------------------------------------------------------------------ cards
@@ -677,14 +672,16 @@ def _serve(host, decision, proof, payload, current, inside, linked, successful, 
             selection, selected, limit = 'default_rank', pool[:1], 1
         else:
             selection, selected, limit = 'none', [], 0
-        seen = {tuple(card) for card in row['cards']}
+        from memvane.host import session_cards
+        by, event['agentScoped'] = session_cards.edit_context(host, payload)
+        seen = session_cards.seen(row, by, host)
         rows, limits, repeated, cited = choose_cards(selected, decision, seen, edited, limit)
         context = _render(answer, rows, limits)
         if context is None:
             rows = []
-        for item in rows:
-            row['cards'].append([item['path'], item['hash']])
         if rows:
+            event['injectedBy'] = by
+            session_cards.record(row, [(item['path'], item['hash']) for item in rows], by)
             save()
     event.update(outcome='served' if rows else 'empty',
                  reason=trace.final_ or ('injected' if rows else 'no_new_cards'),

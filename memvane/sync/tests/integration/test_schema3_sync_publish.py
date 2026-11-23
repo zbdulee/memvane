@@ -7,6 +7,7 @@ then the vector generation, publishes removals, never publishes a partial
 cold view, and leaves the journal untouched when nothing changed. Every check
 counts rows, epochs and pass results.
 """
+import uuid
 import json
 import os
 import subprocess
@@ -55,7 +56,7 @@ class SyncPublish(SyncCase):
                 self.assertTrue(ready.exists(), 'GC did not reach its commit')
                 start = time.monotonic()
                 code, output, errors = self.target.hook('recall', {
-                    'session_id': 'fixture-session', 'cwd': str(self.project),
+                    'session_id': 'fixture-session-' + uuid.uuid4().hex[:8], 'cwd': str(self.project),
                     'hook_event_name': 'UserPromptSubmit', 'prompt': 'kestrelprobe'})
                 samples.append((time.monotonic() - start) * 1000)
                 self.assertEqual(code, 0, errors)

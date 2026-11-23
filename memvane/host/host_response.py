@@ -801,8 +801,48 @@ def _render_answer_timed(host: str, payload: dict, answer) -> dict:
         except Exception:
             remember_cards = None  # The recall answer never depends on edit recall.
         if remember_cards is not None:
-            remember_cards(answer.decision, payload, answer.rows)
+            _trace_fields(injectedBy='p')
+            if remember_cards(answer.decision, payload, answer.rows) == 'write_skipped':
+                # The next recall may inject these cards once more.
+                _trace_fields(sessionState='write_skipped')
     return host_payload(host, context)
+
+
+def _session_exclusions(host: str, decision: dict, payload: dict) -> None:
+    """Hand this prompt recall the cards its session already holds; never raises."""
+    if host not in ('claude', 'codex'):
+        return
+    try:
+        from memvane.host import session_cards
+        from memvane.recall.api import set_session_exclusions
+        cards, state = session_cards.exclusions(decision, payload, host)
+        set_session_exclusions(cards)
+        _trace_fields(sessionExcluded=len(cards), sessionState=state)
+    except Exception:  # noqa: BLE001 - a recall without exclusions repeats a card at worst
+        pass
+
+
+def _session_reset(host: str, decision: dict, payload: dict) -> None:
+    """A SessionStart after a compaction or clear starts the session's injected cards over.
+
+    The marker is written before anything else the hook does and without the
+    session lock, so an edit recall holding that lock cannot delay it.
+    """
+    try:
+        from memvane.diagnostics.api import session_id
+        from memvane.host import session_cards
+        source = payload.get('source')
+        if not isinstance(source, str):
+            return
+        _trace_fields(sessionSource=source if source in session_cards.SESSION_SOURCES else 'other')
+        session = session_id(payload)
+        if host in ('claude', 'codex') and source in session_cards.RESET_SOURCES and session is not None:
+            # Unchecked beyond the trace: a marker that could not be written leaves the
+            # record as it is, and the missing ``sessionReset`` field shows it.
+            if session_cards.mark_reset(decision, session):
+                _trace_fields(sessionReset=source)
+    except Exception:  # noqa: BLE001 - SessionStart never depends on the session record
+        pass
 
 
 def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dict:
@@ -827,6 +867,8 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
     from memvane.provider.api import verification_scope
     with _event_scope(action, host, decision, payload), verification_scope():
         try:
+            if action == 'update-queued':
+                _session_reset(host, decision, payload)
             if action != 'recall':
                 return _serve_selected_once(action, host, decision, payload)
             return _serve_selected_recall(action, host, decision, payload)
@@ -855,6 +897,7 @@ def _serve_selected_recall(action: str, host: str, decision: dict, payload: dict
     # in-process host (Hermes) may run recalls concurrently or nested.
     from memvane.recall.api import recall_scope
     with recall_scope():
+        _session_exclusions(host, decision, payload)
         try:
             return _serve_selected_once(action, host, decision, payload)
         except Exception as exc:
@@ -867,6 +910,8 @@ def _serve_selected_recall(action: str, host: str, decision: dict, payload: dict
         _set_learning_capture(None)
         _write_selection_log(_decision_project_root(decision), 'laya_recall_proof_retry', [],
                              retry=changed)
+        # The retry runs outside the recall scope that held the exclusions: it excludes nothing.
+        _trace_fields(sessionExcluded=0, sessionState='retry')
         return _serve_selected_once(action, host, retry, payload)
 
 
@@ -1021,12 +1066,13 @@ def _session_health_notice(decision, notice, host, payload):
 
 def _timed_route_proof(decision, action):
     from memvane.journal.api import verify_selected_route
-    started = time.monotonic()
+    started, stages = time.monotonic(), {}
     try:
-        return verify_selected_route(decision)
+        return verify_selected_route(decision, stages)
     finally:
         if action == 'recall':
-            _trace_fields(routeProofMs=round((time.monotonic() - started) * 1000, 3))
+            # Where the proof's time goes; a proof that refused reports the parts it reached.
+            _trace_fields(routeProofMs=round((time.monotonic() - started) * 1000, 3), routeProofStages=stages)
 
 
 def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
@@ -1117,8 +1163,8 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
                 external = laya_external_edits.notify(
                     outside, cwd=current, host=host, origin=decision['projectRoot'])
                 _trace_fields(external_edits=external)
-                if inside:
-                    _request_selected_sync(action, decision, proof)
+                if inside:  # The inside part queued the wake: the row says so, as a plain inside edit does.
+                    _request_selected_sync(action, decision, proof);_trace_final('sync_requested')
                 return {}
         elif action != "file-change-event" and payload.get("hook_event_name") != "SessionStart":
             _fail("invalid_session_event")

@@ -57,8 +57,15 @@ class RecallInstallCase(FixtureCase):
             f'concepts/{topic}.md', title=topic.title() + ' protocol', sources=[self.note],
             body=f'The {topic} protocol keeps marker token zq{topic}x and {SHARED} for recall checks.\n')
 
-    def recall(self, prompt, host='claude', session='recall-fixture', cwd=None):
-        """``(context, stderr, event)`` of one in-process selected recall."""
+    def recall(self, prompt, host='claude', session=None, cwd=None):
+        """``(context, stderr, event)`` of one in-process selected recall.
+
+        Each call is a session of its own unless ``session`` names one: a
+        session's later recalls leave out the cards it already holds.
+        """
+        if session is None:
+            self._recall_sessions = getattr(self, '_recall_sessions', 0) + 1
+            session = 'recall-fixture-%d' % self._recall_sessions
         from memvane.host.api import serve_selected
         from memvane.journal.api import select_route
         cwd = str(cwd or self.project)

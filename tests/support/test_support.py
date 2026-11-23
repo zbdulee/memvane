@@ -1,5 +1,6 @@
 """The shared fixtures do what tests rely on (run through ``support.test.mjs``)."""
 from __future__ import annotations
+import uuid
 
 import json
 import os
@@ -49,6 +50,34 @@ class Case(FixtureCase):
         self.assertEqual(len(calls), 3)
         with self.assertRaises(AssertionError):
             self.wait_until(lambda: False, timeout=0.05)
+
+    def test_waits_multiply_by_the_load_scale(self):
+        from unittest import mock
+        from tests.support import case
+        for raw, expected in (('2.5', 2.5), ('0.2', 1.0), ('9', 4.0), ('nan', 1.0), ('x', 1.0)):
+            with mock.patch.dict(os.environ, {case.TIME_SCALE_ENV: raw}):
+                self.assertEqual(case.time_scale(), expected)
+                self.assertEqual(case.scaled(2.0), 2.0 * expected)
+        with mock.patch.dict(os.environ):
+            os.environ.pop(case.TIME_SCALE_ENV, None)
+            self.assertEqual(case.time_scale(), 1.0)
+        # A stepped clock: the wait ends at the scaled deadline, counted in polls.
+        now = [0.0]
+
+        def polls(scale):
+            now[0], seen = 0.0, []
+
+            def predicate():
+                seen.append(now[0])
+                now[0] += 1.0
+                return False
+            with mock.patch.dict(os.environ, {case.TIME_SCALE_ENV: scale}), \
+                    mock.patch.object(case.time, 'monotonic', lambda: now[0]), \
+                    mock.patch.object(case.time, 'sleep', lambda _s: None):
+                with self.assertRaises(AssertionError):
+                    case.wait_until(predicate, timeout=3.0)
+            return len(seen)
+        self.assertEqual((polls('1'), polls('3')), (3, 9))
 
 
 class Project(FixtureCase):
@@ -138,20 +167,22 @@ class Provider(FixtureCase):
             self.assertEqual(provider.current().query_admission, 'admit' if admitted else 'refuse')
         self.assertEqual(refused, ['fixture_lexical_recall', None, 'fixture_lexical_recall'])
 
-    def test_the_query_child_answers_the_published_query_embedding(self):
-        from memvane.provider.api import is_reviewed_provider, query_embed_child_argv
+    def test_the_query_path_answers_the_published_query_embedding(self):
+        from memvane.kernel.errors import IndexContractError
+        from memvane.provider.api import is_reviewed_provider, query_vectors
         from tests.support.fake_provider import FixtureProvider
         provider = FixtureProvider(query_embedding='provider_unavailable').install(self)
         manifest = {'approvedProviderId': 'synthetic-provider', 'dimension': 2}
-        self.assertTrue(is_reviewed_provider(provider.reviewed_provider(manifest)))
+        handle = provider.reviewed_provider(manifest)
+        self.assertTrue(is_reviewed_provider(handle))
         answers = []
         for embedding in ('provider_unavailable', 'vector'):
             provider.answer_queries(embedding)
-            result = subprocess.run(query_embed_child_argv(), text=True, capture_output=True, timeout=60,
-                                    input=json.dumps({'manifest': manifest, 'prompt': 'q', 'timeout': 1,
-                                                      'allowed': ['provider_unavailable']}))
-            answers.append((result.returncode, json.loads(result.stdout)))
-        self.assertEqual(answers, [(0, {'error': 'provider_unavailable'}), (0, {'vector': [1.0, 0.0]})])
+            try:
+                answers.append(query_vectors(handle, 'q', 1, chunks=False, allowed=frozenset(('provider_unavailable',))))
+            except IndexContractError as exc:
+                answers.append(str(exc))
+        self.assertEqual(answers, ['provider_unavailable', ([[1.0, 0.0]], 1)])
 
 
 class Builders(FixtureCase):
@@ -173,7 +204,7 @@ class Builders(FixtureCase):
         self.assertIn('zqfalconx', target.recall('what marker does the falcon protocol keep?'))
         # The hook child finds the fixture provider at the test runtime root (the subprocess seam).
         code, out, err = target.hook('recall', {
-            'session_id': 's', 'cwd': str(target.project.root), 'hook_event_name': 'UserPromptSubmit',
+            'session_id': 's-' + uuid.uuid4().hex[:8], 'cwd': str(target.project.root), 'hook_event_name': 'UserPromptSubmit',
             'prompt': 'what marker does the falcon protocol keep?'})
         self.assertEqual(code, 0, err)
         self.assertIn('zqfalconx', json.loads(out)['hookSpecificOutput']['additionalContext'])

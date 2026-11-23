@@ -21,10 +21,27 @@ def _fail(code: str):
 def _search_trace(trace, timings):
     """Keep candidate paths off the bounded recall event; capture retains them."""
     sources = timings.pop('semanticSources', {})
+    only = frozenset(timings.pop('semanticOnly', ()))
+    # Every candidate's path and cosine: only the injected cards' cosines reach the event (``injectedCosine``).
+    cosine = timings.pop('semanticCosine', {})
     trace.fields(**timings)
     if timings.get('vectorKernelUnavailable'):
         trace.note('laya_vector_kernel_unavailable')
-    return sources
+    return sources, (only, cosine), timings.get('sessionExcludedHits', 0)
+
+
+def _note_semantic_only(trace, result, semantic, answer):
+    """What the semantic lane gave the injected cards.
+
+    ``semanticOnlyInjected``: how many of them the lexical lists did not have.
+    ``injectedCosine``: each injected card's cosine in injection order (None
+    for a card the semantic list did not hold). With ``sessionExcluded`` it
+    shows how far down the ranking the session exclusions have pushed.
+    """
+    only, cosine = semantic
+    if result.semantic_status == 'complete':
+        trace.fields(semanticOnlyInjected=sum(row['path'] in only for row in answer.rows),
+                     injectedCosine=[cosine.get(row['path']) for row in answer.rows])
 
 
 def _vector_off_fallback(decision, main_proof, vector_off, trace):
@@ -105,13 +122,13 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
     with ExitStack() as stack:
         vector = None
         if provider is not None and not vector_off and not unsealed:
-            started = time.monotonic()
+            started, chunks = time.monotonic(), {}
             try:
                 vector = stack.enter_context(dispatch.approved_query_vector(
                     authority=endpoint, snapshot=None, decision=decision, provider=provider,
-                    prompt=prompt, deadline=deadline))
+                    prompt=prompt, deadline=deadline, info=chunks))
             finally:
-                trace.fields(queryEmbeddingMs=round((time.monotonic() - started) * 1000, 3))
+                trace.fields(queryEmbeddingMs=round((time.monotonic() - started) * 1000, 3), **chunks)
             if vector is None and not vector_off:
                 vector_off.append('provider_unavailable')
         for attempt in range(2):
@@ -123,7 +140,7 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
                         deadline=deadline, snapshot=None, decision=decision, provider=provider,
                         authority=endpoint, linked=linked, timings=timings)
                 finally:
-                    semantic_sources = _search_trace(trace, timings)
+                    semantic_sources, semantic_only, excluded_hits = _search_trace(trace, timings)
                 break
             except Exception as exc:
                 # Design 5.1/5.2: a cold view, or a checkout that moved twice
@@ -181,6 +198,11 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
         with reader.pin_schema3(record, deadline=deadline, linked=linked,
                                  pin_view=False) as (_store, _handle, head):
             return head['gen_id'] == result.data_generation
+    if not result.rows and excluded_hits:
+        # Every candidate is a card this session already holds: nothing is injected again.
+        trace.fields(selection='no_candidates', candidates=0, generation=result.data_generation)
+        trace.final('no_candidates_after_exclusion')
+        return RecallAnswer(decision, own_view=own_view)
     answer = _serve_verified_rows(
         decision, settings, prompt, list(result.rows), top_n=top_n,
         title_only=result.title_only, locations=dict(result.source_locations),
@@ -188,6 +210,7 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
         vector_fallback=vector_fallback, allow_mixed_generation=False, trace=trace,
         own_view=own_view)
     answer.capture_sources = semantic_sources
+    _note_semantic_only(trace, result, semantic_only, answer)
     return answer
 
 

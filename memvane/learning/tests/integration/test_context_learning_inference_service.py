@@ -526,6 +526,7 @@ class ServerTests(unittest.TestCase):
                 thread=threading.Thread(target=service._serve,args=(root,),
                     kwargs={'engine':engine,'validate':fake_validate,'ready':ready},daemon=True)
                 thread.start();self.assertTrue(ready.wait(2))
+                stopped=False
                 try:
                     self.assertEqual(exchange(root,envelope())['status'],'ok')
                     self.assertTrue(bookkeeping.wait(1))
@@ -533,12 +534,15 @@ class ServerTests(unittest.TestCase):
                     self.assertEqual(exchange(root,{'command':'shutdown'})['status'],'busy')
                     timer=threading.Timer(.05,release.set);timer.start()
                     self.assertEqual(shutdown_idle(root)['status'],'stopped')
+                    stopped=True
                     timer.join(1)
                 finally:
                     release.set()
-                    if thread.is_alive():
+                    # Asked again only when the stop was not seen: a server that is
+                    # closing accepts a connection and answers nothing.
+                    if not stopped and thread.is_alive():
                         try:shutdown_idle(root)
-                        except (FileNotFoundError,ConnectionRefusedError,OSError):pass
+                        except (FileNotFoundError,ConnectionRefusedError,OSError,ValueError):pass
                     thread.join(2)
 
     def test_startup_race_and_crash_recovery_use_one_kernel_lease(self):

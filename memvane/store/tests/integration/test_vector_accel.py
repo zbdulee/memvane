@@ -50,16 +50,22 @@ class AcceleratedStoreChecks(support.VectorCase):
         self.addCleanup(store._db.set_trace_callback, None)
         with mock.patch.object(accel, 'MAX_ROWS', 3):
             answer = store.search_hybrid(pin, 'hello', [1., 0.], 10, profile_id=p)
-        self.assertEqual(answer['semantic_status'], 'deferred_work_budget')
+        # No arena covers these sets: the store read they need is over the bound until one does.
+        self.assertEqual(answer['semantic_status'], 'deferred_cache_building')
         self.assertEqual(answer['lexical'], lexical)
         self.assertEqual(len(answer['lexical']), 3)  # The seed card has no "hello" token.
         self.assertEqual(answer['semantic'], [])
         self.assertFalse(any('FROM vectors ' in q for q in queries))
+        with mock.patch.object(accel, 'MAX_ROWS', 3), \
+                mock.patch.dict('os.environ', {'MEMVANE_VECTOR_ACCEL': 'store'}):
+            switched = store.search_hybrid(pin, 'hello', [1., 0.], 10, profile_id=p)
+        self.assertEqual(switched['semantic_status'], 'deferred_work_budget')
+        self.assertEqual(switched['lexical'], lexical)
         with mock.patch.object(accel, 'MAX_ROWS', 4):
             self.assertEqual(len(store.search_exact(pin, [1., 0.], 10, profile_id=p)), 4)
         with mock.patch.object(accel, 'MAX_BYTES', 4 * 2 * 4 - 1):
             self.assertEqual(self.refused(store.search_exact, pin, [1., 0.], 10,
-                                         profile_id=p).reason, 'vector_work_exceeded')
+                                         profile_id=p).reason, 'vector_cache_building')
 
     def test_semantic_deadline_preserves_lexical_candidates(self):
         store, _h, _m, _r, p, _g, pin = self.ready_many(4)

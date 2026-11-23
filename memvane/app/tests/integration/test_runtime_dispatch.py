@@ -225,6 +225,57 @@ class Results(DispatchCase):
         self.assertEqual((events[1][1]['generation'], events[1][1]['previousGeneration']),
                          ('g-' + '5' * 32, self.target['generation']))
 
+    def wake_events(self, kind, result):
+        """The ``wake.*`` events of one dispatch of ``result`` and whether it ACKed."""
+        events = []
+        with self.dispatch_target(), self.child(completed(json.dumps(result).encode())), \
+                mock.patch('memvane.diagnostics.api.state_root_of', return_value=self.home), \
+                mock.patch('memvane.diagnostics.api.emit',
+                           side_effect=lambda name, **fields: events.append((name, fields))):
+            try:
+                dispatch.run(kind, self.project)
+                acked = True
+            except DispatchFailure:
+                acked = False
+        return [fields for name, fields in events if name == 'wake.' + kind[5:]], acked
+
+    def test_a_published_main_view_acks_while_linked_views_wait(self):
+        waiting = {'waiting': 2, 'held': 1, 'reasons': {'schema3_pass_budget': 2, 'worktree_missing': 1}}
+        (event,), acked = self.wake_events('laya-sync', {'state': 'unchanged', 'linkedWaiting': waiting})
+        self.assertTrue(acked)
+        self.assertEqual((event['outcome'], event['reason'], event['linked']), ('unchanged', None, waiting))
+        (event,), acked = self.wake_events('laya-sync', {'state': 'unchanged'})
+        self.assertEqual((acked, event['linked']), (True, None))
+        self.assertIsNone(event.get('reoffer'))
+        # A pass that asked for the same wake again says so on its row.
+        (event,), _acked = self.wake_events('laya-sync', {'state': 'unchanged', 'vectorReoffer': True})
+        self.assertIs(event['reoffer'], True)
+        # Only fixed codes and counts reach the log.
+        (event,), _acked = self.wake_events('laya-sync', {'state': 'unchanged', 'linkedWaiting': {
+            'waiting': 1, 'held': 0, 'reasons': {'Private Path/x.md': 1, 'candidate_busy': 'many', '': 3}}})
+        self.assertEqual(event['linked'], {'waiting': 1, 'held': 0, 'reasons': {'_rivate__ath_x.md': 1}})
+        # Two reasons that clean to one code are added, not overwritten.
+        (event,), _acked = self.wake_events('laya-sync', {'state': 'unchanged', 'linkedWaiting': {
+            'waiting': 3, 'held': 0, 'reasons': {'view busy': 1, 'view_busy': 2}}})
+        self.assertEqual(event['linked'], {'waiting': 3, 'held': 0, 'reasons': {'view_busy': 3}})
+        for shape in ('2 views', {'waiting': True, 'held': 0, 'reasons': {}}, {'waiting': 1, 'held': 0},
+                      {'waiting': -1, 'held': 0, 'reasons': {}}):
+            with self.subTest(shape=shape):
+                (event,), acked = self.wake_events('laya-sync', {'state': 'unchanged', 'linkedWaiting': shape})
+                self.assertEqual((acked, event['linked']), (True, None))
+
+    def test_a_compile_pass_that_worked_backlog_off_is_progress(self):
+        cases = (({'state': 'pending', 'reason': 'compile_progress'}, 'progress'),
+                 ({'state': 'pending'}, 'failed'),
+                 ({'state': 'pending', 'reason': 'compile_progress', 'detail': 'more'}, 'failed'),
+                 ({'state': 'deferred', 'reason': 'owner_busy'}, 'failed'))
+        for result, expected in cases:
+            with self.subTest(result=result):
+                (event,), acked = self.wake_events('laya-compile', result)
+                self.assertEqual((acked, event['outcome'], event['reason']), (False, expected, 'target_deferred'))
+        (event,), acked = self.wake_events('laya-sync', {'state': 'pending', 'reason': 'compile_progress'})
+        self.assertEqual((acked, event['outcome']), (False, 'failed'))
+
     def test_a_failed_child_keeps_only_a_bounded_stderr_tail(self):
         with self.dispatch_target(), self.child(completed(b'', 1, b'Traceback\nIndexContractError: provider_unavailable\n')):
             failure = self.failure()

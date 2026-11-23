@@ -29,10 +29,10 @@ def approved_profile_matches(candidate, proof):
     return implementation(candidate, proof)
 
 
-def approved_query_vector(*, authority, snapshot, decision, provider, prompt, deadline):
+def approved_query_vector(*, authority, snapshot, decision, provider, prompt, deadline, info=None):
     from memvane.recall.reader_dispatch import approved_query_vector as implementation
     return implementation(authority=authority, snapshot=snapshot, decision=decision, provider=provider,
-                          prompt=prompt, deadline=deadline)
+                          prompt=prompt, deadline=deadline, info=info)
 
 
 def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline, snapshot=None, decision=None,
@@ -58,6 +58,11 @@ def recall_scope():
 def set_writer_allowed(allowed):
     from memvane.recall.recall_scope import set_writer_allowed as implementation
     return implementation(allowed)
+
+
+def set_session_exclusions(cards):
+    from memvane.recall.recall_scope import set_session_exclusions as implementation
+    return implementation(cards)
 
 
 def set_edit_recall(*, deadline, selector_deadline):

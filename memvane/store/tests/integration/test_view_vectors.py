@@ -249,7 +249,8 @@ class VectorChecks(VectorCase):
         baseline = original(pin, 'hello', 10)
         for elapsed in (0.25, 3.0):
             with self.subTest(elapsed=elapsed):
-                clock = [time.monotonic()]; passed = []
+                # A dyadic start keeps the remaining-time arithmetic exact on every clock.
+                clock = [1024.0]; passed = []
                 def lexical(*args, **kwargs):
                     rows = original(*args, **kwargs)
                     clock[0] += elapsed
@@ -300,7 +301,7 @@ class VectorChecks(VectorCase):
         store, _, _, _, _, p, _, pin = self.ready()
         original = store._pinned
         for elapsed in (0.25, 3.0):
-            clock, passed = [time.monotonic()], []
+            clock, passed = [1024.0], []  # Dyadic, as in test_15: exact remaining time.
             def preflight(value):
                 record = original(value)
                 clock[0] += elapsed

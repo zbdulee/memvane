@@ -37,6 +37,13 @@ IDLE_WAIT_SECS = 5
 # failing attempts; the next sync/compile request creates a fresh row.
 RETRY_CAP_ATTEMPTS = 144
 RETRY_CAPPED_KINDS = frozenset(('laya-sync', 'laya-compile'))
+# A learning wake that was not done this many counted times in a row (about 24
+# hours at the 300 s ceiling: resources never ready, a selector request that
+# keeps waiting) is dropped the same way. The next hook launch or selector
+# re-offer creates a fresh row.
+LEARNING_RETRY_CAP_ATTEMPTS = 288
+RETRY_CAPS = {**{kind: RETRY_CAP_ATTEMPTS for kind in RETRY_CAPPED_KINDS},
+              'learning': LEARNING_RETRY_CAP_ATTEMPTS}
 # A project directory that is missing only proves it is gone once it stayed
 # missing across this long, from the first missing observation, and over this
 # many consecutive missing observations (an unmounted volume or a checkout
@@ -45,6 +52,13 @@ RETRY_CAPPED_KINDS = frozenset(('laya-sync', 'laya-compile'))
 # failures; any other outcome restarts the count.
 MISSING_DROP_SECS = 86400
 MISSING_DROP_MIN_OBSERVATIONS = 3
+# A compile pass that worked part of its backlog off comes back in 30 s without
+# counting an attempt. A pass that left less than any pass before it starts
+# the streak over (``runtime_work._observe_progress``), so a backlog that keeps
+# shrinking never gets here. That many passes in a row without a new low is
+# work that keeps being put back; from then on the retries count, so the
+# backoff and RETRY_CAP_ATTEMPTS bound it.
+COMPILE_PROGRESS_STREAK_CAP = 120
 # Reason recorded when a handler returns falsy without raising.
 NOT_DONE_REASON = 'pending'
 # A target that has just started (or is still loading) its detached owner is
@@ -129,8 +143,15 @@ def failure_reason(error):
     return NOT_DONE_REASON if error is None else type(error).__name__
 
 
+def compile_progress(kind, error):
+    """A compile wake whose pass reported progress with work left."""
+    return (kind == 'laya-compile' and isinstance(error, DispatchFailure)
+            and error.code == 'target_deferred'
+            and error.detail == 'deferred:pending:compile_progress')
+
+
 def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparing=None,
-           reported=False):
+           reported=False, progress=None):
     """Decide what happens to a claimed wake after one execution.
 
     leave: the row goes back to pending with its due, attempts and reason as
@@ -141,8 +162,8 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
     An owner that is still preparing is retried after a fixed delay without
     counting; the prior count from real failures is kept unchanged.
     drop: an ACK that is recorded as a drop. A handler's ``Dropped`` answer
-    (target gone) and a Laya wake whose counted failures reach
-    ``RETRY_CAP_ATTEMPTS`` are dropped; the cap is checked only here, after a
+    (target gone) and a wake whose counted failures reach its kind's cap
+    (``RETRY_CAPS``: Laya and learning wakes) are dropped; the cap is checked only here, after a
     real attempt, so an explicit re-request still runs once. A ``TargetMissing``
     failure does not count an attempt: ``missing`` is ``(first_seen,
     observations)`` of the consecutive missing streak including this one. It
@@ -153,6 +174,9 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
     preparing streak. Once it spans ``PREPARING_STALL_SECS`` the wait retries
     at ``RETRY_MAX_SECS`` and, unless ``reported``, the step carries
     ``stalled`` so the caller reports the streak once. It is never dropped.
+    ``progress`` is the number of consecutive ``compile_progress`` passes of
+    this wake that did not lower its backlog floor, this one included. Past
+    ``COMPILE_PROGRESS_STREAK_CAP`` the retry is counted like any failure.
     """
     if done and error is None:
         if isinstance(done, Dropped):
@@ -163,9 +187,8 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
                 'deferred:pending:schema3_progress_ingest',
                 'deferred:pending:schema3_progress_vector')):
         return {'ack': False, 'due': now + 30, 'reason': failure_reason(error), 'count': 0}
-    if (kind == 'laya-compile' and isinstance(error, DispatchFailure)
-            and error.code == 'target_deferred'
-            and error.detail == 'deferred:pending:compile_progress'):
+    if (compile_progress(kind, error)
+            and (progress is None or progress <= COMPILE_PROGRESS_STREAK_CAP)):
         return {'ack': False, 'due': now + 30,
                 'reason': failure_reason(error), 'count': 0}
     if (kind == 'laya-compile' and isinstance(error, DispatchFailure)
@@ -193,7 +216,7 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
                     'drop': 'target_missing'}
         return {'ack': False, 'due': now + retry_delay(max(0, seen - 1)),
                 'reason': failure_reason(error), 'count': 0}
-    if kind in RETRY_CAPPED_KINDS and attempts + 1 >= RETRY_CAP_ATTEMPTS:
+    if kind in RETRY_CAPS and attempts + 1 >= RETRY_CAPS[kind]:
         return {'ack': True, 'due': now, 'reason': failure_reason(error), 'count': 1,
                 'drop': 'retry_cap'}
     return {'ack': False, 'due': now + retry_delay(attempts), 'reason': failure_reason(error),

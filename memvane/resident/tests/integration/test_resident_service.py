@@ -9,6 +9,7 @@ from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.resident import embed_resident as resident
 from memvane.resident import resident_service as svc
 from memvane.resident.tests.support import DIM, Fixture, embed
+from tests.support.case import scaled
 
 
 class ServiceChecks(Fixture):
@@ -36,6 +37,64 @@ class ServiceChecks(Fixture):
             self.assertTrue(service.stopped.wait(2), 'stale resident did not drain')
             self.assertTrue(service.draining.is_set())
             self.assertEqual(successor.call_count, 1)
+
+    def uninstalled(self, intact):
+        identity = Mock()
+        identity.intact.return_value = intact
+        identity.preferred_background.return_value = intact
+        identity.uninstalled.return_value = True
+        service = self.service(start=False)
+        self.assertTrue(service.acquire(wait=5))
+        reasons = []
+        with patch.object(svc, 'BACKGROUND_BUNDLE', identity), \
+                patch.object(svc, '_event', side_effect=lambda _t, name, outcome, reason=None, **_k:
+                             reasons.append((name, outcome, reason))), \
+                patch.object(svc, '_spawn', return_value=True) as successor:
+            service.start()
+            self.assertTrue(service.stopped.wait(scaled(30)), 'the service did not end')
+            self.assertEqual(successor.call_count, 0)
+        started = [reason for name, outcome, reason in reasons if (name, outcome) == ('resident.drain', 'started')]
+        self.assertEqual(started, ['bundle_uninstalled'])
+
+    def test_no_enabled_host_drains_the_service_and_starts_no_successor(self):
+        self.uninstalled(intact=True)
+
+    def test_a_removed_bundle_no_host_enables_starts_no_successor(self):
+        self.uninstalled(intact=False)
+
+    def test_a_bundle_removed_from_every_host_during_the_drain_waits_for_no_successor(self):
+        # W17 review F-7: the tick saw only a broken bundle; by the end of the drain no host has MemVane.
+        identity = Mock()
+        identity.intact.return_value = False
+        identity.uninstalled.side_effect = [False] + [True] * 8
+        service = self.service(start=False)
+        self.assertTrue(service.acquire(wait=5))
+        reasons = []
+        with patch.object(svc, 'BACKGROUND_BUNDLE', identity), \
+                patch.object(svc, '_event', side_effect=lambda _t, name, outcome, reason=None, **_k:
+                             reasons.append((name, outcome, reason))), \
+                patch.object(svc, 'wait_for_successor') as waited, \
+                patch.object(svc, '_spawn', return_value=True) as successor:
+            service.start()
+            self.assertTrue(service.stopped.wait(scaled(30)), 'the service did not end')
+        self.assertEqual([reason for name, outcome, reason in reasons if (name, outcome) == ('resident.drain', 'started')],
+                         ['bundle_changed'])
+        self.assertEqual((waited.call_count, successor.call_count), (0, 0))
+
+    def test_an_unknown_inventory_keeps_the_service(self):
+        identity = Mock()
+        identity.intact.return_value = True
+        identity.preferred_background.return_value = True
+        identity.uninstalled.return_value = False
+        service = self.service(start=False)
+        self.assertTrue(service.acquire(wait=5))
+        ticks = threading.Event()
+        with patch.object(svc, 'BACKGROUND_BUNDLE', identity), \
+                patch.object(service, 'tick', side_effect=ticks.set):
+            service.start()
+            self.assertTrue(ticks.wait(scaled(30)), 'the service never ticked')
+            self.assertFalse(service.draining.is_set())
+            self.assertGreaterEqual(identity.uninstalled.call_count, 1)
 
     def test_public_sockets_never_appear_with_a_loose_mode(self):
         # Clients refuse a socket with group/other bits; one seen between
@@ -93,8 +152,10 @@ class ServiceChecks(Fixture):
             for thread in threads:
                 thread.start()
             for thread in threads:
-                thread.join(30)
+                thread.join(scaled(30))
         self.assertEqual(errors, [])
+        # A request that is still running is a wait that was too short, not a lost answer.
+        self.assertEqual([thread.name for thread in threads if thread.is_alive()], [])
         self.assertEqual(len(results), 24)
         self.assertEqual(len(self.loads), 1, 'one model load for every project')
         # The service never queues a seventh request at the worker, so a

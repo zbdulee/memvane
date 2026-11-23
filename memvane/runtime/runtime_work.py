@@ -74,6 +74,8 @@ DROP_DETAIL_MAX_ROWS=64
 MISSING_FILE='runtime-wake-missing.json'
 # Each wake's consecutive target_preparing streak and whether it was reported.
 PREPARING_FILE='runtime-wake-preparing.json'
+# Each compile wake's consecutive ``compile_progress`` passes (``COMPILE_PROGRESS_STREAK_CAP``).
+PROGRESS_FILE='runtime-wake-progress.json'
 TIMER_LOCK='runtime-wake-timer.lock'
 # Rows this host left untouched for a newer host (``OTHER_HOST_REASONS``):
 # revision, plugin version and the time this host looks at the row again.
@@ -319,6 +321,7 @@ def drain(queue,*,execute,on_drop=None,on_stall=None,ready=None,clock=time.monot
             return controller.check(POLICY,report)['ready']
         injected_ready=ready
         while runs<max_runs and clock()<deadline:
+            if _uninstalled():return {'status':'uninstalled','runs':runs}
             if not BACKGROUND_BUNDLE.intact() or not getattr(BACKGROUND_BUNDLE, 'preferred_background', lambda: True)():
                 return {'status':'bundle_changed','runs':runs}
             rows=queue.pending()
@@ -350,15 +353,19 @@ def drain(queue,*,execute,on_drop=None,on_stall=None,ready=None,clock=time.monot
             preparing=(isinstance(error,wake_policy.DispatchFailure)
                        and error.code in wake_policy.UNCOUNTED_DISPATCH_REASONS)
             waiting=_observe_preparing(queue.root,row,wall()) if preparing else None
+            progressing=wake_policy.compile_progress(row['kind'],error)
+            passes=_observe_progress(queue.root,row,wall(),getattr(error,'backlog',None)) if progressing else None
             with queue.connect() as db:
                 step=wake_policy.settle(row['attempts'],done=done,error=error,now=wall(),kind=row['kind'],
                                         missing=streak,preparing=waiting and waiting[:2],
-                                        reported=bool(waiting and waiting[2]))
+                                        reported=bool(waiting and waiting[2]),progress=passes)
                 if step.get('leave'):
                     _leave_for_other_host(db,queue.root,row,step,wall());continue
                 if step.get('drop'):_record_drop(queue.root,row,step,error,wall(),on_drop=on_drop)
                 if not missing or step['ack']:_clear_missing(queue.root,row['id'])
                 if not preparing or step['ack']:_clear_missing(queue.root,row['id'],PREPARING_FILE)
+                # An uncounted outcome in between (owner busy, target preparing) is no verdict on the backlog: the streak stays.
+                if step['ack'] or (not progressing and step['count']):_clear_missing(queue.root,row['id'],PROGRESS_FILE)
                 if step.get('stalled'):_record_stall(queue.root,row,waiting,step,wall(),on_stall=on_stall)
                 if step['ack']:
                     # Revision-scoped ACK: a wake re-put while running survives, re-pended.
@@ -401,24 +408,48 @@ def _record_drop(root,row,step,error,now,*,on_drop=None):
         'target':row['target'],'at':now,'reason':reason,'attempts':row['attempts']+step['count'],
         'lastFailure':wake_policy.failure_reason(error) if error is not None else None},
         limit=DROP_DETAIL_MAX_ROWS)
-    if on_drop is not None and row['kind'] in ('laya-sync','laya-compile'):
+    if on_drop is not None and row['kind'] in wake_policy.RETRY_CAPS:
         try:
             on_drop(row['kind'],row['target'],reason=reason,attempts=row['attempts']+step['count'])
         except Exception:
             pass
 
 
-def _observe_missing(root,row,now):
-    """(first observation, observations) of this wake's missing streak, this one included."""
-    entry=_read_map(root/MISSING_FILE).get(row['id'])
+def _observe_missing(root,row,now,name=MISSING_FILE):
+    """(first observation, observations) of this wake's streak in ``name``, this one included."""
+    entry=_read_map(root/name).get(row['id'])
     first,seen=now,1
     if (isinstance(entry,dict) and entry.get('target')==row['target']
             and type(entry.get('at')) in (int,float) and math.isfinite(entry['at'])
             and entry['at']<=now and type(entry.get('seen')) is int and entry['seen']>=1):
         first,seen=entry['at'],entry['seen']+1
-    _record_tail(root/MISSING_FILE,row['id'],{'at':first,'seen':seen,'target':row['target']},
+    _record_tail(root/name,row['id'],{'at':first,'seen':seen,'target':row['target']},
                  limit=MAX_WAKES)
     return first,seen
+
+
+def _observe_progress(root,row,now,backlog):
+    """Consecutive ``compile_progress`` passes of this wake that did not lower its backlog floor.
+
+    ``backlog`` is what the pass left to work off (None from a worker that
+    does not report it: every such pass counts). A pass that leaves less than
+    any pass of the streak before it sets the floor and starts the count
+    over, so a backlog that keeps shrinking never reaches the cap, whatever
+    its size; one that is worked off and put back does.
+    """
+    entry=_read_map(root/PROGRESS_FILE).get(row['id'])
+    first,seen,floor=now,0,None
+    if (isinstance(entry,dict) and entry.get('target')==row['target']
+            and type(entry.get('at')) in (int,float) and math.isfinite(entry['at'])
+            and entry['at']<=now and type(entry.get('seen')) is int and entry['seen']>=0):
+        first,seen=entry['at'],entry['seen']
+        floor=entry['floor'] if type(entry.get('floor')) is int and entry['floor']>=0 else None
+    known=type(backlog) is int and backlog>=0
+    if known and (floor is None or backlog<floor):seen,floor=0,backlog
+    else:seen+=1
+    _record_tail(root/PROGRESS_FILE,row['id'],{'at':first,'seen':seen,'target':row['target'],
+                 **({'floor':floor} if floor is not None else {})},limit=MAX_WAKES)
+    return seen
 
 
 def _observe_preparing(root,row,now):
@@ -554,6 +585,11 @@ def _timer_available(queue, *, background=False):
     finally:os.close(fd)
 
 
+def _uninstalled():
+    """Whether every host dropped MemVane (after the grace); an identity without the check never says so."""
+    return getattr(BACKGROUND_BUNDLE,'uninstalled',lambda:False)() is True
+
+
 def _after_timer(queue,outcome):
     """Re-check after the timer released its lock.
 
@@ -562,7 +598,7 @@ def _after_timer(queue,outcome):
     after the release closes that window. A moved root ('gone') is left to
     the next hook.
     """
-    if outcome=='gone':return
+    if outcome in ('gone','uninstalled'):return
     for _attempt in range(40):
         try:result=_wake(queue, background=True)
         except (OSError,ValueError,sqlite3.Error):return
@@ -576,7 +612,8 @@ def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.
 
     The caller holds ``runtime-wake-timer.lock``. Returns 'empty' once the
     queue has no row, 'expired' at ``max_seconds`` (the caller arms a
-    successor) or 'gone' when the queue cannot be read (a moved root).
+    successor), 'gone' when the queue cannot be read (a moved root) or
+    'uninstalled' when no host has MemVane enabled (no successor is armed).
     """
     wake_once=wake_once or (lambda item: _wake(item, background=True))
     deadline=clock()+max_seconds
@@ -586,6 +623,8 @@ def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.
         rows=[row for row in rows if row['kind'] in wake_policy.KINDS]
         if not rows:return 'empty'
         if clock()>=deadline:return 'expired'
+        # No host has MemVane enabled any more: the rows stay queued and no process waits on them.
+        if _uninstalled():return 'uninstalled'
         if not BACKGROUND_BUNDLE.intact() or not getattr(BACKGROUND_BUNDLE, 'preferred_background', lambda: True)():
             # Keep the lease until the host finishes installing a successor;
             # otherwise no process remains to wake the durable queue.
@@ -684,7 +723,8 @@ def _drain_and_rewake(queue,fd,*,execute,on_drop=None,on_stall=None):
     """
     try:return drain(queue,lease_fd=fd,execute=execute,on_drop=on_drop,on_stall=on_stall)
     finally:
-        if not BACKGROUND_BUNDLE.intact():
+        if _uninstalled():pass  # Nothing is left to run a successor from.
+        elif not BACKGROUND_BUNDLE.intact():
             # The worker lease is already closed; retry an unavailable host.
             _after_timer(queue,'bundle_changed')
         else:

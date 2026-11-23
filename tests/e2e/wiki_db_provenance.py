@@ -242,11 +242,11 @@ class WikiDbProvenance(FixtureCase):
         from memvane.host.api import serve_selected
         from memvane.journal.api import select_route
         if host == 'codex':
-            payload = {'session_id': 'c10-codex', 'turn_id': 'c10-turn', 'transcript_path': None,
+            payload = {'session_id': 'c10-codex-' + uuid.uuid4().hex[:8], 'turn_id': 'c10-turn', 'transcript_path': None,
                        'cwd': str(self.project), 'hook_event_name': 'UserPromptSubmit',
                        'model': 'synthetic', 'prompt': PROMPT}
         else:
-            payload = {'session_id': 'c10-claude', 'transcript_path': str(self.home / 'transcript.jsonl'),
+            payload = {'session_id': 'c10-claude-' + uuid.uuid4().hex[:8], 'transcript_path': str(self.home / 'transcript.jsonl'),
                        'cwd': str(self.project), 'hook_event_name': 'UserPromptSubmit',
                        'permission_mode': 'default', 'prompt': PROMPT}
         decision = select_route(str(self.project), action='recall')

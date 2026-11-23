@@ -39,7 +39,7 @@ def _spec_path():
 
 class FixtureProvider:
     def __init__(self, dimension=2, *, vector=None, identity_changed=False, query_admission='refuse',
-                 query_embedding='vector'):
+                 query_embedding='vector', query_max_chars=None, query_log=False):
         if type(dimension) is not int or dimension < 1:
             raise ValueError('dimension')
         self.dimension = dimension
@@ -47,13 +47,17 @@ class FixtureProvider:
         self.identity_changed = identity_changed
         self.query_admission = query_admission
         self.query_embedding = query_embedding
+        self.query_max_chars, self.query_log = query_max_chars, query_log
+        self.query_by_prefix = {}
         self._path = None
 
     def spec(self):
         return {'schema': SPEC_SCHEMA, 'dimension': self.dimension, 'vector': self.vector,
                 'proposalSha256': REVIEW_SHA, 'runtimeFilesSha256': RUNTIME_FILES_SHA,
                 'identityChanged': self.identity_changed, 'queryAdmission': self.query_admission,
-                'queryEmbedding': self.query_embedding}
+                'queryEmbedding': self.query_embedding, 'queryLog': self.query_log,
+                **({} if self.query_max_chars is None else {'queryMaxChars': self.query_max_chars}),
+                **({'queryVectorByPrefix': self.query_by_prefix} if self.query_by_prefix else {})}
 
     # -- seam --------------------------------------------------------------------
     def install(self, case):
@@ -84,10 +88,27 @@ class FixtureProvider:
             self._publish()
 
     def answer_queries(self, query_embedding):
-        """From now on the query embed child answers ``'vector'`` or ``'provider_unavailable'``."""
+        """From now on a query request answers ``'vector'`` or ``'provider_unavailable'``."""
         self.query_embedding = query_embedding
         if self._path is not None:
             self._publish()
+
+    def bound_queries(self, max_chars=None, *, log=True):
+        """From now on a query text over ``max_chars`` is refused; ``log`` records every text's length."""
+        self.query_max_chars, self.query_log = max_chars, log
+        if self._path is not None:
+            self._publish()
+
+    def vectors_by_prefix(self, mapping):
+        """From now on a query text starting with a key of ``mapping`` gets that vector."""
+        self.query_by_prefix = dict(mapping)
+        if self._path is not None:
+            self._publish()
+
+    def query_lengths(self):
+        """The character counts of the query texts asked since ``bound_queries`` (in order)."""
+        path = self._path.with_name('provider-query-log')
+        return [int(line) for line in path.read_text().split()] if path.exists() else []
 
     def _publish(self):
         raw = json.dumps(self.spec(), sort_keys=True).encode('utf-8')
