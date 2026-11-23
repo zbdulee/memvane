@@ -114,8 +114,9 @@ class CycleResults(unittest.TestCase):
                                       ('M7', 'a' * 64, 'b' * 64, True), ('M7', 'a' * 64, 'a' * 64, False)):
             key = 'pointer' if name == 'M7' else 'row'
             self.assertEqual(worker_retry.moved({name: {key: old}}, {name: {key: new}}), moved, (name, old, new))
-        for old, new, moved in ((3, 4, True), (3, 3, False), (None, 0, True), (4, -1, False)):
-            before = {'groups': {} if old is None else {'c': old}}
+        for old, new, moved in ((3, 4, True), (3, 3, False), ('new', 0, True), (4, -1, False),
+                                (None, 4, False), (3, None, False)):  # None: the cursor could not be read
+            before = {'groups': {} if old == 'new' else {'c': old}}
             self.assertEqual(worker_retry.moved(before, {'groups': {'c': new}}), moved, (old, new))
 
     def test_after_287_retries_each_transition_keeps_or_settles_the_request_by_its_class(self):

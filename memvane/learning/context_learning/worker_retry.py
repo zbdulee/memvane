@@ -56,7 +56,8 @@ def moved(before, after):
 
     A row of a cycle machine crossed a ``FORWARD`` pair, the active pointer (M7, kept as
     its digest) changed, or the training cursor of a cycle saved more optimizer groups.
-    A change the table does not list is not progress.
+    A change the table does not list is not progress, and neither is a cursor that was
+    not read before or now.
     """
     for name, table in FORWARD.items():
         old, new = before.get(name) or {}, after.get(name) or {}
@@ -67,8 +68,9 @@ def moved(before, after):
     if first is not None and last is not None and first != last:
         return True
     saved, now = before.get('groups') or {}, after.get('groups') or {}
-    return any(type(step) is int and step > (saved.get(cycle) if type(saved.get(cycle)) is int else -1)
-               for cycle, step in now.items())
+    # A cursor that could not be read (``None``) is no observation on either side.
+    return any(type(step) is int and step > saved.get(cycle, -1) for cycle, step in now.items()
+               if type(saved.get(cycle, -1)) is int)
 
 
 def snapshot(root):
@@ -80,7 +82,6 @@ def snapshot(root):
     read succeeds nor clears the count.
     """
     from . import candidate_apply
-    from .automatic_staging import _cursor_step
     from .dataset import read_private_json
     from .learning_profile import digest
     from .learning_queue import LearningQueue
@@ -108,7 +109,7 @@ def snapshot(root):
         state['unread'] += ['M3', 'M4', 'M5', 'groups']
     for cycle, status in state['M4'].items():
         if status in ('training', 'deferred', 'failed'):
-            state['groups'][cycle] = _cursor_step(root / 'cycles' / cycle)
+            state['groups'][cycle] = _groups(root / 'cycles' / cycle / 'resume' / 'cursor.json')
     # A file that is not there is a state (no journal, no pointer); one that cannot be read is not.
     for name, path in (('M6', root / candidate_apply.JOURNAL), ('M7', root / 'active-checkpoint.json')):
         if not (path.exists() or path.is_symlink()):
@@ -123,6 +124,18 @@ def snapshot(root):
         except Exception:  # noqa: BLE001
             state['unread'].append(name)
     return state
+
+
+def _groups(path):
+    """Saved optimizer groups of a training cursor: -1 without one, None when it cannot be read."""
+    from .dataset import read_private_json
+    if not (path.exists() or path.is_symlink()):
+        return -1
+    try:
+        step = read_private_json(path).get('next_group')
+    except (OSError, ValueError, AttributeError):
+        return None
+    return step if type(step) is int else None
 
 
 def _saved(path):
@@ -156,6 +169,11 @@ def again(root, project, status, retryable):
         now = None  # Nothing read before either: no state is kept, and the next read is the first.
     for name in unread if now is not None else ():
         now[name] = before.get(name) or {}  # What was read last stands for what could not be read.
+    if now is not None:
+        # The same for one cycle's cursor: the groups read last, or none known (``None``).
+        known = (before or {}).get('groups') or {}
+        now['groups'] = {cycle: known.get(cycle) if step is None else step
+                         for cycle, step in (now.get('groups') or {}).items()}
     if before is not None and moved(before, now):
         count = 0  # The pass moved: counted from here.
     count += 1

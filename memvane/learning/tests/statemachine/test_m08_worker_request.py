@@ -250,6 +250,48 @@ class WorkerRequestTable(unittest.TestCase):
         self.assertEqual((kept.count(True), kept[-1]), (limit - 1, False))
         self.assertEqual([(row['outcome'], row['retries']) for _event, row in emitted], [('retry_cap', limit)])
 
+    def test_a_cursor_that_cannot_be_read_neither_moves_nor_clears_the_count(self):
+        # Review 12 (W15 F-17): one saved group; the cursor file is unreadable on some passes.
+        import sqlite3
+        from contextlib import contextmanager
+        from memvane.learning.context_learning import learning_queue, worker_retry
+        limit = worker_retry.RETRY_RESULT_LIMIT
+        self.fresh()
+        database = self.root / 'fixture.sqlite3'
+        with sqlite3.connect(database) as db:
+            db.execute('CREATE TABLE learning_jobs (job_id TEXT, namespace TEXT, status TEXT)')
+            db.execute('CREATE TABLE cycles (cycle_id TEXT, status TEXT)')
+            db.execute("INSERT INTO learning_jobs VALUES ('job','scope','deferred')")
+            db.execute("INSERT INTO cycles VALUES ('job','deferred')")
+        cursor = self.root / 'cycles' / 'job' / 'resume' / 'cursor.json'
+        cursor.parent.mkdir(parents=True, mode=0o700)
+        cursor.write_text('{"next_group": 1}')
+        cursor.chmod(0o600)
+        self.addCleanup(cursor.chmod, 0o600)
+
+        class Queue:
+            scope = 'scope'
+
+            def __init__(self, root):
+                pass
+
+            @contextmanager
+            def connect(self):
+                db = sqlite3.connect(database)
+                try:
+                    yield db
+                finally:
+                    db.close()
+        emitted, kept = [], []
+        with patch.object(learning_queue, 'LearningQueue', Queue), \
+                patch('memvane.diagnostics.api.emit', side_effect=lambda event, **f: emitted.append((event, f))), \
+                patch('memvane.journal.api.select_route', return_value={}):
+            for index in range(1, limit + 1):
+                cursor.chmod(0 if index in (1, limit - 1) else 0o600)  # Unreadable first and before the limit.
+                kept.append(worker_retry.again(self.root, self.project, 'busy', True))
+        self.assertEqual((kept.count(True), kept[-1]), (limit - 1, False))
+        self.assertEqual([(row['outcome'], row['retries']) for _event, row in emitted], [('retry_cap', limit)])
+
     def test_a_result_that_is_not_a_retry_clears_the_count(self):
         from memvane.learning.context_learning import worker_retry
         self.build('open')
