@@ -15,7 +15,7 @@ trial/profile or a local `active-checkpoint.json`) the selector's choice is
 final, including zero cards. Without one, or when the prepared selector cannot
 answer at query time, recall injects the verified candidates in hybrid rank (at
 most 3) and logs the reason. Learning capture
-(`context_learning.laya_learning.capture_recall`) runs only after the hook
+(`memvane.learning.api.capture_recall`) runs only after the hook
 response is flushed, never raises, and records only a fixed status.
 
 Cases come only from edit recall (the PostToolUse `posttool` tail, see

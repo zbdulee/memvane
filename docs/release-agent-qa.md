@@ -879,7 +879,7 @@ The controlled late-worker barrier is unavailable. Mark Part B `BLOCKED` until a
   content receipt/evidence identity, admission/monitor observations, process
   group and cleanup proof, fresh-session transcript and hook timings. Confirm
   production runs do not set fixture/sandbox bypass flags, and show whether
-  direct `shared.launch` and queued `runtime_work.dispatch` paths both obey
+  direct `shared.launch` and queued `memvane.app.wiring.dispatch` paths both obey
   admission. Existing synthetic tests in `memvane/runtime/tests/run.test.mjs` and
   `memvane/learning/tests/integration/test_context_learning_coordination.py` are L0 coverage,
   not this installed-candidate result.
