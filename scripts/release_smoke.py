@@ -202,6 +202,11 @@ def judge_sync(plan, events, sessions):
             and _since_change(entry, events, plan)]:
         return item('RS-SYNC', FAIL, 'no index.publish after the change')
     if row.get('outcome') != 'served':
+        if change.get('afterTsBeforeCommit'):
+            # The time is from before the commit: a pass that began before the change
+            # counts as later, and no served card says which index P4 read.
+            return item('RS-SYNC', NOT_RUN, 'the time of the change is from before its commit '
+                        'and P4 served no card (%s/%s)' % (row.get('outcome'), row.get('reason')))
         return item('RS-SYNC', PASS, 'cards NOT RUN (P4 %s/%s)' % (row.get('outcome'), row.get('reason')))
     added, after, deleted = change['added'], change['changed']['after'], change['deleted']
     if not (_has_card(row, added) and _has_card(row, after)):

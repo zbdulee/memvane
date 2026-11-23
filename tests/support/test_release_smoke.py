@@ -234,6 +234,15 @@ class Verdict(FixtureCase):
         statuses, result = self.status(after, quiet.rows)
         self.assertEqual(statuses['RS-SYNC'], smoke.PASS)
         self.assertIn('cards NOT RUN', next(row['note'] for row in result['items'] if row['id'] == 'RS-SYNC'))
+        # With a time read before the commit, a pass without a served card proves nothing.
+        early = copy.deepcopy(after)
+        early['delta']['afterTsBeforeCommit'] = True
+        statuses, result = self.status(early, quiet.rows)
+        self.assertEqual(statuses['RS-SYNC'], smoke.NOT_RUN)
+        self.assertIn('before its commit', next(row['note'] for row in result['items'] if row['id'] == 'RS-SYNC'))
+        served = Rows(self.plan)
+        served.sync(early)
+        self.assertEqual(self.status(early, served.rows)[0]['RS-SYNC'], smoke.PASS)
         stale = Rows(self.plan)
         row = stale.sync(after)
         row['cards'].append({'path': after['delta']['deleted']['path'], 'sha': 'x'})
