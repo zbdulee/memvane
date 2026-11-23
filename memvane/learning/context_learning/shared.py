@@ -2023,7 +2023,7 @@ def _settle_owned(root, name, state, result, project, *, handoff=False):
     status = result.get("status") if isinstance(result, dict) else None
     status = status[:80] if isinstance(status, str) and status else "failed"
     from .worker_retry import again  # The same retry result too many times in a row settles the request.
-    retry = again(root, project, status, status in RETRY)
+    retry = again(root, project, status, status in RETRY, result)
     # Only a retryable result hands off; a finished cycle settles normally.
     handoff = handoff and retry
     if retry and not handoff:

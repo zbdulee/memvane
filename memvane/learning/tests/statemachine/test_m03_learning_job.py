@@ -297,11 +297,24 @@ class LearningJobTable(unittest.TestCase):
         self.assertEqual((row['status'], row['reason'], row['attempts'], rearms),
                          ('blocked', learning_queue.ATTEMPTS_EXHAUSTED, limit, limit // 3 - 1))
         self.assertEqual(self.q.rearm(now=at * 10), [])
+        # Third-party review T-3: the wait is chosen by what ended the claim, not by a count.
+        self.fresh()
+        self.job_id = self.plan()['id']
+        waits = []
+        for reason, failure in (('trainer_progress', False), ('resource', False), ('inference', False),
+                                ('resource', False), ('trainer_failed', True), ('trainer_failed', True),
+                                ('trainer_progress', False), ('resource', False)):
+            at += day
+            waits.append(round(self.attempt(reason, failure, at)['retry_at'] - at))
+        self.assertEqual(waits, [30, 300, 300, 300, 60, 120, 30, 300])
         # A deferral outside a claim (resources checked before claiming) takes nothing back.
         self.fresh()
         self.job_id = self.plan()['id']
+        # It keeps the short first wait the pass's bounded waiter retries within.
+        self.assertEqual(self.q.defer(self.job_id, 'resource', now=NOW)['retry_at'] - NOW, 30)
         self.force(attempts=5)
-        self.assertEqual(self.q.defer(self.job_id, 'resource', now=NOW)['attempts'], 5)
+        row = self.q.defer(self.job_id, 'resource', now=NOW)
+        self.assertEqual((row['attempts'], row['retry_at'] - NOW), (5, 300))
 
     def test_a_block_of_another_reason_is_not_rearmed(self):
         self.blocked('failed', at=0)

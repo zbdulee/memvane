@@ -141,7 +141,13 @@ def validate_candidate(root,policy,cycle_id,*,expected=None):
     incumbent=expected['old_pointer'] if expected else current
     # Before the comparison with the evaluation: an evaluation of damaged bytes records their
     # hash, which differs from the pointer's on every pass, and evaluating again cannot change it.
-    if _hash(incumbent['artifact_path'])!=incumbent['artifact_sha256']:raise ValueError(INCUMBENT_DAMAGED)
+    # Not after the decision: the pointer is the candidate's and the replaced artifact is no
+    # longer what is served, so its bytes cannot stop the activation. A file that is gone or
+    # cannot be read safely is damaged like changed bytes.
+    if not decided:
+        try:damaged=_hash(incumbent['artifact_path'])!=incumbent['artifact_sha256']
+        except (OSError,ValueError):damaged=True
+        if damaged:raise ValueError(INCUMBENT_DAMAGED)
     if metrics.get('incumbentArtifactSha256')!=incumbent['artifact_sha256']:
         raise ValueError('apply_incumbent_changed')
     if expected:

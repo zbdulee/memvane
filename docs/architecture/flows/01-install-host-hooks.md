@@ -66,8 +66,7 @@ flowchart TD
 - [`hooks/run-hook:55-75`](../../../hooks/run-hook#L55-L75): `legacy`는 작업 없이 exit 0입니다. `update-queued`에서만 `memvane/host/onboarding_notice.py`가 돌려준 안내(사용자용 한 줄과 거절 명령을 담은 `onboarding-answer` JSON 한 줄)를 출력합니다. 사용자가 그 세션을 건너뛰었거나(`onboarding-skip`) 그 프로젝트를 거절한(`onboarding-never`) 기록이 `~/.local/state/memvane/v1/onboarding/`에 있으면 안내를 내지 않습니다. Codex에는 `hookSpecificOutput` SessionStart JSON으로 감싸 출력합니다.
 - [`hooks/run-hook`](../../../hooks/run-hook): `engine=gemini`를 받아들입니다. 하지만 공식 Antigravity의 자동 posttool·index·compile은 공식 payload adapter가 생길 때까지 비활성입니다.
 - Hermes: 별도 Python plugin으로, `post_tool_call`을 관찰만 합니다. 이 문서의 `run-hook` route·enqueue·compile 경로에는 속하지 않습니다.
-- [`memvane/app/setup_entry.py`](../../../memvane/app/setup_entry.py)의 `main`: 설치자 action 목록과 `--approve-*` 승인 플래그입니다. `index-runtime-status`·`provision-index-runtime`·`gc-index-runtime`과 `state-cleanup`(state 정리의 미리보기와 승인 삭제)은 `--project` 없이 실행합니다.
-- [`memvane/app/setup_entry.py`](../../../memvane/app/setup_entry.py)의 `main`: index-origin 계열 action을 `install.api`에 위임합니다.
+- [`memvane/app/setup_entry.py`](../../../memvane/app/setup_entry.py)의 `main`: 설치자 action 목록과 `--approve-*` 승인 플래그이며, index-origin 계열 action을 `install.api`에 위임합니다. `index-runtime-status`·`provision-index-runtime`·`gc-index-runtime`은 `--project` 없이 실행합니다. `state-cleanup`(state 정리의 미리보기와 승인 삭제, `--project` 없음)은 같은 파일의 `_state_cleanup`이 맡습니다.
 
 ### QA 증거와 미검증
 

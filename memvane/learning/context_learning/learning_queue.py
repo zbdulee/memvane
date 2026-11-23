@@ -26,6 +26,9 @@ UNREPEATABLE = ('learning_train_intent_changed', 'learning_batch_source_changed'
 # a claim that ends deferred without a failure (a slice that advanced the cursor, a
 # resource or inference deferral) gives its count back, so progress never reaches the limit.
 ATTEMPT_LIMIT = 30
+# ``defer`` without a failure: the reason of a slice that advanced the cursor and its wait,
+# and the wait of every other deferral that ended a claim (resources, inference).
+PROGRESS, PROGRESS_SECONDS, DEFER_SECONDS = 'trainer_progress', 30, 300
 ATTEMPTS_EXHAUSTED = 'trainer_attempts_exhausted'
 # Blocks no later attempt can clear. The next plan pins other members when there are
 # any; with the same members it answers with the blocked job.
@@ -167,10 +170,15 @@ class LearningQueue:
             if job is None:raise ValueError('learning_job_scope_invalid')
             failures=job['failures']+int(failure)
             # Not an attempt that failed: the claim's count is given back (see ATTEMPT_LIMIT).
-            attempts=job['attempts']-int(not failure and job['status']=='running' and job['attempts']>0)
+            claimed=job['status']=='running'
+            attempts=job['attempts']-int(not failure and claimed and job['attempts']>0)
             blocked=failures>=3
             if blocked and failure and job['attempts']>=ATTEMPT_LIMIT:reason=ATTEMPTS_EXHAUSTED  # final: never rearmed
-            retry=now+(REARM_SECONDS if blocked else min(300,30*2**min(job['attempts'],4)))
+            # A claim that ended without a failure: a slice that advanced comes back soon, any
+            # other deferral waits the ceiling (the claim found nothing it could do sooner).
+            # A failure, and a deferral before any claim (the resources were not ready: the
+            # bounded waiter of the same pass retries it), back off with the failed attempts.
+            retry=now+(REARM_SECONDS if blocked else min(300,30*2**min(job['attempts'],4)) if failure or not claimed else PROGRESS_SECONDS if reason==PROGRESS else DEFER_SECONDS)
             db.execute("UPDATE learning_jobs SET status=?,failures=?,attempts=?,retry_at=?,reason=? WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",('blocked' if blocked else 'deferred',failures,attempts,retry,reason,job_id,self.scope))
             return self.get(job_id,db=db)
 

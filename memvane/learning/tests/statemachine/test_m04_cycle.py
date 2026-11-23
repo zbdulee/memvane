@@ -462,6 +462,7 @@ class TrainingAttempts(CycleFixture):
         for _ in range(4):
             result = self.attempt('timeout_progress')
             self.assertEqual((result['status'], result['reason']), ('deferred_resource', 'trainer_timeout'))
+            self.assertIs(result.get('progress'), True)  # The worker's retry count starts over (T-3).
             self.assertEqual(self.job()[1:4], ('deferred', 0, 'trainer_progress'))
             self.assertEqual(self.cycle(), 'deferred')
         self.assertNotIn('failed', self.outcomes())

@@ -385,8 +385,9 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
                 # A deferral gets the worker's own row; a failure names the trainer's frames.
                 _cycle_event(project, 'failed', cycle=cycle_id, reason=str(exc)[:80],
                              errorSite=getattr(exc, 'error_site', None))
+            # ``progress``: the slice advanced the cursor; the worker's count of retries starts over.
             return {'status': 'deferred_resource' if deferred else 'failed', 'reason': str(exc)[:80],
-                    'cycle_id': cycle_id}
+                    'cycle_id': cycle_id, **({'progress': True} if advanced else {})}
     return _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,
         trainer_factory=trainer_factory,coordination=coordination)
 

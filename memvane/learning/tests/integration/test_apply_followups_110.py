@@ -396,6 +396,9 @@ class FailuresBeforeAJournal(Case):
         active = case.root / 'active.artifact'
         case.write(active, (case.root / 'base.artifact').read_bytes())
         case.json(case.root / 'active-checkpoint.json', {**case.old, 'artifact_path': str(active)})
+        if evaluated_after is None:
+            active.unlink()
+            return
         active.write_bytes(b'damaged')
         if evaluated_after:
             # What an evaluation of the damaged bytes records as its incumbent.
@@ -406,7 +409,8 @@ class FailuresBeforeAJournal(Case):
 
     def test_a_damaged_incumbent_artifact_closes_the_evaluation_at_once_and_is_not_evaluated_again(self):
         # W13 r4 review F-17, W13b r3 review F-18: whether the bytes changed before or after the evaluation.
-        for evaluated_after in (False, True):
+        # None: the active artifact is gone (third-party review T-1).
+        for evaluated_after in (False, True, None):
             with self.subTest(evaluated_after_the_damage=evaluated_after):
                 case = self.fixture()
                 queue, _job = self.queue(case)
@@ -431,6 +435,28 @@ class FailuresBeforeAJournal(Case):
                 if (status, claimed) != ('staged_evaluated', None):
                     raise AssertionError((status, claimed))
                 self.assertFalse((case.root / candidate_close.APPLY_FAILURES).exists())
+
+    def test_after_the_pointer_the_replaced_artifact_no_longer_stops_the_activation(self):
+        # Third-party review T-1: the decision is made; the old model's file is not what is served.
+        for change in ('damaged', 'deleted'):
+            with self.subTest(replaced_artifact=change):
+                case = self.fixture()
+
+                def stop(at):
+                    if at == 'pointer_committed':
+                        raise RuntimeError('fixture crash')
+                with self.assertRaises(RuntimeError):
+                    case.run_apply(fault=stop)
+                self.assertEqual(A.read_journal(case.root)['phase'], 'pointer_committed')
+                old = case.root / 'base.artifact'
+                if change == 'damaged':
+                    old.write_bytes(b'damaged')
+                else:
+                    old.unlink()
+                answer = case.run_apply()
+                if answer['status'] != 'applied':
+                    raise AssertionError(answer)
+                A.readable(case.root)
 
     def test_only_open_candidates_are_kept(self):
         case = self.fixture()

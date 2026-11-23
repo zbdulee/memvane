@@ -12,7 +12,7 @@ base checkpoint 포인터는 `schema_version: 1`을 기록한다. 해당 키만 
 `learning` wake는 미완으로 끝난 pass가 연속 288회(약 24시간)면 `retry_cap`으로
 버려지고(`wake.drop`), 다음 hook의 요청이나 selector 재제안이 새 행을 만든다. 이 상한은 사유를 보지 않고 미완 pass를 센다: 학습이 조각으로 진행 중인 pass와 자식이 도는 동안의 확인도 한 번이므로, `kind` `learning`의 `wake.drop` `retry_cap` 행만으로 "학습이 끝내 못 돌았다"고 읽지 않고 같은 시간대의 `learning.cycle` 행과 함께 본다. 상한이 없던 버전에서 오래 미뤄진 행은 갱신 뒤 첫 미완 pass에서 큰 `attempts`와 함께 바로 버려질 수 있다.
 worker 자식이 재시도 결과(`deferred_resource`·`busy`·`apply_deferred` 등, 종류가 섞여도 이어 센다)로 연속 288회 끝나면 그 요청은 더 깨우지 않고
-마지막 결과로 정산되며 `learning.cycle` `retry_cap` 행(사유 = 마지막 결과, `retries`)이 남는다(`worker_retry.py`). 재시도가 아닌 결과만 이 수를 0으로 돌린다.
+마지막 결과로 정산되며 `learning.cycle` `retry_cap` 행(사유 = 마지막 결과, `retries`)이 남는다(`worker_retry.py`. 횟수는 namespace의 `worker-retry.json`에 두며, 없거나 읽히지 않으면 0부터 세는 캐시라 1.x 영속 계약에 들지 않는다). 재시도가 아닌 결과만 이 수를 0으로 돌린다.
 다음 hook의 요청부터 다시 센다. trainer 실패로 막힌 job은 실패한 학습 시도의 누적(`attempts`: 실패하거나 중단된 claim만 세고, cursor가 전진한 조각과 자원·추론 미룸은 세지 않는다)이 30회에 닿으면 재무장하지 않고
 `trainer_attempts_exhausted`로 닫히며, trainer 자식이 보고한 반복 불가 사유(`trainer_failed:` 접두)도
 worker의 것과 같이 즉시 닫힌다.

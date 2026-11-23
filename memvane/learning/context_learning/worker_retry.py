@@ -9,7 +9,9 @@ or evaluation that never gets done. At ``RETRY_RESULT_LIMIT`` the request is
 settled with the last status instead (no further wake) and one
 ``learning.cycle`` row says so (``retry_cap`` with that status as its reason
 and the count). The next hook launch writes a new request, and the count
-starts over. A result that is not a retry clears the count.
+starts over. A result that is not a retry clears the count, and so does a
+retry result whose training slice advanced the cursor (``progress``): a job
+that keeps moving is never settled by this limit.
 """
 from __future__ import annotations
 
@@ -37,12 +39,22 @@ def _clear(path):
         pass  # Ignored: a count that stays is only reached sooner, and the next result rewrites it.
 
 
-def again(root, project, status, retryable):
+def _progressed(result):
+    if not isinstance(result, dict):
+        return False
+    cycle = result.get('cycle')
+    return result.get('progress') is True or (isinstance(cycle, dict) and cycle.get('progress') is True)
+
+
+def again(root, project, status, retryable, result=None):
     """Whether this result keeps the request pending and asks for another wake."""
     path = Path(root) / NAME
     if not retryable:
         _clear(path)
         return False
+    if _progressed(result):
+        _clear(path)
+        return True
     count = _count(path)
     if count < RETRY_RESULT_LIMIT:
         from .local_cycle import _atomic_json
