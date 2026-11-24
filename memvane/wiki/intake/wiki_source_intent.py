@@ -9,13 +9,9 @@ eligibility (`_source_record`), the cap value (`QMD_SYNC_COMPILE_MAX`) and the
 queue append stay with the enqueue module. Manual sync now attaches a content
 revision there; other row fields and trigger labels remain unchanged.
 
-Content revision is optional. Hashed scans (SessionStart sync, the file-change
-worker) put `revisions` in `changedFiles`; manual sync hashes eligible source
-rows at enqueue, while PostToolUse has no revision. `revision_key` only lets
-the enqueue module skip a row identical to one *still in the live queue*;
-rows the worker already claimed or drained are not visible to it, so this is
-not cross-run processed dedup. Legacy manual-sync rows without a revision are
-also kept rather than guessed to match a newer file.
+Live rows for the same source, trigger, route and operation are coalesced.
+Hashed sync rows name a content revision. PostToolUse rows carry the latest
+pending refresh event and the worker reads its source on claim.
 """
 
 # 큐 행에 원문 revision을 남기는 필드. hash가 있는 경로의 행에만 붙는다.
@@ -70,16 +66,23 @@ def revision_key(record):
     absorbs a manual-sync or PostToolUse intent. A row without a revision has
     no key and is never treated as a duplicate.
     """
-    if not isinstance(record, dict):
+    key = source_key(record)
+    if key is None:
         return None
-    source = record.get("source")
     revision = record.get(REVISION_FIELD)
-    if not isinstance(source, dict) or not isinstance(revision, str) or not revision:
+    if not isinstance(revision, str) or not revision:
         return None
-    collection, path, trigger = source.get("collection"), source.get("path"), record.get("trigger")
-    if not all(isinstance(value, str) and value for value in (collection, path, trigger)):
+    return (*key[:2], revision, *key[2:])
+
+
+def source_key(record):
+    """One source operation; delete, forced refresh, shared wait and backfill stay distinct."""
+    if not isinstance(record, dict) or not isinstance(record.get("source"), dict):
         return None
-    key = (collection, path, revision, trigger)
+    source = record["source"]
+    key = (source.get("collection"), source.get("path"), record.get("trigger"))
+    if not all(isinstance(value, str) and value for value in key):
+        return None
     if record.get('sourceDelete') is True:
         key += ('delete',)
     if record.get('forceRecompile') is True:
@@ -91,19 +94,41 @@ def revision_key(record):
     return key
 
 
-def without_queued(candidates, queued_keys):
-    """Drop `(collection, rel, record)` candidates whose key is already queued.
+def live_key(record):
+    """Coalesce only rows owned by the same installation within the project."""
+    key = source_key(record)
+    if key is None or 'selectedRoute' not in record:
+        return key
+    route = record['selectedRoute']
+    if not isinstance(route, dict) or set(route) not in (
+            {'installId', 'scopeId'}, {'installId', 'scopeId', 'storeIncarnation'}):
+        return None
+    if not all(isinstance(value, str) and value for value in route.values()):
+        return None
+    return (*key, tuple(sorted(route.items())))
 
-    Run before the cap split, so a skipped candidate is neither queued nor
-    deferred. The caller still charges each skipped one a cap slot (it is
-    compiled by the same wake), so the cap bounds live rows, not appends.
-    """
-    kept = []
+
+def queue_revision(record):
+    """The replay token already carried by this producer's row."""
+    if not isinstance(record, dict):
+        return None
+    revision = record.get(REVISION_FIELD)
+    pending = record.get('pendingRefresh')
+    event = pending.get('eventId') if isinstance(pending, dict) else None
+    if (isinstance(revision, str) and revision) or (isinstance(event, str) and event):
+        return (revision, event)
+    return None
+
+
+def without_queued(candidates, queued_revisions):
+    """A single live copy of this revision already uses a slot in the wake."""
+    fresh = []
     for candidate in candidates:
-        key = revision_key(candidate[2])
-        if key is None or key not in queued_keys:
-            kept.append(candidate)
-    return kept
+        row = candidate[2]
+        token = queue_revision(row)
+        if token is None or queued_revisions.get(live_key(row)) != token:
+            fresh.append(candidate)
+    return fresh
 
 
 def enqueue_result(reason, queued=0, deferred_files=()):

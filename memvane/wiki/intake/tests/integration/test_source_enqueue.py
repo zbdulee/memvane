@@ -129,7 +129,7 @@ class SourceEnqueue(FixtureCase):
                         'created': ['note.py'], 'updated': ['.draft/hidden.md'], 'deleted': ['a.md']}}
         self.assertEqual(self.run_enqueue()['reason'], 'no_sources')
 
-    def test_same_revision_is_coalesced_but_changed_bytes_requeue(self):
+    def test_changed_revision_replaces_only_its_live_slot(self):
         self.assertEqual(self.run_enqueue()['queued'], 4)
         again = self.run_enqueue()
         self.assertEqual(again['queued'], 0)
@@ -137,7 +137,9 @@ class SourceEnqueue(FixtureCase):
         self.project.write_note('docs/a.md', 'changed content\n')
         changed = self.run_enqueue()
         self.assertEqual(changed['queued'], 1)
-        self.assertEqual(self.rows()[-1]['source']['path'], 'docs/a.md')
+        rows = self.rows()
+        self.assertEqual([r['source']['path'] for r in rows], ['docs/a.md', 'docs/b.md', 'docs/c.md', 'src/s.md'])
+        self.assertEqual(rows[0]['contentRevision'], enqueue._stable_revision(self.project.root / 'docs/a.md'))
 
     def test_symlinked_compile_dir_is_rejected_before_planning(self):
         outside = self.home / 'outside'
@@ -223,3 +225,43 @@ class SourceEnqueue(FixtureCase):
         self.assertEqual({row['trigger'] for row in rows},
                          {'session_start_source', 'post_sync_source'})
         self.assertTrue(all(row.get('contentRevision') for row in rows))
+
+    def test_edit_collapses_legacy_duplicates_preserving_flags_routes_and_unreadable_lines(self):
+        self.changed = {'docs': {'root': str(self.project.root / 'docs'),
+                                 'created': [], 'updated': ['a.md'], 'deleted': []}}
+        self.run_enqueue()
+        current, = self.rows()
+        old = dict(current, contentRevision='old')
+        separate = [dict(old, **flags) for flags in (
+            {'sourceDelete': True}, {'forceRecompile': True},
+            {'sourceDelete': True, 'sharedEnqueued': True}, {'initialBackfill': 'a' * 32},
+            {'trigger': 'session_start_source'}, {'selectedRoute': {'installId': 'other', 'scopeId': 'scope'}})]
+        opaque = b'not JSON: \xff\n'
+        payload = b''.join((json.dumps(row) + '\n').encode() for row in [old, current, *separate])
+        self.queue.write_bytes(opaque + payload)
+        self.assertEqual(self.run_enqueue()['queued'], 1)
+        raw = self.queue.read_bytes()
+        self.assertTrue(raw.startswith(opaque))
+        rows = [json.loads(line) for line in raw[len(opaque):].splitlines()]
+        self.assertEqual(rows[0]['contentRevision'], current['contentRevision'])
+        self.assertEqual(rows[1:], separate)
+
+    def test_one_batch_retains_only_the_last_revision_even_if_already_live(self):
+        self.run_enqueue()
+        first, *others = self.rows()
+        older = dict(first, contentRevision='older')
+        enqueue._append_jsonl(self.queue, [older, first])
+        self.assertEqual(self.rows(), [first, *others])
+        self.queue.unlink()
+        enqueue._append_jsonl(self.queue, [older, *others, first])
+        self.assertEqual(self.rows(), [first, *others])
+
+    def test_failed_atomic_replacement_keeps_original_and_propagates_to_sync(self):
+        self.run_enqueue()
+        before = self.queue.read_bytes()
+        self.project.write_note('docs/a.md', 'replacement')
+        with patch.object(os, 'replace', side_effect=OSError('fixture_write_failure')):
+            with self.assertRaisesRegex(OSError, 'fixture_write_failure'):
+                self.run_enqueue()
+        self.assertEqual(self.queue.read_bytes(), before)
+        self.assertEqual(list(self.queue.parent.glob('.source-queue-*')), [])

@@ -11,6 +11,7 @@ import hashlib
 import os
 import shutil
 import stat
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, queue_lock_path as _queue_lock_path
@@ -173,14 +174,7 @@ def enqueue_changed_sources(project_root, config, changed_files,
             if intent.revision_key(record) is None:
                 path = Path(project_root) / record['source']['path']
                 record[intent.REVISION_FIELD] = _stable_revision(path)
-    # 상한 값(env)은 여기서 읽고 분할 규칙만 순수 계획에 맡긴다.
-    # Unhashed legacy rows are still kept: an old job has no proof that its
-    # source is the same revision, so never silently suppress it.
-    if any(intent.revision_key(record) for _, _, record in candidates):
-        plan = _append_unqueued(queue_path, candidates, cap)
-    else:
-        plan = intent.plan_enqueue(candidates, cap)
-        _append_jsonl(queue_path, plan["records"])
+    plan = _append_unqueued(queue_path, candidates, cap)
     if plan["records"] or plan["result"].get("wakePending"):
         from memvane.wiki.workspace import api as wiki_selected_laya
         wiki_selected_laya.request_compile(Path(project_root),
@@ -224,6 +218,17 @@ def _append_jsonl(path, records):
     if not records:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.name == ct.SOURCE_QUEUE:
+        # Source producers also include pending-refresh recovery and shared waits.
+        # One producer batch can contain multiple observations of the same source.
+        # Keep its first position and latest row; opaque jobs each retain their slot.
+        latest = {}
+        for index, record in enumerate(records):
+            key = intent.live_key(record)
+            latest[index if key is None else key] = record
+        candidates = [(None, None, record) for record in latest.values()]
+        _append_unqueued(path, candidates, len(candidates))
+        return
     lock_path = _queue_lock_path(path)
     with open(lock_path, "a", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
@@ -233,35 +238,64 @@ def _append_jsonl(path, records):
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
-def _queued_revision_keys(path, limit=None):
-    """Revision keys of rows still in the live queue (not claimed/drained ones).
-
-    An unreadable queue, or one larger than `limit` bytes
-    (`QUEUE_SCAN_MAX_BYTES`), yields no keys: at most `limit + 1` bytes are
-    read, and the rows are appended as before the scan existed, so the failure
-    mode is a duplicate, never a lost intent or an unbounded read under the lock.
-    """
-    limit = QUEUE_SCAN_MAX_BYTES if limit is None else limit
+def _live_queue(path, limit):
+    """Read only the live queue under the byte cap. Retain unrelated lines verbatim."""
     try:
-        with open(path, "rb") as handle:
+        with path.open('rb') as handle:
             data = handle.read(limit + 1)
     except OSError:
-        return set()
+        return [], {}
     if len(data) > limit:
-        return set()
-    keys = set()
-    for line in data.decode("utf-8", errors="replace").splitlines():
+        return [], {}
+    lines = data.splitlines(keepends=True)
+    groups = {}
+    for i, line in enumerate(lines):
         try:
-            key = intent.revision_key(json.loads(line))
-        except ValueError:
+            row = json.loads(line)
+        except (ValueError, UnicodeError, RecursionError):
             continue
+        key = intent.live_key(row)
         if key is not None:
-            keys.add(key)
-    return keys
+            groups.setdefault(key, []).append((i, row))
+    return lines, groups
+
+
+def _queued_revision_keys(path, limit=None):
+    _, groups = _live_queue(path, QUEUE_SCAN_MAX_BYTES if limit is None else limit)
+    return {key for group in groups.values() for _, row in group
+            if (key := intent.revision_key(row)) is not None}
+
+
+def _store_source_rows(path, records, lines, groups):
+    """Replace all superseded live rows at their first slot and append new jobs."""
+    if not any(intent.live_key(row) in groups for row in records):
+        _write_jsonl(path, records)
+        return
+    for row in records:
+        encoded = (json.dumps(row, ensure_ascii=False, sort_keys=True) + '\n').encode('utf-8')
+        group = groups.get(intent.live_key(row))
+        if group:
+            lines[group[0][0]] = encoded
+            for index, _ in group[1:]:
+                lines[index] = b''
+        else:
+            if lines and lines[-1] and not lines[-1].endswith(b'\n'):
+                lines.append(b'\n')
+            lines.append(encoded)
+    # Keep even malformed unrelated bytes. Errors propagate before enqueue ACK.
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.source-queue-', delete=False) as tmp:
+        try:
+            os.fchmod(tmp.fileno(), stat.S_IMODE(path.stat().st_mode))
+            tmp.writelines(lines)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            os.replace(tmp.name, path)
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
 
 
 def _append_unqueued(path, candidates, cap):
-    """Skip rows still queued under the same revision key, then cap and append.
+    """Skip identical revisions, cap fresh intents, and replace superseded live rows.
 
     Everything happens under the one queue lock the worker's claim/requeue
     also takes, so a skip decision and the append see the same queue. Skipped
@@ -281,10 +315,13 @@ def _append_unqueued(path, candidates, cap):
     with open(_queue_lock_path(path), "a", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
-            fresh = intent.without_queued(candidates, _queued_revision_keys(path))
+            lines, groups = _live_queue(path, QUEUE_SCAN_MAX_BYTES)
+            revisions = {key: intent.queue_revision(group[0][1])
+                         for key, group in groups.items() if len(group) == 1}
+            fresh = intent.without_queued(candidates, revisions)
             plan = intent.plan_enqueue(fresh, max(0, cap - (len(candidates) - len(fresh))))
             if plan["records"]:
-                _write_jsonl(path, plan["records"])
+                _store_source_rows(path, plan["records"], lines, groups)
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     if len(fresh) < len(candidates):

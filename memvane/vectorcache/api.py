@@ -16,6 +16,14 @@ def scan(arena, covered, *, dimension, queries, native, deadline, stats):
                           deadline=deadline, stats=stats)
 
 
+def score_sets(directory, sets, *, profile_id, recipe_id, dimension, store_incarnation,
+               queries, native, deadline, stats, clock):
+    from memvane.vectorcache.scan import score_sets as implementation
+    return implementation(directory, sets, profile_id=profile_id, recipe_id=recipe_id, dimension=dimension,
+                          store_incarnation=store_incarnation, queries=queries, native=native,
+                          deadline=deadline, stats=stats, clock=clock, open_arena=opened)
+
+
 def identity(*, nonce, profile_id, recipe_id, dimension, store_incarnation):
     """The identity one arena pair is bound to."""
     from memvane.vectorcache.arena import identity as implementation

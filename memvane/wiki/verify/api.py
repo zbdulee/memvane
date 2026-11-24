@@ -17,6 +17,11 @@ def run(root, config, compile_cfg, produced_targets=None):
     return implementation(root, config, compile_cfg, produced_targets=produced_targets)
 
 
+def pending_revision_target(root, config, revision):
+    from memvane.wiki.verify.pending_replacement import pending_revision_target as implementation
+    return implementation(root, config, revision)
+
+
 def verify_skipped_path(root, vcfg):
     from memvane.wiki.verify.wiki_verify_worker import verify_skipped_path as implementation
     return implementation(root, vcfg)

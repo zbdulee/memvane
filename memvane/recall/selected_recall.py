@@ -39,7 +39,7 @@ def _note_semantic_only(trace, result, semantic, answer):
     shows how far down the ranking the session exclusions have pushed.
     """
     only, cosine = semantic
-    if result.semantic_status == 'complete':
+    if result.semantic_status in ('complete', 'partial'):
         trace.fields(semanticOnlyInjected=sum(row['path'] in only for row in answer.rows),
                      injectedCosine=[cosine.get(row['path']) for row in answer.rows])
 
@@ -118,12 +118,9 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
         admit_query()
     except Exception:
         vector_off.append('resource_deferred')
-    # A view sealed without vectors (a lexical-first publish whose fill is
-    # still deferred) serves its lexical lists; the provider is not asked.
-    unsealed = endpoint.record.get('vector_profile') is None
     with ExitStack() as stack:
         vector = None
-        if provider is not None and not vector_off and not unsealed:
+        if provider is not None and not vector_off:
             started, chunks = time.monotonic(), {}
             try:
                 vector = stack.enter_context(dispatch.approved_query_vector(
@@ -184,8 +181,7 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
         vector_fallback = 'selected_reader_endpoint_' + vector_off[0]
     elif vector_off:
         vector_fallback = _vector_off_fallback(decision, main_proof, vector_off, trace)
-    elif unsealed or (vector is not None and result.semantic_status == 'lexical_only'):
-        # The second case: a linked worktree view sealed lexical-first.
+    elif vector is not None and result.semantic_status == 'lexical_only':
         vector_fallback = 'selected_view_vectors_pending'
     if vector_fallback is not None:
         trace.note('laya_vector_' + vector_fallback)

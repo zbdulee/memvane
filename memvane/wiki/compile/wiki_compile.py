@@ -418,6 +418,31 @@ def source_hash(candidate: dict) -> str:
     return hashlib.sha256(json.dumps(stable, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 
+def replacement_hash(target, base, revisions):
+    """Keep equal summaries from different source revisions in separate pending files."""
+    from memvane.store.api import regular
+    from memvane.store.types import MAX_BODY
+    if not revisions:
+        return base
+    name = '.' + target.name + '.pending-' + base
+    try:
+        raw, _, _ = regular(target.parent, name, MAX_BODY)
+        text = raw.decode('utf-8')
+    except (OSError, ValueError):
+        return base
+    front = wiki_markers.FRONTMATTER_RE.match(text)
+    marker = wiki_markers.AUTO_START_RE.search(text)
+    if not (front and marker and marker.group(1) == base and auto_writable_text(text)[0]):
+        return base
+    previous = yaml_scalars.frontmatter_source_revisions(front.group(1))
+    def content_key(rows):
+        return [(row['path'], row['collection'], row['sha256']) for row in rows]
+    current = content_key(revisions)
+    if not previous or content_key(previous) == current:
+        return base
+    return hashlib.sha256(json.dumps([base, current], ensure_ascii=True).encode()).hexdigest()[:16]
+
+
 def lint_candidate(candidate: dict, target: Path | None, max_lines: int) -> dict:
     findings = []
     title = str(candidate.get("title") or "").strip()
@@ -1302,6 +1327,9 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                                   'findings': ['verified_replacement_requires_review']}
                 append_jsonl(candidate_path, record)
                 return 0
+            h = replacement_hash(target, h, record["sourceRevisions"])
+            record["sourceHash"] = h
+            page = markdown_page(candidate, summary, status, redactions, h)
             pending_page = compose_generated_card(old, page)
             if pending_page is None:
                 record['action'] = 'merge-needed'

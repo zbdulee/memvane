@@ -726,6 +726,29 @@ def generation_engine_order(engine):
     return (host,)
 
 
+def _reuse_source_revision(root, config, job, source_revision, selected_route, bound_pending, cpath):
+    from memvane.wiki.workspace import api as wiki_selected_laya
+    proof_card = selected_compiled_revision_card(
+        root, selected_route, source_revision, content_only=True)
+    if proof_card is not None:
+        wiki_selected_laya.recheck(selected_route)
+        if bound_pending is not None and not wiki_freshness.resolve_pending_refresh(
+                root, bound_pending, source_revision, [source_revision],
+                compiled_event_id=bound_pending["eventId"]):
+            return True, True, []
+        append_jsonl(cpath, {
+            **bounded_failure("skipped", job, "already_compiled_revision"),
+            "card": proof_card,
+        })
+        return True, False, []
+    pending_target = wiki_verify.pending_revision_target(root, config, source_revision)
+    if pending_target is not None:
+        wiki_selected_laya.recheck(selected_route)
+        append_jsonl(cpath, bounded_failure('skipped', job, 'awaiting_pending_verification'))
+        return True, False, []
+    return None
+
+
 def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
                 checkout=None) -> tuple[bool, bool, list[str]]:
     """Return (processed, preserve_job, verify_target_paths).
@@ -912,27 +935,12 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     if verify_suppression_hash(root, compile_cfg, rel) == wiki_verify.source_body_hash(content):
         append_jsonl(cpath, bounded_failure("skipped", job, "verify_inconclusive_suppressed"))
         return True, False, []
-    # Cost guard (selected Laya only), also BEFORE any extractor spawn: a trusted
-    # card already proves this exact revision, whichever trigger or replayed claim
-    # brought the job back. Legacy QMD keeps its existing path.
-    # A job kept after a partial failure (one card written, another rejected)
-    # is exactly the case where a trusted sibling does not prove the revision
-    # finished, so it is never skipped here.
-    if (selected_route is not None and job.get("partialCompile") is not True
+    if (selected_route is not None and job.get('partialCompile') is not True
             and job.get('forceRecompile') is not True):
-        proof_card = selected_compiled_revision_card(
-            root, selected_route, source_revision, content_only=True)
-        if proof_card is not None:
-            wiki_selected_laya.recheck(selected_route)
-            if bound_pending is not None and not wiki_freshness.resolve_pending_refresh(
-                    root, bound_pending, source_revision, [source_revision],
-                    compiled_event_id=bound_pending["eventId"]):
-                return True, True, []
-            append_jsonl(cpath, {
-                **bounded_failure("skipped", job, "already_compiled_revision"),
-                "card": proof_card,
-            })
-            return True, False, []
+        reuse = _reuse_source_revision(root, config, job, source_revision, selected_route,
+                                      bound_pending, cpath)
+        if reuse is not None:
+            return reuse
 
     extractor = compile_cfg.get("extractor") if isinstance(compile_cfg.get("extractor"), dict) else {}
     # 폴백은 settings_types.DEFAULT_CONFIG["compile"]["extractor"]["timeout"]와 같아야 한다.
@@ -1379,7 +1387,7 @@ _NOT_AN_ATTEMPT = frozenset(('initial_backfill_already_settled', 'initial_backfi
 _SETTLING = frozenset(('not_refreshed', 'verify_inconclusive_suppressed', 'source_unreadable', 'invalid_source_scope',
                        'unsafe_source_path', 'missing_source_path', 'missing_extractor', 'missing_candidates',
                        'extractor_unavailable', 'writer_rejected', 'unknown_host_exhausted',
-                       'source_folder_excluded', 'already_compiled_revision'))
+                       'source_folder_excluded', 'already_compiled_revision', 'awaiting_pending_verification'))
 
 
 def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, *,

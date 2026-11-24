@@ -106,3 +106,13 @@ class PosttoolEnqueue(FixtureCase):
         self.assertEqual((child.returncode, child.stdout, child.stderr), (0, '', ''))
         self.assertEqual(self.rows(self.queue), [])
         self.assertEqual(self.rows(self.pending), [])
+
+    def test_five_edits_keep_one_job_with_the_latest_refresh_and_host(self):
+        for index in range(5):
+            self.source.write_text('revision %d' % index)
+            engine = 'claude' if index == 4 else 'codex'
+            self.assertEqual(self.run_edit(self.source, engine=engine)['queued'], 1)
+        job, = self.rows(self.queue)
+        pending = self.rows(self.pending)[-1]
+        self.assertEqual(job['pendingRefresh'], {key: pending[key] for key in ('eventId', 'ts', 'engine')})
+        self.assertEqual(job['engine'], 'claude')

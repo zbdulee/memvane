@@ -135,6 +135,76 @@ class RevisionSkipChecks(FixtureCase):
         job['selectedRoute'] = wiki_selected_laya.route_identity(self.bound)
         return job
 
+    def test_five_edits_extract_once_and_replayed_revision_waits_for_pending_review(self):
+        from tests.support.engines_fake import FakeEngines
+        from memvane.wiki.compile import refresh_settlement
+
+        def write(root, candidate):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                wc._compile_locked(root, self.config, self.config['compile'], self.wiki,
+                                   candidate, False)
+            return json.loads(out.getvalue())
+
+        self.config['compile']['semanticDedup'] = {'enabled': False}
+        queue = self.root / '.memvane/compile/source-queue.jsonl'
+        verify_queue = queue.with_name('verify-queue.jsonl')
+        cfg = self.config['compile']
+        live = self.wiki / 'concepts/source-decision.md'
+        with patch.object(worker, 'compile_candidate', side_effect=write), \
+             patch.object(wiki_selected_laya, 'request_sync'), \
+             patch.object(wiki_selected_laya, 'request_compile'):
+            self.process('post_tool_source')
+            self.verify(live)
+            verify_queue.write_text('')
+            self.extractor_calls.clear()
+            for i in range(5):
+                self.source.write_text(f'Synthetic source decision {i}\n')
+                wiki_compile_enqueue.enqueue_payload({'hook_event_name': 'PostToolUse',
+                    'cwd': str(self.root), 'engine': 'claude', 'tool_input': {'file_path': str(self.source)}})
+            rows = [json.loads(line) for line in queue.read_text().splitlines()]
+            self.assertEqual(len(rows), 1)
+            self.assertTrue(worker.process_job_settled(self.root, self.config, cfg, rows[0])[0])
+            self.assertEqual(self.extractor_calls, ['post_tool_source'])
+            first = json.loads(verify_queue.read_text())
+            old_pending = self.root / first['pendingPath']
+            self.assertTrue(old_pending.is_file())
+            event = wiki_freshness.record_pending_refresh(self.root, 'docs/source.md', 'claude')
+            # An active verifier has claimed the job; the candidate still awaits its verdict.
+            claimed = verify_queue.with_name(verify_queue.name + f'.claimed.{os.getpid()}.active')
+            verify_queue.rename(claimed)
+            self.assertEqual(worker.process_job_settled(self.root, self.config, cfg, rows[0]), (True, False, []))
+            self.assertEqual(self.extractor_calls, ['post_tool_source'])
+            self.assertEqual(refresh_settlement.unsettled(self.root, [event]), [])
+            self.assertEqual(wiki_freshness.latest_unresolved_pending(self.root, 'docs/source.md')['eventId'],
+                             event['eventId'])
+
+            # Unchanged model summary, different source bytes. Both jobs retain
+            # their exact pending path; the old verdict cannot publish the new one.
+            self.source.write_text('Synthetic source after review was queued\n')
+            self.process('post_tool_source')
+            second = json.loads(verify_queue.read_text())
+            newest = self.root / second['pendingPath']
+            self.assertNotEqual(newest, old_pending)
+            self.assertEqual(len(self.extractor_calls), 2)
+            self.assertIn(second['sourceHash'], newest.read_text())
+            # Review only the stale job. A concurrent claim still owns the new job.
+            claimed.write_text(json.dumps(second) + '\n')
+            verify_queue.write_text(json.dumps(first) + '\n')
+            verifier = FakeEngines({'verify': {'verdict': 'pass', 'reasons': [],
+                'claims': [{'claim': 'Synthetic source', 'supported': True, 'quote': 'Synthetic source',
+                            'sourcePath': 'docs/source.md'}]}}).install(self)
+            self.assertEqual(verification_stamp.run(self.root, self.config, cfg)['processed'], 1)
+            self.assertEqual(verifier.calls, [])
+            self.assertFalse(old_pending.exists())
+            self.assertEqual(list(live.parent.glob('.*.pending-*')), [newest])
+            claimed.replace(verify_queue)
+            self.assertEqual(verification_stamp.run(self.root, self.config, cfg)['processed'], 1)
+            self.assertEqual([call['task'] for call in verifier.calls], ['verify'])
+            self.assertIn(second['sourceHash'], live.read_text())
+            self.assertNotIn(first['sourceRevisions'][0]['sha256'], live.read_text())
+            self.assertFalse(newest.exists())
+
     def test_nested_meta_named_card_is_compile_proof(self):
         # Only wiki-root SCHEMA.md/index.md/log.md are meta pages. A verified card
         # at concepts/index.md proves its revision like any other card.

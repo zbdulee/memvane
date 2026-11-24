@@ -124,6 +124,80 @@ class Publish(PendingCase):
                 self.assertEqual((row['result'], row['reason']), ('skipped', 'pending_replacement_invalid'))
 
 
+class StaleSource(PendingCase):
+    def candidate(self, marker, job):
+        block = worker.yaml_scalars.dump_source_revisions(job['sourceRevisions'])
+        text = card_text('generated', marker, 'sourceRevisions:\n' +
+                         '\n'.join('  - ' + row for row in block))
+        self.pending(marker).write_text(text)
+        return text
+
+    def test_stale_retirement_requires_the_audit_entry_and_emits_the_reason(self):
+        marker = 'a' * 16
+        job = self.stage(marker)
+        text = self.candidate(marker, job)
+        self.source.write_text('Different current bytes')
+        fake = self.fake()
+        with mock.patch.object(worker, 'record_verify_deletion', return_value=False):
+            self.assertEqual(self.run_verify()['remaining'], 1)
+        self.assertEqual(self.pending(marker).read_text(), text)
+        with mock.patch.object(worker.workspace_files, 'append_activity') as event:
+            self.assertEqual(self.run_verify()['remaining'], 0)
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(self.card_now(), self.old)
+        self.assertFalse(self.pending(marker).exists())
+        row = self.ledger('verify-deleted.jsonl')[-1]
+        self.assertEqual((row['targetPath'], row['verdict'], row['reasons']),
+                         (job['pendingPath'], 'stale_replacement', ['pending_source_changed']))
+        self.assertEqual(self.log()[-1]['reason'], 'pending_source_changed')
+        self.assertEqual(event.call_args.kwargs['reason'], 'pending_source_changed')
+
+    def test_stamped_replay_cannot_publish_an_obsolete_source(self):
+        marker = 'b' * 16
+        job = self.stage(marker)
+        text = self.candidate(marker, job)
+        self.assertTrue(worker.stamp_verification(self.pending(marker), 'verified', 'claude', 'self',
+                                                   worker.yaml_scalars.card_body_hash(text)))
+        self.source.write_text('Changed after the verification stamp')
+        fake = self.fake()
+        self.assertEqual(self.run_verify()['processed'], 1)
+        self.assertEqual(fake.calls, [])
+        self.assertFalse(self.pending(marker).exists())
+        self.assertEqual(self.card_now(), self.old)
+
+    def test_a_replayed_job_for_newer_bytes_at_the_same_path_cannot_remove_them(self):
+        marker = 'c' * 16
+        old = self.stage(marker)
+        self.source.write_text('New content under reused marker')
+        new = {**old, 'sourceRevisions': [self.project.revision(self.source)]}
+        latest = self.candidate(marker, new)
+        fake = self.fake()
+        self.assertEqual(self.run_verify()['processed'], 1)
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(self.pending(marker).read_text(), latest)
+        self.assertEqual(self.ledger('verify-deleted.jsonl'), [])
+        self.write_queue(new)
+        self.assertEqual(self.run_verify()['processed'], 1)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertIn(worker.yaml_scalars.card_body_hash(latest), self.card_now())
+
+    def test_new_content_survives_a_later_timestamp_on_a_stale_job(self):
+        early, late = 'd' * 16, 'e' * 16
+        old = self.stage(early)
+        self.candidate(early, old)
+        self.source.write_text('New source revision')
+        new = {**old, 'sourceHash': late, 'pendingPath': pending_rel(late),
+               'sourceRevisions': [self.project.revision(self.source)]}
+        self.candidate(late, new)
+        self.write_queue(new, {**old, 'ts': '2026-07-05T00:00:00Z'})
+        fake = self.fake()
+        self.assertEqual(self.run_verify()['processed'], 2)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertIn(late, self.card_now())
+        self.assertFalse(self.pending(early).exists())
+        self.assertFalse(self.pending(late).exists())
+
+
 class Cleanup(PendingCase):
     def test_superseded_candidates_are_cleaned_and_the_latest_is_verified(self):
         a, b = 'a' * 16, 'b' * 16

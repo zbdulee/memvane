@@ -6,7 +6,7 @@ recall validates shape/values everywhere and full digests on the top cards.
 """
 from __future__ import annotations
 
-import os
+from itertools import groupby
 from pathlib import Path
 import time
 
@@ -64,10 +64,65 @@ def _load(db, groups, heads, recipe_id, profile_id, dimension, deadline, stats):
     return packed, ranges
 
 
-def heads(store, db, cards, spec, deadline):
+def search_recipe(generation, profile_id, partial_recipe_id):
+    """A complete head binds the exact search to its own recipe and profile."""
+    recipe_id = generation['recipe_id'] if partial_recipe_id is None else v.identifier(partial_recipe_id)
+    if generation['coverage'] == 'complete':
+        if profile_id != generation['profile_id'] or recipe_id != generation['recipe_id']:
+            v.fail('vector_profile_mismatch')
+    elif partial_recipe_id is None:
+        v.fail('vector_coverage_absent')
+    return recipe_id
+
+
+def member_sets(store, db, every, dropped, recipe_id, profile_id, query, deadline, stats, *, partial):
+    """Group the pin's eligible rows by blob; session exclusions never enter a vector scan."""
+    cards = [row for row in every if (row['path'], row['blob_sha']) not in dropped]
+    spec = dict(recipe_id=recipe_id, profile_id=profile_id)
+    found = heads(store, db, every if partial else cards, spec, deadline, partial=partial)
+    if partial:
+        stats['vectorEligibleMembers'] = len(every)
+        every = [row for row in every if row['blob_sha'] in found]
+        stats['vectorCoveredMembers'] = len(every)
+        cards = [row for row in cards if row['blob_sha'] in found]
+    stats['vectorExcluded'] = len(every) - len(cards)
+    dimension = None
+    if found or not partial:
+        dimension = store._profile(profile_id)['dimension']
+        if any(len(item) != dimension for item in query):
+            v.fail('vector_query_invalid')
+    groups = {}
+    for row in cards:
+        groups.setdefault(row['blob_sha'], []).append(row)
+    return groups, found, dimension
+
+
+def _matching_chunks(db, batch, chunks, recipe_id, deadline):
+    """Which immutable chunk sets still match their content digest, without reading vector bytes."""
+    marks = ','.join('?' for _ in batch)
+    cursor = db.execute('SELECT blob_sha,seq,position,text,text_sha,length(CAST(text AS BLOB)) FROM chunks WHERE recipe_id=? '
+                        'AND blob_sha IN (' + marks + ') ORDER BY blob_sha,seq', (recipe_id, *batch))
+    matched = set()
+    for blob, group in groupby(cursor, key=lambda row: row[0]):
+        rows, size = [], 0
+        for row in group:
+            vectors._left(deadline)
+            size += row[5]
+            if len(rows) >= chunks[blob][1] or size > v.MAX_SET_BYTES:
+                break
+            rows.append(dict(seq=row[1], position=row[2], text=row[3], text_sha=row[4]))
+        else:
+            if len(rows) == chunks[blob][1] and v.chunk_digest(blob, recipe_id, rows) == chunks[blob][2]:
+                matched.add(blob)
+        vectors._left(deadline)
+    return matched
+
+
+def heads(store, db, cards, spec, deadline, *, partial=False):
     """``{blob: set head}`` of the eligible cards' blobs, read in batches (``_rows_coverage`` without ``full``)."""
     recipe_id, profile_id = spec['recipe_id'], spec['profile_id']
-    store._recipe(recipe_id); store._profile(profile_id)
+    if not partial:
+        store._recipe(recipe_id); store._profile(profile_id)
     blobs = list(dict.fromkeys(row['blob_sha'] for row in cards if row['eligible']))
     answer = {}
     for start in range(0, len(blobs), _BLOB_BATCH):
@@ -80,6 +135,10 @@ def heads(store, db, cards, spec, deadline):
         embedded = {row[0]: row for row in db.execute(
             'SELECT blob_sha,chunk_count,set_digest FROM embedding_sets WHERE recipe_id=? AND profile_id=? '
             'AND blob_sha IN (' + marks + ')', (recipe_id, profile_id, *batch))}
+        if partial:
+            present = [blob for blob in batch if blob in chunks and blob in embedded
+                       and 0 < chunks[blob][1] == embedded[blob][1] <= v.MAX_CHUNKS]
+            batch = _matching_chunks(db, present, chunks, recipe_id, deadline) if present else ()
         for blob in batch:
             if blob not in chunks or blob not in embedded:
                 v.fail('vector_coverage_incomplete')
@@ -87,51 +146,9 @@ def heads(store, db, cards, spec, deadline):
                 v.fail('embedding_set_invalid')
             answer[blob] = dict(chunk_count=chunks[blob][1], chunk_digest=chunks[blob][2],
                                 embedding_digest=embedded[blob][2])
+    if partial and answer:
+        store._recipe(recipe_id); store._profile(profile_id)
     return answer
-
-
-def _arena_scores(store, groups, heads, recipe_id, profile_id, dimension, query, deadline, stats, native):
-    """``(scores, covered, missing, state)`` from the vector arena beside this store.
-
-    Sets the arena covers are scored from its mapped rows; ``missing`` lists
-    the blobs the store read has to supply. Anything that goes wrong inside the
-    arena reader answers as "no arena": only a deadline leaves this function.
-    """
-    from memvane.vectorcache import api as vectorcache
-    if os.environ.get('MEMVANE_VECTOR_ACCEL', '').lower() == 'store':
-        return {}, {}, list(groups), 'disabled'
-    started, scanned, missing, wrong = time.perf_counter(), 0.0, (), 0
-    try:
-        directory = Path(store._path).parent / vectorcache.DIRECTORY
-        with vectorcache.opened(directory, profile_id=profile_id, recipe_id=recipe_id, dimension=dimension,
-                                store_incarnation=store._incarnation) as found:
-            if found is None:
-                return {}, {}, list(groups), 'absent'
-            covered, missing, wrong = found.cover(
-                {blob: (heads[blob]['chunk_count'], heads[blob]['embedding_digest']) for blob in groups})
-            mark = time.perf_counter()
-            scores, unreadable = vectorcache.scan(found, covered, dimension=dimension, queries=query, native=native,
-                                                  deadline=deadline, stats=stats)
-            scanned = (time.perf_counter() - mark) * 1000
-        for blob in unreadable:
-            del covered[blob]
-        missing = missing + unreadable
-        stats['vectorRows'] += sum(rows for _first, rows in covered.values())
-        state = 'inconsistent' if wrong or unreadable else 'building' if missing else 'ok'
-        return scores, covered, missing, state
-    except v.BlobStoreError as exc:
-        if exc.reason == vectors.DEADLINE_EXCEEDED:
-            # The scan ran out of time on the arena's rows: that is where this search read.
-            stats.update(vectorSource='arena', vectorCache='inconsistent' if wrong else 'building' if missing else 'ok')
-            raise
-        return {}, {}, list(groups), 'absent'
-    except Exception:  # noqa: BLE001 - a derived file never fails the search; the store answers
-        return {}, {}, list(groups), 'absent'
-    finally:
-        # Opening, mapping and the crc of the member sets are the load; the kernel scan is the scan.
-        stats['vectorLoadMs'] += (time.perf_counter() - started) * 1000 - scanned
-        stats['vectorScanMs'] += scanned
-        stats['vectorDotMs'] += scanned
 
 
 def search(store, db, groups, heads, recipe_id, profile_id, dimension, query,
@@ -143,8 +160,12 @@ def search(store, db, groups, heads, recipe_id, profile_id, dimension, query,
     the search waits for the arena to catch up (``CACHE_BUILDING``), unless
     the arena is switched off, which keeps the work-budget refusal.
     """
-    scores, covered, missing, state = _arena_scores(store, groups, heads, recipe_id, profile_id, dimension,
-                                                    query, deadline, stats, native)
+    from memvane.vectorcache import api as vectorcache
+    sets = {blob: (heads[blob]['chunk_count'], heads[blob]['embedding_digest']) for blob in groups}
+    scores, covered, missing, state = vectorcache.score_sets(
+        Path(store._path).parent / vectorcache.DIRECTORY, sets, profile_id=profile_id, recipe_id=recipe_id,
+        dimension=dimension, store_incarnation=store._incarnation, queries=query, native=native,
+        deadline=deadline, stats=stats, clock=time.perf_counter)
     stats.update(vectorSource='arena' if covered else 'store', vectorCache=state)
     if covered:
         stats['vectorMissing'] = sum(heads[blob]['chunk_count'] for blob in missing)

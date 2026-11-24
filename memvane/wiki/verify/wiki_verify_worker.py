@@ -46,7 +46,6 @@ import fcntl
 import hashlib
 import json
 import os
-import re
 import sqlite3
 import stat
 import sys
@@ -67,6 +66,7 @@ from memvane.wiki.card import api as source_spans
 from memvane.wiki.card.api import card_sources_allowed, parse_frontmatter
 from memvane.wiki.card import api as yaml_scalars
 from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path, requeue_lines, append_jsonl, read_queue, claim_queue
+from memvane.wiki.verify.pending_replacement import pending_replacement, job_revisions, pending_matches_job
 from memvane.wiki.verify.verify_ledger import ledger_writable, source_body_hash
 from memvane.wiki.verify.verification_stamp import stamp_verification, render_verification, write_rendered_verification
 # 경로는 전부 `compile_paths` 상수 테이블에서 온다(설정 키 4개는 제거됐다 —
@@ -369,32 +369,6 @@ def wake_pending_retirement(root: Path) -> None:
         wiki_selected_laya.request_compile(root, selected)
 
 
-def pending_replacement(root: Path, wiki_root: Path, job: dict,
-                        live_target: Path) -> tuple[Path, str] | None:
-    """Accept only the compiler's hidden pending path for this exact target/job.
-
-    ``sourceHash`` is ``wiki_compile.source_hash``: 16 lowercase hex, the same
-    value in the auto marker and the pending filename suffix.
-    ``expectedTargetHash`` is the full SHA-256 of the prior live card bytes.
-    """
-    rel = job.get('pendingPath')
-    if rel is None:
-        return None
-    job_hash = job.get('sourceHash')
-    expected = job.get('expectedTargetHash')
-    if (not isinstance(job_hash, str) or not re.fullmatch(r'[0-9a-f]{16}', job_hash)
-            or not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected)
-            or not isinstance(rel, str)):
-        raise ValueError('pending_replacement_invalid')
-    root = root.resolve()
-    pending = live_target.with_name('.' + live_target.name + '.pending-' + job_hash)
-    if (pending.is_symlink() or pending.relative_to(root).as_posix() != rel
-            or pending.parent != live_target.parent
-            or not pending.is_relative_to(wiki_root)):
-        raise ValueError('pending_replacement_invalid')
-    return pending, expected
-
-
 def publish_pending_replacement(root: Path, config: dict, job: dict,
                                 pending: Path, live_target: Path,
                                 expected: str) -> str:
@@ -451,6 +425,44 @@ def finish_stale_pending(root: Path, pending: Path, job: dict,
             pass
     # Queue-aware cleanup runs after all retained jobs have been requeued.
     log_verdict(log_path, {**base_record(job), 'result': 'stale_replacement'})
+    wake_pending_retirement(root)
+    return True, False
+
+
+def _unproved_pending(job, pending, snapshots, log_path):
+    # A replay cannot authorize cleanup of a different file at the same path.
+    if snapshots is not None:
+        snapshots.pop(pending, None)
+    log_verdict(log_path, {**base_record(job), 'result': 'skipped',
+                           'reason': 'pending_replacement_changed'})
+    return True, False
+
+
+def _settle_stale_revision(root, config, job, pending, text, snapshots, log_path, selected):
+    """Under the writer lock, authorize cleanup only for this exact obsolete candidate."""
+    reason = 'pending_source_changed'
+    if pending.resolve() != pending or snapshots is None or pending not in snapshots:
+        return _unproved_pending(job, pending, snapshots, log_path)
+    info = pending.lstat()
+    fingerprint = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    fresh, _, status, _ = card_state(pending)
+    if (fingerprint != snapshots[pending] or not fresh or fresh != text
+            or not pending_matches_job(fresh, job)):
+        return _unproved_pending(job, pending, snapshots, log_path)
+    observed = source_freshness(root, config, job)
+    if not observed or observed.get('reason') != 'content_hash_mismatch':
+        return False, True
+    if status == 'verified' and selected is not None:
+        _supersede_job_intent(root, config, job, pending, selected[0])
+    record = {**base_record(job), 'targetPath': job['pendingPath'], 'reasons': [reason]}
+    # No retirement without a durable explanation; the requeued job protects the file.
+    if not record_verify_deletion(root, {}, job_revisions(job), record, 'stale_replacement'):
+        return False, True
+    log_verdict(log_path, {**base_record(job), 'result': 'stale_replacement', 'reason': reason})
+    # Diagnostic only: the deletion ledger records the reason even if the event write fails.
+    wiki = root / config.get('wikiPath', settings_types.WIKI_REL)
+    workspace_files.append_activity(root, 'stale_replacement', pending.relative_to(wiki).as_posix(),
+                                    '', bound=selected, reason=reason)
     wake_pending_retirement(root)
     return True, False
 
@@ -859,6 +871,71 @@ def apply_verify_verdict_locked(
     return (True, False) if applied else (False, True)
 
 
+def _replay_pending(root, config, job, target, live_target, expected, log_path,
+                    snapshots, checkout, selected_route):
+    if not target.exists():
+        # A crash after atomic replacement but before queue ACK is a
+        # completed replay. Otherwise the pending candidate is missing.
+        live_text, live_meta, live_status, live_hash = card_state(live_target)
+        if (live_text is not None and live_status == 'verified'
+                and live_hash == job.get('sourceHash')
+                and live_meta.get('verifiedBodyHash') ==
+                    yaml_scalars.card_body_hash(live_text)):
+            if checkout is not None:
+                try:
+                    with cp.card_write_lock(root), workspace_files.mutation_lock(root):
+                        current_text, _, _, _ = card_state(live_target)
+                        if current_text == live_text:
+                            _, gate_reason = _provenance_gate(job, checkout)
+                            if gate_reason == 'provenance_checkout_changed':
+                                _supersede_job_intent(root, config, job, live_target, selected_route[0])
+                except (OSError, RuntimeError, ValueError):
+                    return False, True
+            reindex_wiki(root, config)
+            wake_pending_retirement(root)
+            log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
+            return True, False
+        log_verdict(log_path, {**base_record(job), 'result': 'skipped',
+                               'reason': 'pending_replacement_missing'})
+        return True, False
+    if target.is_symlink():
+        log_verdict(log_path, {**base_record(job), 'result': 'skipped',
+                               'reason': 'pending_replacement_unsafe'})
+        return True, False
+    staged_text, _, staged_status, staged_hash = card_state(target)
+    if staged_status == 'verified' and staged_hash == job.get('sourceHash'):
+        try:
+            with cp.card_write_lock(root), workspace_files.mutation_lock(root):
+                current, current_meta, _, _ = card_state(target)
+                if (current != staged_text or ('sourceRevisions' in current_meta and 'sourceRevisions' in job
+                        and not pending_matches_job(current, job))):
+                    return _unproved_pending(job, target, snapshots, log_path)
+                freshness = source_freshness(root, config, job)
+                if freshness and freshness.get('state') != wiki_markers.FRESH:
+                    if freshness.get('reason') == 'content_hash_mismatch':
+                        return _settle_stale_revision(root, config, job, target, staged_text,
+                                                      snapshots, log_path, selected_route)
+                    return False, True
+                _, gate_reason = _provenance_gate(job, checkout)
+                if gate_reason == 'provenance_checkout_changed':
+                    _supersede_job_intent(root, config, job, target, selected_route[0])
+                outcome = publish_pending_replacement(
+                    root, config, job, target, live_target, expected)
+                if outcome == 'published':
+                    wake_pending_retirement(root)
+                    log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
+                    return True, False
+                if outcome == 'stale':
+                    if selected_route is not None:
+                        _supersede_job_intent(root, config, job, target, selected_route[0])
+                    return finish_stale_pending(root, target, job, log_path, snapshots)
+        except (OSError, RuntimeError, ValueError):
+            pass
+        return False, True
+
+    return None
+
+
 def process_verify_job(
     root: Path, config: dict, compile_cfg: dict, vcfg: dict, job: dict, log_path: Path,
     *, snapshots: dict | None = None,
@@ -898,60 +975,18 @@ def process_verify_job(
         return True, False
     if staged is not None:
         target, expected = staged
-        if not target.exists():
-            # A crash after atomic replacement but before queue ACK is a
-            # completed replay. Otherwise the pending candidate is missing.
-            live_text, live_meta, live_status, live_hash = card_state(live_target)
-            if (live_text is not None and live_status == 'verified'
-                    and live_hash == job.get('sourceHash')
-                    and live_meta.get('verifiedBodyHash') ==
-                        yaml_scalars.card_body_hash(live_text)):
-                if checkout is not None:
-                    try:
-                        with cp.card_write_lock(root), workspace_files.mutation_lock(root):
-                            current_text, _, _, _ = card_state(live_target)
-                            if current_text == live_text:
-                                _, gate_reason = _provenance_gate(job, checkout)
-                                if gate_reason == 'provenance_checkout_changed':
-                                    _supersede_job_intent(root, config, job, live_target, selected_route[0])
-                    except (OSError, RuntimeError, ValueError):
-                        return False, True
-                reindex_wiki(root, config)
-                wake_pending_retirement(root)
-                log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
-                return True, False
-            log_verdict(log_path, {**base_record(job), 'result': 'skipped',
-                                   'reason': 'pending_replacement_missing'})
-            return True, False
-        if target.is_symlink():
-            log_verdict(log_path, {**base_record(job), 'result': 'skipped',
-                                   'reason': 'pending_replacement_unsafe'})
-            return True, False
-        staged_text, _, staged_status, staged_hash = card_state(target)
-        if staged_status == 'verified' and staged_hash == job.get('sourceHash'):
-            try:
-                with cp.card_write_lock(root), workspace_files.mutation_lock(root):
-                    _, gate_reason = _provenance_gate(job, checkout)
-                    if gate_reason == 'provenance_checkout_changed':
-                        _supersede_job_intent(root, config, job, target, selected_route[0])
-                    outcome = publish_pending_replacement(
-                        root, config, job, target, live_target, expected)
-                    if outcome == 'published':
-                        wake_pending_retirement(root)
-                        log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
-                        return True, False
-                    if outcome == 'stale':
-                        if selected_route is not None:
-                            _supersede_job_intent(root, config, job, target, selected_route[0])
-                        return finish_stale_pending(root, target, job, log_path, snapshots)
-            except (OSError, RuntimeError, ValueError):
-                pass
-            return False, True
+        replay = _replay_pending(root, config, job, target, live_target, expected, log_path,
+                                 snapshots, checkout, selected_route)
+        if replay is not None:
+            return replay
 
     text, meta, status, block_hash = card_state(target)
     if text is None:
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "card_missing"})
         return True, False
+    if (staged is not None and 'sourceRevisions' in meta and 'sourceRevisions' in job
+            and not pending_matches_job(text, job)):
+        return _unproved_pending(job, target, snapshots, log_path)
     if status != "generated" or meta.get("createdBy") not in wiki_markers.CREATED_BY_NAMES:
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "not_generated"})
         return True, False
@@ -992,6 +1027,10 @@ def process_verify_job(
     snapshot_sources, freshness, span_evidence = snapshot_revision_evidence(
         root, config, job, max_chars)
     if freshness is not None and freshness.get("state") != wiki_markers.FRESH:
+        if staged is not None and freshness.get('reason') == 'content_hash_mismatch':
+            with cp.card_write_lock(root), workspace_files.mutation_lock(root):
+                return _settle_stale_revision(root, config, job, target, text, snapshots,
+                                              log_path, selected_route)
         log_verdict(log_path, {
             **base_record(job), "result": "deferred", "reason": "source_changed_before_verify",
             "freshnessReason": freshness.get("reason", ""),
@@ -1268,6 +1307,11 @@ def _dedup_by_target(rows: list, root: Path | None = None) -> list:
         if job is None:
             continue
         key = job.get("targetPath", "")
+        revisions = job_revisions(job) if job.get('pendingPath') else []
+        if revisions:
+            # A stale replay can arrive last. Preserve the review of each distinct
+            # source content until its own freshness and file identity are checked.
+            key = (key, tuple((r['path'], r['collection'], r['sha256']) for r in revisions))
         ts = cp.parse_ts(job.get("ts")) or 0.0
         if key not in latest:
             order.append(key)
