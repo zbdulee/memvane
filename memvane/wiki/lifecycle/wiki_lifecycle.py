@@ -334,7 +334,7 @@ def inspect_card(page: Path, root: Path, allow_roots: list[Path],
     from memvane.wiki.card import api as wiki_card
 
     text = read_card(page)
-    if text is None:
+    if text is None or not wiki_card.card_sources_allowed(text, ()):
         return None
     owned, _ = wc.auto_writable_text(text)
     if not owned:

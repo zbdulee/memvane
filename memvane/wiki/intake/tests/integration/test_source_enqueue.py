@@ -72,6 +72,24 @@ class SourceEnqueue(FixtureCase):
     def rows(self):
         return [json.loads(line) for line in self.queue.read_text().splitlines()] if self.queue.exists() else []
 
+    def test_session_and_post_sync_exclude_changes_and_deletions_before_selection(self):
+        paths = ['a' + sep + '/x.md' for sep in ('\x85', '\u2028', '\u2029')]
+        for path in paths:
+            self.project.write_note('docs/' + path, 'raw bytes\n')
+        entry = {'root': str(self.project.root / 'docs'), 'created': paths[:1], 'updated': paths[1:],
+                 'deleted': ['deleted' + path for path in paths], 'revisions': {}}
+        entry['revisions'] = {path: 'a' * 64 for path in [*paths, *entry['deleted']]}
+        self.changed = {'docs': entry}
+        selected = ({'recallSettings': {'skipPaths': []}, 'installId': 'a' * 32,
+                     'scopeId': 'b' * 32, 'storeIncarnation': 'c' * 32}, {})
+        with patch.object(workspace, 'selected', return_value=selected), patch.object(workspace, 'request_compile') as wake:
+            for session in (True, False):
+                self.assertEqual(self.run_enqueue(session_start=session)['queued'], 0)
+            wake.assert_not_called()
+            entry['updated'].append('b.md')
+            self.assertEqual(self.run_enqueue(session_start=True)['queued'], 1)
+            self.assertEqual([r['source']['path'] for r in self.rows()], ['docs/b.md'])
+
     def test_sync_queues_eligible_sources_in_cap_order(self):
         result = self.run_enqueue()
         self.assertEqual((result['queued'], result['deferred'], result['reason']), (4, 0, 'queued'))

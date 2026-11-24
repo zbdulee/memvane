@@ -69,7 +69,7 @@ def _eligible(decision, snapshot, config):
             project_rel = (Path(roots[name]) / rel).relative_to(project).as_posix()
         except ValueError:
             continue
-        if source_text.is_denied_source_path(project_rel) or excluded_source(project_rel, skips):
+        if source_text.is_denied_source_path(project_rel) or excluded_source(project_rel, skips, wiki_source=True):
             continue
         out[path] = sha
     return out
@@ -310,6 +310,9 @@ def discover(decision, snapshot, config, live, engines):
     for path, item in row['items'].items():
         if item['stage'] in ('pending', 'dispatched') and eligible.get(path) != item['sha256']:
             item['stage'] = 'skipped'
+            from memvane.wiki.card.api import card_sources_allowed
+            name, _, rel = path.partition('/')
+            card_sources_allowed({'path': str(Path(decision['collectionRoots'][name]) / rel)}, report=True, decision=decision)
             changed = True
     if changed:
         d._write(_path(decision), row)

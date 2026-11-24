@@ -147,6 +147,9 @@ def _append_event_unlocked(path: Path, event: dict) -> bool:
 
 def record_pending_refresh(root: Path, source_path: str, engine: str) -> dict | None:
     """Durably invalidate one source before its separate queue append."""
+    from memvane.wiki.card.trust import incompatible_source
+    if incompatible_source(source_path, report=True):
+        return None
     source = _safe_source_path(source_path)
     path = _pending_path(root)
     if source is None or path is None:

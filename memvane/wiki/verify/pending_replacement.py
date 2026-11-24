@@ -144,3 +144,34 @@ def pending_source_review(root, config, revision, *, reuse=True):
     except (OSError, RuntimeError, ValueError):
         pass  # Unproved reuse costs a new extraction; it never suppresses work.
     return None, claimed_source
+
+
+def card_state(target: Path) -> tuple[str | None, dict, str, str]:
+    """(text, frontmatter, status, block sourceHash) — 읽기 실패 시 text None."""
+    try:
+        text = target.read_text(encoding="utf-8")
+    except OSError:
+        return None, {}, "", ""
+    meta, ok = yaml_scalars.parse_frontmatter(text)
+    if not ok:
+        meta = {}
+    status = str(meta.get("status") or "").strip() or "generated"
+    match = wiki_markers.AUTO_START_RE.search(text)
+    return text, meta, status, (match.group(1) if match else "")
+
+
+def incompatible_cards(paths, *, report=True):
+    for path in paths:
+        text, _, _, _ = card_state(path)
+        if text is not None and not yaml_scalars.card_sources_allowed(text, report=report):
+            return True
+    return False
+
+
+def source_freshness(root: Path, config: dict, job: dict) -> dict | None:
+    """Check job-owned provenance, preserving legacy jobs without the field."""
+    if "sourceRevisions" not in job:
+        return None
+    revisions = job.get("sourceRevisions")
+    return yaml_scalars.check_card(
+        {"sourceRevisions": revisions}, root, yaml_scalars.allow_roots_of(config))

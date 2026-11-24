@@ -66,7 +66,7 @@ from memvane.wiki.card.api import card_sources_allowed, parse_frontmatter
 from memvane.wiki.card import api as yaml_scalars
 from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, append_jsonl, read_queue, claim_queue
 from memvane.wiki.verify import promotion
-from memvane.wiki.verify.pending_replacement import pending_replacement, job_revisions, pending_matches_job
+from memvane.wiki.verify.pending_replacement import pending_replacement, job_revisions, pending_matches_job, card_state, source_freshness, incompatible_cards
 from memvane.wiki.verify.verify_ledger import ledger_writable, source_body_hash
 from memvane.wiki.verify.verification_stamp import stamp_verification, render_verification, write_rendered_verification
 # 경로는 전부 `compile_paths` 상수 테이블에서 온다(설정 키 4개는 제거됐다 —
@@ -387,6 +387,9 @@ def publish_pending_replacement(root: Path, config: dict, job: dict,
             old_bytes = live_target.read_bytes()
         except (FileNotFoundError, IsADirectoryError):
             return 'stale'
+        if (not card_sources_allowed(job, report=True) or not card_sources_allowed(pending_text, report=True)
+                or not card_sources_allowed(old_bytes.decode('utf-8'), report=True)):
+            return 'retry'
         if hashlib.sha256(old_bytes).hexdigest() != expected:
             return 'stale'
         # Once the reviewed candidate is published, the previous completed
@@ -463,20 +466,6 @@ def _settle_stale_revision(root, config, job, pending, text, snapshots, log_path
                                     '', bound=selected, reason=reason)
     wake_pending_retirement(root)
     return True, False
-
-
-def card_state(target: Path) -> tuple[str | None, dict, str, str]:
-    """(text, frontmatter, status, block sourceHash) — 읽기 실패 시 text None."""
-    try:
-        text = target.read_text(encoding="utf-8")
-    except OSError:
-        return None, {}, "", ""
-    meta, ok = parse_frontmatter(text)
-    if not ok:
-        meta = {}
-    status = str(meta.get("status") or "").strip() or "generated"
-    match = wiki_markers.AUTO_START_RE.search(text)
-    return text, meta, status, (match.group(1) if match else "")
 
 
 def load_sources(
@@ -599,26 +588,8 @@ def snapshot_revision_evidence(
 
 
 def base_record(job: dict) -> dict:
-    """attempt 이전에도 쓸 수 있는 레코드 필드.
-
-    `engine`은 여기에 두지 않는다 — 시도가 있기 전에는 "검수 엔진"이 없고, 같은 키가
-    줄에 따라 생성 엔진/검수 엔진 두 의미를 가지면 집계가 오염된다. 생성 엔진은 항상
-    `producedBy`, 실제로 판정을 낸 엔진은 항상 `engine`이다.
-    """
-    return {
-        "ts": now_iso(),
-        "targetPath": job.get("targetPath", ""),
-        "producedBy": job.get("engine", ""),
-    }
-
-
-def source_freshness(root: Path, config: dict, job: dict) -> dict | None:
-    """Check job-owned provenance, preserving legacy jobs without the field."""
-    if "sourceRevisions" not in job:
-        return None
-    revisions = job.get("sourceRevisions")
-    return wiki_freshness.check_card(
-        {"sourceRevisions": revisions}, root, wsm.allow_roots_of(config))
+    """Before a verifier is chosen, identify only the producing engine."""
+    return {"ts": now_iso(), "targetPath": job.get("targetPath", ""), "producedBy": job.get("engine", "")}
 
 
 def card_changed_during_verify(
@@ -772,6 +743,8 @@ def apply_verify_verdict_locked(
     ``sha256`` they are bound to; they are further narrowed to the card's own
     ``sourceRevisions`` so recall can bind them to what the card claims.
     """
+    if incompatible_cards((target, root / job['targetPath']) if job.get('pendingPath') else (target,)):
+        return False, True
     fresh_text, fresh_meta, fresh_status, fresh_hash = card_state(target)
     if card_changed_during_verify(job_hash, fresh_meta, fresh_status, fresh_hash,
                                   payload_text, fresh_text):
@@ -925,6 +898,8 @@ def _replay_pending(root, config, job, target, live_target, expected, log_path,
                 _, gate_reason = _provenance_gate(job, checkout)
                 if gate_reason == 'provenance_checkout_changed':
                     _supersede_job_intent(root, config, job, target, selected_route[0])
+                if incompatible_cards((target, live_target)):
+                    return False, True
                 outcome = publish_pending_replacement(
                     root, config, job, target, live_target, expected)
                 if outcome == 'published':
@@ -948,6 +923,9 @@ def process_verify_job(
 ) -> tuple[bool, bool]:
     """Return (processed, preserve_job) — wiki_compile_worker.process_job과 동일 계약."""
     from memvane.wiki.workspace import api as wiki_selected_laya
+    from memvane.wiki.card.api import card_sources_allowed
+    if not card_sources_allowed(job, report=True):
+        return False, True
     selected_route = wiki_selected_laya.selected(root)
     checkout = None
     if selected_route is not None and isinstance(job.get('sourceFingerprints'), dict):
@@ -979,6 +957,8 @@ def process_verify_job(
         log_verdict(log_path, {**base_record(job), 'result': 'skipped',
                                'reason': 'pending_replacement_invalid'})
         return True, False
+    if incompatible_cards((target, staged[0]) if staged is not None else (target,)):
+        return False, True
     if staged is not None:
         target, expected = staged
         replay = _replay_pending(root, config, job, target, live_target, expected, log_path,
@@ -1406,6 +1386,9 @@ def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict
                 if staged is None:
                     continue
                 path = staged[0]
+                from memvane.wiki.card.api import card_sources_allowed
+                if not card_sources_allowed(job) or incompatible_cards((path, target), report=False):
+                    continue
                 info = path.lstat()
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
                     continue

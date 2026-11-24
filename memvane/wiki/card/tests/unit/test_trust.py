@@ -4,6 +4,19 @@ from memvane.wiki.card import api
 
 
 class CardTrustTests(FixtureCase):
+    def test_source_policy_reads_only_decoded_paths_across_frontmatter_layouts(self):
+        def allowed(declaration, body='manual note'):
+            return api.card_sources_allowed('---\ntitle: Card\n' + declaration + '\n---\n' + body)
+        for sep, escape in (('\x85', r'\N'), ('\u2028', r'\L'), ('\u2029', r'\P')):
+            self.assertFalse(allowed('sources:\n  - {kind: file, path: docs/a' + sep + '}'))
+            self.assertFalse(allowed('sources: [{kind: file, "path": "docs/' + escape + '/a.md"}]'))
+            self.assertFalse(allowed('sources:\n  - kind: file\n    path: "docs/' + escape + '/a.md"'))
+            self.assertTrue(allowed('sources:\n  - {label: "literal ,path: ' + sep + '", path: "docs/good.md"}', sep))
+            self.assertTrue(allowed('sources:\n  - {path: "docs/' + '\\' + escape + '/good.md"}'))
+            self.assertTrue(allowed('sourceRevisions:\n  - {path: "docs/good.md"} # ' + sep))
+            self.assertTrue(api.card_sources_allowed({'sourceFingerprints': {'branch_key': sep}}))
+            self.assertFalse(api.card_sources_allowed({'path': 'docs/good.md', 'sourcePath': 'docs/' + sep}))
+
     def test_verified_owned_card_requires_source_provenance(self):
         project = make_project(self.home, git=False)
         source = project.write_note('docs/source.md', 'documented fact')

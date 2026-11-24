@@ -148,9 +148,9 @@ def contained_path(base, path_str, roots):
     return implementation(base, path_str, roots)
 
 
-def excluded_source(path, skip_paths):
+def excluded_source(path, skip_paths, *, wiki_source=False):
     from memvane.settings.source_exclusion import excluded_source as implementation
-    return implementation(path, skip_paths)
+    return implementation(path, skip_paths, wiki_source=wiki_source)
 
 
 def select_collections(edited_paths, cwd, config):

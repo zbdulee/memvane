@@ -138,7 +138,7 @@ def _backlog(project: Path, source: Path, bound):
             return None
         count = len(refresh_settlement.unsettled(project, [
             item for item in unresolved if not excluded_source(
-                item['sourcePath'], bound[0]['recallSettings']['skipPaths'])]))
+                item['sourcePath'], bound[0]['recallSettings']['skipPaths'], wiki_source=True)]))
         if source.parent.is_dir():
             claim = source.name + '.claimed.'
             for child in source.parent.iterdir():
@@ -179,7 +179,7 @@ def _idle_locked(project: Path, source: Path, verify: Path, bound):
     # the selected compile wake open for a source the worker must not compile.
     from memvane.settings.api import excluded_source
     active_unresolved = [item for item in unresolved if not excluded_source(
-        item['sourcePath'], bound[0]['recallSettings']['skipPaths'])]
+        item['sourcePath'], bound[0]['recallSettings']['skipPaths'], wiki_source=True)]
     # An event whose compile attempt ended without a card stays unresolved for
     # recall; the compile wake has nothing left to do for it.
     from memvane.wiki.compile import refresh_settlement

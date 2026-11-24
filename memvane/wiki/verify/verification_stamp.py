@@ -91,7 +91,9 @@ def render_verification(path: Path, status: str, engine: str, mode: str,
 def write_rendered_verification(path: Path, rendered: str, expected_text: str, *, owner=None) -> bool:
     """Write the previously rendered stamp only while its input remains current."""
     try:
-        if path.read_text(encoding='utf8') != expected_text:
+        if (not yaml_scalars.card_sources_allowed(expected_text, report=True)
+                or not yaml_scalars.card_sources_allowed(rendered, report=True)
+                or path.read_text(encoding='utf8') != expected_text):
             return False
     except (OSError, UnicodeError):
         return False

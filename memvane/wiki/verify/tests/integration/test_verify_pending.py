@@ -46,6 +46,29 @@ class PendingCase(VerifyCase):
 
 
 class Publish(PendingCase):
+    def test_old_mixed_pending_or_base_preserves_both_files_without_verification(self):
+        from memvane.wiki.verify import verification_stamp as stamp
+        revision = 'a' * 16
+        fake = self.fake()
+        cfg = self.config()
+        for sep in ('\x85', '\u2028', '\u2029'):
+            for changed in ('live', 'pending'):
+                with self.subTest(sep=repr(sep), changed=changed):
+                    job = self.stage(revision)
+                    pending = self.pending(revision)
+                    file = self.card if changed == 'live' else pending
+                    text = file.read_text().replace('\n---\n', '\nsources:\n  - {kind: "file", path: "docs/a'
+                                                   + sep + 'b.md"}\n---\n', 1)
+                    file.write_text(text + '\nhandwritten note\n')
+                    before = self.card.read_bytes(), pending.read_bytes()
+                    self.assertEqual(worker.process_verify_job(self.root, cfg, cfg['compile'], {},
+                                                               job, self.compile_dir / 'verdict.jsonl'), (False, True))
+                    self.assertFalse(stamp.write_rendered_verification(file, 'new stamp', file.read_text()))
+                    self.assertEqual((self.card.read_bytes(), pending.read_bytes()), before)
+                    self.assertEqual(self.archived(), [])
+        self.assertEqual(fake.calls, [])
+        self.assertFalse((self.compile_dir / 'verdict.jsonl').exists())
+
     def test_a_candidate_is_published_only_after_it_verifies(self):
         revision = 'a' * 16
         self.stage(revision)

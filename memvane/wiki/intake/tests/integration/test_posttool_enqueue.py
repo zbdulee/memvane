@@ -32,6 +32,43 @@ class PosttoolEnqueue(FixtureCase):
     def rows(self, path):
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
+    def test_direct_append_skips_incompatible_sources_before_the_enqueue_limit(self):
+        from memvane.wiki.intake import api as intake
+        paths = ['docs/a' + sep + '.md' for sep in ('\x85', '\u2028', '\u2029')]
+        jobs = [{'source': {'kind': 'file', 'collection': self.project.raw_name, 'path': path}}
+                for path in [*paths, 'docs/source.md']]
+        intake.append_source_jobs(self.queue, jobs[:-1])
+        self.assertEqual(self.rows(self.queue), [])
+        candidates = [(self.project.raw_name, job['source']['path'], job) for job in jobs]
+        enqueue._append_unqueued(self.queue, candidates, 1)
+        self.assertEqual([r['source']['path'] for r in self.rows(self.queue)], ['docs/source.md'])
+
+    def test_patch_and_edit_array_keep_each_original_path_until_admission(self):
+        normal = self.project.write_note('docs/accepted.md', 'body\u2028only\n')
+        paths = []
+        commands = []
+        for sep in ('\x85', '\u2028', '\u2029'):
+            ending = 'docs/source.md' + sep
+            parent = 'docs/a' + sep + '/note.md'
+            paths.extend([ending, parent])
+            for name in (ending, parent):
+                self.project.write_note(name, 'original bytes\n')
+            commands.extend(['*** Add File: ' + ending, '*** Delete File: ' + parent,
+                             '*** Update File: ' + ending, '*** Move to: ' + parent])
+        payload = {'tool_name': 'apply_patch', 'tool_input': {
+            'command': '\r\n'.join(commands + ['*** Update File: docs/accepted.md']),
+            'edits': [{'file_path': path} for path in paths]}}
+        from memvane.diagnostics import api as diagnostics
+        with patch.object(diagnostics, 'emit') as log:
+            self.assertEqual(self.run_edit(normal, **payload)['queued'], 1)
+        reasons = [call for call in log.call_args_list if
+                   call.kwargs.get('reason') == 'compile_source_path_line_separator']
+        self.assertEqual(len(reasons), len(paths))
+        self.assertEqual([r['source']['path'] for r in self.rows(self.queue)], ['docs/accepted.md'])
+        self.assertEqual([r['sourcePath'] for r in self.rows(self.pending)], ['docs/accepted.md'])
+        for path in paths:
+            self.assertEqual((self.root / path).read_bytes(), b'original bytes\n')
+
     def test_source_edit_records_pending_refresh_before_its_source_queue_job(self):
         self.assertEqual(self.run_edit(self.source), {'queued': 1, 'reason': 'queued'})
         pending, jobs = self.rows(self.pending), self.rows(self.queue)

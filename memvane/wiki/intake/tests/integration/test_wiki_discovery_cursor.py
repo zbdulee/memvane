@@ -43,6 +43,22 @@ class DiscoveryCursor(FixtureCase):
         self.assertTrue(discovery.activate_grant(self.decision, 'sync', grant))
         return grant
 
+    def test_policy_exclusions_stay_in_raw_snapshot_without_spending_pending_capacity(self):
+        discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='before')
+        self.source.write_text('changed\n')
+        snapshot = {self.key: hashlib.sha256(self.source.read_bytes()).hexdigest()}
+        for sep in ('\x85', '\u2028', '\u2029'):
+            path = 'docs/a' + sep + '/note.md'
+            data = self.project.write_note(path, 'source\n').read_bytes()
+            snapshot[self.project.raw_name + '/' + path] = hashlib.sha256(data).hexdigest()
+        with patch.object(discovery, 'MAX_PENDING', 1):
+            self.assertEqual(self.drain('after', snapshot)['pending'], 1)
+            self.accept()
+            self.assertEqual(self.drain('after', snapshot)['queued'], 1)
+        stored = discovery._read(discovery._paths(self.decision)[0])
+        self.assertEqual(stored['rawSnapshot'], snapshot)
+        self.assertEqual(stored['pending'], {})
+
     def test_ungranted_change_waits_until_accepted_grant(self):
         discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
         self.source.write_text('changed\n')

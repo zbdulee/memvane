@@ -114,9 +114,9 @@ def verified_wiki_locations(row, decision, pending_sources, source_skip_paths=()
     from memvane.wiki.card.trust import _verified_wiki_locations as implementation
     return implementation(row, decision, pending_sources, source_skip_paths, current_source=current_source, reasons=reasons)
 
-def card_sources_allowed(body, skip_paths):
+def card_sources_allowed(body, skip_paths=(), *, report=False, decision=None):
     from memvane.wiki.card.trust import card_sources_allowed as implementation
-    return implementation(body, skip_paths)
+    return implementation(body, skip_paths, report=report, decision=decision)
 
 
 # Declared sources.

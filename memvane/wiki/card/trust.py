@@ -81,6 +81,8 @@ def _verified_wiki_locations(row: dict, decision: dict,
     if end < 0:
         return _rejected(reasons, 'frontmatter_missing')
     block = body[4:end]
+    if _card_path_excluded(block):
+        return _rejected(reasons, 'compile_source_path_line_separator')
     fields = wiki_card.parse_frontmatter_scalars(block)
     revisions = wiki_card.frontmatter_source_revisions(block)
     meta = {'status': fields.get('status'), 'createdBy': fields.get('createdBy'),
@@ -144,17 +146,75 @@ def _verified_wiki_locations(row: dict, decision: dict,
     return tuple(source_spans.locator(span) for span in spans)
 
 
-def card_sources_allowed(body: str, skip_paths) -> bool:
-    """Fail closed for a selected wiki card's complete compiler provenance."""
-    if not skip_paths:
-        return True
-    if not isinstance(body, str):
+def _report_excluded(decision):
+    from memvane.diagnostics import api as events
+    events.emit('compile.source', outcome='skipped', reason='compile_source_path_line_separator', decision=decision)
+
+
+def incompatible_source(value, *, report=False, decision=None):
+    """Only decoded source paths are subject to the released JSONL readers' line boundary."""
+    from memvane.settings.api import excluded_source
+    if isinstance(value, dict):
+        records = [value, value.get('source')]
+        for key in ('sources', 'sourceRevisions', 'authoritativeSources'):
+            if isinstance(value.get(key), list):
+                records.extend(value[key])
+        spec = value.get('sourceFingerprints')
+        if isinstance(spec, dict) and isinstance(spec.get('fingerprints'), list):
+            records.extend(spec['fingerprints'])
+        paths = [row[key] for row in records if isinstance(row, dict) for key in ('path', 'sourcePath') if key in row]
+    else:
+        paths = [value]
+    rejected = any(excluded_source(path, (), wiki_source=True) for path in paths)
+    if rejected and report:
+        _report_excluded(decision)
+    return rejected
+
+
+# Match complete quoted scalars between source fields too: text in another field
+# can contain "path:" or braces. Physical LF is the card writer's record boundary.
+_QUOTED = r""""(?:[^"\\]|\\.)*"|'(?:[^']|'')*'"""
+_PATH_FIELD = re.compile(
+    r"(?:^[ \t]*(?:-[ \t]+)?|[{,][ \t]*)"
+    r"""(?:path|sourcePath|"path"|"sourcePath"|'path'|'sourcePath')[ \t]*:[ \t]*"""
+    + r"(?P<value>" + _QUOTED + r"|[^,}\]#]*)|" + _QUOTED + r"|\#.*"
+)
+
+
+def _card_path_excluded(block):
+    from memvane.wiki.card import yaml_scalars
+    if not incompatible_source(block) and '\\' not in block:
         return False
+    section = None
+    for line in block.split('\n'):
+        if line and line[0] not in ' \t':
+            section = line.partition(':')[0]
+        if section not in ('sources', 'sourceRevisions'):
+            continue
+        for field in _PATH_FIELD.finditer(line):
+            raw = field['value']
+            if raw is not None and (incompatible_source(raw) or incompatible_source(yaml_scalars.load(raw))):
+                return True
+    return False
+
+
+def card_sources_allowed(body, skip_paths=(), *, report=False, decision=None) -> bool:
+    """Check the complete source paths of a job or a serialized wiki card."""
+    if isinstance(body, dict):
+        return not incompatible_source(body, report=report, decision=decision)
+    if not isinstance(body, str):
+        return not skip_paths
     from memvane.settings.api import excluded_source
     from memvane.wiki.card import wiki_card
     from memvane.wiki.card import yaml_scalars
     normalized_body = body.replace('\r\n', '\n').replace('\r', '\n')
     end = normalized_body.find('\n---\n', 4) if normalized_body.startswith('---\n') else -1
+    if end > 0 and _card_path_excluded(normalized_body[4:end]):
+        if report:
+            _report_excluded(decision)
+        return False
+    if not skip_paths:
+        return True
     revisions = (wiki_card.frontmatter_source_revisions(normalized_body[4:end])
                  if end > 0 else [])
     normalized = [yaml_scalars.normalize_source_revision(item) for item in revisions]

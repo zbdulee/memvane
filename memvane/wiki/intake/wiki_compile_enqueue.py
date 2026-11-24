@@ -213,6 +213,9 @@ def _write_jsonl(path, records):
 
 
 def _append_jsonl(path, records):
+    from memvane.wiki.card.api import card_sources_allowed
+    if path.name == ct.SOURCE_QUEUE:
+        records = [record for record in records if card_sources_allowed(record, report=True)]
     if not records:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -255,6 +258,10 @@ def _append_unqueued(path, candidates, cap):
     can still kick the compile worker. It is absent when nothing was skipped
     and is not part of any status/sync output.
     """
+    from memvane.wiki.card.api import card_sources_allowed
+    candidates = [item for item in candidates if card_sources_allowed(item[2], report=True)]
+    if not candidates:
+        return intent.plan_enqueue([], cap)
     path.parent.mkdir(parents=True, exist_ok=True)
     keys = {intent.operation_key(row) for _, _, row in candidates}
     original, lines, groups = source_queue.read_live(path, QUEUE_SCAN_MAX_BYTES, keys)
@@ -290,6 +297,9 @@ def compile_gate(config, accepted_triggers):
 
 
 def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_TOOL_TRIGGER):
+    from memvane.wiki.card.api import card_sources_allowed
+    if not card_sources_allowed({'path': str(path_value)}, report=True):
+        return None
     source_path = Path(path_value)
     abs_path = source_path if source_path.is_absolute() else Path(cwd) / source_path
     try:
@@ -313,7 +323,7 @@ def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_T
         rel_path = resolved.relative_to(Path(project_root).resolve()).as_posix()
     except ValueError:
         return None
-    if _is_denied_source_path(rel_path):
+    if not card_sources_allowed({'path': rel_path}, report=True) or _is_denied_source_path(rel_path):
         return None
     # dot-prefix 정책은 유지하되 적용 범위를 "등록된 collection 루트 아래"로 좁힌다.
     # 루트 자체의 dot segment(예: `.nova/06_Sessions`)는 사용자가 collectionPaths에
@@ -374,9 +384,7 @@ def enqueue_payload(payload):
 
     records = []
     seen = set()
-    for edited_path in paths:
-        if not isinstance(edited_path, str):
-            continue
+    for edited_path in dict.fromkeys(paths):
         record = _source_record(edited_path, cwd, project_root, config, _engine(payload))
         if record is None:
             continue

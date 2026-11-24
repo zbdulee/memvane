@@ -764,6 +764,9 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     """
     # Never accept a queue-supplied processed receipt. This field is populated
     # only from the stable source bytes this invocation actually read.
+    from memvane.wiki.card.api import card_sources_allowed
+    if not card_sources_allowed(job, report=True):
+        return False, True, []
     previous_revision = job.pop('_processedContentRevision', None)
     job.pop('_backfillSkipped', None)
     from memvane.wiki.workspace import api as wiki_selected_laya
@@ -803,6 +806,8 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     if is_hidden_source_path(rel):
         append_jsonl(cpath, bounded_failure("extractor_failed", job, "invalid_source_scope"))
         return True, False, []
+    if not card_sources_allowed({'path': rel}, report=True):
+        return False, True, []
     skip_paths = qmd_config.generation_skip_paths(config, selected_route)
     if skip_paths is not None:
         from memvane.settings.api import excluded_source
@@ -1454,6 +1459,9 @@ def recover_pending_refreshes(root: Path, config: dict, queue: Path) -> int:
     """
     records = []
     for pending in _unsettled_refreshes(root):
+        from memvane.wiki.card.api import card_sources_allowed
+        if not card_sources_allowed(pending):
+            continue
         record = _source_record(
             pending.get("sourcePath"), str(root), str(root), config,
             pending.get("engine", settings_types.UNKNOWN_ENGINE),
