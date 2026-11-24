@@ -14,6 +14,7 @@ from memvane.wiki.compile import selected_execution as execution, wiki_compile_w
 from memvane.wiki.intake import api as intake
 from memvane.wiki.workspace import api as workspace
 from tests.support.case import FixtureCase
+from tests.support.queue_files import pending_text
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
 
@@ -87,5 +88,5 @@ class OwnerBusy(FixtureCase):
              patch.object(worker, 'process_job', side_effect=ResourceDeferred('owner_busy')):
             with self.assertRaisesRegex(ResourceDeferred, '^owner_busy$'):
                 worker._main_locked(SimpleNamespace(json=True, flush_all=True), self.root, {}, {}, queue, None)
-        self.assertEqual(queue.read_text().splitlines(), [raw])
+        self.assertEqual(pending_text(queue).splitlines(), [raw])
         self.assertFalse(list(self.root.glob('queue.jsonl.claimed.*')))

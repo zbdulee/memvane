@@ -8,6 +8,7 @@ from unittest.mock import patch
 from memvane.wiki.compile import wiki_compile as compiler
 from memvane.wiki.card import api as card
 from memvane.wiki.workspace import api as workspace
+from tests.support.wiki_handoff import waiting_reviews
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
@@ -17,22 +18,22 @@ class WriteIdentity(FixtureCase):
     def setUp(self):
         super().setUp()
         self.project = make_project(self.home)
-        self.config = expanded(self.project, compile={'mode': 'auto-wiki', 'verify': {'enabled': False}})
+        self.config = expanded(self.project, compile={'mode': 'auto-wiki', 'verify': {'enabled': True}})
         use_config(self, self.project, self.config)
-        self.project.write_note('docs/a.md', 'first source\n')
+        source_a = self.project.write_note('docs/a.md', 'first source\n')
         self.project.write_note('docs/b.md', 'second source\n')
         self.card = self.project.wiki / 'entities/existing-a.md'
         self.card.parent.mkdir(parents=True)
-        self.card.write_text('---\ntitle: "Existing A"\ncanonicalKey: "existing-a"\n'
-                             'type: entity\nstatus: generated\ncreatedBy: memvane\n'
-                             'sources:\n  - {kind: file, path: "docs/a.md", collection: "fixture"}\n'
-                             '---\n\n<!-- qmd:auto:start id="main" sourceHash="a01da0" -->\n'
-                             '## Summary\nOriginal fact.\n<!-- qmd:auto:end -->\n\n'
-                             '## Manual notes\nPreserve these notes.\n')
+        revision = self.project.revision(source_a)
+        original = dict(title='Existing A', canonicalKey='existing-a', suggestedType='entity', summary='Original fact.',
+                        sources=[{k: revision[k] for k in ('kind', 'path', 'collection')}], sourceRevisions=[revision])
+        page = compiler.markdown_page(original, original['summary'], 'generated', [], compiler.source_hash(original))
+        self.card.write_text(page + '\n## Manual notes\nPreserve these notes.\n')
         decision = {'state': 'candidate', 'projectRoot': str(self.project.root),
                     'installId': 'a' * 32, 'scopeId': 'b' * 32, 'storeIncarnation': 'c' * 32,
                     'recallSettings': {'skipPaths': []},
-                    'collections': [{'name': self.project.wiki_name, 'role': 'wiki',
+                    'collections': [{'name': self.project.raw_name, 'role': 'raw', 'sourceRoot': str(self.project.root)},
+                                    {'name': self.project.wiki_name, 'role': 'wiki',
                                      'sourceRoot': str(self.project.wiki)}]}
         self.bound = (decision, {'productRouteAllowed': True})
 
@@ -42,15 +43,34 @@ class WriteIdentity(FixtureCase):
                      'suggestedType': 'entity', 'confidence': 'high',
                      'targetPath': '.memvane/wiki/entities/existing-a.md',
                      'sources': [{'kind': 'file', 'path': source, 'collection': self.project.raw_name}]}
-        if revisions is not None:
-            candidate['sourceRevisions'] = revisions
+        if revisions is None:
+            revisions = [self.project.revision(self.project.root / source)]
+        candidate['sourceRevisions'] = revisions
+        queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
+        before = {w.state['id'] for w in waiting_reviews(queue)}
+        visible = self.card.read_bytes()
         output = io.StringIO()
-        with patch.object(workspace, 'selected', return_value=self.bound), \
+        with workspace.card_write_lock(self.project.root), workspace.mutation_lock(self.project.root), \
+             patch.object(workspace, 'selected', return_value=self.bound), \
              patch.object(workspace, 'recheck'), patch.object(workspace, 'request_sync'), \
              patch.object(workspace, 'append_activity'), redirect_stdout(output):
             compiler._compile_locked(self.project.root, self.config, self.config['compile'],
                                      self.project.wiki, candidate, False)
-        return json.loads(output.getvalue())
+        result = json.loads(output.getvalue()) if output.getvalue().strip() else {}
+        self.assertEqual(self.card.read_bytes(), visible)
+        if result.get('action') == 'updated':
+            work, = (w for w in waiting_reviews(queue) if w.state['id'] not in before)
+            job = json.loads(work.read('raw'))
+            self.assertEqual(job, work.state['binding']['job'])
+            self.assertEqual(job['targetPath'], candidate['targetPath'])
+            self.assertEqual(job['sourceRevisions'], candidate['sourceRevisions'])
+            self.assertFalse(queue.exists() and queue.read_bytes())
+            self.assertEqual(job['expectedTargetHash'], hashlib.sha256(visible).hexdigest())
+            pending = (self.project.root / job['pendingPath']).read_bytes()
+            self.assertEqual(work.read('image'), pending)
+            self.staged = pending.decode()
+            self.assertIn('sourceHash="' + job['sourceHash'] + '"', self.staged)
+        return result
 
     def test_unrelated_source_is_audited_without_overwriting_card(self):
         before = self.card.read_bytes()
@@ -64,13 +84,13 @@ class WriteIdentity(FixtureCase):
         self.assertEqual(json.loads(audit.read_text().splitlines()[-1])['action'], 'merge-needed')
 
     def test_same_key_or_shared_source_are_not_identity_mismatches(self):
-        for title, key, source in (('Renamed A', 'existing-a', 'docs/a.md'),
+        for title, key, source in (('Renamed A', 'existing-a', 'docs/b.md'),
                                    ('Different label', 'different-label', 'docs/a.md')):
             with self.subTest(key=key):
                 result = self.compile(title, key, source)
                 self.assertEqual(result['action'], 'updated')
-                self.assertIn('Revised synthetic fact.', self.card.read_text())
-                self.assertIn('Preserve these notes.', self.card.read_text())
+                self.assertIn('Revised synthetic fact.', self.staged)
+                self.assertIn('Preserve these notes.', self.staged)
 
     def test_refresh_ignores_reviewed_scalar_and_removes_old_verification_spans(self):
         old = self.card.read_text().replace('status: generated\n',
@@ -79,7 +99,7 @@ class WriteIdentity(FixtureCase):
         self.card.write_text(old)
         result = self.compile('Renamed A', 'existing-a', 'docs/a.md')
         self.assertEqual(result['action'], 'updated')
-        new = self.card.read_text()
+        new = self.staged
         self.assertIn('Revised synthetic fact.', new)
         self.assertIn('status: generated', new)
         self.assertNotIn('sourceSpans:', new)
@@ -100,25 +120,31 @@ class WriteIdentity(FixtureCase):
                 self.assertEqual(result['action'], 'merge-needed')
                 self.assertEqual(self.card.read_text(), content)
 
+    def test_disabled_verification_audits_existing_card_for_review(self):
+        self.config['compile']['verify']['enabled'] = False
+        self.assertEqual(self.compile('Renamed A', 'existing-a', 'docs/a.md'), {})
+        folder = self.project.root / '.memvane/compile'
+        row, = [json.loads(raw) for raw in (folder / 'candidates.jsonl').read_bytes().splitlines()]
+        self.assertEqual(row['targetPath'], self.card.relative_to(self.project.root).as_posix())
+        self.assertEqual((row['action'], row['lint']['findings']), ('merge-needed', ['verified_replacement_requires_review']))
+        self.assertEqual(waiting_reviews(folder / 'verify-queue.jsonl'), [])
+
     def test_old_manual_status_is_refreshed_as_generated(self):
         self.card.write_text(self.card.read_text().replace('status: generated', 'status: manual\nreviewed: true'))
         self.assertEqual(self.compile('Renamed A', 'existing-a', 'docs/a.md')['action'], 'updated')
-        result = self.card.read_text()
+        result = self.staged
         self.assertIn('status: generated', result)
         self.assertNotIn('reviewed:', result)
         self.assertIn('Revised synthetic fact.', result)
 
     def test_refresh_replaces_old_source_revision_with_current_bytes(self):
         source = self.project.root / 'docs/a.md'
-        def revision():
-            return {'kind': 'file', 'path': 'docs/a.md', 'collection': self.project.raw_name,
-                    **card.snapshot_bytes(source)[0]}
-        first = revision()
+        first = self.project.revision(source)
         self.assertEqual(self.compile('Renamed A', 'existing-a', 'docs/a.md', [first])['action'], 'updated')
         source.write_text('updated synthetic source\n')
-        second = revision()
+        second = self.project.revision(source)
         self.assertEqual(self.compile('Renamed A', 'existing-a', 'docs/a.md', [second])['action'], 'updated')
-        block = compiler.FRONTMATTER_RE.match(self.card.read_text()).group(1)
+        block = compiler.FRONTMATTER_RE.match(self.staged).group(1)
         revisions = card.frontmatter_source_revisions(block)
         self.assertEqual(len(revisions), 1)
         self.assertEqual(revisions[0]['sha256'], hashlib.sha256(source.read_bytes()).hexdigest())

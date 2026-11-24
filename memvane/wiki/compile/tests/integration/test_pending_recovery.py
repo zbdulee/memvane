@@ -2,6 +2,7 @@
 import json
 
 from memvane.wiki.card import api as card
+from memvane.wiki.workspace import api as workspace
 from memvane.wiki.compile import wiki_compile_worker as worker
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
@@ -17,7 +18,9 @@ class PendingRecovery(FixtureCase):
         queue = project.root / '.memvane/compile/source-queue.jsonl'
         self.assertEqual(worker.recover_pending_refreshes(project.root, config, queue), 1)
         self.assertEqual(worker.recover_pending_refreshes(project.root, config, queue), 1)
-        lines = queue.read_text().splitlines()
+        self.assertFalse(queue.exists())
+        native = workspace.safe_queue_path(project.root, native=True)
+        lines = native.read_text().splitlines()
         kept, _dropped = worker.dedup_jobs([(line, json.loads(line)) for line in lines])
         self.assertEqual(len(kept), 1)
         row = kept[0][1]

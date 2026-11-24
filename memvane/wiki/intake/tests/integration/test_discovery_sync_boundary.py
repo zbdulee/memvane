@@ -7,6 +7,7 @@ from memvane.host import api as host
 from memvane.runtime import api as runtime
 from memvane.wiki.intake import wiki_discovery as discovery
 from tests.support.case import FixtureCase
+from tests.support.queue_files import pending_text
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
@@ -53,7 +54,7 @@ class DiscoverySyncBoundary(FixtureCase):
             self.assertEqual(wakes.pending(), [])
             self.assertEqual(discovery.observe_grants(decision)['grants']['sync'], [])
             queue = project.root / '.memvane/compile/source-queue.jsonl'
-            self.assertEqual([json.loads(line)['source']['path'] for line in queue.read_text().splitlines()],
+            self.assertEqual([json.loads(line)['source']['path'] for line in pending_text(queue).splitlines()],
                              ['docs/note.md'])
         finally:
             os.close(timer)
@@ -88,11 +89,11 @@ class DiscoverySyncBoundary(FixtureCase):
         self.assertEqual(discovery._read(cursor), before)
         self.assertEqual(discovery.observe_grants(decision)['grants']['sync'], [grant])
         queue = project.root / '.memvane/compile/source-queue.jsonl'
-        self.assertFalse(queue.exists() and queue.read_text().strip())
+        self.assertFalse(pending_text(queue).strip())
         retried = install.run_sync()
         self.assertEqual(retried['state'], 'unchanged', retried)
         self.assertEqual(retried['generation'], published[0])
-        jobs = [json.loads(line) for line in queue.read_text().splitlines()]
+        jobs = [json.loads(line) for line in pending_text(queue).splitlines()]
         self.assertEqual([(job['source']['path'], job['contentRevision']) for job in jobs],
                          [('docs/note.md', hashlib.sha256(source.read_bytes()).hexdigest())])
         self.assertEqual(discovery.observe_grants(decision)['grants']['sync'], [])
@@ -114,7 +115,7 @@ class DiscoverySyncBoundary(FixtureCase):
         result = install.run_sync()
         self.assertIn(result['state'], ('indexed', 'unchanged'), result)
         queue = project.root / '.memvane/compile/source-queue.jsonl'
-        jobs = [json.loads(line) for line in queue.read_text().splitlines()]
+        jobs = [json.loads(line) for line in pending_text(queue).splitlines()]
         self.assertEqual([(job['source']['path'], job['engine']) for job in jobs],
                          [('docs/note.md', 'unknown')])
         self.assertEqual(discovery._read(discovery._paths(decision)[0])['pending'], {})
@@ -141,7 +142,7 @@ class DiscoverySyncBoundary(FixtureCase):
         self.assertEqual(discovery._read(discovery._paths(decision)[0])['pending'], {})
         self.assertEqual(discovery.observe_grants(decision)['grants']['sync'], [])
         queue = project.root / '.memvane/compile/source-queue.jsonl'
-        self.assertFalse(queue.exists() and queue.read_text().strip())
+        self.assertFalse(pending_text(queue).strip())
 
     def test_failed_bash_does_not_record_a_discovery_grant(self):
         project = make_project(self.home)
@@ -185,12 +186,12 @@ class DiscoverySyncBoundary(FixtureCase):
         self.assertEqual((progress['total'], progress['dispatched'], progress['settled']), (1, 1, 0))
         self.assertEqual(backfill._load(decision)['engine'], 'claude')
         queue = project.root / '.memvane/compile/source-queue.jsonl'
-        jobs = [json.loads(line) for line in queue.read_text().splitlines()]
+        jobs = [json.loads(line) for line in pending_text(queue).splitlines()]
         self.assertEqual([(job['source']['path'], job['trigger']) for job in jobs],
                          [('docs/note.md', 'session_start_source')])
         self.assertIn(first['state'], ('indexed', 'unchanged'), first)
         install.run_sync()
-        self.assertEqual([json.loads(line) for line in queue.read_text().splitlines()], jobs)
+        self.assertEqual([json.loads(line) for line in pending_text(queue).splitlines()], jobs)
         self.assertEqual(backfill.summary(backfill._load(decision)), progress)
 
     def test_ungranted_revision_waits_for_a_successful_bash_grant(self):
@@ -217,7 +218,7 @@ class DiscoverySyncBoundary(FixtureCase):
                     project.raw_name + '/docs/new.md': hashlib.sha256(new.read_bytes()).hexdigest()}
         self.assertEqual(discovery._read(cursor)['pending'], expected)
         queue = project.root / '.memvane/compile/source-queue.jsonl'
-        self.assertFalse(queue.exists() and queue.read_text().strip())
+        self.assertFalse(pending_text(queue).strip())
         session = {'hook_event_name': 'SessionStart', 'cwd': str(project.root), 'session_id': 'fixture'}
         with patch.object(runtime, 'request', return_value={'status': 'queued'}):
             host.serve_selected('update-queued', 'claude', install.select(), session)
@@ -226,7 +227,7 @@ class DiscoverySyncBoundary(FixtureCase):
         self.assertIn(refused['state'], ('indexed', 'unchanged'), refused)
         self.assertEqual(discovery._read(cursor)['pending'], expected)
         self.assertEqual(discovery.observe_grants(install.select())['grants']['session_start'], [])
-        self.assertFalse(queue.exists() and queue.read_text().strip())
+        self.assertFalse(pending_text(queue).strip())
         payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
                    'tool_input': {'command': 'touch docs/note.md'},
                    'tool_response': {'exit_code': 0}, 'cwd': str(project.root)}
@@ -236,7 +237,7 @@ class DiscoverySyncBoundary(FixtureCase):
         second = install.run_sync()
         self.assertIn(second['state'], ('indexed', 'unchanged'), second)
         self.assertEqual(discovery._read(cursor)['pending'], {})
-        jobs = [json.loads(line) for line in queue.read_text().splitlines()]
+        jobs = [json.loads(line) for line in pending_text(queue).splitlines()]
         self.assertEqual({job['source']['path']: (job['engine'], job['contentRevision']) for job in jobs},
                          {'docs/new.md': ('claude', expected[project.raw_name + '/docs/new.md']),
                           'docs/note.md': ('claude', revision), 'docs/gone.md': ('claude', gone_hash)})
@@ -281,7 +282,7 @@ class DiscoverySyncBoundary(FixtureCase):
             install.run_sync()
             self.assertEqual(discovery._read(cursor)['pending'], before)
             queue = project.root / '.memvane/compile/source-queue.jsonl'
-            self.assertFalse(queue.exists() and queue.read_text().strip())
+            self.assertFalse(pending_text(queue).strip())
 
     def test_sync_before_grant_activation_gets_a_follow_up_wake(self):
         project = make_project(self.home)
@@ -307,7 +308,7 @@ class DiscoverySyncBoundary(FixtureCase):
                     observed.append(discovery.observe_grants(decision))
                     install.run_sync()
                     self.assertEqual(discovery._read(cursor)['pending'], pending)
-                    self.assertFalse(queue.exists() and queue.read_text().strip())
+                    self.assertFalse(pending_text(queue).strip())
             return {'status': 'queued'}
         payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
                    'tool_input': {'command': 'touch docs/note.md'},
@@ -320,7 +321,7 @@ class DiscoverySyncBoundary(FixtureCase):
         self.assertEqual(len(discovery.observe_grants(decision)['grants']['sync']), 1)
         install.run_sync()
         self.assertEqual(discovery._read(cursor)['pending'], {})
-        self.assertEqual(len(queue.read_text().splitlines()), 1)
+        self.assertEqual(len(pending_text(queue).splitlines()), 1)
 
     def test_grant_activation_failure_never_authorizes_sync(self):
         from memvane.recall.types import HostResponseError
@@ -356,7 +357,7 @@ class DiscoverySyncBoundary(FixtureCase):
             install.run_sync()
             self.assertEqual(discovery._read(cursor)['pending'], pending)
             queue = project.root / '.memvane/compile/source-queue.jsonl'
-            self.assertFalse(queue.exists() and queue.read_text().strip())
+            self.assertFalse(pending_text(queue).strip())
 
     def test_sync_inside_rejected_session_cannot_use_provisional_grant(self):
         from memvane.recall.types import HostResponseError
@@ -394,7 +395,7 @@ class DiscoverySyncBoundary(FixtureCase):
         self.assertEqual(grants['provisional']['session_start'], [])
         self.assertEqual(discovery._read(cursor)['pending'], pending)
         queue = project.root / '.memvane/compile/source-queue.jsonl'
-        self.assertFalse(queue.exists() and queue.read_text().strip())
+        self.assertFalse(pending_text(queue).strip())
 
     def test_refused_followup_is_accepted_if_sync_already_used_the_grant(self):
         project = make_project(self.home)
@@ -431,4 +432,4 @@ class DiscoverySyncBoundary(FixtureCase):
         cursor = discovery._paths(decision)[0]
         self.assertEqual(discovery._read(cursor)['pending'], {})
         queue = project.root / '.memvane/compile/source-queue.jsonl'
-        self.assertEqual(len(queue.read_text().splitlines()), 1)
+        self.assertEqual(len(pending_text(queue).splitlines()), 1)
