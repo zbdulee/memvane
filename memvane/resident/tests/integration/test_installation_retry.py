@@ -72,6 +72,74 @@ class InstallationRetry(FixtureCase):
                     launch.assert_called_once()
                 self.assertEqual(worker.state, 'ready')
 
+    def check_shared_launch_retry(self, *, prior_reads, deferred=False):
+        a, b = self.projects
+        ma, mb = [self.proofs[p][1]['providerManifest'] for p in (a, b)]
+        key = svc._worker_key(ma)
+        self.assertEqual(key, svc._worker_key(mb))
+        for p in (a, b):
+            svc.register(p, root=self.root)
+
+        def inline(**opts):
+            return Mock(start=lambda: opts['target'](*opts['args']))
+
+        with patch.object(svc.threading, 'Thread', side_effect=inline), \
+             patch.object(owner.time, 'time') as wall, patch.object(svc.time, 'monotonic') as mono:
+            for attempts, stamp in enumerate(prior_reads, 1):
+                wall.return_value = mono.return_value = stamp
+                with patch.object(provider, 'hash_file', side_effect=OSError(errno.EIO, 'fixture launch proof read')):
+                    self.service._adopt(a)
+                self.assertEqual(owner.read_owner_state(ma)['attempts'], attempts)
+                self.assertIsNone(owner.read_owner_state(mb))
+                self.assertEqual(self.service.workers[key].failures, 0)
+
+            if deferred:
+                wall.return_value = mono.return_value = 130
+                with patch.object(self.service, 'admit', return_value=False):
+                    self.service._adopt(a)
+                self.assertEqual(self.service.workers[key].failures, 0)
+                self.assertEqual(owner.read_owner_state(ma)['attempts'], len(prior_reads))
+                self.assertEqual(owner.read_owner_state(mb)['attempts'], 0)
+
+            wall.return_value = mono.return_value = 160 if deferred else 130
+            with patch.object(provider, 'start_owned_embed_service', side_effect=RuntimeError('one_spawn_failure')) as launch:
+                self.service._adopt(a)
+                launch.assert_called_once()
+            worker = self.service.workers[key]
+            self.assertEqual((worker.failures, worker.state, worker.retry_at), (1, 'failed', mono.return_value + 10))
+            row = owner.read_owner_state(mb)
+            self.assertEqual((row['reason'], row['attempts'], row['terminal']), ('startup_failed', 1, False))
+
+            wall.return_value = mono.return_value = mono.return_value + 21
+            with patch.object(provider, 'start_owned_embed_service', return_value=object()) as launch:
+                self.service._adopt(b)
+                launch.assert_called_once()
+            self.assertEqual((worker.state, worker.failures), ('ready', 0))
+
+    def test_shared_launch_failure_after_two_install_proof_errors(self):
+        self.check_shared_launch_retry(prior_reads=(100, 110))
+
+    def test_shared_launch_failure_without_prior_proof_errors(self):
+        self.check_shared_launch_retry(prior_reads=())
+
+    def test_admission_wait_keeps_proof_history_local(self):
+        self.check_shared_launch_retry(prior_reads=(100, 110), deferred=True)
+
+    def test_shared_start_failure_preserves_another_installs_proof_cooldown(self):
+        a, b = self.projects
+        for project in (a, b):
+            svc.register(project, root=self.root)
+        ma, mb = [self.proofs[p][1]['providerManifest'] for p in (a, b)]
+        with patch.object(owner.time, 'time', return_value=100):
+            owner._write_state(ma, 'startup_failed', attempts=3)
+        prior = owner.read_owner_state(ma)
+        worker = svc.Worker(svc._worker_key(mb), str(self.root / 'w.sock'))
+        with patch.object(owner.time, 'time', return_value=120), \
+             patch.object(provider, 'start_owned_embed_service', side_effect=RuntimeError('one_spawn_failure')):
+            self.service._load_attested(b, *self.proofs[b], mb, worker, 'seal-b')
+        self.assertEqual(owner.read_owner_state(ma), prior)
+        self.assertEqual((worker.failures, owner.read_owner_state(mb)['attempts']), (1, 1))
+
     def test_transient_state_in_the_future_allows_adoption(self):
         manifest = self.proofs[self.projects[0]][1]['providerManifest']
         for reason, attempts in (('startup_failed', 1), ('startup_failed', 2), ('starting', 0), ('resource_deferred', 0)):

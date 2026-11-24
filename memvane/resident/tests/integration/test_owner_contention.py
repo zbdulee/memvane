@@ -98,8 +98,8 @@ class OwnerContention(FixtureCase):
                 service._load_attested(decision['projectRoot'], decision, proof,
                                        'selected', manifest, worker, 'seal')
                 state = embed_resident.read_owner_state(manifest)
-                self.assertEqual((worker.state, state['reason'], state['terminal']),
-                                 ('terminal', 'identity_invalid', True))
+                self.assertEqual((worker.state, worker.failures, state['reason'], state['terminal']),
+                                 ('terminal', 0, 'identity_invalid', True))
 
     def test_incompatible_newer_service_never_spawns_or_drains(self):
         from unittest.mock import patch

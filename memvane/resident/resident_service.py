@@ -1408,7 +1408,6 @@ class Service:
             handle = None
         with self.lock:
             worker.loading = False
-            worker.failures = max(worker.failures, prior_attempts)
             if handle is not None:
                 if self.draining.is_set():
                     with suppress(Exception):
@@ -1424,15 +1423,12 @@ class Service:
                 # independently of earlier model-start failures. Their retry
                 # budget remains on the startup-failure branch below.
                 worker.retry_at = time.monotonic() + LOAD_RETRY_SECONDS[0]
+            elif reason == 'identity_invalid':
+                worker.state = 'terminal'
             else:
-                worker.failures += 1
-                worker.failures = min(_MAX_FAILURES, worker.failures)
-                if reason == 'identity_invalid':
-                    worker.state = 'terminal'
-                elif worker.failures >= _MAX_FAILURES:
-                    worker.state = 'cooldown'
-                else:
-                    worker.state = 'failed'
+                # Only failed process starts and observed process exits charge the shared worker.
+                worker.failures = min(_MAX_FAILURES, worker.failures + 1)
+                worker.state = 'cooldown' if worker.failures >= _MAX_FAILURES else 'failed'
                 worker.retry_at = time.monotonic() + (
                     _FAILURE_COOLDOWN_SECONDS if worker.state == 'cooldown'
                     else 5 * 2 ** worker.failures)
@@ -1449,14 +1445,18 @@ class Service:
                 continue
             if _worker_key(row) != worker.identity:
                 continue
-            # A shared start failure cannot shorten another installation's terminal cooldown.
-            # Keep the existing diagnostics on read/write failure; adoption retries from disk.
+            # An admission wait must preserve each installation's remaining proof budget.
+            # On read/write failure, adoption retries from the existing disk state.
             with suppress(Exception):
                 prior = read_owner_state(row)
-                if prior and prior['terminal'] and _failure_window_remaining(prior):
-                    continue
-                _write_state(row, reason, terminal=worker.state == 'terminal',
-                             attempts=min(_MAX_FAILURES, worker.failures))
+                if prior and _failure_window_remaining(prior):
+                    if prior['terminal'] or (worker.state != 'terminal' and prior['reason'] == 'startup_failed'
+                                             and prior['attempts'] >= _MAX_FAILURES):
+                        continue
+                attempts = worker.failures
+                if reason == 'resource_deferred' and prior:
+                    attempts = max(attempts, prior['attempts'])
+                _write_state(row, reason, terminal=worker.state == 'terminal', attempts=attempts)
 
     # ----------------------------------------------------------- per project
     def _close_listener(self, binding):
