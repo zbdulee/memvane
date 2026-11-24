@@ -37,6 +37,22 @@ class NativeEdits(FixtureCase):
         self.assertFalse(self.public.exists())
         self.assertEqual(list(self.private.parent.glob('.edit-*')), [])
 
+    def test_private_event_fields_round_trip_unicode_line_separators(self):
+        engine = 'name\u0085part\u2028part\u2029end'
+        event = card.record_pending_refresh(self.root, 'one.md', engine)
+        self.assertEqual(event['engine'], engine)
+        self.assertEqual(card.unresolved_pending_refreshes_strict(self.root), [event])
+        self.assertFalse(self.public.exists())
+
+    def test_same_source_in_both_ledgers_requires_the_jobs_own_event(self):
+        released = dict(self.first, eventId='1' * 32)
+        self.public.write_text(json.dumps(released) + '\n')
+        self.assertIsNone(card.latest_unresolved_pending(self.root, 'one.md'))
+        for event in (released, self.first):
+            self.assertEqual(card.latest_unresolved_pending(self.root, 'one.md', event_id=event['eventId']), event)
+        self.assertTrue(card.resolve_pending_refresh(self.root, released, self.revision, [self.revision]))
+        self.assertEqual(card.unresolved_pending_refreshes_strict(self.root), [self.first])
+
     def test_same_id_in_both_ledgers_never_grants_resolution(self):
         self.public.write_text(json.dumps(dict(self.first, sourcePath='other.md')) + '\n')
         before = [p.read_bytes() for p in (self.private, self.public)]

@@ -117,7 +117,7 @@ def _read_events_unlocked(path: Path, strict: bool = False) -> list[dict] | None
     except (OSError, ValueError, RecursionError):
         return None if strict else []
     rows = []
-    for line in text.splitlines():
+    for line in text.split("\n"):
         if not line.strip():
             continue
         try:
@@ -284,7 +284,8 @@ def latest_unresolved_pending(root: Path, source_path: str, *, event_id=None) ->
         events = _unresolved(root, True, receipt=receipt) or []
     except (ValueError, OSError, RuntimeError):
         return None
-    return next((row for row in reversed(events) if row['sourcePath'] == source), None)
+    matches = [row for row in events if row['sourcePath'] == source]
+    return matches[0] if len(matches) == 1 else None
 
 
 def same_revision(left, right) -> bool:

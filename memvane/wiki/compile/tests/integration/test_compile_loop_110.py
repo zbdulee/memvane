@@ -25,6 +25,7 @@ from memvane.wiki.compile import wiki_compile_worker as worker
 from memvane.wiki.engines import api as engines
 from memvane.wiki.workspace import api as workspace
 from tests.support.case import FixtureCase
+from tests.support.queue_files import pending_text
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
@@ -111,9 +112,7 @@ class CompileLoop(FixtureCase):
         return [row for row in rows if reason is None or row.get('reason') == reason]
 
     def queued(self):
-        files = [self.queue] + list(self.compile_dir.glob('source-queue.jsonl.claimed.*'))
-        return [line for path in files if path.exists()
-                for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
+        return [line for line in pending_text(self.queue).splitlines() if line.strip()]
 
     def settled(self):
         path = self.compile_dir / refresh_settlement.SETTLED_NAME
@@ -121,7 +120,7 @@ class CompileLoop(FixtureCase):
 
     def assert_attempted_once(self, event, *, calls, reason):
         """After several more passes nothing is attempted again and the wake drains."""
-        ledger = (self.compile_dir / 'source-refresh-pending.jsonl').read_bytes()
+        ledger = (self.compile_dir / '.handoff/v1/refresh/events.jsonl').read_bytes()
         states = [self.selected_pass()['state'] for _ in range(PASSES)]
         self.assertEqual(states, ['drained'] * PASSES)
         self.assertEqual(len(self.calls), calls)
@@ -131,7 +130,7 @@ class CompileLoop(FixtureCase):
         # Recall freshness still reads the event as unresolved, and the ledger bytes are as they were.
         self.assertEqual([item['eventId'] for item in wiki_freshness.unresolved_pending_refreshes_strict(self.root)],
                          [event['eventId']])
-        self.assertEqual((self.compile_dir / 'source-refresh-pending.jsonl').read_bytes(), ledger)
+        self.assertEqual((self.compile_dir / '.handoff/v1/refresh/events.jsonl').read_bytes(), ledger)
 
     # -- the four endings -----------------------------------------------------------
     def test_an_extractor_answer_with_no_candidate_is_paid_for_once(self):
