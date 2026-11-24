@@ -61,7 +61,7 @@ class SelectedWikiChecks(FixtureCase):
         self.assertTrue(claim.exists())
         self.assertFalse(queue.exists())
 
-    def test_dead_owner_claim_is_requeued_and_remains_pending(self):
+    def test_dead_owner_remains_pending_until_the_native_consumer_takes_its_original(self):
         import os
         from unittest.mock import patch
         queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
@@ -71,5 +71,13 @@ class SelectedWikiChecks(FixtureCase):
         claim.write_text('{"targetPath":"card.md"}\n', encoding='utf-8')
         with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(pid)}):
             self.assertTrue(workspace.queue_busy(queue))
+            self.assertEqual(claim.read_bytes(), b'{"targetPath":"card.md"}\n')
+            self.assertFalse(queue.exists())
+            recovered = workspace.claim_queue(queue, private=True)
         self.assertFalse(claim.exists())
-        self.assertIn('card.md', queue.read_text(encoding='utf-8'))
+        self.assertNotEqual(recovered.parent, queue.parent)
+        rows = workspace.read_queue(recovered)
+        self.assertEqual(rows[0][1], {'targetPath': 'card.md', '_requeue_count': 1})
+        self.assertEqual(queue.read_bytes(), b'')
+        rows.finish(queue, recovered, [])
+        self.assertFalse(workspace.queue_busy(queue))

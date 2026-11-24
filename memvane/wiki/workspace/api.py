@@ -37,9 +37,13 @@ def validate_compile_run_lock(root, fd):
     return implementation(root, fd)
 
 
-def safe_queue_path(project_root, configured_path=None):
+def safe_queue_path(project_root, configured_path=None, *, native=False):
     from memvane.wiki.workspace.queue_paths import _safe_queue_path
-    return _safe_queue_path(project_root, configured_path)
+    path = _safe_queue_path(project_root, configured_path)
+    if native and path is not None:
+        from memvane.wiki.workspace.handoff.api import native_live
+        return native_live(path, create=True)
+    return path
 
 
 def queue_lock_path(path):
@@ -62,9 +66,9 @@ def read_queue(path):
     return implementation(path)
 
 
-def claim_queue(path, *, receipt_writer=None, before_claim=None):
+def claim_queue(path, *, receipt_writer=None, before_claim=None, private=False):
     from memvane.wiki.workspace.queue import claim_queue as implementation
-    return implementation(path, receipt_writer=receipt_writer, before_claim=before_claim)
+    return implementation(path, receipt_writer=receipt_writer, before_claim=before_claim, private=private)
 
 
 def request_lifecycle(decision, trigger):

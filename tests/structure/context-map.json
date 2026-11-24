@@ -1759,6 +1759,16 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/workspace/handoff/api.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/handoff/budget.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/workspace/lifecycle_requests.py": {
       "context": "wiki/workspace",
       "layer": "adapter",

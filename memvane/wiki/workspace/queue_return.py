@@ -20,11 +20,13 @@ class ClaimRows(list):
 
     def __init__(self, path):
         super().__init__()
-        raw, info = _read_file(path)
+        raw, info = _read_file(path, limit=8 * 1024 ** 2)
+        self.native = path.name.startswith('native.claimed.')
         self.inode = info.st_ino
         self.size = len(raw)
         self.digest = hashlib.sha256(raw).hexdigest()
         self.line_ranges = []
+        self.quarantined = []
         start = 0
         for line in raw.split(b'\n')[:-1]:
             length = len(line) + 1
@@ -35,13 +37,21 @@ class ClaimRows(list):
                 continue  # Exact undecodable bytes remain private at return.
             if not text.strip():
                 continue
+            if self.native:
+                from memvane.wiki.workspace.handoff.api import occurrence
+                job, _ = occurrence(line + b'\n')
+                if job is None:
+                    continue
             try:
-                job = json.loads(text)
+                job = job if self.native else json.loads(text)
             except (ValueError, RecursionError):
                 job = None
             self.line_ranges.append((offset, length))
             self.append((text, job if isinstance(job, dict) else None))
 
+
+    def quarantine(self, line):
+        self.quarantined.append((line + '\n').encode('utf-8'))
 
     def finish(self, queue, claim, remaining):
         with queue_locked(queue):
@@ -54,7 +64,7 @@ class ClaimRows(list):
         return _finish_verified(queue, claim, self, remaining, cleanup)
 
 
-def _read_file(path, *, sync_private=False):
+def _read_file(path, *, sync_private=False, limit=None):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, 'rb') as src:
         info = os.fstat(fd)
@@ -67,7 +77,19 @@ def _read_file(path, *, sync_private=False):
             if stat.S_IMODE(info.st_mode) != 0o600:
                 os.fchmod(fd, 0o600)
             os.fsync(fd)
-        return src.read(), info
+        if limit is not None and info.st_size > limit:
+            raise OSError('queue_requires_batch')
+        from memvane.wiki.workspace.handoff import budget
+        budget.charge(budget.channel(path), info.st_size)
+        remaining = info.st_size
+        blocks = []
+        while remaining:
+            block = src.read(min(65536, remaining))
+            if not block:
+                raise OSError('queue_changed_during_read')
+            blocks.append(block)
+            remaining -= len(block)
+        return b''.join(blocks), info
 
 
 def _raw(path):
@@ -163,21 +185,28 @@ def _snapshot(path, rows):
     return raw
 
 
-def _split_tail(raw, size):
+def _split_tail(raw, size, *, native=False):
     """Only complete UTF-8 lines enter a released queue; preserve all other bytes."""
     boundary = raw.rfind(b'\n', 0, size) + 1
     public, retained = [], []
+    offset = 0
+    from memvane.wiki.workspace.handoff.api import occurrence
     for line in raw.split(b'\n')[:-1]:
-        try:
-            line.decode('utf-8')
-        except UnicodeError:
-            retained.append(line + b'\n')
-    for line in raw[boundary:].split(b'\n')[:-1]:
-        try:
-            line.decode('utf-8')
-        except UnicodeError:
-            continue
-        public.append(line + b'\n')
+        entry = line + b'\n'
+        if native:
+            job, _ = occurrence(entry)
+            valid = job is not None
+        else:
+            try:
+                line.decode('utf-8')
+                valid = True
+            except UnicodeError:
+                valid = False
+        if not valid:
+            retained.append(entry)
+        elif offset >= boundary:
+            public.append(entry)
+        offset += len(entry)
     retained.append(raw[raw.rfind(b'\n') + 1:])
     return b''.join(public), b''.join(retained)
 
@@ -252,7 +281,7 @@ def resume(queue):
         if (info.st_ino != state['inode'] or len(original) < size
                 or hashlib.sha256(original[:size]).hexdigest() != state['digest']):
             raise OSError('queue return source changed')
-        tail, torn = _split_tail(original, state['read'])
+        tail, torn = _split_tail(original, state['read'], native=state['private'])
         publish = _decoded(state['return'])
         hold = _decoded(state['hold'])
         if state['private']:
@@ -306,7 +335,12 @@ def resume(queue):
 def finish_locked(queue, claim, remaining, rows, *, held=b''):
     resume(queue)
     original = _snapshot(claim, rows)
-    tail, torn = _split_tail(original, rows.size)
+    tail, torn = _split_tail(original, rows.size, native=rows.native)
+    if rows.quarantined:
+        folder = _dir(queue, create=True)
+        opaque = b''.join(rows.quarantined)
+        name = 'fragment-%x-%s' % (rows.inode, hashlib.sha256(opaque).hexdigest())
+        _exact_file(folder / name, opaque)
     if not remaining and not held and not tail and not torn:
         claim.unlink()
         fsync_dir(claim.parent)
@@ -358,19 +392,21 @@ def _finish_verified(queue, claim, rows, remaining, cleanup):
     with queue_locked(queue):
         resume(queue)
         original = _snapshot(claim, rows)
-        tail, torn = _split_tail(original, rows.size)
+        tail, torn = _split_tail(original, rows.size, native=rows.native)
         folder = _dir(queue)
-        other = [p for p in queue.parent.glob(queue.name + '.claimed.*') if p != claim]
+        from itertools import chain, islice
+        public = (p for p in queue.parent.glob(queue.name + '.claimed.*') if p != claim)
+        private = () if folder is None else (p for p in folder.iterdir()
+                    if p != claim and (p.name == queue.name or p.name.startswith(('native.claimed.', 'ready-', 'fragment-'))))
+        other = list(islice(chain(public, private), 65))
+        uncertain = len(other) > 64 or bool(torn or rows.quarantined)
         if queue.exists():
             other.append(queue)
-        if folder is not None:
-            other.extend(p for p in folder.iterdir()
-                         if p != claim and p.name.startswith(('native.claimed.', 'ready-', 'fragment-')))
-        extra = cleanup(lines_bytes(remaining) + tail, other, bool(torn))
+        extra = cleanup(lines_bytes(remaining) + tail, other, uncertain)
         finish_locked(queue, claim, list(remaining) + extra, rows)
 
 
-def take_private(queue, alive):
+def take_private(queue, alive, *, include_live=True):
     folder = _dir(queue)
     if folder is None:
         return None
@@ -385,10 +421,16 @@ def take_private(queue, alive):
         dest = folder / ('native.claimed.%d.%s' % (os.getpid(), nonce))
         _move_claim(child, dest)
         return dest
+    live = folder / queue.name
+    if include_live and live.exists() and live.stat().st_size:
+        dest = folder / ('native.claimed.%d.%s' % (os.getpid(), _token()))
+        _move_claim(live, dest)
+        return dest
     return None
 
 
 def queue_recovery_pending(queue):
     folder = _dir(queue)
-    return folder is not None and any(p.name == 'work' or p.name.startswith(('ready-', 'native.claimed.'))
+    return folder is not None and any(p.name == 'work' or (p.name == queue.name and p.stat().st_size)
+                                      or p.name.startswith(('ready-', 'native.claimed.'))
                                       for p in folder.iterdir())

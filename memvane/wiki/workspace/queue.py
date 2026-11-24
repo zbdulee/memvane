@@ -84,7 +84,7 @@ def _write_discard_ledger(compile_dir: Path, queue_name: str, job: dict, requeue
     fsync_dir(ledger_path.parent)
 
 
-def reclaim_orphaned_claimed(path: Path, max_requeue: int = MAX_REQUEUE_COUNT, *, receipt_writer=None):
+def reclaim_orphaned_claimed(path: Path, max_requeue: int = MAX_REQUEUE_COUNT, *, receipt_writer=None, private=False):
     """
     Return dead claims under the live queue lock. Source and verify rows at
     their retry limit stay private unless a frozen discard receipt settles them.
@@ -135,6 +135,11 @@ def reclaim_orphaned_claimed(path: Path, max_requeue: int = MAX_REQUEUE_COUNT, *
 
         try:
             if native:
+                if private:
+                    private_folder = queue_return._dir(path, create=True)
+                    moved = private_folder / ('native.claimed.%d.%s' % (os.getpid(), uuid.uuid4().hex))
+                    queue_return._move_claim(child, moved)
+                    child = moved
                 rows = queue_return.ClaimRows(child)
             else:
                 rows = _text_rows(child.read_text(encoding='utf-8', errors='replace'))
@@ -202,24 +207,37 @@ def read_queue(path: Path):
         return []
 
 
-def claim_queue(path: Path, *, receipt_writer=None, before_claim=None) -> Path | None:
+def claim_queue(path: Path, *, receipt_writer=None, before_claim=None, private=False) -> Path | None:
     claimed = path.with_name(f"{path.name}.claimed.{os.getpid()}.{uuid.uuid4().hex}")
     path.parent.mkdir(parents=True, exist_ok=True)
     with queue_return.legacy_card_lock(path), queue_return.queue_locked(path):
+        if private:
+            saved = queue_return.take_private(path, _is_pid_alive, include_live=False)
+            if saved is None:
+                from memvane.wiki.workspace.handoff.api import native_live
+                live = native_live(path)
+                if before_claim is not None and live is not None and live.exists() and live.stat().st_size:
+                    before_claim(live)
+                saved = queue_return.take_private(path, _is_pid_alive)
+            if saved is not None:
+                return saved
         if before_claim is not None:
             before_claim(path)
         live_existed = path.exists()
-        reclaim_orphaned_claimed(path, receipt_writer=receipt_writer)
+        reclaim_orphaned_claimed(path, receipt_writer=receipt_writer, private=private)
         native = path.name in (cp.SOURCE_QUEUE, cp.VERIFY_QUEUE) or receipt_writer is not None
         if native:
-            private = queue_return.take_private(path, _is_pid_alive)
-            if private is not None:
-                return private
+            saved = queue_return.take_private(path, _is_pid_alive)
+            if saved is not None:
+                return saved
             if not live_existed and path.exists() and path.stat().st_size == 0:
                 return None
         try:
             if native:
-                queue_return._move_claim(path, claimed, private=False)
+                if private:
+                    folder = queue_return._dir(path, create=True)
+                    claimed = folder / ('native.claimed.%d.%s' % (os.getpid(), uuid.uuid4().hex))
+                queue_return._move_claim(path, claimed, private=private)
             else:
                 os.replace(path, claimed)
         except FileNotFoundError:

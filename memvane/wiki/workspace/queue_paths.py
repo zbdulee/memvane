@@ -38,7 +38,9 @@ def _safe_queue_path(project_root, configured_path=None):
 
 
 def _queue_lock_path(path):
-    return path.with_name(f"{path.name}.lock")
+    from memvane.wiki.workspace.handoff.api import public_name
+    public = public_name(path)
+    return public.with_name(f"{public.name}.lock")
 
 
 def requeue_lines(path: Path, raw_lines: list[str]):
