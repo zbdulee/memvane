@@ -14,33 +14,31 @@ updated: 2026-11-02
 createdBy: memvane
 confidence: high
 sources:
-  - {kind: "file", path: "docs/architecture.md", collection: "qmd-auto-context"}
+  - {kind: "file", path: "docs/dev/contexts/working-rules.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/architecture.md", collection: "qmd-auto-context", sha256: "5689777e0c6cebfa2919f053400921bbe05b1de0c00db17bba98f55747a57339", size: 59235, mtimeNs: 1794232266534214838}
+  - {kind: "file", path: "docs/dev/contexts/working-rules.md", collection: "qmd-auto-context", sha256: "d898e201344edc187114a4472afa650ef308114e2aa6e42957b146024e4bea9c", size: 20942, mtimeNs: 1795479671851822896}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-15T14:58:29.804398Z"
+verifiedAt: "2026-11-24T00:52:41.175477Z"
 verifiedMode: "self"
-verifiedBodyHash: "efba7693bff8f882a4f2dbd279379a5d74d9c8e4c99d212abf2f33ac60b80491"
+verifiedBodyHash: "a655bb62f0b72c6046844ed914eaadf5c462557cf9d76fe7bf064f8940202d7d"
 sourceSpans:
-  - {path: "docs/architecture.md", sourceSha256: "5689777e0c6cebfa2919f053400921bbe05b1de0c00db17bba98f55747a57339", startLine: 3, endLine: 3, spanSha256: "31ef8bb18d50197c2b5d09cce91b60a74870f99b75ece078dbc855985aeb9006"}
-  - {path: "docs/architecture.md", sourceSha256: "5689777e0c6cebfa2919f053400921bbe05b1de0c00db17bba98f55747a57339", startLine: 5, endLine: 6, spanSha256: "68c5d0f072f24027de49132892e00a20f933871dcc843df02088226f48949a9d"}
-  - {path: "docs/architecture.md", sourceSha256: "5689777e0c6cebfa2919f053400921bbe05b1de0c00db17bba98f55747a57339", startLine: 5, endLine: 7, spanSha256: "c9eee605ab4aeb82df0dcd747f4bd6181ba15b0e5914008e46c938ff1fb04a2d"}
-  - {path: "docs/architecture.md", sourceSha256: "5689777e0c6cebfa2919f053400921bbe05b1de0c00db17bba98f55747a57339", startLine: 7, endLine: 8, spanSha256: "fb546e4874c9e83acdfb6ae54477832f24e9617eaf5ebe241057b96b94c56390"}
-  - {path: "docs/architecture.md", sourceSha256: "5689777e0c6cebfa2919f053400921bbe05b1de0c00db17bba98f55747a57339", startLine: 12, endLine: 13, spanSha256: "dba7f0f7616154df65c65b22f1354ffa9073d7cf6bf522c3a19882e639d03bc2"}
-  - {path: "docs/architecture.md", sourceSha256: "5689777e0c6cebfa2919f053400921bbe05b1de0c00db17bba98f55747a57339", startLine: 20, endLine: 20, spanSha256: "7bec811889edf70a53dff086ff5b36c34e5ca1554b7411071d95ae5ea548de0f"}
-  - {path: "docs/architecture.md", sourceSha256: "5689777e0c6cebfa2919f053400921bbe05b1de0c00db17bba98f55747a57339", startLine: 25, endLine: 26, spanSha256: "97e6f23e574dbcbbba7a5408fb8816dd4cef3f63522e6b006423f0ad808a58d9"}
-  - {path: "docs/architecture.md", sourceSha256: "5689777e0c6cebfa2919f053400921bbe05b1de0c00db17bba98f55747a57339", startLine: 47, endLine: 48, spanSha256: "19769ff830ae1c18e7068837e819d0b077cb2ec79c583865d36049064dbb861c"}
-  - {path: "docs/architecture.md", sourceSha256: "5689777e0c6cebfa2919f053400921bbe05b1de0c00db17bba98f55747a57339", startLine: 50, endLine: 51, spanSha256: "4a36568e3bd7b7895ce67853ecd0abf91f0e730b5bc0619ae104a6a1d1611ade"}
-  - {path: "docs/architecture.md", sourceSha256: "5689777e0c6cebfa2919f053400921bbe05b1de0c00db17bba98f55747a57339", startLine: 91, endLine: 92, spanSha256: "1a3f8cebfdee03b0b044f23ea726831c6e3558d263d026becfeb542300d71808"}
-  - {path: "docs/architecture.md", sourceSha256: "5689777e0c6cebfa2919f053400921bbe05b1de0c00db17bba98f55747a57339", startLine: 103, endLine: 105, spanSha256: "c9615e0f557fcaced5b4860e1c5660bef01928f803901e2a16e5ec6f7e8a01d9"}
+  - {path: "docs/dev/contexts/working-rules.md", sourceSha256: "d898e201344edc187114a4472afa650ef308114e2aa6e42957b146024e4bea9c", startLine: 3, endLine: 3, spanSha256: "e21c0687a84c2e8818dd2fd6d51301e35eaac661d109ada762a2f38e32914d2e"}
+  - {path: "docs/dev/contexts/working-rules.md", sourceSha256: "d898e201344edc187114a4472afa650ef308114e2aa6e42957b146024e4bea9c", startLine: 7, endLine: 7, spanSha256: "1b73e499d3e133e6631df95a98fc9f991fe32526e66358894a77138cfc4dbcb7"}
+  - {path: "docs/dev/contexts/working-rules.md", sourceSha256: "d898e201344edc187114a4472afa650ef308114e2aa6e42957b146024e4bea9c", startLine: 58, endLine: 58, spanSha256: "a48585584ae669cd104f559d4ca408bbcbf0a37f268113404ba1c3c770b8d027"}
+  - {path: "docs/dev/contexts/working-rules.md", sourceSha256: "d898e201344edc187114a4472afa650ef308114e2aa6e42957b146024e4bea9c", startLine: 61, endLine: 61, spanSha256: "9ce2e22c8c4363a1dd033fc56a2f2fee4b6c8797881afad92e284ffc10986385"}
+  - {path: "docs/dev/contexts/working-rules.md", sourceSha256: "d898e201344edc187114a4472afa650ef308114e2aa6e42957b146024e4bea9c", startLine: 62, endLine: 62, spanSha256: "753cfea4660399ad43db244a47518c5a387ed3413625726c2304afe53777bb0d"}
+  - {path: "docs/dev/contexts/working-rules.md", sourceSha256: "d898e201344edc187114a4472afa650ef308114e2aa6e42957b146024e4bea9c", startLine: 63, endLine: 63, spanSha256: "2a67be223953eba9f18697f71a526bb934237cc94fdafb994ba3c138cd061adb"}
+  - {path: "docs/dev/contexts/working-rules.md", sourceSha256: "d898e201344edc187114a4472afa650ef308114e2aa6e42957b146024e4bea9c", startLine: 64, endLine: 64, spanSha256: "3ef53727ef143657b49c8bc551fbe607d0f5389735327be91ed0a4da907c9b2d"}
+  - {path: "docs/dev/contexts/working-rules.md", sourceSha256: "d898e201344edc187114a4472afa650ef308114e2aa6e42957b146024e4bea9c", startLine: 67, endLine: 67, spanSha256: "3363e85ff661fd6505e8535d79761c351b1da0c2f495779a240f5e314dae1554"}
+  - {path: "docs/dev/contexts/working-rules.md", sourceSha256: "d898e201344edc187114a4472afa650ef308114e2aa6e42957b146024e4bea9c", startLine: 69, endLine: 69, spanSha256: "528e6d75476bd4ed85819edae1fe1e9a8b39ef087e2fb9a670b6b338cf5b92d4"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="6f67400c1b456c53" -->
+<!-- qmd:auto:start id="main" sourceHash="6b1fafc6d1e08aa0" -->
 ## Summary
-MemVane(plugin id `memvane`)은 프로젝트 위키 컨텍스트를 주입하는 호스트 플러그인이다. 도메인 동작은 `core/`에 두고 호스트 adapter는 이벤트를 공통 JSON 계약으로 변환한다. Claude/Codex command hooks와 Hermes Python hooks는 `core/laya_index_host_route.py`와 `core/laya_host_response.py`를 공유한다. hook은 durable wake와 queue row를 기록하고 embedding·sync·compile·verify는 off-hook worker가 수행한다. recall은 마지막으로 publish된 wiki index generation을 읽는다. 사용자 설정·문제 해결 안내는 `README.md`, 유지보수 아키텍처는 `docs/architecture.md`, 기능별 흐름도는 `architecture/flows/README.md`에 있다. `docs/plans/`의 memvane-db Git-blob 설계에서 PR8–PR10은 미완료 설계이며 배포 동작의 근거가 아니다.
+`docs/dev/contexts/working-rules.md` 기준 MemVane은 Claude Code · Codex · Hermes Agent · Antigravity(Gemini)의 색인 기반 자동 컨텍스트 주입 플러그인이다. 플러그인 id는 `memvane`, marketplace는 `memvane-marketplace`, 사용자 안내는 `README.md`다. 공통 구현은 `memvane/`, 프로세스 진입은 `entry/`, Claude/Codex/Gemini의 run-hook 디스패처와 hooks.json/hooks-codex.json은 `hooks/`에 둔다. `hermes_adapter/`는 Hermes Python plugin의 pre_llm_call/on_session_start/pre_tool_call/post_tool_call을 연결하며 `post_tool_call`은 observer-only다. 인덱스·임베딩 런타임은 resident service가 소유한다. `host_response.py`의 PostToolUse `index`와 성공한 agent Bash의 `file-change-event`는 선택된 route의 Laya full-scan sync owner를 깨운다. 실제 색인은 hook 밖의 durable worker가 수행한다. route 분류와 실패 계약은 `memvane/host/README.md`에 있다.
 <!-- qmd:auto:end -->

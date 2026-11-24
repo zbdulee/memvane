@@ -5,7 +5,6 @@ aliases:
   - "wiki.card 로그 해석"
   - "카드 예산 초과 로그"
 related:
-  - "memvane-install-event-log"
   - "memvane-logs-query-interface"
   - "memvane-wiki-backfill-log-semantics"
 type: concept
@@ -17,28 +16,30 @@ confidence: high
 sources:
   - {kind: "file", path: "skills/logs/SKILL.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "skills/logs/SKILL.md", collection: "qmd-auto-context", sha256: "1fb47c9e45dee0998c02d67d84313dbc1eedc229c8d5701c3721e56f13781525", size: 4311, mtimeNs: 1793427988676342965}
+  - {kind: "file", path: "skills/logs/SKILL.md", collection: "qmd-auto-context", sha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", size: 9476, mtimeNs: 1794981800337578513}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T12:15:30.634398Z"
+verifiedAt: "2026-11-18T17:30:48.291533Z"
 verifiedMode: "self"
-verifiedBodyHash: "ee6332408b52688184038f697c40811002869bfa106c9572e49375cee0044c4e"
+verifiedBodyHash: "48615102efc33c2daab69a2e4ab9b56f0f35c373505d6ff64edc7fd8572fbfac"
 sourceSpans:
-  - {path: "skills/logs/SKILL.md", sourceSha256: "1fb47c9e45dee0998c02d67d84313dbc1eedc229c8d5701c3721e56f13781525", startLine: 40, endLine: 41, spanSha256: "2c11fbdbc9824587816d4990e988af27623edcebced988ef543050dba553341c"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "1fb47c9e45dee0998c02d67d84313dbc1eedc229c8d5701c3721e56f13781525", startLine: 41, endLine: 42, spanSha256: "aee1e986f33561293a66cc7b9434058f32163b7e1728e773d6aeab8e41662f6b"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "1fb47c9e45dee0998c02d67d84313dbc1eedc229c8d5701c3721e56f13781525", startLine: 42, endLine: 43, spanSha256: "87fed6551c5069f4172129f68046dffc9594237e03616871031f051a5203709f"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "1fb47c9e45dee0998c02d67d84313dbc1eedc229c8d5701c3721e56f13781525", startLine: 43, endLine: 44, spanSha256: "821463e93590e42521638070077119e818784c58b1848b4a90400bd83446dc99"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "1fb47c9e45dee0998c02d67d84313dbc1eedc229c8d5701c3721e56f13781525", startLine: 44, endLine: 46, spanSha256: "c1a02868a2816df0919b7c63fc54dfb932f13f1d6e57a8e3ba8b095efc2be634"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "1fb47c9e45dee0998c02d67d84313dbc1eedc229c8d5701c3721e56f13781525", startLine: 46, endLine: 47, spanSha256: "d8fb5fada7eaae9fe4eddf6a2c83e9f3a54b80e2c52b576e8ed4410a5008ee50"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "1fb47c9e45dee0998c02d67d84313dbc1eedc229c8d5701c3721e56f13781525", startLine: 48, endLine: 49, spanSha256: "15a2eccb5f532ec915eeac56c04494d1d58d829817c09a2472351af396551362"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "1fb47c9e45dee0998c02d67d84313dbc1eedc229c8d5701c3721e56f13781525", startLine: 50, endLine: 51, spanSha256: "a102463255bc7adbce2840886580eb2655784a271c9d491ed2143c85304ec572"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 47, endLine: 48, spanSha256: "2c11fbdbc9824587816d4990e988af27623edcebced988ef543050dba553341c"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 48, endLine: 49, spanSha256: "aee1e986f33561293a66cc7b9434058f32163b7e1728e773d6aeab8e41662f6b"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 49, endLine: 50, spanSha256: "87fed6551c5069f4172129f68046dffc9594237e03616871031f051a5203709f"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 50, endLine: 51, spanSha256: "821463e93590e42521638070077119e818784c58b1848b4a90400bd83446dc99"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 51, endLine: 53, spanSha256: "c1a02868a2816df0919b7c63fc54dfb932f13f1d6e57a8e3ba8b095efc2be634"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 53, endLine: 54, spanSha256: "d8fb5fada7eaae9fe4eddf6a2c83e9f3a54b80e2c52b576e8ed4410a5008ee50"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 55, endLine: 56, spanSha256: "15a2eccb5f532ec915eeac56c04494d1d58d829817c09a2472351af396551362"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 57, endLine: 58, spanSha256: "2f110eac2c87ccab92d2fd308af1283632fb4f5b840758b342c8429fb44535ef"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 58, endLine: 59, spanSha256: "2f09e81ea9b60e36d14d628b1976df0d1d6d0ae7ee27ea1655dd596f0f85644c"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 59, endLine: 61, spanSha256: "d0064beaecfa1376854d0be2ac5daa25b4ec3d4365dcc8c83e059c9b41a453dd"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="3f658781974fdae9" -->
+<!-- qmd:auto:start id="main" sourceHash="a5be996b810b1e11" -->
 ## Summary
-`wiki.card`의 `over_budget`은 local selector budget 초과로 writer가 카드를 한 번 보류함을 뜻한다. `size` / `budget`과 `method`의 `tokenizer` 또는 `derive_limit`을 기록하며, 수동 작성 부분만 초과하면 `reason`은 `manual_section_over_budget`이다. `split` / `split_unavailable`은 source당 한 번의 분할 재요청이며 `requested`, `parts`, `written`을 기록한다. `split_unavailable`의 `reason`은 분할 실행 불가, free card slots 초과, 또는 원본과 같은 쓰기 기준으로 수용할 수 없는 부분이 있어 원본을 쓰는 이유다. `over_budget_written`은 그 시도 후 예산을 초과한 채 기록된 카드이며 selector는 앞부분으로 점수화한다. `measure_failed`는 크기를 셀 selector runtime 부재, `unmeasured`는 머신의 selector tokenizer 부재로 크기 검사 없이 기록됨을 뜻한다. `merge_kept_separate`는 keeper의 예산 초과로 dedup merge를 거절함을 뜻한다.
+`wiki.card`의 `over_budget`은 selector 예산 초과로 쓰기를 한 번 보류한 상태다. `size` / `budget`과 `method`의 `tokenizer` 또는 `derive_limit`을 기록한다. 수동 작성 부분만으로 초과하면 `reason`은 `manual_section_over_budget`이다. `split` / `split_unavailable`은 원본당 1회 분할 요청에 대해 `requested`, `parts`, `written`을 기록한다. `split_unavailable`의 `reason`은 분할 실행 불가, 빈 카드 슬롯 초과, 원본과 동일한 쓰기 기준에 맞지 않는 분할 카드 중 원본을 쓰게 된 이유를 표시한다. `over_budget_written`은 분할 시도 후 예산을 넘겨 쓴 카드로 selector는 앞부분을 평가한다. `measure_failed`는 계수 가능한 selector 런타임 부재, `unmeasured`는 selector tokenizer 부재로 크기 검사 없이 쓴 경우다. `merge_kept_separate`는 남길 카드의 예산 초과로 병합을 거절한 상태다. `measured_after_failure`의 `reason`은 `runtime_fallback`이며 첫 런타임 실패 후 다른 런타임이 계수해 예산 이내로 판정한 상태다. 런타임 실패 후 계수한 모든 `wiki.card` 결과에는 `measureId`, `attempts`, `failure` 코드가 들어간다.
 <!-- qmd:auto:end -->

@@ -5,8 +5,7 @@ aliases:
   - "Checkout view 정체성"
   - "branch와 checkout digest"
 related:
-  - "laya-checkout-registration-identity"
-  - "laya-checkout-capture-proof-boundary"
+  - "laya-checkout-view"
 type: concept
 status: verified
 created: 2026-11-02
@@ -16,29 +15,29 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/development-checkout-capture.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/development-checkout-capture.md", collection: "qmd-auto-context", sha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", size: 6053, mtimeNs: 1794183670386791573}
+  - {kind: "file", path: "docs/development-checkout-capture.md", collection: "qmd-auto-context", sha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", size: 5878, mtimeNs: 1794981800087511318}
 triggers:
   - "session_start_source"
 redactions:
-verifiedBy: "codex"
-verifiedAt: "2026-11-15T15:30:10.922299Z"
+verifiedBy: "claude"
+verifiedAt: "2026-11-18T17:29:11.741178Z"
 verifiedMode: "self"
-verifiedBodyHash: "46406b9c408416a29e9c83fded382d5c430f886d5cf246003451d88aa4ee4524"
+verifiedBodyHash: "337f1579ba4191e1b28786191753423644f1fd03b537b825cd385ddbce887af4"
 sourceSpans:
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 51, endLine: 51, spanSha256: "52ae71468d13c643eccfc1e3a115ed699c9179bcc6495c893f126d6d264b182a"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 52, endLine: 52, spanSha256: "be62c96a6a46c7a0e113abe644f853a4d4c857d75e47fc02432439ddc6062861"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 52, endLine: 53, spanSha256: "35dcb4cd0f603731b7d7a96bc30063b85aa9723abf48a6f417c75dac380c837d"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 53, endLine: 53, spanSha256: "d0c0f376e12ff96727cdb0f04649e9c7a759cd010646e388dbc2833fdfdcee18"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 54, endLine: 54, spanSha256: "2d8eda1432ca1867759e764e480d3b65d25194e9aa5ce56fe1322595139494dc"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 54, endLine: 55, spanSha256: "118dafa58aa07730b7848391215b27a2883d36f21a0b31967473de93a6f1d8b7"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 56, endLine: 57, spanSha256: "ca1b084f717b06f95742b47278a1e3ee2e859ce041190e26f29e9d51128cf85e"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 57, endLine: 57, spanSha256: "cae5f27d3fd72d6cd26d2082396fd34f1fa59d7b42c2a3f74e71885fbc1368ef"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 58, endLine: 59, spanSha256: "f5307c2d729c59841ece29626a02530a48a99f229f6ed42211623272a34e6777"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 49, endLine: 49, spanSha256: "52ae71468d13c643eccfc1e3a115ed699c9179bcc6495c893f126d6d264b182a"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 50, endLine: 50, spanSha256: "be62c96a6a46c7a0e113abe644f853a4d4c857d75e47fc02432439ddc6062861"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 50, endLine: 51, spanSha256: "35dcb4cd0f603731b7d7a96bc30063b85aa9723abf48a6f417c75dac380c837d"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 51, endLine: 51, spanSha256: "d0c0f376e12ff96727cdb0f04649e9c7a759cd010646e388dbc2833fdfdcee18"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 52, endLine: 52, spanSha256: "2d8eda1432ca1867759e764e480d3b65d25194e9aa5ce56fe1322595139494dc"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 52, endLine: 53, spanSha256: "118dafa58aa07730b7848391215b27a2883d36f21a0b31967473de93a6f1d8b7"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 54, endLine: 55, spanSha256: "ca1b084f717b06f95742b47278a1e3ee2e859ce041190e26f29e9d51128cf85e"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 55, endLine: 55, spanSha256: "cae5f27d3fd72d6cd26d2082396fd34f1fa59d7b42c2a3f74e71885fbc1368ef"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 56, endLine: 57, spanSha256: "f5307c2d729c59841ece29626a02530a48a99f229f6ed42211623272a34e6777"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="0ffc94fbe6783d9b" -->
+<!-- qmd:auto:start id="main" sourceHash="bb2b2eed1594d77e" -->
 ## Summary
-branch key는 `refs/heads/<name>`, detached HEAD는 `detached:<oid>`다. unborn branch의 HEAD는 `None`이며 non-Git의 branch key는 `non-git`, HEAD·object format은 `None`이다. Git 손상·권한·명령 실패를 non-Git으로 숨기지 않는다. 같은 등록과 branch는 같은 view identity를 사용한다. 같은 branch의 HEAD가 다른 계보로 움직이면 view identity는 유지되고 checkout digest가 달라진다. linked worktree는 repository 등록을 공유할 수 있으나 worktree/view identity는 각각 가지며 index·operation evidence도 해당 worktree에 속한다. 전체 Git 관측 전후의 ref·HEAD·index·operation·경로 identity를 대조하고 변경 시 유한 예산 안에서 재시도하거나 거절한다.
+branch key는 `refs/heads/<name>`, detached HEAD는 `detached:<oid>`다. unborn branch는 HEAD가 `None`이다. non-Git은 branch key가 `non-git`이고 HEAD·object format이 `None`이다. Git 손상·권한·명령 실패는 이 상태로 숨기지 않는다. 같은 등록과 branch는 같은 view identity를 사용한다. 같은 branch의 HEAD가 다른 계보로 움직이면 view identity는 유지되고 checkout digest가 달라진다. linked worktree는 같은 repository 등록을 공유할 수 있고 worktree/view identity는 각각 가지며, Git index와 진행 중 operation은 해당 worktree의 evidence다. 전체 Git 관측 전후를 대조해 ref·HEAD·index·operation·경로 identity가 도중에 바뀌면 유한 예산 안에서 재시도하거나 거절한다.
 <!-- qmd:auto:end -->

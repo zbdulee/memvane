@@ -18,28 +18,31 @@ confidence: high
 sources:
   - {kind: "file", path: "skills/query/SKILL.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "skills/query/SKILL.md", collection: "qmd-auto-context", sha256: "46d99027c1abe175608f488547e35b5c21aaab296f325f800dc21fc52898b9ea", size: 1554, mtimeNs: 1793426244189774830}
+  - {kind: "file", path: "skills/query/SKILL.md", collection: "qmd-auto-context", sha256: "3948a2e158057b1899f3cf6a815053b2b85c557ef3bdc2cfd6e6131c29985467", size: 1781, mtimeNs: 1794981800338682448}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T12:15:47.543412Z"
+verifiedAt: "2026-11-18T21:45:08.473157Z"
 verifiedMode: "self"
-verifiedBodyHash: "fe5f6bfa4ce0f269219585aad4399761e35e157a44f81783818b085e28887c8e"
+verifiedBodyHash: "131e79349e01bec3e16de0b2052462fe0cb395b49974bb46ec8561afef7ca938"
 sourceSpans:
-  - {path: "skills/query/SKILL.md", sourceSha256: "46d99027c1abe175608f488547e35b5c21aaab296f325f800dc21fc52898b9ea", startLine: 3, endLine: 3, spanSha256: "c297f4f45856cf22e2ae9d4fa55516db074ca4b8939dc24ec13c6f403a35cfbf"}
-  - {path: "skills/query/SKILL.md", sourceSha256: "46d99027c1abe175608f488547e35b5c21aaab296f325f800dc21fc52898b9ea", startLine: 12, endLine: 12, spanSha256: "834b50f4cf052b52ab561907ae2b4984ee113270f7e6a1aa0c805159a8dd05dd"}
-  - {path: "skills/query/SKILL.md", sourceSha256: "46d99027c1abe175608f488547e35b5c21aaab296f325f800dc21fc52898b9ea", startLine: 13, endLine: 13, spanSha256: "60b7f1bd2674e851f73b9b07c6f070477b2b7cd51e45607674b97dff9da0db75"}
-  - {path: "skills/query/SKILL.md", sourceSha256: "46d99027c1abe175608f488547e35b5c21aaab296f325f800dc21fc52898b9ea", startLine: 16, endLine: 16, spanSha256: "f330d0a6f89da35d6feb48e7c83e0ec12a958b5a9508769be961e5bc5bb5165e"}
-  - {path: "skills/query/SKILL.md", sourceSha256: "46d99027c1abe175608f488547e35b5c21aaab296f325f800dc21fc52898b9ea", startLine: 21, endLine: 21, spanSha256: "6f6c5332b39cde19967cd64d79c63d025ba29c015743824667f27d0fdd9b10a3"}
-  - {path: "skills/query/SKILL.md", sourceSha256: "46d99027c1abe175608f488547e35b5c21aaab296f325f800dc21fc52898b9ea", startLine: 28, endLine: 28, spanSha256: "66f9e08356a85c3b7646d373f1862b1861c0a3cc2f13f0b6cb0732e62e3ef941"}
-  - {path: "skills/query/SKILL.md", sourceSha256: "46d99027c1abe175608f488547e35b5c21aaab296f325f800dc21fc52898b9ea", startLine: 29, endLine: 29, spanSha256: "cdb706e6010b8af0da4e9e74ab262034ff3054d6c1cf3064c91e473dd196cea1"}
-  - {path: "skills/query/SKILL.md", sourceSha256: "46d99027c1abe175608f488547e35b5c21aaab296f325f800dc21fc52898b9ea", startLine: 30, endLine: 30, spanSha256: "b9f9e3115d7513588e6644350bb84c1a95e10ea5b7fd77451ebdfb9f87b4e881"}
+  - {path: "skills/query/SKILL.md", sourceSha256: "3948a2e158057b1899f3cf6a815053b2b85c557ef3bdc2cfd6e6131c29985467", startLine: 3, endLine: 8, spanSha256: "a930453faadc87b8ba4ba66e4bd962f19497a5140eca06128c713b297f8cbaf2"}
+  - {path: "skills/query/SKILL.md", sourceSha256: "3948a2e158057b1899f3cf6a815053b2b85c557ef3bdc2cfd6e6131c29985467", startLine: 12, endLine: 12, spanSha256: "834b50f4cf052b52ab561907ae2b4984ee113270f7e6a1aa0c805159a8dd05dd"}
+  - {path: "skills/query/SKILL.md", sourceSha256: "3948a2e158057b1899f3cf6a815053b2b85c557ef3bdc2cfd6e6131c29985467", startLine: 13, endLine: 13, spanSha256: "60b7f1bd2674e851f73b9b07c6f070477b2b7cd51e45607674b97dff9da0db75"}
+  - {path: "skills/query/SKILL.md", sourceSha256: "3948a2e158057b1899f3cf6a815053b2b85c557ef3bdc2cfd6e6131c29985467", startLine: 13, endLine: 16, spanSha256: "7acbb532f1f23d244e430a477204ab3ede6f038560e2a397ab0da41d87fddcff"}
+  - {path: "skills/query/SKILL.md", sourceSha256: "3948a2e158057b1899f3cf6a815053b2b85c557ef3bdc2cfd6e6131c29985467", startLine: 21, endLine: 21, spanSha256: "6f6c5332b39cde19967cd64d79c63d025ba29c015743824667f27d0fdd9b10a3"}
+  - {path: "skills/query/SKILL.md", sourceSha256: "3948a2e158057b1899f3cf6a815053b2b85c557ef3bdc2cfd6e6131c29985467", startLine: 25, endLine: 26, spanSha256: "e768a8f5e02857319c29a6da739ff1902f254e06c2bdb82cae50ac1bf9454469"}
+  - {path: "skills/query/SKILL.md", sourceSha256: "3948a2e158057b1899f3cf6a815053b2b85c557ef3bdc2cfd6e6131c29985467", startLine: 26, endLine: 27, spanSha256: "e6ffacbb185e28896091c57493f00314e26c6b47351744e3dbaa870258e05c15"}
+  - {path: "skills/query/SKILL.md", sourceSha256: "3948a2e158057b1899f3cf6a815053b2b85c557ef3bdc2cfd6e6131c29985467", startLine: 31, endLine: 31, spanSha256: "66f9e08356a85c3b7646d373f1862b1861c0a3cc2f13f0b6cb0732e62e3ef941"}
+  - {path: "skills/query/SKILL.md", sourceSha256: "3948a2e158057b1899f3cf6a815053b2b85c557ef3bdc2cfd6e6131c29985467", startLine: 32, endLine: 32, spanSha256: "cdb706e6010b8af0da4e9e74ab262034ff3054d6c1cf3064c91e473dd196cea1"}
+  - {path: "skills/query/SKILL.md", sourceSha256: "3948a2e158057b1899f3cf6a815053b2b85c557ef3bdc2cfd6e6131c29985467", startLine: 33, endLine: 33, spanSha256: "b9f9e3115d7513588e6644350bb84c1a95e10ea5b7fd77451ebdfb9f87b4e881"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="1ffda56120c60d44" -->
+<!-- qmd:auto:start id="main" sourceHash="456678775fca2968" -->
 ## Summary
-`skills/query/SKILL.md`의 query는 현재 프로젝트의 선택된 memvane-db index에 프롬프트와 같은 MemVane recall hook으로 수동 검색하는 읽기 전용 인터페이스다. 대상 cwd와 검색어를 확인하고 `bash "$ROOT/skills/query/scripts/query.sh" "$PWD" "question or keywords"`를 실행한다. plugin root는 대상 프로젝트 `$PWD`와 다르며 wrapper는 자신의 위치에서 구한다. 환경변수 기반 해석식은 `ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}"`이고 git-toplevel fallback은 plugin checkout 안에서만 유효하다. 선택된 MemVane route 또는 선택된 main checkout의 linked git worktree만 검색한다. 미온보딩 프로젝트는 exit 1과 onboarding notice를 반환하며 setup skill로 안내한다. setup의 명시적 onboarding 요청은 거절된 SessionStart notice도 다시 활성화한다. 선택된 route의 proof 실패는 exit 3이며 이유를 보고하고 다른 검색 방식으로 우회하지 않는다. 빈 출력은 유효한 검색 결과 없음으로 유지한다.
+`skills/query/SKILL.md`의 query는 현재 프로젝트의 선택된 memvane-db index에 프롬프트와 동일한 MemVane recall hook으로 접근하는 읽기 전용 검색 인터페이스다. 대상 cwd와 검색어를 확인하고 `bash "$ROOT/skills/query/scripts/query.sh" "$PWD" "question or keywords"`를 실행한다. plugin root는 대상 프로젝트 (`$PWD`)와 별개이며 wrapper는 자신의 위치에서 구한다. 환경변수 기반 해석식은 `ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}"`이며 git-toplevel fallback은 plugin checkout 안에서만 유효하다.
+선택된 MemVane route 또는 선택된 main checkout의 linked git worktree를 검색한다. 미온보딩 프로젝트는 exits 1과 onboarding notice를 반환해 setup skill로 안내한다. setup에서 온보딩을 명시적으로 요청하면 거절된 SessionStart notice도 다시 활성화된다. 선택된 route의 proof 실패는 exits 3이며 이유를 보고하고 우회 검색을 금지한다. 빈 출력은 유효한 검색 결과 없음으로 처리한다. lexical results에 vector-pending note가 포함되면 벡터 채우기가 백그라운드에서 계속된다. 진행률은 setup skill의 build status로 확인하고 조회할 수 없는 건수는 unknown으로 표시한다.
 <!-- qmd:auto:end -->

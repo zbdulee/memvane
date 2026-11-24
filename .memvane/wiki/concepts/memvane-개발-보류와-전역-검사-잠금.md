@@ -4,7 +4,7 @@ canonicalKey: "memvane-development-guard"
 aliases:
   - "개발 보류 및 검사 직렬화"
 related:
-  - "memvane-development-lease-mechanism"
+  - "memvane-development-guard-command-routing"
   - "memvane-development-checkpoints"
 type: concept
 status: verified
@@ -15,30 +15,33 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/development-resource-safety.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/development-resource-safety.md", collection: "qmd-auto-context", sha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", size: 8522, mtimeNs: 1794183670387730541}
+  - {kind: "file", path: "docs/development-resource-safety.md", collection: "qmd-auto-context", sha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", size: 8414, mtimeNs: 1794981800087947908}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-15T15:32:38.460378Z"
+verifiedAt: "2026-11-18T08:09:10.821428Z"
 verifiedMode: "self"
-verifiedBodyHash: "5b743b53ec6bd8b4658ace374170b6b2f9f8adec4f4c94b38feedb43039ff72c"
+verifiedBodyHash: "58eb3c9cace6f9a97edec2eaf906d8162fbe019ba02525357b3fb14be56949af"
 sourceSpans:
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 5, endLine: 6, spanSha256: "ab0fdb68a1858909b099b994000df9ab3ed3e48f25ebfd13575553db07b44010"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 6, endLine: 7, spanSha256: "6789856518f800bd6f77603a7b1f9bd7400f3dbdbb1aa54a1609adeaaa4d548c"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 7, endLine: 8, spanSha256: "17ee3a797cfa7242640e03ee786bf383bc0b4b5305f5cb7aa9f07ee10345b0bf"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 10, endLine: 10, spanSha256: "83c28b3f4ecbe25775082c7d04e46b854d67e8ca831cfa6e09a8e22fa974c769"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 11, endLine: 11, spanSha256: "ff49d2e5d3d6b96a0aa6b1ddcc2560110deca5fd8623d1f4bcc16e4a574da5e0"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 35, endLine: 36, spanSha256: "63d86bad3f3ed2b8fb421bcaddd573999c432c73e9eacdc0ed982367794d0ca5"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 59, endLine: 61, spanSha256: "7d83a24d8709907d14d66a87e8bee9393551b29f5474af4ad3c1d3e56afbfc2f"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 61, endLine: 64, spanSha256: "5de77332ef71e9ec1c037242df5de214751f83fb7f5f2e1a5d8e4f6762edca27"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 65, endLine: 66, spanSha256: "8a50a4188e0cb70266ee72679d763f7fe472e0dc0e7379ab4bb3f793095e2842"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 74, endLine: 75, spanSha256: "c9873403fe8d45500af1c9a9f388483071e917fdc84ed7bca9c95abc742da0bb"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 5, endLine: 8, spanSha256: "e3259d1182964333e69346f3e2a8cd303d64a20d119eaf270539f2b5235ed202"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 6, endLine: 7, spanSha256: "6789856518f800bd6f77603a7b1f9bd7400f3dbdbb1aa54a1609adeaaa4d548c"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 10, endLine: 10, spanSha256: "83c28b3f4ecbe25775082c7d04e46b854d67e8ca831cfa6e09a8e22fa974c769"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 11, endLine: 11, spanSha256: "ff49d2e5d3d6b96a0aa6b1ddcc2560110deca5fd8623d1f4bcc16e4a574da5e0"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 50, endLine: 51, spanSha256: "07643e1f046bba6ffed8cecd6b2d7e7b0372b7c5b2bd5c5b1f98a63ee90e15b0"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 51, endLine: 53, spanSha256: "1aca986738f82e0fb633f86a793d0e55605530cacf344b7ecf64e57fd975d764"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 54, endLine: 55, spanSha256: "2b99682a76e4eebe19113553f7ed6dfdf7588eabb1c139d26f92cf069666354d"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 57, endLine: 59, spanSha256: "7d83a24d8709907d14d66a87e8bee9393551b29f5474af4ad3c1d3e56afbfc2f"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 59, endLine: 62, spanSha256: "5de77332ef71e9ec1c037242df5de214751f83fb7f5f2e1a5d8e4f6762edca27"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 62, endLine: 63, spanSha256: "5f5fef709989bc7c4169658e5e848cff1acb14d45d278f2ada85d794d159c54f"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 63, endLine: 64, spanSha256: "8a50a4188e0cb70266ee72679d763f7fe472e0dc0e7379ab4bb3f793095e2842"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="dd814dc5e41e7b84" -->
+<!-- qmd:auto:start id="main" sourceHash="bcc449cdcb22f411" -->
 ## Summary
-로컬 ignored `.development-hold.json`은 일반 검사·백업·해시를 포함한 모든 child job을 차단한다. 해제에는 명시적 사용자 승인이 필요하며 CLI 우회는 없다. child 실행 전 exit 75와 `work_remains_on_hold`를 반환한다. 승인은 자원·소유권·cleanup 검사를 우회하지 않는다. sampler-only는 child를 실행하지 않으며 이전 작업의 완료 증거가 아니다. 일반 focused 검사(`--kind test`)는 worktree·agent 전체에서 최대 3개이며 파일 동시성은 1이다. `npm test`의 `--exclusive`, backup, hash, model-test, review, sampler-only, calibration envelope는 단독 실행한다. 자리 부족은 exit 75와 `development_job_busy`이며 queue 없이 재시도한다. `npm run test:guard-unit`만 실제 host probe·모델 작업 없는 작은 Python 안전 검사의 bootstrap 예외다.
+`docs/development-resource-safety.md`의 로컬 ignored `.development-hold.json`은 일반 테스트·백업·해시를 포함한 모든 child job을 실행 전에 exit 75와 `work_remains_on_hold`로 거절할 수 있다. 해제에는 명시적 사용자 승인이 필요하고 CLI 우회는 없다. 승인을 받아도 자원·프로세스 소유권·cleanup 검사는 적용된다. sampler-only는 child를 실행하지 않으며 이전 작업을 완료 처리하지 않는다.
+모든 worktree와 작업 종류는 macOS의 `~/Library/Logs/qmd-development-guard/heavy.lock` 또는 Linux의 `~/.local/state/qmd-development-guard/heavy.lock`을 사용한다. 홈은 OS UID 데이터베이스에서 결정하므로 `HOME`으로 잠금을 분리할 수 없다. lease는 사전 검사부터 cleanup까지 유지하며 child가 잠금 descriptor를 상속한다.
+focused `--kind test`는 `heavy.lock` 공유 잠금과 `test-slot-N.lock` 단독 잠금을 사용해 전체 worktree·agent에서 최대 3개까지 실행한다. `npm test`의 `--exclusive`, backup, hash, model-test, review, sampler-only, calibration envelope 및 이전 checkout은 `heavy.lock`을 단독 보유한다. 빈자리가 없으면 exit 75와 `development_job_busy`를 반환하며 대기열 없이 재시도한다.
 <!-- qmd:auto:end -->

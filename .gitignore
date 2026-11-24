@@ -43,3 +43,5 @@ __pycache__/
 .memvane/selection.json
 .memvane/file-changes/
 .memvane/wiki/.memvane-root
+# Card replacements waiting for verification (published on a verify pass)
+.memvane/wiki/**/.*.pending-*

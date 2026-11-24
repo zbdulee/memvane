@@ -16,30 +16,29 @@ confidence: high
 sources:
   - {kind: "file", path: "skills/wiki-compile/SKILL.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "skills/wiki-compile/SKILL.md", collection: "qmd-auto-context", sha256: "4ad470eca0e61e36c2fce9519e26b3b789cf87cf0cecd761d80d3b55b3f6b970", size: 3436, mtimeNs: 1793427988676886636}
+  - {kind: "file", path: "skills/wiki-compile/SKILL.md", collection: "qmd-auto-context", sha256: "806f52c2e8c7140e2f35d0baf9db583408880388d99213b55b421ba3785fbd1f", size: 3471, mtimeNs: 1794981800339703840}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T12:16:41.032527Z"
+verifiedAt: "2026-11-18T08:26:44.484641Z"
 verifiedMode: "self"
-verifiedBodyHash: "842e84fea11c36aa755485c99fc5be7f61cf16400589508a1f1318ff3ded85e2"
+verifiedBodyHash: "7decf22d8f94c65b54cafef2f72bde4e1df7b50047af7de317471351a5c4116e"
 sourceSpans:
-  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "4ad470eca0e61e36c2fce9519e26b3b789cf87cf0cecd761d80d3b55b3f6b970", startLine: 3, endLine: 8, spanSha256: "3c07ab523d1f6b0edfea3ab6250d181f5f43ae24fe3060fb39e4cb1c99445876"}
-  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "4ad470eca0e61e36c2fce9519e26b3b789cf87cf0cecd761d80d3b55b3f6b970", startLine: 12, endLine: 12, spanSha256: "b9285bf9512400cb16f5c996042c10c7f21b469be0d46b586c1a2037cba3fbfa"}
-  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "4ad470eca0e61e36c2fce9519e26b3b789cf87cf0cecd761d80d3b55b3f6b970", startLine: 19, endLine: 31, spanSha256: "d5854b4c23094fab8802eac09a5a9ac1d6a704dd837de6cad0f1e8b05057d816"}
-  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "4ad470eca0e61e36c2fce9519e26b3b789cf87cf0cecd761d80d3b55b3f6b970", startLine: 22, endLine: 31, spanSha256: "55f89a4c33fbe7ac2beb9c8f0580d8ca10f0254b88d929ed3e02b45d3e0e59ca"}
-  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "4ad470eca0e61e36c2fce9519e26b3b789cf87cf0cecd761d80d3b55b3f6b970", startLine: 39, endLine: 39, spanSha256: "e497066c0a8f74ebdc2da1d0edba5f851889e49d7d488cae716a317bcbdc82e6"}
-  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "4ad470eca0e61e36c2fce9519e26b3b789cf87cf0cecd761d80d3b55b3f6b970", startLine: 41, endLine: 55, spanSha256: "c2c081dcefabaa00db03dc309a5247a4dbd7cc16e8fd767ff837c4cfe7a8e475"}
-  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "4ad470eca0e61e36c2fce9519e26b3b789cf87cf0cecd761d80d3b55b3f6b970", startLine: 57, endLine: 57, spanSha256: "1b5fb2ecbe82e18725bfaf685ba6e782e332f715358a926a40e990574dc4479b"}
-  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "4ad470eca0e61e36c2fce9519e26b3b789cf87cf0cecd761d80d3b55b3f6b970", startLine: 61, endLine: 61, spanSha256: "6bbd73a3c383b4a6ceb11850bf8f8877d2cbcfb3e97a21ddbf59edf1dc5dfbba"}
-  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "4ad470eca0e61e36c2fce9519e26b3b789cf87cf0cecd761d80d3b55b3f6b970", startLine: 62, endLine: 62, spanSha256: "40de2f300215f5097a65cbb733e7dd9a550dcd07b34dc9fb26d73466993ef584"}
-  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "4ad470eca0e61e36c2fce9519e26b3b789cf87cf0cecd761d80d3b55b3f6b970", startLine: 66, endLine: 66, spanSha256: "620a32eeb06f42a1cd0a28e956ffad7950b497fe3c8f3d319c1bbc656414d110"}
+  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "806f52c2e8c7140e2f35d0baf9db583408880388d99213b55b421ba3785fbd1f", startLine: 8, endLine: 12, spanSha256: "15c1ec555242bd35ca8926d8e16cab0eeb8ad4ebc63d80d5b71311bb07fddbb2"}
+  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "806f52c2e8c7140e2f35d0baf9db583408880388d99213b55b421ba3785fbd1f", startLine: 16, endLine: 16, spanSha256: "f330d0a6f89da35d6feb48e7c83e0ec12a958b5a9508769be961e5bc5bb5165e"}
+  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "806f52c2e8c7140e2f35d0baf9db583408880388d99213b55b421ba3785fbd1f", startLine: 19, endLine: 31, spanSha256: "d5854b4c23094fab8802eac09a5a9ac1d6a704dd837de6cad0f1e8b05057d816"}
+  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "806f52c2e8c7140e2f35d0baf9db583408880388d99213b55b421ba3785fbd1f", startLine: 34, endLine: 34, spanSha256: "d521ea57cf7ef05b633de5cbc8ab50c25e3cc587d7138ecbcf8da0333d038d97"}
+  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "806f52c2e8c7140e2f35d0baf9db583408880388d99213b55b421ba3785fbd1f", startLine: 39, endLine: 39, spanSha256: "f91a790012ce1c0c4999d4cac9fabf1c6a26680ff6d7d46181348989c35305e3"}
+  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "806f52c2e8c7140e2f35d0baf9db583408880388d99213b55b421ba3785fbd1f", startLine: 41, endLine: 55, spanSha256: "c2c081dcefabaa00db03dc309a5247a4dbd7cc16e8fd767ff837c4cfe7a8e475"}
+  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "806f52c2e8c7140e2f35d0baf9db583408880388d99213b55b421ba3785fbd1f", startLine: 57, endLine: 57, spanSha256: "1b5fb2ecbe82e18725bfaf685ba6e782e332f715358a926a40e990574dc4479b"}
+  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "806f52c2e8c7140e2f35d0baf9db583408880388d99213b55b421ba3785fbd1f", startLine: 61, endLine: 61, spanSha256: "6bbd73a3c383b4a6ceb11850bf8f8877d2cbcfb3e97a21ddbf59edf1dc5dfbba"}
+  - {path: "skills/wiki-compile/SKILL.md", sourceSha256: "806f52c2e8c7140e2f35d0baf9db583408880388d99213b55b421ba3785fbd1f", startLine: 66, endLine: 66, spanSha256: "620a32eeb06f42a1cd0a28e956ffad7950b497fe3c8f3d319c1bbc656414d110"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="ee9367a194f8c6cb" -->
+<!-- qmd:auto:start id="main" sourceHash="9211333269e1dbac" -->
 ## Summary
-`skills/wiki-compile/SKILL.md`는 compact durable summary 또는 candidate JSON을 받는 명시적 wiki 쓰기 경로다. 대상 cwd와 짧은 사실·결정·규칙을 확인하고 `skills/wiki-compile/scripts/wiki-compile.sh`에 JSON stdin과 cwd를 전달한다. `core/wiki_extract.py`가 compact 입력을 `core/wiki_compile.py` candidate JSON으로 변환한다. 입력은 `trigger`, `sourceRef`, 선택적 `sourceKind`, `durable`의 `title`·`summary`·`type`·`confidence` 또는 `{"candidates":[...]}`이며 `related`는 형제 카드의 `canonicalKey`를 가리킨다. 예시 값은 `manual`, `session:local`, `session`이다. raw transcript·role-labeled chat logs·credentials·temporary progress는 금지하며 transcript-shaped 입력은 거부하고 candidate queue의 transcript text를 redact한다.
+`skills/wiki-compile/SKILL.md`의 Wiki Compile은 대상 cwd와 짧고 재사용 가능한 사실·결정·규칙을 받아 위키 카드를 생성하거나 큐에 넣는 명시적 쓰기 경로다. `ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}"`로 플러그인 루트를 확인하고 `$ROOT/skills/wiki-compile/scripts/wiki-compile.sh`에 JSON stdin과 `"$PWD"`를 전달한다. `memvane/wiki/compile/wiki_extract.py`는 compact 입력을 `memvane/wiki/compile/wiki_compile.py`의 candidate JSON으로 변환한다. compact 입력은 `trigger`, `sourceRef`, 선택적 `sourceKind`, `durable`의 `title`·`summary`·`type`·`confidence`를 받는다. 예시 값은 `manual`, `session:local`, `session`, `decision`, `high`다. `{"candidates":[...]}`도 지원하며 선택적 `related`는 형제 카드의 `canonicalKey`를 가리킨다. stdout은 `created`, `candidate`, `rejected`, `tombstoned`, `split-required` 등의 처리 결과와 생성 경로가 있으면 그 경로를 반환한다. raw transcript, 역할 표기가 있는 채팅 로그, 자격 증명, 일시적 진행 상황은 입력에서 제외한다. 대화록 형식의 입력은 거부하고 candidate queue에서 대화록 텍스트를 가린다.
 <!-- qmd:auto:end -->

@@ -6,6 +6,7 @@ aliases:
 related:
   - "laya-resident-service"
   - "laya-sync-target-preparing"
+  - "laya-resident-installation-reproof"
 type: concept
 status: verified
 created: 2026-11-02
@@ -15,26 +16,31 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/runtime-resource-coordination.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/runtime-resource-coordination.md", collection: "qmd-auto-context", sha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", size: 42602, mtimeNs: 1793503909942861345}
+  - {kind: "file", path: "docs/runtime-resource-coordination.md", collection: "qmd-auto-context", sha256: "ac0263c9e1b3b99625611ce1a76eed9059851d815c7f72bfbb23c17eeb7f89b4", size: 43583, mtimeNs: 1794981800090913998}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T13:26:40.396018Z"
+verifiedAt: "2026-11-18T08:45:26.512862Z"
 verifiedMode: "self"
-verifiedBodyHash: "86c1a5d1f45c75da393a4e6e285dad7d53f968b0f390778a559293a4642e5aef"
+verifiedBodyHash: "f4fc06b9e0021c3f9119a7820a1df2e5bc681be359f4cc0c1d9d8a6a7349a500"
 sourceSpans:
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 51, endLine: 53, spanSha256: "475699c0d48d4f967dd58a58ba077faafc6a017e3be1b0c29df660725e804fa0"}
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 53, endLine: 55, spanSha256: "3b0756a002ac93f6620d9b7e84ebb39649a3c227e7da8b3985df28453c9b155d"}
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 53, endLine: 59, spanSha256: "561cc7f79696eff8ff05b8d106e37e5446714c241928747358d3910c88a3c14d"}
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 55, endLine: 56, spanSha256: "58cf786a8b25fd661d711b9fac1cd4c90a6d2de816a07dde642d055524052c2a"}
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 56, endLine: 59, spanSha256: "face2db551de456970cd39673c55da05f2eb1c138fabb32fb3bc6cd0c002295e"}
-  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "fb68bed27ca06a3eeff2d611f1a683174f49db7e55101b34d3d71b200a975d48", startLine: 76, endLine: 78, spanSha256: "60860d0af3ee23ba16dd6c9c56a4fceef73558a1ab23463d8adc67d3b42e4251"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "ac0263c9e1b3b99625611ce1a76eed9059851d815c7f72bfbb23c17eeb7f89b4", startLine: 73, endLine: 74, spanSha256: "aec66c195d79387f84ba9b0b2f0c21448e1072563fde51041b889eafd21db42e"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "ac0263c9e1b3b99625611ce1a76eed9059851d815c7f72bfbb23c17eeb7f89b4", startLine: 74, endLine: 74, spanSha256: "382fab4494b573920902172b155eae04b3c478ea09ed253b88c1eac4ac0b58f6"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "ac0263c9e1b3b99625611ce1a76eed9059851d815c7f72bfbb23c17eeb7f89b4", startLine: 74, endLine: 75, spanSha256: "e4543ef941b7ef2d3be8fc24ab174e8fc18d54ec60f71d19a4206286e9ea9284"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "ac0263c9e1b3b99625611ce1a76eed9059851d815c7f72bfbb23c17eeb7f89b4", startLine: 85, endLine: 87, spanSha256: "9c7bef4f2c7b94979ab9aba14daad0e5710816b425884a661ba9558693eaa8c4"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "ac0263c9e1b3b99625611ce1a76eed9059851d815c7f72bfbb23c17eeb7f89b4", startLine: 87, endLine: 87, spanSha256: "0545b462365919f93c09111f95d8534836ae2b836fcdfe96384de29c14cd6399"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "ac0263c9e1b3b99625611ce1a76eed9059851d815c7f72bfbb23c17eeb7f89b4", startLine: 87, endLine: 89, spanSha256: "085ba8e2c6f9d9ba0f3c93bab4dde3e5e645f89da1e3a3c480e10006315a928b"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "ac0263c9e1b3b99625611ce1a76eed9059851d815c7f72bfbb23c17eeb7f89b4", startLine: 89, endLine: 91, spanSha256: "446c152ca6b8d5255da5de0ce3cdf1ed85f2b3f3898545c06cacc189822de6d8"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "ac0263c9e1b3b99625611ce1a76eed9059851d815c7f72bfbb23c17eeb7f89b4", startLine: 91, endLine: 92, spanSha256: "de43ea5c1438d007f2b7874c91b36c30439fcb06ef127b05af976907003ad7d7"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "ac0263c9e1b3b99625611ce1a76eed9059851d815c7f72bfbb23c17eeb7f89b4", startLine: 92, endLine: 92, spanSha256: "765ac0a58ac91ebdf0b3787313fea29bd4beb32c78057c4985e05418683735e7"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "ac0263c9e1b3b99625611ce1a76eed9059851d815c7f72bfbb23c17eeb7f89b4", startLine: 93, endLine: 93, spanSha256: "d74daf983dfb96bfa16f07b0d61a5be8ef13fdf6ef8a67fac7d47380d40832cc"}
+  - {path: "docs/runtime-resource-coordination.md", sourceSha256: "ac0263c9e1b3b99625611ce1a76eed9059851d815c7f72bfbb23c17eeb7f89b4", startLine: 93, endLine: 95, spanSha256: "dd9874011e5618e9b35ee966f40d1bf3b8deded846a6c16f3e44691d2f53b6c7"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="1f61ff2ba4201cd0" -->
+<!-- qmd:auto:start id="main" sourceHash="7e9d75b1fa753779" -->
 ## Summary
-서비스는 설치의 `.resident.lock`/`.lock`을 유지하고 봉인된 `runtime/laya-embed.sock`을 bind한 뒤 owner state를 기록한다. upgrade fence·restore·withdrawal에 따른 route 변경은 one second 안에 설치를 해제한다. worker 사망은 `worker_exited`로 해제하며 registry에서 동일한 three-failure budget 아래 reload·재채택한다. load 거부는 대기 설치마다 `resource_deferred`로 기록하여 attempt로 세지 않고 5–60 seconds 후 자체 재시도한다. drifted 설치에 연결할 worker가 없으면 `resident.adopt waiting read_only_no_worker`를 한 번 기록한다.
+서비스는 `.resident.lock`/`.lock`을 유지하고 봉인된 `runtime/laya-embed.sock`을 bind한 뒤 owner state를 기록한다. restore 또는 withdrawal로 route가 바뀌면 one second 안에 설치를 해제한다. worker 사망 시 `worker_exited`로 해제하고 registry에서 자체 reload·재채택한다. Three transient start failures 후 300-second cooldown에 들어가 lexical recall을 제공하며 이후 새 retry budget을 받는다. cooldown은 durable owner state로 서비스 재시작을 넘어 유지된다. worker 시작마다 provider와 runtime attestation을 확인하고 selection 변경은 새 proof까지 연기한다. attestation과 identity 실패는 terminal이며 잘못된 provider identity는 시작을 막는다. `verify_worker_attestation`의 full artifact rehash는 bind 시 installation identity마다 한 번 수행한다.
 <!-- qmd:auto:end -->

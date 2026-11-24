@@ -5,7 +5,7 @@ aliases:
   - "개발 가드 격리 한계"
 related:
   - "memvane-development-process-ownership"
-  - "memvane-development-observation-policy"
+  - "memvane-development-guard-resumption"
 type: concept
 status: verified
 created: 2026-11-02
@@ -15,28 +15,29 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/development-resource-safety.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/development-resource-safety.md", collection: "qmd-auto-context", sha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", size: 8522, mtimeNs: 1794183670387730541}
+  - {kind: "file", path: "docs/development-resource-safety.md", collection: "qmd-auto-context", sha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", size: 8414, mtimeNs: 1794981800087947908}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-15T16:21:18.254219Z"
+verifiedAt: "2026-11-18T08:12:16.151849Z"
 verifiedMode: "self"
-verifiedBodyHash: "c8c55f8b67042e5258f6b473ef73ee61b7dce74767b56d0f37e15118b63bbef7"
+verifiedBodyHash: "0c2d14607aa87b49ca61aaf0f8a58a3bbdf64fbbebabef00ae9fbfef9ecf5348"
 sourceSpans:
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 122, endLine: 123, spanSha256: "3878e5649581535f9fa7c829cf04bd70bc4b7843be92607b42e2f1aab566458c"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 123, endLine: 124, spanSha256: "b3240e4085fef6bdc01af01129944c8bf89a75f5cdf744c2e4cda33821f649b3"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 124, endLine: 125, spanSha256: "dd7fa7448a5ccad1be63de2310175e34cff470911471cdd6b11453d4a36f2e31"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 125, endLine: 126, spanSha256: "275031a84e7bdce953897a1ceb2264d920d73453a6a478b5507609fc0955abfe"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 126, endLine: 129, spanSha256: "1a80e9b4cfc0cb66fccb414d513941edaf68e1194d3907b377718414afc24c4f"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 129, endLine: 130, spanSha256: "5f756568e30cedfacf55ffc89c1df56a0c7bb1a10b51f35ee0384f25ae70413c"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 130, endLine: 131, spanSha256: "7937b7f3bcac1fcdd5ddf4ae9e72c729478d123b0b3244e569b57b8e0b95b8bd"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 131, endLine: 131, spanSha256: "598c3bbd3970fa8263fc9bcd9cd9e890a6686d091feb62572bd118711f49bdea"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 120, endLine: 120, spanSha256: "39c4cbef02d9f24afa404895f986ca0ea134856d239be5668783983438076b71"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 120, endLine: 121, spanSha256: "3878e5649581535f9fa7c829cf04bd70bc4b7843be92607b42e2f1aab566458c"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 121, endLine: 122, spanSha256: "b3240e4085fef6bdc01af01129944c8bf89a75f5cdf744c2e4cda33821f649b3"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 122, endLine: 123, spanSha256: "dd7fa7448a5ccad1be63de2310175e34cff470911471cdd6b11453d4a36f2e31"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 123, endLine: 123, spanSha256: "7c4f0f801b185e1e7719db94741a376a84cdecc4258b9cabc3bb2f382a47e500"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 124, endLine: 127, spanSha256: "1a80e9b4cfc0cb66fccb414d513941edaf68e1194d3907b377718414afc24c4f"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 127, endLine: 127, spanSha256: "49968dc0957d5d5eb4318ae6f181671db55fa0c6bd289b48ca911e8e11402681"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 128, endLine: 129, spanSha256: "7937b7f3bcac1fcdd5ddf4ae9e72c729478d123b0b3244e569b57b8e0b95b8bd"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 129, endLine: 129, spanSha256: "598c3bbd3970fa8263fc9bcd9cd9e890a6686d091feb62572bd118711f49bdea"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="952a4377fca3621a" -->
+<!-- qmd:auto:start id="main" sourceHash="5f12557c72255edf" -->
 ## Summary
-개발 가드는 cooperative sampled guard이며 macOS aggregate hard memory/CPU containment가 아니다. sample 사이에 fork·detach 후 parent를 완전히 잃는 child는 ancestry 탐지를 피할 수 있고 짧은 peak도 발생할 수 있다. `ps lstart`는 초 단위 정밀도이며 check-to-signal race가 남으므로 모든 PID-reuse race 방지를 증명하지 않는다. wrapper 존재만으로 detaching job을 승인하지 않으며 heavy work 재개 전에 명시적 lifecycle/ownership containment가 필요하다. process identity 누락은 cleanup을 unsettled로 만들며 사용자 프로세스 signal의 근거가 아니다. 갑작스러운 OS 실패는 checkpoint 쓰기를 중단할 수 있다. 기존 interrupted run은 검사하며 passed로 재표기하지 않는다.
+`docs/development-resource-safety.md`의 개발 가드는 협력적 샘플링 방식이다. macOS에서 전체 child tree의 메모리·CPU를 강제로 제한할 수 없으며, 샘플 사이에 fork·detach 후 parent를 잃은 child는 ancestry 추적을 피할 수 있고 짧은 peak도 놓칠 수 있다. `ps lstart`는 초 단위이고 identity 검사와 signal 사이에 경쟁 조건이 남는다. detaching job의 heavy work를 재개하려면 별도의 명시적 lifecycle/ownership containment가 필요하다. 프로세스 identity가 누락되면 cleanup을 unsettled로 기록한다. 급작스러운 OS 실패로 checkpoint 기록이 끊길 수 있으므로 중단된 실행은 검사하고 passed로 다시 표시하지 않는다.
 <!-- qmd:auto:end -->

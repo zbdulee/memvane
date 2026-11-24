@@ -5,8 +5,7 @@ aliases:
   - "릴리스 GO / NO-GO 기록"
   - "릴리스 QA 승인 조건"
 related:
-  - "release-agent-qa-run-template"
-  - "release-qa-cleanup-and-recovery-evidence"
+  - "release-qa-evidence-review-calibration"
 type: concept
 status: verified
 created: 2026-11-02
@@ -14,29 +13,31 @@ updated: 2026-11-02
 createdBy: memvane
 confidence: high
 sources:
-  - {kind: "file", path: "docs/templates/release-agent-qa-run.md", collection: "qmd-auto-context"}
+  - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/templates/release-agent-qa-run.md", collection: "qmd-auto-context", sha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", size: 9145, mtimeNs: 1794185295243299019}
+  - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context", sha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", size: 58013, mtimeNs: 1794981800090078568}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-15T15:45:53.901707Z"
+verifiedAt: "2026-11-18T08:07:32.521776Z"
 verifiedMode: "self"
-verifiedBodyHash: "21621990a97c701223fd63e20df4444ad0f53a3e629da75bf986485d51f8bf27"
+verifiedBodyHash: "cf6e0b2cc31fa28b8017dcca086484f81a05042880c185bd8d589c3521475d08"
 sourceSpans:
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 1, endLine: 3, spanSha256: "f021298b5d897cb44909cad94d1c57f15f51506c1d8f410d411032ea72d98974"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 3, endLine: 4, spanSha256: "47b6c4716c67db42c281d6d5cd228c39b612f495d29c4de77a5e49b08d8f232c"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 205, endLine: 205, spanSha256: "f0e584af6b0410b342e1798f5516de3cae1ef643088d18fbd3361e357c824657"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 206, endLine: 206, spanSha256: "eb5b0649f0a1ae625654cd2efb09c0b791b2b997ef61af8936d75b569d40d768"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 207, endLine: 207, spanSha256: "948bbda2df6fa7543981d2131b3ea97688bae1f3b70f50a22a51107b054cd076"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 208, endLine: 208, spanSha256: "97c6a8216c291b697377f7ecb9aa5181181016838a4a5c4032d2c13fcf67ab6e"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "610d5cad1ae372f57fedd36b9f365b7128f61d97dad26ec17ece206507a5bd96", startLine: 209, endLine: 209, spanSha256: "3e46781841bf3dc3d78d168b23c5cb995a4b3b68aad70698286c669f42c63a6c"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 78, endLine: 78, spanSha256: "b28b21f74bcb11aef0a2e5560ccc5b0bf66b55c24c3f2207889b3b1625c36bb3"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 79, endLine: 79, spanSha256: "098367b8b6a694c9728968ec7ee32741949db73ff8ccec40573000c45600483d"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 80, endLine: 80, spanSha256: "1604f43504e3408c970406ea64cfa97ad846b4244cc03f901c7ae7448283af65"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 81, endLine: 81, spanSha256: "e38ec7beefff6e80dfe41a24bb906b25db23a206009c3cd64df3b57df66caa7a"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 83, endLine: 84, spanSha256: "90bef2149caaf50de58d5a59b2799f86995d6dbacd08866746eded545a5a132d"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 85, endLine: 86, spanSha256: "30adbae238ffb47dc894e58d2ac96abd2400ac84ab8cf3ac06f4f43b3e672f6b"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 87, endLine: 89, spanSha256: "8f7f1b1525621c1e0c1f445f150d79736383a332cc340c92c52a51962e0a2785"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 89, endLine: 90, spanSha256: "877b30debe800c97d4019cc30cfa64e17c0f07f5724bda3239bd7bb6c65f5311"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 97, endLine: 100, spanSha256: "bbc539fa0c4fcd97acaff5d419bdcda14881b03a452316b2f25e9623875b24f9"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="4d2ea6faba4a9750" -->
+<!-- qmd:auto:start id="main" sourceHash="654642dd92d9b207" -->
 ## Summary
-`docs/templates/release-agent-qa-run.md`의 Release decision은 Mandatory scenarios all PASS in mandatory cells?를 yes / no로 기록한다. Mandatory scenario blockers는 scenario·reason·owner로 남기며 Unverified cells / hosts named in release notes도 기록한다. 최종 Decision은 GO / NO-GO이고 Decided by / date를 함께 남긴다. 이 문서는 빈 템플릿이므로 실제 출시 승인이나 실행 성공을 증명하지 않는다.
+`docs/release-agent-qa.md`는 모든 필수 matrix cell의 모든 필수 scenario가 `PASS`일 때만 정식 출시를 허용한다. `PASS`에는 모든 기대 결과의 관측, 필수 증거, 설치본과 후보의 동일성이 필요하다. 반증, 제품 timeout·hang·silent no-op, hook 실패·timeout, 증거 없는 성공 주장은 `FAIL`이다. 승인·하드웨어·호스트 인증·장애·증거 유실은 `BLOCKED`, 미시도는 `NOT RUN`이다. 필수 cell의 세 상태는 출시를 막으며 원인과 수정 작업을 기록한다. 선택 host/OS 조합을 검증하지 않았으면 release notes에 명시한다. RQA-WIKI-01의 revision idempotency처럼 미충족인 정책 목표도 기대 결과로 유지하며 미달 시 `FAIL`이다.
 <!-- qmd:auto:end -->

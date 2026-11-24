@@ -12,35 +12,33 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/out-of-project-edit-routing.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/out-of-project-edit-routing.md", collection: "qmd-auto-context", sha256: "531ae4a1981af57767d650d0f5cfb462eac21fef7ff9ffe24c26349a04de3334", size: 4137, mtimeNs: 1794185295238570134}
+  - {kind: "file", path: "docs/out-of-project-edit-routing.md", collection: "qmd-auto-context", sha256: "d1608e1e603202512fa72ee0ead53d1db1569738fa26cc4ffd70dc999ae5fd99", size: 4792, mtimeNs: 1794981800088975883}
 triggers:
   - "session_start_source"
 redactions:
 related:
-  - "external-edit-notification-lifecycle"
+  - "external-edit-registry-candidates"
   - "external-edit-target-selection"
-  - "external-edit-owner-compile-policy"
+  - "external-edit-notification-lifecycle"
+  - "external-edit-owner-compile-processing"
   - "out-of-project-compile-queue-overflow"
-verifiedBy: "codex"
-verifiedAt: "2026-11-15T16:14:25.312149Z"
+verifiedBy: "claude"
+verifiedAt: "2026-11-18T11:49:17.795954Z"
 verifiedMode: "self"
-verifiedBodyHash: "f7e98deecebf3123d9e8ee46ccbe800176643db1f231d208ff654e4e00cd539e"
+verifiedBodyHash: "a980128853e058bf0ea633679a906839651e104ef1b8f6d25e80de9990408bdd"
 sourceSpans:
-  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "531ae4a1981af57767d650d0f5cfb462eac21fef7ff9ffe24c26349a04de3334", startLine: 3, endLine: 4, spanSha256: "e49da44f000013ddd2e6bb02d3b8746cc9f5246722bf33d3b37d0e57d878fa5d"}
-  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "531ae4a1981af57767d650d0f5cfb462eac21fef7ff9ffe24c26349a04de3334", startLine: 4, endLine: 4, spanSha256: "53ba665127d98bb73fbc6768cba60f6bddceb439558c2e5fff8cd7d889801749"}
-  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "531ae4a1981af57767d650d0f5cfb462eac21fef7ff9ffe24c26349a04de3334", startLine: 5, endLine: 5, spanSha256: "7672590e892bce5d6096852a368213b8b931c6fdc2a7148e9ebb3a3eb593c170"}
-  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "531ae4a1981af57767d650d0f5cfb462eac21fef7ff9ffe24c26349a04de3334", startLine: 10, endLine: 10, spanSha256: "1ad76ecfcffafc590b512cf9968b03dc499768716042ffcf9000dd04dd472104"}
-  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "531ae4a1981af57767d650d0f5cfb462eac21fef7ff9ffe24c26349a04de3334", startLine: 13, endLine: 15, spanSha256: "8bc4721f4d07587efc924c2b52565c713af1d200b2aa85a97bc1172f32e6f147"}
-  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "531ae4a1981af57767d650d0f5cfb462eac21fef7ff9ffe24c26349a04de3334", startLine: 15, endLine: 15, spanSha256: "4a7e6078d3ab5e03af103de4dcde261e471c6125cf24f2311fbc781da1c5e7cd"}
-  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "531ae4a1981af57767d650d0f5cfb462eac21fef7ff9ffe24c26349a04de3334", startLine: 16, endLine: 17, spanSha256: "466ddd90f15f60b2686571441f2492f398d21d32da11d5f25bdb4054b62b2a59"}
-  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "531ae4a1981af57767d650d0f5cfb462eac21fef7ff9ffe24c26349a04de3334", startLine: 17, endLine: 18, spanSha256: "7e5149418378a30c7f674669add47ff876783e793d8acd8f02b79defc59a3a81"}
-  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "531ae4a1981af57767d650d0f5cfb462eac21fef7ff9ffe24c26349a04de3334", startLine: 18, endLine: 18, spanSha256: "eccf3504410aeef331926a085e2bf8bc2e6fed59d889841312354a9788319782"}
-  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "531ae4a1981af57767d650d0f5cfb462eac21fef7ff9ffe24c26349a04de3334", startLine: 55, endLine: 55, spanSha256: "f7d5f9208e48ef0d23aca8e8506ae54e9cbcd4ecf6e661998c997aa74cbc8a7d"}
+  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "d1608e1e603202512fa72ee0ead53d1db1569738fa26cc4ffd70dc999ae5fd99", startLine: 3, endLine: 4, spanSha256: "e49da44f000013ddd2e6bb02d3b8746cc9f5246722bf33d3b37d0e57d878fa5d"}
+  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "d1608e1e603202512fa72ee0ead53d1db1569738fa26cc4ffd70dc999ae5fd99", startLine: 4, endLine: 4, spanSha256: "53ba665127d98bb73fbc6768cba60f6bddceb439558c2e5fff8cd7d889801749"}
+  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "d1608e1e603202512fa72ee0ead53d1db1569738fa26cc4ffd70dc999ae5fd99", startLine: 5, endLine: 5, spanSha256: "7672590e892bce5d6096852a368213b8b931c6fdc2a7148e9ebb3a3eb593c170"}
+  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "d1608e1e603202512fa72ee0ead53d1db1569738fa26cc4ffd70dc999ae5fd99", startLine: 9, endLine: 10, spanSha256: "f055733dc7a6fe3a3c046732f2a85d418d79b4f292477fa93ded7dd31528c18b"}
+  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "d1608e1e603202512fa72ee0ead53d1db1569738fa26cc4ffd70dc999ae5fd99", startLine: 20, endLine: 22, spanSha256: "8bc4721f4d07587efc924c2b52565c713af1d200b2aa85a97bc1172f32e6f147"}
+  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "d1608e1e603202512fa72ee0ead53d1db1569738fa26cc4ffd70dc999ae5fd99", startLine: 23, endLine: 25, spanSha256: "461409d470f15d1c426b6e4d7b5c2c970cfb06f52e02e99cc6487da17e15e754"}
+  - {path: "docs/out-of-project-edit-routing.md", sourceSha256: "d1608e1e603202512fa72ee0ead53d1db1569738fa26cc4ffd70dc999ae5fd99", startLine: 62, endLine: 62, spanSha256: "f7d5f9208e48ef0d23aca8e8506ae54e9cbcd4ecf6e661998c997aa74cbc8a7d"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="c3d06b5d6bd34ca9" -->
+<!-- qmd:auto:start id="main" sourceHash="24d1b0af353ee397" -->
 ## Summary
-`docs/out-of-project-edit-routing.md`에서 선택된 프로젝트 A의 훅은 다른 선택된 프로젝트 B의 원문 변경을 알린다. Claude Code·Codex·Hermes Agent가 공통 코어를 사용하며 검색 컨텍스트와 로컬 compile 범위는 A를 따른다. 실패한 편집은 알리지 않는다. `verify_notification_target`은 B의 journal·route·번들·봉인된 attestation 메타데이터만 검증하며 색인·claim DB나 provider·모델을 실행하지 않는다. `notificationOnly`는 작업 권한이 아니다. 성공한 sync 뒤 B 워커가 `laya_external_edits.drain`으로 discovery grant 없이 알림을 읽고 enqueue 전에 전체 write 증명·현재 설정·파일 버전을 재검증한다. 증명이 바뀌면 재시도한다. 알림 실패는 A의 완료된 편집과 자체 sync를 막지 않는다.
+`docs/out-of-project-edit-routing.md`에서 선택된 프로젝트 A의 편집 훅은 다른 선택된 프로젝트 B의 원문 변경을 B의 백그라운드 워커에게 알린다. 공통 코어가 Claude Code·Codex·Hermes Agent의 편집 이벤트를 처리하며, A의 검색 컨텍스트와 로컬 compile 범위는 A를 따른다. A 훅의 기존 전체 증명이 A의 편집 이벤트를 검증하고 외부 경로도 같은 이벤트 형식 검사를 받는다. 실패한 편집은 알림을 만들지 않는다. `verify_notification_target`은 B의 journal·route·번들·봉인된 attestation 메타데이터만 검증하며 B의 색인·claim DB를 열거나 provider·모델을 실행하지 않는다. 반환값의 `notificationOnly`는 작업 권한을 부여하지 않는다. 성공한 sync 뒤 B 워커가 `external_edits.drain`을 호출하며 discovery grant가 없어도 알림을 읽고, 실제 enqueue 전에 기존 전체 write 증명·현재 설정·파일 버전을 다시 확인한다. 증명이 바뀌면 알림을 남겨 재시도한다. 알림 저장이나 대상 검증 실패는 A의 완료된 편집과 A 자체의 sync를 막지 않는다.
 <!-- qmd:auto:end -->

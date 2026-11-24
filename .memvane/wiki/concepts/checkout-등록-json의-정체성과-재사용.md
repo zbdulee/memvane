@@ -6,7 +6,6 @@ aliases:
   - "Checkout 등록 JSON 재사용"
 related:
   - "laya-checkout-view"
-  - "laya-checkout-capture-integration"
 type: concept
 status: verified
 created: 2026-11-02
@@ -16,28 +15,29 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/development-checkout-capture.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/development-checkout-capture.md", collection: "qmd-auto-context", sha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", size: 6053, mtimeNs: 1794183670386791573}
+  - {kind: "file", path: "docs/development-checkout-capture.md", collection: "qmd-auto-context", sha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", size: 5878, mtimeNs: 1794981800087511318}
 triggers:
   - "session_start_source"
 redactions:
-verifiedBy: "codex"
-verifiedAt: "2026-11-15T15:29:53.582693Z"
+verifiedBy: "claude"
+verifiedAt: "2026-11-18T17:28:56.786593Z"
 verifiedMode: "self"
-verifiedBodyHash: "f0a6ff43727a16f69c005001c3b38f7669bd89a686584809910d673232f7f160"
+verifiedBodyHash: "3c2fdd7443528c889690cdd48e2ce885df0006b73e5bebca564ab99dea0036ac"
 sourceSpans:
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 39, endLine: 40, spanSha256: "33cc304ac8053f2757e43702b260e3d9ac3da91afb72da1d31afbd7bc522dbec"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 40, endLine: 40, spanSha256: "80b68b48b113a89033d9b3fa81abe316a93f1bacfc223634c349f551576df673"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 41, endLine: 41, spanSha256: "64baf034b05eee5eb5d7a537354847847da9c3236b996cc909cc9102117db6d5"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 43, endLine: 43, spanSha256: "4b09d5365a7bcfd0bce9d84aaa9c1500cc0e9ad714843a7c218b0c9e04adbfa0"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 44, endLine: 45, spanSha256: "c19baa6ee52766644315c52fa5127961f35714e4fa089936669daac5674c0ecf"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 45, endLine: 46, spanSha256: "3eaf5bf61f168f606ec4f93ed56f6fc192f15eafdf46ea212212f109def468fb"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 46, endLine: 46, spanSha256: "e56faf9b89dcaa4e2bd570230e9b430925ac60245d2e37265e54a5da66188307"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 47, endLine: 47, spanSha256: "580802561afb8fd53e89c086d21d0c4be88b40e47423f4e01f2eeaf7b432f9dc"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 8, endLine: 8, spanSha256: "a7a53642b03760d49f039d4137a0fd8966b45037caf443e04731a3841affaf6f"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 37, endLine: 38, spanSha256: "33cc304ac8053f2757e43702b260e3d9ac3da91afb72da1d31afbd7bc522dbec"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 38, endLine: 38, spanSha256: "80b68b48b113a89033d9b3fa81abe316a93f1bacfc223634c349f551576df673"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 39, endLine: 39, spanSha256: "64baf034b05eee5eb5d7a537354847847da9c3236b996cc909cc9102117db6d5"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 41, endLine: 41, spanSha256: "4b09d5365a7bcfd0bce9d84aaa9c1500cc0e9ad714843a7c218b0c9e04adbfa0"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 42, endLine: 43, spanSha256: "c19baa6ee52766644315c52fa5127961f35714e4fa089936669daac5674c0ecf"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 43, endLine: 44, spanSha256: "3eaf5bf61f168f606ec4f93ed56f6fc192f15eafdf46ea212212f109def468fb"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 44, endLine: 44, spanSha256: "e56faf9b89dcaa4e2bd570230e9b430925ac60245d2e37265e54a5da66188307"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 45, endLine: 45, spanSha256: "580802561afb8fd53e89c086d21d0c4be88b40e47423f4e01f2eeaf7b432f9dc"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="80434a7fe457a039" -->
+<!-- qmd:auto:start id="main" sourceHash="a4f707e6166946ad" -->
 ## Summary
-등록 JSON은 canonical 경로·dev/ino와 repository/worktree의 상호 귀속을 묶는다. 등록 API를 다시 호출하면 새 UUID를 생성하므로 같은 등록을 재사용하려면 호출자가 반환 JSON을 보관해야 한다. 모듈 자체는 등록 JSON을 디스크나 journal에 저장하지 않는다. 같은 경로에 디렉터리를 재생성하거나 등록된 디렉터리를 옮겨도 기존 등록을 자동 인계하지 않는다. 같은 common Git dir라도 프로젝트 상대 위치가 다르면 별도 등록이다. 별도 clone과 submodule에는 부모 저장소 등록을 적용할 수 없다. UUID와 digest는 정체성 값이며 설치·검색·쓰기 권한을 부여하지 않는다.
+등록 JSON은 canonical 경로·dev/ino와 repository/worktree의 상호 귀속을 묶는다. 등록 API를 다시 호출하면 새 UUID를 만들므로 같은 등록을 재사용하려면 반환 JSON을 호출자가 보관해야 한다. 모듈 자체는 등록 JSON을 디스크나 journal에 저장하지 않으며, 운영에서는 store의 `store_meta`·`worktrees` 행이 보관한다. 같은 경로에 디렉터리를 재생성하거나 등록된 디렉터리를 옮기면 기존 등록으로 자동 인계하지 않는다. 같은 common Git dir라도 프로젝트 상대 위치가 다르면 별도 등록이다. 별도 clone과 submodule에 부모 저장소의 등록을 적용할 수 없다. UUID와 digest는 정체성 값이며 설치·검색·쓰기 권한을 부여하지 않는다.
 <!-- qmd:auto:end -->

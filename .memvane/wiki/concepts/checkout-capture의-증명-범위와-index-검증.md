@@ -5,8 +5,8 @@ aliases:
   - "Checkout capture 증명 경계"
   - "Checkout index 검증"
 related:
+  - "laya-checkout-view"
   - "laya-checkout-view-evidence"
-  - "laya-checkout-capture-resource-limits"
 type: concept
 status: verified
 created: 2026-11-02
@@ -16,31 +16,30 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/development-checkout-capture.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/development-checkout-capture.md", collection: "qmd-auto-context", sha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", size: 6053, mtimeNs: 1794183670386791573}
+  - {kind: "file", path: "docs/development-checkout-capture.md", collection: "qmd-auto-context", sha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", size: 5878, mtimeNs: 1794981800087511318}
 triggers:
   - "session_start_source"
 redactions:
-verifiedBy: "codex"
-verifiedAt: "2026-11-15T15:30:30.479335Z"
+verifiedBy: "claude"
+verifiedAt: "2026-11-18T17:28:21.652934Z"
 verifiedMode: "self"
-verifiedBodyHash: "2bfe6000de1383e74a508b1b055b486ecff4a790a782ad6a9aabd68a3aacd49e"
+verifiedBodyHash: "42f06307d1e77c7295a1ec545b051b3100bff0712c6ba8731313bc9685ceaa54"
 sourceSpans:
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 63, endLine: 63, spanSha256: "6a8fbe3ff3f776b30a0306978c08fc112985d0d1be5e21916554e738b905651f"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 64, endLine: 65, spanSha256: "d58d9f72590b46d0dc1fd6ffb62517b2240af7986a7663c6111ca87dcb253925"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 65, endLine: 65, spanSha256: "627319c371130da6be7242c969e06a7ef77fb5ad6219c52013639bc7319c7daf"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 67, endLine: 67, spanSha256: "3b993c6f2635db11a27bf31d1dbe8093dbc784fac489a40dce1726af739d1a9e"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 67, endLine: 68, spanSha256: "2078caae30456a05b02b897348411696241cbba7340db51e7707089368db70cc"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 69, endLine: 69, spanSha256: "926e6bf778efd30e02f46dda3252430d71db2527ad47241509b48726f35e80fd"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 70, endLine: 70, spanSha256: "4fe098251c32f98ce1023a42921ba34ec83bcd4bfb963ab10afdf01ca685ee04"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 71, endLine: 71, spanSha256: "87738e5557f14726d0624a296bfa048598667b5203c97854a6c5e21d8fbb0c44"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 74, endLine: 74, spanSha256: "8e8a845220d95cba876a1c64bf5f481d0e5407788890fd1ac62f5d971ce89b91"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 76, endLine: 76, spanSha256: "de04c0a00062ad01009ebcfbbeb5534264afe0b84a0c9d667b37f6daa214bf3f"}
-  - {path: "docs/development-checkout-capture.md", sourceSha256: "48f8f41e1ae807f4801c1b61b64ffcfd7bd66dee762e4104447f21b081b7fce7", startLine: 77, endLine: 77, spanSha256: "65e418d4b8571d6cd408be45f10b9db2e7d3bcb50b5801d736f720be04bad265"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 61, endLine: 61, spanSha256: "6a8fbe3ff3f776b30a0306978c08fc112985d0d1be5e21916554e738b905651f"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 62, endLine: 63, spanSha256: "d58d9f72590b46d0dc1fd6ffb62517b2240af7986a7663c6111ca87dcb253925"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 63, endLine: 63, spanSha256: "627319c371130da6be7242c969e06a7ef77fb5ad6219c52013639bc7319c7daf"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 65, endLine: 65, spanSha256: "3b993c6f2635db11a27bf31d1dbe8093dbc784fac489a40dce1726af739d1a9e"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 65, endLine: 66, spanSha256: "2078caae30456a05b02b897348411696241cbba7340db51e7707089368db70cc"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 67, endLine: 67, spanSha256: "926e6bf778efd30e02f46dda3252430d71db2527ad47241509b48726f35e80fd"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 68, endLine: 68, spanSha256: "4fe098251c32f98ce1023a42921ba34ec83bcd4bfb963ab10afdf01ca685ee04"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 69, endLine: 69, spanSha256: "87738e5557f14726d0624a296bfa048598667b5203c97854a6c5e21d8fbb0c44"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 72, endLine: 72, spanSha256: "8e8a845220d95cba876a1c64bf5f481d0e5407788890fd1ac62f5d971ce89b91"}
+  - {path: "docs/development-checkout-capture.md", sourceSha256: "6125c913e41daedc2fc4e4f5bcd2767f35f0f61178ea96a08e0bf787dee0ab5d", startLine: 74, endLine: 75, spanSha256: "6a275949468b71b3e9f1f1321be6816dce2ead8cb4620d19b3cb0ff0f9ccf1d4"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="08a714be035aa751" -->
+<!-- qmd:auto:start id="main" sourceHash="8ca56e2ea2b75575" -->
 ## Summary
-capture는 원문 본문을 읽지 않는다. HEAD와 index가 같아도 unstaged 파일 bytes는 다를 수 있어 실제 데이터 게시에는 별도 source scan manifest가 필요하다. 현재 원문·카드 내용·삭제 조건은 이 API만으로 증명할 수 없다. primary index를 직접 읽어 v2·v3·v4 framing과 checksum을 확인한다. Git index 로더를 호출하지 않아 split index 거절 시 shared index의 mtime을 갱신하지 않는다. shared 내용까지 증명할 수 없으면 `split_index_unsupported`로 거절한다. `capture_matches`는 evidence 타입과 입력 digest도 검증한다. 새 저장소 schema·reader endpoint·view 검색 선택은 별도 계약이다. index framing은 Git index format을 따른다. 검증은 `test/laya-checkout-view.test.mjs`와 임시 Git fixture, 호스트 route 회귀는 `test/laya-index-host-route.test.mjs`를 사용한다.
+capture는 원문 본문을 읽지 않는다. HEAD와 index가 같아도 unstaged 파일 bytes는 다를 수 있으므로 실제 데이터 게시에는 별도 source scan manifest가 필요하다. 이 API만으로 현재 원문·카드 내용이나 삭제 조건을 증명할 수 없다. primary index를 먼저 상한 안에서 직접 읽어 v2·v3·v4 framing과 checksum을 확인한다. Git index 로더를 호출하지 않으므로 split index를 거절할 때 shared index의 mtime을 갱신하지 않는다. split index의 shared 내용까지 증명할 수 없으면 `split_index_unsupported`로 거절한다. `capture_matches`는 evidence 타입과 입력 digest도 검증한다. 새 저장소 schema·reader endpoint·view 검색 선택은 별도 계약이다. index framing은 Git index format을 따른다. 검증은 `memvane/store/tests/integration/test_checkout_view.py`(`memvane/store/tests/run.test.mjs`)와 임시 Git fixture를 사용하고, 호스트 route 회귀는 `memvane/route/tests/run.test.mjs`로 확인한다.
 <!-- qmd:auto:end -->

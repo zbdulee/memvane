@@ -5,7 +5,10 @@ aliases:
   - "checkout별 검색 일관성 목표"
   - "raw 즉시 검색 미구현"
 related:
-  - "memvane-git-blob-checkout-design"
+  - "laya-worktree-reader-behavior"
+  - "laya-view-content-set-reuse"
+  - "laya-view-card-trust"
+  - "laya-view-scan-removal-policy"
 type: concept
 status: verified
 created: 2026-11-02
@@ -15,29 +18,29 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/git-worktree-search-sync-policy.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/git-worktree-search-sync-policy.md", collection: "qmd-auto-context", sha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", size: 9644, mtimeNs: 1794183670388147628}
+  - {kind: "file", path: "docs/git-worktree-search-sync-policy.md", collection: "qmd-auto-context", sha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", size: 8776, mtimeNs: 1794981800088861131}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-15T16:50:31.136822Z"
+verifiedAt: "2026-11-18T14:59:12.469702Z"
 verifiedMode: "self"
-verifiedBodyHash: "3df4ceabd1320e8e29adcbf589557896bf0156192f9ccc9dd89f52d074f96220"
+verifiedBodyHash: "57517e97a85d532761b52c9756618d420c02289f654ddc11b819b34f6038a11a"
 sourceSpans:
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 91, endLine: 95, spanSha256: "6dc2b462e1d6d57ded752d3378b094e551df89cc20017a8be34dc7980a5e3e6f"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 96, endLine: 97, spanSha256: "e820f7d34bc897aa7c9588e70c00b0a70e37a729450cba70f7a4d64ee62268d0"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 97, endLine: 98, spanSha256: "3f5ee4c16cd71d702da63b64bd46a97d98d7e5ab26222cf73fc51a1cb68da06c"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 106, endLine: 107, spanSha256: "cdb2e88fa354fee97a7afcab896ccd9583a9045429e908a1d78849323dec8c79"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 109, endLine: 110, spanSha256: "925955e58661d93a090e76caebd25ff3cb9c5ff22c9ae79f3d9205c4214e33aa"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 110, endLine: 110, spanSha256: "9b510852e6ef36503328566799b4b5fc3ada6dda35adb0cbb4c3cc0bee1f10df"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 111, endLine: 111, spanSha256: "6157456737436e51ecf737b9a600b340b2adb5aade126263b357e72e1a55a1ca"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 112, endLine: 112, spanSha256: "1a69403fc6ce137bf7f4351c1e46d866eb79daea781b2ff21038f282dd5d88cf"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 124, endLine: 125, spanSha256: "98021a74100e41e73d1268975887f3b3365d5832bc3df9ae5d87fbb143e650b3"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 83, endLine: 87, spanSha256: "6dc2b462e1d6d57ded752d3378b094e551df89cc20017a8be34dc7980a5e3e6f"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 87, endLine: 88, spanSha256: "2000352c3ce8b0b102da8a9bea73fb8faea3c24e1f67bebb73a03dff3fc8ae21"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 88, endLine: 89, spanSha256: "e820f7d34bc897aa7c9588e70c00b0a70e37a729450cba70f7a4d64ee62268d0"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 89, endLine: 90, spanSha256: "3f5ee4c16cd71d702da63b64bd46a97d98d7e5ab26222cf73fc51a1cb68da06c"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 98, endLine: 99, spanSha256: "cdb2e88fa354fee97a7afcab896ccd9583a9045429e908a1d78849323dec8c79"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 99, endLine: 99, spanSha256: "28e95a2d2eb77472357c242f797c3298f4b588bf48c44068a8779b8c2aa66b46"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 102, endLine: 104, spanSha256: "fb8d201acbe56db9bea52e67a2a23dcf7fa98848e76c2b9de252636abc034746"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 103, endLine: 103, spanSha256: "6157456737436e51ecf737b9a600b340b2adb5aade126263b357e72e1a55a1ca"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 104, endLine: 104, spanSha256: "1a69403fc6ce137bf7f4351c1e46d866eb79daea781b2ff21038f282dd5d88cf"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="2426b01d98de6290" -->
+<!-- qmd:auto:start id="main" sourceHash="b8f339bd274e8d1b" -->
 ## Summary
-checkout/worktree별 현재 파일 집합을 따르는 검색은 정책 목표다. schema3 reader는 커밋하지 않은 위키 카드 변경도 해당 checkout의 sync pass에서 게시한다. 원문 변경은 main checkout의 위키 compile을 거쳐야 반영된다. raw 즉시 검색 fallback과 새 파일 즉시 주입은 구현하지 않는다. 한 recall은 한 view의 게시 generation 하나만 pin하며 준비 중인 부분 결과를 섞지 않는다. 게시 head가 없으면 다른 view로 폴백하지 않고 `view_preparing`으로 끝난다. 게시 세대는 현재 checkout보다 뒤처질 수 있으며 결과는 해당 view의 마지막 게시본이다. v6 reader가 이 계약을 만족한다고 주장하지 않는다.
+checkout/worktree의 현재 파일 집합을 따르고 허용된 collection의 dirty 파일을 반영하는 것은 정책 목표다. schema3 reader는 커밋하지 않은 위키 카드 변경도 해당 checkout의 sync pass에서 게시하며 원문 변경은 main checkout의 위키 compile을 거친다. raw 즉시 검색 fallback과 새 파일 즉시 주입은 미구현이다. 한 recall은 한 view의 마지막 게시 generation 하나만 pin하고 준비 중인 부분 결과는 섞지 않는다. 게시 head가 없으면 `view_preparing`으로 끝나며 게시본은 현재 checkout보다 뒤처질 수 있다.
 <!-- qmd:auto:end -->

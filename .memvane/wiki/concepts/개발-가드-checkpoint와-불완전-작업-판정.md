@@ -5,8 +5,9 @@ aliases:
   - "개발 가드 미완료 판정"
   - "개발 가드 체크포인트"
 related:
-  - "memvane-development-lease-mechanism"
-  - "memvane-development-process-ownership"
+  - "memvane-development-guard"
+  - "memvane-development-guard-sampling"
+  - "memvane-development-guard-resumption"
 type: concept
 status: verified
 created: 2026-11-02
@@ -16,30 +17,32 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/development-resource-safety.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/development-resource-safety.md", collection: "qmd-auto-context", sha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", size: 8522, mtimeNs: 1794183670387730541}
+  - {kind: "file", path: "docs/development-resource-safety.md", collection: "qmd-auto-context", sha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", size: 8414, mtimeNs: 1794981800087947908}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-15T16:21:01.918536Z"
+verifiedAt: "2026-11-18T08:11:49.711917Z"
 verifiedMode: "self"
-verifiedBodyHash: "19f52dea3ba1c77667f31cc8de51319aa9bf4606e08951795e8d708fce705fd7"
+verifiedBodyHash: "fb12f914539f6042f73d641a53f22e1c31422741d2d1d9eacad177bfa630a239"
 sourceSpans:
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 13, endLine: 14, spanSha256: "f5d286bc4cff02af91a6f27290430d2ba250a9ca968c851f31b3ef9f2ab8e217"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 55, endLine: 55, spanSha256: "d78fa332f351ebdf457c03a590bc746fe4899885907a508f1c4b9ecc2466b5c5"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 69, endLine: 70, spanSha256: "2906242a00019a4f4c11586addfe93c6824db8128414f74997ce198d56a23842"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 70, endLine: 72, spanSha256: "5c136af4184d4f36fd24db3f0077afbc982dca98e4234838322f7b8760934ddf"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 72, endLine: 72, spanSha256: "ff5b7a34b145869bb13f3da9dd4e2eeb171a48f6ba5c332f7e6fc2481bb2955c"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 111, endLine: 113, spanSha256: "05891591cc8c8d208a8d3fe36f8a20f0129d046190b72c97d526685c5383f67c"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 113, endLine: 114, spanSha256: "07b15e1235ad468a3a64a6a780b47725728262fb1c9d028023d9d9a5bde9ded7"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 114, endLine: 114, spanSha256: "a02d80d908e4032088c4fdbf61923d4854703f0661b2826f82d5eb26fe6531eb"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 115, endLine: 116, spanSha256: "3c754f6ed8f959af0c017ff3d6f1753169d8ce933e0fef48780b5441410bb792"}
-  - {path: "docs/development-resource-safety.md", sourceSha256: "dc5c1c086fb67a711ca206b45e461c011fd0cfffe26135b209dc78fafc691842", startLine: 116, endLine: 118, spanSha256: "50846656c1c64c4e18bf66192cd2ce81bb98039c3a56e85c5b7d4c32902fc960"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 13, endLine: 14, spanSha256: "f5d286bc4cff02af91a6f27290430d2ba250a9ca968c851f31b3ef9f2ab8e217"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 53, endLine: 53, spanSha256: "d78fa332f351ebdf457c03a590bc746fe4899885907a508f1c4b9ecc2466b5c5"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 66, endLine: 67, spanSha256: "541f21c6b1e9ebc11213a46c63fbfcba16b53e29e4efcb0f7780270b504144e6"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 67, endLine: 68, spanSha256: "2906242a00019a4f4c11586addfe93c6824db8128414f74997ce198d56a23842"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 68, endLine: 70, spanSha256: "5c136af4184d4f36fd24db3f0077afbc982dca98e4234838322f7b8760934ddf"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 70, endLine: 70, spanSha256: "ff5b7a34b145869bb13f3da9dd4e2eeb171a48f6ba5c332f7e6fc2481bb2955c"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 109, endLine: 111, spanSha256: "05891591cc8c8d208a8d3fe36f8a20f0129d046190b72c97d526685c5383f67c"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 111, endLine: 112, spanSha256: "07b15e1235ad468a3a64a6a780b47725728262fb1c9d028023d9d9a5bde9ded7"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 112, endLine: 112, spanSha256: "a02d80d908e4032088c4fdbf61923d4854703f0661b2826f82d5eb26fe6531eb"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 113, endLine: 114, spanSha256: "3c754f6ed8f959af0c017ff3d6f1753169d8ce933e0fef48780b5441410bb792"}
+  - {path: "docs/development-resource-safety.md", sourceSha256: "087037d22ad1e13d99c1c1e0cfdee47ae693dc0f64a6497eee08e39c97b025a5", startLine: 114, endLine: 116, spanSha256: "50846656c1c64c4e18bf66192cd2ce81bb98039c3a56e85c5b7d4c32902fc960"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="8aad31a16c442672" -->
+<!-- qmd:auto:start id="main" sourceHash="ab48d4154150b9ec" -->
 ## Summary
-영속 private `runs/ID/samples.jsonl`은 pressure/headroom/swap/load와 child CPU/RSS/start identity를 기록하며 command arguments·environment secrets는 제외한다. `checkpoint.json`, 단독 실행의 `active.json`, shared 검사의 `active-test-slot-N.json`은 passed·failed·stopped·unsettled cleanup을 구분한다. shared 검사는 unsettled `active.json` 또는 자기 slot record를, exclusive 작업은 모든 unsettled record를 거절한다. older checkouts는 `active.json`만 읽는다. root identity 불명·cleanup 실패·supervisor 강제 종료는 수동 검사 전까지 후속 작업을 차단한다. resource stop은 완료가 아니며 interrupted test log·partial backup에는 자체 완료 증거가 필요하다. child data·logs·partial backups를 보존하고 운영 databases·models를 rollback하지 않는다. checkpoint·logs는 reboot 뒤에도 남는다.
+`docs/development-resource-safety.md`의 각 실행은 `runs/ID`, checkpoint, samples, 임시 runtime root, 프로세스 트리를 따로 사용한다. 비공개 `runs/ID/samples.jsonl`에는 pressure/headroom/swap/load와 각 child의 CPU/RSS/start identity를 기록하고 명령 인자와 환경 비밀은 제외한다. `checkpoint.json`과 단독 실행의 `active.json` 또는 공유 검사의 `active-test-slot-N.json`은 passed, failed, stopped, unsettled cleanup을 구분하며 재부팅 뒤에도 로그와 checkpoint가 남는다.
+공유 검사는 unsettled `active.json` 또는 자기 슬롯 기록을 거절하고 단독 실행은 모든 unsettled 기록을 거절한다. 이전 checkout은 `active.json`만 읽는다. root identity 불명, cleanup 실패, supervisor 강제 종료는 수동 검사 전까지 다음 실행을 차단한다. 자원 중단, 끊긴 테스트 로그, 부분 백업은 자체 완료 증거가 있어야 완료 처리한다. cleanup은 child 데이터·테스트 로그·부분 백업을 보존하며 운영 database나 model을 롤백하지 않는다.
 <!-- qmd:auto:end -->

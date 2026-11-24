@@ -4,7 +4,9 @@ canonicalKey: "wiki-dedup-resolver"
 aliases:
   - "위키 중복 정리 에이전트"
 related:
-  - "wiki-dedup-deletion-sync"
+  - "wiki-dedup-host-delegation"
+  - "wiki-dedup-queue-safety"
+  - "wiki-dedup-selected-sync"
 type: entity
 status: verified
 created: 2026-11-02
@@ -12,32 +14,29 @@ updated: 2026-11-02
 createdBy: memvane
 confidence: high
 sources:
-  - {kind: "file", path: "agents/wiki-dedup-resolver.md", collection: "qmd-auto-context"}
+  - {kind: "file", path: "skills/wiki-dedup/SKILL.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "agents/wiki-dedup-resolver.md", collection: "qmd-auto-context", sha256: "91d77c28ff0ef70f8636c7b5f282a98bdcb66fae70260858c9188e7dc2091dfd", size: 11504, mtimeNs: 1793427988667980644}
+  - {kind: "file", path: "skills/wiki-dedup/SKILL.md", collection: "qmd-auto-context", sha256: "784faefe447506bec307a9065f6f248ed33adf748c237bb92712a9bbf633b609", size: 3796, mtimeNs: 1794981800340310558}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T12:50:45.952008Z"
+verifiedAt: "2026-11-18T08:31:38.600513Z"
 verifiedMode: "self"
-verifiedBodyHash: "13f366f102de11c941611effbfa417db6aa991f11d9d774823a99842683f893e"
+verifiedBodyHash: "52822defb7287d18904f3ad15b542bff4233f0882117b0fcf2ec6263241344db"
 sourceSpans:
-  - {path: "agents/wiki-dedup-resolver.md", sourceSha256: "91d77c28ff0ef70f8636c7b5f282a98bdcb66fae70260858c9188e7dc2091dfd", startLine: 8, endLine: 9, spanSha256: "ed6778fe87af03d76692673342ceb797f98238a91716dcdfdc200e49dfdd6030"}
-  - {path: "agents/wiki-dedup-resolver.md", sourceSha256: "91d77c28ff0ef70f8636c7b5f282a98bdcb66fae70260858c9188e7dc2091dfd", startLine: 9, endLine: 11, spanSha256: "fadbd43224028222a6bcfd583a0bb28a5561f9cb6bb3e02104514745f61e526e"}
-  - {path: "agents/wiki-dedup-resolver.md", sourceSha256: "91d77c28ff0ef70f8636c7b5f282a98bdcb66fae70260858c9188e7dc2091dfd", startLine: 11, endLine: 12, spanSha256: "b4eca94e39d4786c6710656afc47237ed1bd57798e394a8b59e64a8a6b521310"}
-  - {path: "agents/wiki-dedup-resolver.md", sourceSha256: "91d77c28ff0ef70f8636c7b5f282a98bdcb66fae70260858c9188e7dc2091dfd", startLine: 13, endLine: 14, spanSha256: "bbc9115c6736ee84b8fa4227304a523f4e9d3a787ce251f17cbd7d3b101d071a"}
-  - {path: "agents/wiki-dedup-resolver.md", sourceSha256: "91d77c28ff0ef70f8636c7b5f282a98bdcb66fae70260858c9188e7dc2091dfd", startLine: 14, endLine: 15, spanSha256: "91d420338a5da9bdc7650360923f9e2631760327657bd81b86e021bc4b6021d3"}
-  - {path: "agents/wiki-dedup-resolver.md", sourceSha256: "91d77c28ff0ef70f8636c7b5f282a98bdcb66fae70260858c9188e7dc2091dfd", startLine: 89, endLine: 91, spanSha256: "3c3d3fb055548cfb15eeeb98916282e5eb42751910c6d3ce39ee1e3d92009751"}
-  - {path: "agents/wiki-dedup-resolver.md", sourceSha256: "91d77c28ff0ef70f8636c7b5f282a98bdcb66fae70260858c9188e7dc2091dfd", startLine: 91, endLine: 92, spanSha256: "689fa5729d9376e400a28bb1080a81358f77ac8a4b929572a4ce68ee53c919fb"}
-  - {path: "agents/wiki-dedup-resolver.md", sourceSha256: "91d77c28ff0ef70f8636c7b5f282a98bdcb66fae70260858c9188e7dc2091dfd", startLine: 92, endLine: 95, spanSha256: "e2d58635eb0c3c561d306cd686f5aa9bf47ceac678d88dda586422dd53867cee"}
-  - {path: "agents/wiki-dedup-resolver.md", sourceSha256: "91d77c28ff0ef70f8636c7b5f282a98bdcb66fae70260858c9188e7dc2091dfd", startLine: 107, endLine: 107, spanSha256: "f04edd36e02eb607e81939357cf80e71841aa42a98d4564b78334e3f4d340459"}
-  - {path: "agents/wiki-dedup-resolver.md", sourceSha256: "91d77c28ff0ef70f8636c7b5f282a98bdcb66fae70260858c9188e7dc2091dfd", startLine: 137, endLine: 138, spanSha256: "8a1f10cdd46968a006560672d1486dfd6968872647b44d6016b8636918ab21eb"}
+  - {path: "skills/wiki-dedup/SKILL.md", sourceSha256: "784faefe447506bec307a9065f6f248ed33adf748c237bb92712a9bbf633b609", startLine: 8, endLine: 10, spanSha256: "da221dd8fcbdcc705a5e3d41ed796a9bb2823db3482517b7a8de069522cb747f"}
+  - {path: "skills/wiki-dedup/SKILL.md", sourceSha256: "784faefe447506bec307a9065f6f248ed33adf748c237bb92712a9bbf633b609", startLine: 9, endLine: 11, spanSha256: "58eefda890d8c44818108eb157e948c1a6b2e8704682135f2e6a8e33ea3d1a69"}
+  - {path: "skills/wiki-dedup/SKILL.md", sourceSha256: "784faefe447506bec307a9065f6f248ed33adf748c237bb92712a9bbf633b609", startLine: 10, endLine: 12, spanSha256: "a777fb8e4d6f823215a01341e23662af5d9eab9e00c4386b7b1cb0ce8b0e699b"}
+  - {path: "skills/wiki-dedup/SKILL.md", sourceSha256: "784faefe447506bec307a9065f6f248ed33adf748c237bb92712a9bbf633b609", startLine: 14, endLine: 15, spanSha256: "6189c2c04edd15ef6be02bd0d9aeadb99450fd6b02397b51cc428322456f8393"}
+  - {path: "skills/wiki-dedup/SKILL.md", sourceSha256: "784faefe447506bec307a9065f6f248ed33adf748c237bb92712a9bbf633b609", startLine: 15, endLine: 16, spanSha256: "7078eb5c74fac5cb0aa81109375774e2e3c86b2c89d629229fd4115c67155236"}
+  - {path: "skills/wiki-dedup/SKILL.md", sourceSha256: "784faefe447506bec307a9065f6f248ed33adf748c237bb92712a9bbf633b609", startLine: 33, endLine: 33, spanSha256: "0a107ef759fe8b596f5a385130a02e9fd18021cb5b28bc27a235bf57d15a6c41"}
+  - {path: "skills/wiki-dedup/SKILL.md", sourceSha256: "784faefe447506bec307a9065f6f248ed33adf748c237bb92712a9bbf633b609", startLine: 56, endLine: 56, spanSha256: "2c4c32c044c9b0266ed3de596fddab55d03819bdb946fa5746c15c314c3e503d"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="23d42b8834c88ec1" -->
+<!-- qmd:auto:start id="main" sourceHash="1b0fb3c7453a07dd" -->
 ## Summary
-`wiki-dedup`이 실행하는 `wiki-dedup-resolver`는 `.memvane/compile/dedup-needed.jsonl`의 기존 카드 쌍을 처리한다. `core/wiki_dedup_scan.py`가 저장된 memvane-db 벡터의 cosine similarity 0.9 이상으로 선정하지만 `score`는 후보 필터이며 병합 판정이 아니다. `merge-needed.jsonl`은 수동 충돌 진단으로 처리하지 않는다. 병합 기준은 동일 사실이 아니라 하나의 문장으로 설명할 수 있는 공유 범주·주제다. 세부 사실이 다르다는 이유만으로 분리하지 않으며, 서로 다른 주제를 혼합하거나 공유 주제를 설명할 수 없을 때 `--action skip`한다. 직접 사용자 호출 문구는 없고 사용자 진입점은 `wiki-dedup`이다.
+`wiki-dedup`은 `.memvane/compile/dedup-needed.jsonl`에 쌓인 기존 위키 카드 쌍을 `wiki-dedup-resolver`에 위임하는 유일한 진입점이다. 선택된 프로젝트에서 SessionStart 및 원문 수정 후 백그라운드로 실행되는 `memvane/wiki/dedup/wiki_dedup_scan.py`는 저장된 memvane-db 벡터의 cosine similarity가 0.9 이상인 쌍을 큐에 넣는다. 유사도는 후보 선정 기준이며 병합 여부는 resolver가 판단한다. `status: generated` 카드도 처리 대상이다. `merge-needed.jsonl`은 기록 시점의 충돌 진단용이다.
 <!-- qmd:auto:end -->
