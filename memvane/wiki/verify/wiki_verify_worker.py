@@ -65,6 +65,7 @@ from memvane.wiki.card import api as source_spans
 from memvane.wiki.card.api import card_sources_allowed, parse_frontmatter
 from memvane.wiki.card import api as yaml_scalars
 from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, append_jsonl, read_queue, claim_queue
+from memvane.wiki.verify import promotion
 from memvane.wiki.verify.pending_replacement import pending_replacement, job_revisions, pending_matches_job
 from memvane.wiki.verify.verify_ledger import ledger_writable, source_body_hash
 from memvane.wiki.verify.verification_stamp import stamp_verification, render_verification, write_rendered_verification
@@ -391,15 +392,12 @@ def publish_pending_replacement(root: Path, config: dict, job: dict,
         # card must remain recoverable just like a source-deletion retirement.
         from memvane.wiki.card.api import archive_card
         if not archive_card(
-                root, live_target, live_target.read_text(encoding='utf-8'), expected):
+                root, live_target, old_bytes.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n'), expected):
             return 'retry'
-        os.replace(pending, live_target)
-        directory = os.open(live_target.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    except OSError:
+        outcome = promotion.publish(root, job, pending, live_target, pending_text, old_bytes)
+        if outcome != 'published':
+            return outcome
+    except (OSError, ValueError):
         return 'retry'
     wiki_root = (root / config.get('wikiPath', settings_types.WIKI_REL)).resolve()
     workspace_files.append_activity(root, 'updated', live_target.relative_to(wiki_root).as_posix(),
@@ -832,9 +830,10 @@ def apply_verify_verdict_locked(
                 if gate_reason:
                     log_verdict(log_path, {**base_record(job), 'result': 'skipped', 'reason': gate_reason})
         stamped = (stamp_verification(target, 'verified', engine, verified_mode,
-                                      yaml_scalars.card_body_hash(payload_text), source_spans=bound or None)
+                                      yaml_scalars.card_body_hash(payload_text), source_spans=bound or None,
+                                      owner=(root, job), expected=fresh_text)
                    if rendered is None and (checkout is None or not isinstance(job.get('sourceFingerprints'), dict)) else
-                   rendered is not None and write_rendered_verification(target, rendered, fresh_text))
+                   rendered is not None and write_rendered_verification(target, rendered, fresh_text, owner=(root, job)))
         if not stamped:
             if intent_path is not None:
                 _supersede_compile_intent(intent_path)
@@ -865,18 +864,25 @@ def apply_verify_verdict_locked(
     applied = apply_negative_verdict(
         root, config, compile_cfg, vcfg, target, engine, verified_mode, action, verdict,
         sources, {**record, 'pendingOnly': True} if pending_only else record,
-        log_path, yaml_scalars.card_body_hash(payload_text), pending_only=pending_only
+        log_path, yaml_scalars.card_body_hash(payload_text), pending_only=pending_only, job=job, expected=fresh_text
     )
     return (True, False) if applied else (False, True)
 
 
 def _replay_pending(root, config, job, target, live_target, expected, log_path,
                     snapshots, checkout, selected_route):
+    try:
+        with cp.card_write_lock(root), workspace_files.mutation_lock(root):
+            recovered = promotion.recover(root, job, target, live_target)
+    except (KeyError, OSError, TypeError, RuntimeError, ValueError):
+        return False, True
+    if recovered == 'retry':
+        return False, True
     if not target.exists():
         # A crash after atomic replacement but before queue ACK is a
         # completed replay. Otherwise the pending candidate is missing.
         live_text, live_meta, live_status, live_hash = card_state(live_target)
-        if (live_text is not None and live_status == 'verified'
+        if recovered == 'published' or (live_text is not None and live_status == 'verified'
                 and live_hash == job.get('sourceHash')
                 and live_meta.get('verifiedBodyHash') ==
                     yaml_scalars.card_body_hash(live_text)):
@@ -978,6 +984,27 @@ def process_verify_job(
                                  snapshots, checkout, selected_route)
         if replay is not None:
             return replay
+
+    else:
+        try:
+            with cp.card_write_lock(root), workspace_files.mutation_lock(root):
+                def still_fresh():
+                    state = source_freshness(root, config, job)
+                    return not state or state.get('state') == wiki_markers.FRESH
+                stamped = promotion.resume_stamp(root, job, live_target, still_fresh)
+                if stamped == 'published' and checkout is not None:
+                    _, reason = _provenance_gate(job, checkout)
+                    if reason == 'provenance_checkout_changed':
+                        _supersede_job_intent(root, config, job, live_target, selected_route[0])
+        except (KeyError, OSError, TypeError, RuntimeError, ValueError):
+            return False, True
+        if stamped == 'published':
+            reindex_wiki(root, config)
+            wake_pending_retirement(root)
+            log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
+            return True, False
+        if stamped is not None:
+            return False, True
 
     text, meta, status, block_hash = card_state(target)
     if text is None:
@@ -1234,7 +1261,7 @@ def defer_or_drop(
 def apply_negative_verdict(
     root: Path, config: dict, compile_cfg: dict, vcfg: dict, target: Path, engine: str,
     verified_mode: str, action: str, verdict: str, sources: list[dict], record: dict,
-    log_path: Path, body_hash: str | None = None, *, pending_only: bool = False,
+    log_path: Path, body_hash: str | None = None, *, pending_only: bool = False, job=None, expected=None,
 ) -> bool:
     """Apply a fail/inconclusive verdict. Only inconclusive leaves a suppression marker.
 
@@ -1275,11 +1302,16 @@ def apply_negative_verdict(
         # 제목은 **삭제 전에** 읽는다 — unlink 후에는 프론트매터를 더 못 읽는다.
         _, dead_meta, _, _ = card_state(target)
         dead_title = str(dead_meta.get("title") or target.stem)
-        target.unlink(missing_ok=True)
         if pending_only:
+            target.unlink(missing_ok=True)
             log_verdict(log_path, {**record, 'result': 'pending_deleted',
                                    'suppressedSources': suppressed})
             return True
+        try:
+            if job is None or expected is None or not promotion.retire(root, job, target, expected, verdict):
+                return False
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
         wiki_root = (root / config.get("wikiPath", settings_types.WIKI_REL)).resolve()
         workspace_files.append_activity(root, "deleted", target.relative_to(wiki_root).as_posix(),
                                  dead_title, reason='verify_retire')

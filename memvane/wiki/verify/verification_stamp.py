@@ -8,13 +8,14 @@ from memvane.settings import types as settings_types
 from memvane.wiki.card import api as yaml_scalars
 from memvane.wiki.card.api import render_frontmatter_fields as _render_frontmatter_fields
 from memvane.wiki.card.types import SOURCE_SPANS_KEY
+from memvane.wiki.verify import promotion
 from memvane.wiki.workspace import api as workspace_files
 from memvane.wiki.workspace.api import write_text_atomic
 
 
 @workspace_files.guard_path
 def stamp_verification(path: Path, status: str, engine: str, mode: str,
-                       body_hash: str | None, source_spans: list | None = None) -> bool:
+                       body_hash: str | None, source_spans: list | None = None, *, owner=None, expected=None) -> bool:
     """Write a machine-review outcome — status AND all three proof fields together.
 
     Single writer so a status can never land without its proof. The live corpus shows
@@ -37,21 +38,15 @@ def stamp_verification(path: Path, status: str, engine: str, mode: str,
     complete and bound to this card's own `sourceRevisions`; otherwise nothing is
     written (no partial proof).
     """
-    expected_text = None
-    if source_spans:
-        try:
-            expected_text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            return False
+    try:
+        expected_text = path.read_text(encoding='utf-8')
+    except (OSError, UnicodeError):
+        return False
+    if expected is not None and expected != expected_text:
+        return False
     rendered = render_verification(path, status, engine, mode, body_hash, source_spans,
                                    datetime.now(timezone.utc))
-    if expected_text is not None:
-        try:
-            if path.read_text(encoding="utf-8") != expected_text:
-                return False
-        except (OSError, UnicodeError):
-            return False
-    return rendered is not None and write_text_atomic(path, rendered)
+    return rendered is not None and write_rendered_verification(path, rendered, expected_text, owner=owner)
 
 
 def render_verification(path: Path, status: str, engine: str, mode: str,
@@ -93,11 +88,11 @@ def render_verification(path: Path, status: str, engine: str, mode: str,
     }, blocks={SOURCE_SPANS_KEY: emitted})
 
 
-def write_rendered_verification(path: Path, rendered: str, expected_text: str) -> bool:
+def write_rendered_verification(path: Path, rendered: str, expected_text: str, *, owner=None) -> bool:
     """Write the previously rendered stamp only while its input remains current."""
     try:
         if path.read_text(encoding='utf8') != expected_text:
             return False
     except (OSError, UnicodeError):
         return False
-    return write_text_atomic(path, rendered)
+    return promotion.write_stamp(path, rendered, expected_text, owner, write_text_atomic)

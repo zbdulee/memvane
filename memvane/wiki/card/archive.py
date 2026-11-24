@@ -30,11 +30,11 @@ def archive_card(root: Path, card: Path, text: str, proof_hash: str) -> bool:
                              proof_hash + '\0' + text).encode()).hexdigest()
     saved = archive / (digest + '.md')
     try:
-        if saved.exists():
-            if saved.is_symlink() or saved.read_text(encoding='utf-8') != text:
-                return False
-        else:
+        if not os.path.lexists(saved):
             os.link(card, saved, follow_symlinks=False)
+        # An editor can atomically replace the source between inspection and link.
+        if saved.is_symlink() or not stat.S_ISREG(saved.lstat().st_mode) or saved.read_text(encoding='utf-8') != text:
+            return False
         # The archive is useful only when an operator can locate the original
         # card. Keep that identity beside the immutable bytes on every replay.
         sidecar = archive / (digest + '.json')
