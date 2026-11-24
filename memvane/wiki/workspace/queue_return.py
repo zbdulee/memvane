@@ -28,9 +28,11 @@ class ClaimRows(list):
         self.line_ranges = []
         self.quarantined = []
         start = 0
+        from memvane.wiki.workspace.handoff import budget
         for line in raw.split(b'\n')[:-1]:
             length = len(line) + 1
             offset, start = start, start + length
+            budget.observe(path, info.st_ino, offset, line + b'\n')
             try:
                 text = line.decode('utf-8')
             except UnicodeError:
@@ -288,7 +290,10 @@ def resume(queue):
             hold += publish + tail
             publish = b''
         else:
-            publish += tail
+            from memvane.wiki.workspace.handoff.api import destinations
+            publish, native, opaque = destinations(publish + tail)
+            hold += native
+            torn += opaque
         if hold:
             _exact_file(folder / ('ready-' + nonce), hold)
         if torn:
@@ -356,19 +361,19 @@ def finish_locked(queue, claim, remaining, rows, *, held=b''):
     resume(queue)
 
 
-def legacy_card_lock(queue):
+def legacy_card_lock(queue, *, blocking=True):
     from memvane.wiki.workspace import compile_paths as cp
     from memvane.settings import types as project_types
     if queue.name == cp.VERIFY_QUEUE and queue.parent.parent.name in project_types.NAMES:
-        return cp.card_write_lock(queue.parent.parent.parent)
+        return cp.card_write_lock(queue.parent.parent.parent, blocking=blocking)
     return nullcontext()
 
 
 @contextmanager
-def queue_locked(queue):
+def queue_locked(queue, *, blocking=True):
     from memvane.wiki.workspace.queue_paths import _queue_lock_path
     with _queue_lock_path(queue).open('a') as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         yield
 
 
@@ -406,7 +411,7 @@ def _finish_verified(queue, claim, rows, remaining, cleanup):
         finish_locked(queue, claim, list(remaining) + extra, rows)
 
 
-def take_private(queue, alive, *, include_live=True):
+def take_private(queue, alive, *, include_live=True, before=None):
     folder = _dir(queue)
     if folder is None:
         return None
@@ -418,11 +423,15 @@ def take_private(queue, alive, *, include_live=True):
             if not match or alive(int(match[1])):
                 continue
             nonce = match[2]
+        if before is not None:
+            before(child)
         dest = folder / ('native.claimed.%d.%s' % (os.getpid(), nonce))
         _move_claim(child, dest)
         return dest
     live = folder / queue.name
     if include_live and live.exists() and live.stat().st_size:
+        if before is not None:
+            before(live)
         dest = folder / ('native.claimed.%d.%s' % (os.getpid(), _token()))
         _move_claim(live, dest)
         return dest

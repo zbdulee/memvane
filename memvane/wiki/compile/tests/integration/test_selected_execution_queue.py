@@ -46,7 +46,7 @@ class SelectedExecutionQueue(FixtureCase):
         with patch.object(card, 'unresolved_pending_refreshes_strict', return_value=[]):
             self.assertIs(execution._compile_idle(self.root, self.source, self.verify, self.bound), True)
 
-    def test_orphan_claim_is_requeued_and_prevents_ack(self):
+    def test_orphan_claim_prevents_ack_until_native_consumer_finishes(self):
         pid = 4242421
         claim = self.source.with_name(self.source.name + '.claimed.%s.%s' % (pid, 'f' * 32))
         claim.write_text('{"source":"orphan"}\n')
@@ -59,8 +59,15 @@ class SelectedExecutionQueue(FixtureCase):
             result = execution.run(self.root)
         self.assertEqual(result['state'], 'pending')
         spawn.assert_called_once()
+        self.assertEqual(claim.read_bytes(), b'{"source":"orphan"}\n')
+        self.assertFalse(self.source.exists())
+        with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(pid)}):
+            recovered = workspace.claim_queue(self.source, private=True)
         self.assertFalse(claim.exists())
-        self.assertIn('orphan', self.source.read_text())
+        rows = workspace.read_queue(recovered)
+        self.assertEqual([job for _, job in rows], [{'source': 'orphan', '_requeue_count': 1}])
+        rows.finish(self.source, recovered, [])
+        self.assertFalse(workspace.queue_busy(self.source))
 
     def test_live_verify_claim_prevents_idle(self):
         claim = self.verify.with_name(self.verify.name + '.claimed.%s.%s' % (os.getppid(), 'f' * 32))

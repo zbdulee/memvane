@@ -35,6 +35,20 @@ class NativeRows(FixtureCase):
                 self.assertEqual(len(physical.decode().splitlines()), 1 if escaped else 2)
         self.assertEqual(raw.occurrence(b'{"a":1}\r\n'), ({'a': 1}, True))
 
+    def test_released_return_rechecks_literal_and_escaped_rows_before_publication(self):
+        for name in ('source-queue.jsonl', 'verify-queue.jsonl'):
+            folder = self.tmp / name[:-6]
+            folder.mkdir()
+            queue = folder / name
+            good = '{"allowed":true}'
+            hidden = [json.dumps({'value': 'x' + ch + 'y'}, ensure_ascii=escaped)
+                      for escaped in (False, True) for ch in ('\x85', '\u2028', '\u2029')]
+            api.requeue_lines(queue, [good, *hidden, 'opaque'])
+            self.assertFalse(queue.exists() and queue.read_bytes())
+            private = raw.native_live(queue).parent
+            exact = ''.join(r + '\n' for r in [good, *hidden, 'opaque']).encode()
+            self.assertEqual(next(private.glob('ready-*')).read_bytes(), exact)
+
     def test_partial_old_append_returns_privately_after_public_claim(self):
         queue = self.tmp / 'verify-queue.jsonl'
         row = b'{"targetPath":"one"}\n'

@@ -5,16 +5,17 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
 import mmap
+import hashlib
 import os
 from pathlib import Path
 import secrets
 import stat
 import struct
 import tempfile
-import time
 
 MIB = 1024 ** 2
-LIMITS = {'source': 8*MIB, 'verify': 8*MIB, 'private': 8*MIB, 'evidence': 24*MIB, 'commits': 32}
+LIMITS = {'source': 8*MIB, 'verify': 8*MIB, 'private': 8*MIB, 'evidence': 24*MIB, 'commits': 32,
+          'source_rows': 4096, 'verify_rows': 4096, 'private_rows': 4096}
 _INDEX = {key: i for i, key in enumerate(LIMITS)}
 _CURRENT = ContextVar('wiki_queue_pass', default=None)
 _FD_KEY = '_MEMVANE_HANDOFF_PASS'
@@ -33,6 +34,7 @@ class Budget:
         self.fd, self.cookie = fd, cookie
         self.mapping = mmap.mmap(fd, _SIZE)
         self.snapshots = {}
+        self.rows = set()
         self.deadline = None
 
     def available(self, key):
@@ -56,7 +58,22 @@ def channel(path):
     for name in ('source', 'verify'):
         if path.name.startswith(name + '-queue.jsonl'):
             return name
+    if path.name.startswith(('native.claimed.', 'ready-')):
+        for name in ('source', 'verify'):
+            if path.parent.name == hashlib.sha256((name + '-queue.jsonl').encode()).hexdigest()[:24]:
+                return name
     return 'private'
+
+
+def observe(path, inode, offset, raw):
+    ledger = current()
+    if ledger is None:
+        return
+    lane = channel(path)
+    identity = (lane, inode, offset, hashlib.sha256(raw).digest())
+    if identity not in ledger.rows:
+        ledger.debit(lane + '_rows', 1)
+        ledger.rows.add(identity)
 
 
 def child_options(env=None):

@@ -193,7 +193,7 @@ def deferred_result(exc):
 def _queue_busy(queue: Path, *, receipt_writer=None):
     """True if ``queue`` holds rows or a live claim, decided under its lock.
 
-    Dead-owner ``<queue>.claimed.*`` rows are requeued first. Claim presence and
+    The native consumer recovers dead owners on source and verify queues. Claim presence and
     queue content are read under the same lock ``claim_queue`` moves rows
     under, so a concurrent claim is seen as either the queue or its claim.
     """

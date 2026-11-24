@@ -55,7 +55,14 @@ def requeue_lines(path: Path, raw_lines: list[str]):
                     for line in raw_lines:
                         handle.write(line if line.endswith('\n') else line + '\n')
                 return
-            from memvane.wiki.workspace.queue_return import lines_bytes
+            from memvane.wiki.workspace import queue_return
+            from memvane.wiki.workspace.handoff.api import destinations
+            material = queue_return.lines_bytes(raw_lines)
+            public, native, opaque = destinations(material)
+            if native or opaque:
+                folder = queue_return._dir(path, create=True)
+                queue_return._exact_file(folder / ('ready-' + uuid.uuid4().hex), material)
+                return  # One durable name owns the entire submitted group.
             try:
                 live = path.read_bytes()
             except FileNotFoundError:
@@ -63,7 +70,7 @@ def requeue_lines(path: Path, raw_lines: list[str]):
             if live and not live.endswith(b'\n'):
                 raise OSError('incomplete queue tail')
             swap = path.parent / ('.qr-' + uuid.uuid4().hex)
-            write_new_file(swap, live + lines_bytes(raw_lines))
+            write_new_file(swap, live + public)
             swap.replace(path)
             fsync_dir(path.parent)
         finally:

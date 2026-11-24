@@ -148,9 +148,9 @@ def trim_jsonl(path, max_bytes=262144):
     return implementation(path, *given)
 
 
-def mutation_lock(root):
+def mutation_lock(root, *, blocking=True):
     from memvane.wiki.workspace.wiki_mutation_lock import lock as implementation
-    return implementation(root)
+    return implementation(root, blocking=blocking)
 
 
 def guard_path(func):

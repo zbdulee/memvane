@@ -156,6 +156,10 @@ def reclaim_orphaned_claimed(path: Path, max_requeue: int = MAX_REQUEUE_COUNT, *
             except (TypeError, ValueError, OverflowError):
                 count = 1
             if count <= max_requeue:
+                if native:
+                    from memvane.wiki.workspace.handoff.api import occurrence
+                    if not occurrence((line + '\n').encode())[1]:
+                        rows.quarantine(line)
                 remaining.append(json.dumps({**data, '_requeue_count': count}, ensure_ascii=False))
                 continue
             receipt = None
@@ -210,15 +214,10 @@ def read_queue(path: Path):
 def claim_queue(path: Path, *, receipt_writer=None, before_claim=None, private=False) -> Path | None:
     claimed = path.with_name(f"{path.name}.claimed.{os.getpid()}.{uuid.uuid4().hex}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    with queue_return.legacy_card_lock(path), queue_return.queue_locked(path):
+    with queue_return.legacy_card_lock(path, blocking=not private), queue_return.queue_locked(path, blocking=not private):
         if private:
-            saved = queue_return.take_private(path, _is_pid_alive, include_live=False)
-            if saved is None:
-                from memvane.wiki.workspace.handoff.api import native_live
-                live = native_live(path)
-                if before_claim is not None and live is not None and live.exists() and live.stat().st_size:
-                    before_claim(live)
-                saved = queue_return.take_private(path, _is_pid_alive)
+            queue_return.resume(path)
+            saved = queue_return.take_private(path, _is_pid_alive, before=before_claim)
             if saved is not None:
                 return saved
         if before_claim is not None:

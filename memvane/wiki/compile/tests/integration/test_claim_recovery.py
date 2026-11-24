@@ -11,6 +11,7 @@ from unittest.mock import patch
 from memvane.wiki.workspace import api as workspace
 from memvane.wiki.intake import api as intake
 from tests.support.case import FixtureCase
+from tests.support.queue_files import pending_text
 
 
 class ClaimRecovery(FixtureCase):
@@ -191,6 +192,10 @@ class ClaimRecovery(FixtureCase):
         self.assertEqual(consumed.read_bytes(), row)
         self.assertEqual(self.queue.read_bytes(), b'')
         consumed.unlink()
+        empty = workspace.claim_queue(self.queue)
+        rows = workspace.read_queue(empty)
+        self.assertEqual(list(rows), [])
+        rows.finish(self.queue, empty, [])
         self.assertFalse(workspace.queue_busy(self.queue))
 
     def test_orphan_with_unproved_legacy_return_prefix_keeps_both_occurrences(self):
@@ -290,5 +295,7 @@ class ClaimRecovery(FixtureCase):
         self.assertIsInstance(errors[0], BlockingIOError)
         intake.append_source_jobs(self.queue, [second])
         claimed = outcomes[0]
-        rows = [json.loads(line) for path in (claimed, self.queue) for line in path.read_text().splitlines()]
+        self.assertTrue(claimed.is_file())
+        rows = [json.loads(line) for line in pending_text(self.queue).splitlines()]
+        self.assertEqual(len(rows), 2)
         self.assertEqual({row['source']['path'] for row in rows}, {'docs/a.md', 'docs/b.md'})

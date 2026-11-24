@@ -27,6 +27,10 @@ def public_name(path):
     if (parent.name == hashlib.sha256(os.fsencode(path.name)).hexdigest()[:24]
             and tuple(p.name for p in list(parent.parents)[:3]) == ('returns', 'v1', '.handoff')):
         return parent.parents[3] / path.name
+    if path.name.startswith(('ready-', 'native.claimed.')) and tuple(p.name for p in list(parent.parents)[:3]) == ('returns', 'v1', '.handoff'):
+        for name in ('source-queue.jsonl', 'verify-queue.jsonl'):
+            if parent.name == hashlib.sha256(os.fsencode(name)).hexdigest()[:24]:
+                return parent.parents[3] / name
     return path
 
 
@@ -57,6 +61,18 @@ def occurrence(raw):
         return row, safe
     except (UnicodeError, ValueError, RecursionError):
         return None, False
+
+
+def destinations(raw):
+    """Validate the actual released JSONL and its released orphan serialization before publishing."""
+    public, native, opaque = [], [], []
+    pieces = raw.split(b'\n')
+    for line in pieces[:-1]:
+        physical = line + b'\n'
+        job, safe = occurrence(physical)
+        (public if safe else native if job is not None else opaque).append(physical)
+    opaque.append(pieces[-1])
+    return b''.join(public), b''.join(native), b''.join(opaque)
 
 
 def prepare_delivery(queue, key, raw):
@@ -105,6 +121,7 @@ def bounded_rows(path, max_bytes=MAX_BYTES, max_rows=MAX_ROWS):
                 if len(raw) > SLAB or count >= max_rows:
                     raise OSError('queue_occurrence_limit')
                 count += 1
+                budget.observe(path, before.st_ino, offset, raw)
                 yield offset, raw
                 offset += len(raw)
             if len(carry) >= SLAB:
@@ -112,6 +129,7 @@ def bounded_rows(path, max_bytes=MAX_BYTES, max_rows=MAX_ROWS):
         if carry:
             if count >= max_rows:
                 raise OSError('queue_occurrence_limit')
+            budget.observe(path, before.st_ino, offset, carry)
             yield offset, carry
         after = os.fstat(fd)
         if ((before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
@@ -157,3 +175,58 @@ def withdraw(queue):
     queue_return._move_claim(queue, ready)
     queue_return.ensure_live(queue)
     return ready
+
+
+def delivery_pending(queue, name):
+    folder = queue_return._dir(queue)
+    return folder is not None and ((folder / ('ready-' + name)).exists() or
+                                   next(folder.glob('native.claimed.*.' + name), None) is not None)
+
+
+def take_delivery(queue, name, validate):
+    """Own only this batch's durable witness; released claims and unrelated ready names are untouched."""
+    import re
+    from memvane.wiki.workspace.queue import _is_pid_alive
+    if re.fullmatch('[0-9a-f]{32}', name) is None:
+        raise ValueError('invalid_queue_delivery')
+    with queue_return.legacy_card_lock(queue, blocking=False), queue_return.queue_locked(queue, blocking=False):
+        if not validate():
+            return None
+        folder = queue_return._dir(queue)
+        ready = folder / ('ready-' + name)
+        own = folder / ('native.claimed.%d.%s' % (os.getpid(), name))
+        if ready.exists():
+            queue_return._move_claim(ready, own)
+            return own
+        for path in folder.glob('native.claimed.*.' + name):
+            match = re.fullmatch(r'native\.claimed\.(\d+)\.' + name, path.name)
+            if match and not _is_pid_alive(int(match[1])):
+                queue_return._move_claim(path, own)
+                return own
+    return None
+
+
+def defer_unread(queue, path):
+    """Return an unstarted, owned occurrence for a new pass without fabricating a successful read."""
+    import re
+    if path is None or path.parent != queue_return._dir(queue):
+        return
+    match = re.fullmatch(r'native\.claimed\.%d\.([0-9a-f]{32})' % os.getpid(), path.name)
+    if match:
+        with queue_return.queue_locked(queue, blocking=False):
+            queue_return._move_claim(path, path.with_name('ready-' + match[1]))
+
+
+def settle_observed(queue, stamp, raw):
+    """The caller owns the project and queue locks; only one exact, fully proved public row is eligible."""
+    node = queue.lstat()
+    if (node.st_dev, node.st_ino, node.st_size, node.st_ctime_ns, node.st_mtime_ns) != stamp:
+        return False
+    claim = queue.with_name(queue.name + '.claimed.%d.%s' % (os.getpid(), queue_return._token()))
+    queue_return._move_claim(queue, claim, private=False)
+    queue_return.ensure_live(queue)
+    rows = queue_return.ClaimRows(claim)
+    if rows.size != len(raw) or rows.digest != hashlib.sha256(raw).hexdigest():
+        return False
+    queue_return.finish_locked(queue, claim, [], rows)
+    return True
