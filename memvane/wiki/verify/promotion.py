@@ -404,13 +404,6 @@ def _time(value):
     return dt
 
 
-def _created_after_audit(latest, audit):
-    # Released rows have one-second precision. A matching earlier marker in the
-    # same second cannot prove which generation a later interrupted audit owns.
-    return (latest and latest.get('action') == 'created' and audit.get('deletedAt')
-            and _time(latest['ts']) > _time(audit['deletedAt']))
-
-
 def _audit_owner(root, target, audit, create=False):
     return _folder(root, {'targetPath': target, 'visibleVerdict': 'retire-audit-' + _digest(audit)}, create)
 
@@ -561,26 +554,16 @@ def missing_retirement(root, target, *, check, manifest_has, repair, sync):
     verdict = audit[1]['verdict']
     intent = _record(folder / 'retire')
     if 'audit' in intent and intent['audit'] != _digest(audit):
-        return 'retry'
-    history = _target_ledger(root, MANIFEST, target)
-    if 'previous' in intent and not _same_generation(intent['previous'], history):
-        status = _retirement_status(root, folder, target, verdict, manifest_has=manifest_has, repair=None)
-        if (history[1] and history[1].get('action') == 'created' and
-                (status in ('retired', verdict) or _created_after_audit(history[1], audit[1]))):
-            return 'manual'
-        return 'retry'
-    if 'previous' not in intent and _created_after_audit(history[1], audit[1]):
         return 'manual'
-    if ('previous' not in intent and history[1] and history[1].get('action') == 'created'
-            and not _legacy_generation(root, folder, intent, history, audit[1])
-            and manifest_has(intent['manifest'])):
-        # The recorded deletion already precedes this creation. The writer must
-        # preserve a manual removal even if the old verifier did not mark completion.
-        status = _retirement_status(root, folder, target, verdict, manifest_has=manifest_has, repair=None)
-        return 'manual' if status in (verdict, 'retired') else 'retry'
+    history = _target_ledger(root, MANIFEST, target)
+    if 'previous' in intent:
+        if not _same_generation(intent['previous'], history):
+            return 'manual'
+    elif not _legacy_generation(root, folder, intent, history, audit[1]):
+        return 'manual'
     status = _retirement_status(root, folder, target, verdict, manifest_has=manifest_has, repair=repair, check=check)
     if status == 'retired':
-        return 'retry'
+        return 'manual'
     if status != verdict:
         return 'retry'
     if not check:

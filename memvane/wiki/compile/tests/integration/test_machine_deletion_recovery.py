@@ -131,16 +131,40 @@ class DirectWriter(FixtureCase):
         self.assertEqual(self.rows('tombstones.jsonl'), [])
         self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')], ['created'])
 
-    def interrupt_tag(self, revision):
+    def interrupt_tag(self, revision, cut='before_manifest'):
         repo = Path.cwd()
         tag = cases.archived_tag(repo, self.tmp, revision)
         script = Path(__file__).resolve().parents[1] / 'tagged_retirement.py'
-        r = subprocess.run([sys.executable, '-B', str(script), str(self.root)], cwd=tag, capture_output=True,
+        r = subprocess.run([sys.executable, '-B', str(script), str(self.root), cut], cwd=tag, capture_output=True,
                            text=True, timeout=20, input=json.dumps([self.config, self.candidate('Newest source.')]),
                            env={**os.environ, 'PYTHONPATH': os.pathsep.join((str(tag), str(repo)))})
         self.assertEqual(r.returncode, 27, r.stderr)
         self.assertEqual(len(self.rows('verify-deleted.jsonl')), 1)
         self.assertFalse(self.target.exists())
+
+    def test_updated_generation_after_native_or_legacy_retirement_keeps_manual_delete(self):
+        for revision in (None, '01136dc964e42c2c7dca2f27951612dc3cdc3dee'):
+            with self.subTest(revision=revision):
+                self.prepare('updated-' + str(revision))
+                self.bound = None
+                self.target.unlink()
+                if revision is None:
+                    self.assertEqual(self.write('Newest initial source.'), (0, 'created'))
+                    self.assertEqual(self.negative_verify('fail')['remaining'], 0)
+                else:
+                    self.interrupt_tag(revision, 'before_finished')
+                    self.assertFalse(list(self.queue.parent.glob('retired-wiki/.promotions/*/finished')))
+                self.assertFalse(self.target.exists())
+                with patch.object(writer, 'now_iso', return_value='2099-01-01T00:00:01Z'):
+                    self.assertEqual(self.write('Newest recreated source.'), (0, 'created'))
+                self.assertEqual(self.native_verify(), {'calls': 1, 'remaining': 0})
+                with patch.object(writer, 'now_iso', return_value='2099-01-01T00:00:05Z'):
+                    self.assertEqual(self.write('Newest edited source.'), (0, 'updated'))
+                self.assertEqual(self.native_verify(), {'calls': 1, 'remaining': 0})
+                self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')],
+                                 ['created', 'verify-deleted', 'created', 'updated'])
+                self.assert_manual_delete()
+                self.assertEqual(len(self.rows('generated-manifest.jsonl')), 4)
 
     def test_first_native_format_recovers_the_actual_displaced_generation(self):
         self.interrupt_tag('01136dc964e42c2c7dca2f27951612dc3cdc3dee')
