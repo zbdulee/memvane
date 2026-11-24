@@ -985,7 +985,7 @@ def process_verify_job(
         try:
             with cp.card_write_lock(root), workspace_files.mutation_lock(root):
                 retirement = promotion.retirement_status(
-                    root, job, manifest_has=lambda row: _manifest_has(root, row),
+                    root, job, manifest_has=lambda row: _manifest_has(root, row, latest=True),
                     repair=lambda row: record_machine_delete(root, compile_cfg, row, row['verdict']))
                 if retirement in ('fail', 'inconclusive'):
                     reindex_wiki(root, config)

@@ -266,7 +266,7 @@ class Ordinary(PendingCase):
         self.assertEqual(len(engine.calls), 1)
         self.assertEqual(len(self.ledger('generated-manifest.jsonl')), 1)
 
-    def test_interrupted_negative_recovers_exactly_one_manifest_row_from_the_displaced_inode(self):
+    def test_interrupted_negative_without_creation_history_keeps_the_archive(self):
         old = self.setup().encode()
         job = self.job()
         engine = self.fake(FAIL)
@@ -278,7 +278,7 @@ class Ordinary(PendingCase):
             self.assertEqual(self.verify_one(job), (True, False))
         self.assertEqual(len(engine.calls), 1)
         self.assertEqual((self.root / self.records()['archivePath']).read_bytes(), old)
-        self.assertEqual([row['action'] for row in self.ledger('generated-manifest.jsonl')], ['verify-deleted'])
+        self.assertEqual(self.ledger('generated-manifest.jsonl'), [])
 
 
 if __name__ == '__main__':

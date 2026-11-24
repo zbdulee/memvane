@@ -27,8 +27,12 @@ with workspace.card_write_lock(root), workspace.mutation_lock(root):
 if cut == 'before_manifest':
     failure = patch.object(Path, 'open', interrupted)
 else:
-    from memvane.wiki.verify import promotion
-    failure = patch.object(promotion, 'finish_retirement', side_effect=lambda *_: os._exit(27))
+    os_open = os.open
+    def stop_before_finished(path, *args, **kwargs):
+        if isinstance(path, Path) and path.name == '.finished.partial':
+            os._exit(27)
+        return os_open(path, *args, **kwargs)
+    failure = patch.object(os, 'open', stop_before_finished)
 with patch.object(engines, 'run_extractor', return_value=(FAIL, None, 0)), failure:
     verifier.run(root, config, config['compile'])
 raise SystemExit(28)

@@ -114,11 +114,15 @@ def _record_manifest(root, row):
         node = os.fstat(stream.fileno())
         if not stat.S_ISREG(node.st_mode) or node.st_nlink != 1 or node.st_uid != os.getuid():
             raise OSError('unsafe initial card manifest')
-        present, last = False, b''
+        latest, last = None, b''
         for line in stream:
             last = line
             try:
-                present |= json.loads(line) == row
+                recorded = json.loads(line)
+                if not isinstance(recorded, dict):
+                    raise ValueError('invalid initial card manifest')
+                if recorded.get('targetPath') == row['targetPath']:
+                    latest = recorded
             except (ValueError, RecursionError):
                 if line.strip():
                     raise ValueError('invalid initial card manifest')
@@ -127,6 +131,7 @@ def _record_manifest(root, row):
                 (node.st_size, node.st_ctime_ns) != (after.st_size, after.st_ctime_ns) or
                 (last and not last.endswith(b'\n'))):
             raise OSError('initial card manifest changed')
+        present = latest == row
         if not present:
             data = canonical_json_bytes(row) + b'\n'
             stream.write(data)

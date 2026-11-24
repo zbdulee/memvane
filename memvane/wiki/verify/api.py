@@ -98,7 +98,7 @@ def missing_retirement(root, config, target, *, check):
     from memvane.wiki.verify import promotion, wiki_verify_worker as worker
     try:
         return promotion.missing_retirement(
-            root, target, check=check, manifest_has=lambda row: worker._manifest_has(root, row),
+            root, target, check=check,
             repair=lambda row: worker.record_machine_delete(root, config['compile'], row, row['verdict']),
             sync=lambda: worker.reindex_wiki(root, config))
     except (KeyError, OSError, RuntimeError, TypeError, ValueError):

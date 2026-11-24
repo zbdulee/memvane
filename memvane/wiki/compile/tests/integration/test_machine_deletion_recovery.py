@@ -7,8 +7,10 @@ from pathlib import Path
 import subprocess
 import sys
 from contextlib import redirect_stdout
+from datetime import datetime
 from unittest.mock import patch
 
+from memvane.kernel import paths
 from memvane.wiki.compile import wiki_compile as writer
 from memvane.wiki.compile.tests.integration import test_pending_handoff as cases
 from memvane.wiki.engines import api as engines
@@ -28,7 +30,8 @@ class DirectWriter(FixtureCase):
         self.target.unlink()
 
     def candidate(self, text):
-        self.source.write_text(text)
+        if self.source.read_text() != text:
+            self.source.write_text(text)
         revision = self.project.revision(self.source)
         return {'title': 'Decision', 'summary': 'Decision in the current source.', 'engine': 'claude',
                 'trigger': 'post_tool_source', 'targetPath': self.target.relative_to(self.root).as_posix(),
@@ -110,26 +113,36 @@ class DirectWriter(FixtureCase):
                          ['created', 'verify-deleted', 'created'])
         self.assertEqual(self.rows('tombstones.jsonl'), [])
 
-    def test_compaction_of_earlier_rows_preserves_the_same_retired_generation(self):
+    def test_compaction_without_generation_proof_uses_the_manual_delete_rule(self):
         self.interrupt_native(duplicate=True)
         manifest = self.queue.with_name('generated-manifest.jsonl')
         workspace.compact_manifest(manifest, max_bytes=0)
         self.assertEqual([r['action'] for r in self.rows(manifest.name)], ['created'])
-        self.assertEqual(self.write('Newest corrected source.'), (0, 'created'))
-        self.assertEqual([r['action'] for r in self.rows(manifest.name)], ['created', 'verify-deleted', 'created'])
+        self.assertEqual(self.write('Newest corrected source.'), (0, 'tombstoned'))
+        self.assertEqual(self.write('Newest source changed again.'), (0, 'suppressed'))
+        self.assertEqual(len(self.rows('tombstones.jsonl')), 1)
+        self.assertEqual([r['action'] for r in self.rows(manifest.name)], ['created'])
 
-    def test_changed_archive_content_or_inode_does_not_authorize_a_machine_or_manual_delete(self):
+    def test_changed_archive_content_cannot_authorize_a_machine_delete(self):
         self.interrupt_native()
         slot, = self.queue.parent.glob('retired-wiki/.promotions/*/displaced.md')
-        original = slot.read_bytes()
-        slot.write_bytes(original + b'editor append')
-        self.assertEqual(self.write('Newest corrected source.'), (1, 'deferred'))
-        replacement = slot.with_name('replacement')
-        replacement.write_bytes(original)
-        replacement.replace(slot)
-        self.assertEqual(self.write('Newest corrected source.'), (1, 'deferred'))
-        self.assertEqual(self.rows('tombstones.jsonl'), [])
+        changed = slot.read_bytes() + b'editor append'
+        slot.write_bytes(changed)
+        self.assertEqual(self.write('Newest corrected source.'), (0, 'tombstoned'))
+        self.assertEqual(self.write('Newest source changed again.'), (0, 'suppressed'))
+        self.assertEqual(len(self.rows('tombstones.jsonl')), 1)
         self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')], ['created'])
+        self.assertEqual(slot.read_bytes(), changed)
+
+    def test_different_archive_inode_cannot_authorize_a_machine_delete(self):
+        self.interrupt_native()
+        slot, = self.queue.parent.glob('retired-wiki/.promotions/*/displaced.md')
+        replacement = slot.with_name('replacement')
+        replacement.write_bytes(slot.read_bytes())
+        replacement.replace(slot)
+        self.assertEqual(self.write('Newest corrected source.'), (0, 'tombstoned'))
+        self.assertEqual(len(self.rows('tombstones.jsonl')), 1)
+        self.assertFalse(self.target.exists())
 
     def interrupt_tag(self, revision, cut='before_manifest'):
         repo = Path.cwd()
@@ -166,12 +179,43 @@ class DirectWriter(FixtureCase):
                 self.assert_manual_delete()
                 self.assertEqual(len(self.rows('generated-manifest.jsonl')), 4)
 
-    def test_first_native_format_recovers_the_actual_displaced_generation(self):
+    def test_first_native_format_without_file_generation_proof_uses_tombstone(self):
         self.interrupt_tag('01136dc964e42c2c7dca2f27951612dc3cdc3dee')
-        self.assertEqual(self.write('Newest corrected source.'), (0, 'created'))
-        self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')],
-                         ['created', 'verify-deleted', 'created'])
-        self.assertEqual(self.rows('tombstones.jsonl'), [])
+        archive, = self.queue.parent.glob('retired-wiki/.promotions/*/displaced.md')
+        before = archive.read_bytes()
+        self.assertEqual(self.write('Newest corrected source.'), (0, 'tombstoned'))
+        self.assertEqual(self.write('Newest source changed again.'), (0, 'suppressed'))
+        self.assertEqual(len(self.rows('tombstones.jsonl')), 1)
+        self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')], ['created'])
+        self.assertEqual(archive.read_bytes(), before)
+
+    def test_byte_identical_same_second_creation_survives_compaction_as_new_history(self):
+        manifest = self.queue.with_name('generated-manifest.jsonl')
+        source = 'Newest source used for both generations.'
+        stamp = '2026-11-24T01:00:00Z'
+        with patch.object(writer, 'now_iso', return_value=stamp), patch.object(paths, 'datetime') as clock:
+            clock.now.return_value = datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+            self.assertEqual(self.write(source), (0, 'created'))
+            created, = self.rows(manifest.name)
+
+            open_file = os.open
+            def stop_at_completion(path, *args, **kwargs):
+                if isinstance(path, Path) and path.name == '.finished.partial':
+                    raise KeyboardInterrupt
+                return open_file(path, *args, **kwargs)
+
+            with patch.object(os, 'open', side_effect=stop_at_completion), self.assertRaises(KeyboardInterrupt):
+                self.negative_verify('fail')
+            self.assertFalse(self.target.exists())
+            self.assertFalse(list(self.queue.parent.glob('retired-wiki/.promotions/*/finished')))
+            before, marker = self.rows(manifest.name)
+            self.assertEqual((before, marker['action'], marker['ts']), (created, 'verify-deleted', stamp))
+            self.assertEqual(self.write(source), (0, 'created'))
+            self.assertEqual(self.rows(manifest.name), [created, marker, created])
+        workspace.compact_manifest(manifest, max_bytes=0)
+        self.assertEqual(self.rows(manifest.name), [created])
+        self.assert_manual_delete()
+        self.assertEqual(self.rows(manifest.name), [created])
 
     def negative_verify(self, verdict, *, suppression_failure=False):
         answer = {'verdict': verdict, 'claims': [{'claim': 'Decision', 'supported': False, 'quote': ''}],
