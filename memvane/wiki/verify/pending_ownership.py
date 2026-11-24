@@ -9,67 +9,21 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import stat
-from pathlib import Path
 
-from memvane.kernel.atomic_rename import MAX_FILE, atomic_json, fsync_dir
+from memvane.kernel.atomic_rename import fsync_dir
 from memvane.settings import api as settings
 from memvane.store.api import regular
 from memvane.store.types import MAX_BODY
 from memvane.wiki.workspace import api as workspace, types as workspace_types
-from memvane.wiki.verify import wiki_verify_worker as verify
+from memvane.wiki.verify import legacy_handoff, wiki_verify_worker as verify
 from memvane.wiki.verify.pending_replacement import job_revisions, pending_matches_job, pending_replacement
 
-NAME = '.pending-ownership.json'
-
-
-def _relative(value):
-    return (isinstance(value, str) and value and '\x00' not in value
-            and not Path(value).is_absolute() and '..' not in Path(value).parts
-            and Path(value).as_posix() == value)
-
-
-def _digest(value):
-    return isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value)
-
-
-def _valid_plan(rel, plan, owners):
-    if not isinstance(plan, dict) or set(plan) != {'job', 'sha256', 'reason', 'swap'}:
-        return False
-    job = plan['job']
-    if (not isinstance(job, dict) or not _relative(job.get('targetPath')) or
-            job.get('pendingPath') != rel or not _digest(plan['sha256']) or owners.get(rel) != plan['sha256'] or
-            plan['reason'] not in ('pending_source_changed', 'pending_replacement_superseded') or
-            not isinstance(plan['swap'], str) or not re.fullmatch(r'\.verify-swap-[a-z0-9_]{8}', plan['swap'])):
-        return False
-    target, marker = Path(job['targetPath']), job.get('sourceHash')
-    return (isinstance(marker, str) and re.fullmatch('[0-9a-f]{16}', marker)
-            and not target.name.startswith('.') and _digest(job.get('expectedTargetHash'))
-            and target.with_name('.' + target.name + '.pending-' + marker).as_posix() == rel
-            and job_revisions(job) and verify._cleanup_job_key(job))
-
-
-def load(queue):
-    try:
-        raw, _, _ = regular(queue.parent, NAME, MAX_FILE)
-    except FileNotFoundError:
-        return {'owners': {}, 'retirements': {}}
-    state = json.loads(raw)
-    if (not isinstance(state, dict) or set(state) != {'owners', 'retirements'}
-            or not all(isinstance(value, dict) for value in state.values())):
-        raise ValueError('invalid_pending_ownership')
-    owners = state['owners']
-    if (any(not _relative(rel) or not re.fullmatch(r'\..+\.pending-[0-9a-f]{16}', Path(rel).name)
-            or not _digest(sha) for rel, sha in owners.items()) or
-            any(not _valid_plan(rel, plan, owners) for rel, plan in state['retirements'].items())):
-        raise ValueError('invalid_pending_ownership')
-    return state
-
-
-def store(queue, state):
-    atomic_json(queue.with_name(NAME), state)
-    fsync_dir(queue.parent)
+NAME = legacy_handoff.NAME
+load = legacy_handoff.load
+store = legacy_handoff.store
+reserved = legacy_handoff.reserved
+has_state = legacy_handoff.has_state
 
 
 def discard_unpublished(queue, state):
@@ -77,6 +31,8 @@ def discard_unpublished(queue, state):
     # prepared operation did not publish, even if a released reader drained the queue.
     abandoned = set()
     for rel, plan in list(state['retirements'].items()):
+        if legacy_handoff.OLD_SWAP.fullmatch(plan['swap']):
+            continue  # The import never consumes an e8 no-commit witness.
         swap = queue.with_name(plan['swap'])
         try:
             info = swap.lstat()
@@ -138,8 +94,7 @@ def _audited(root, job, plan):
     path = settings.ledger(root, workspace_types.VERIFY_DELETED)
     if path is None:
         return False
-    operation = 'retirement_' + hashlib.sha256(
-        (verify._cleanup_job_key(job) + plan['sha256'] + plan['swap']).encode()).hexdigest()
+    operation = legacy_handoff.operation(plan)
     reasons = [plan['reason'], operation]
     token = operation.encode()
     # Every writer of this ledger holds the card lock. Keep a torn trailing row
@@ -184,6 +139,14 @@ def finish(root, config, wiki, queue, state, referenced, selected):
         if rel in referenced:
             continue
         job = plan['job']
+        historical = legacy_handoff.OLD_SWAP.fullmatch(plan['swap'])
+        if historical:
+            # A missing swap and old audit cannot prove that these bytes are stale today.
+            if not legacy_handoff.current_retirement(queue, rel, plan):
+                continue
+            fresh = verify.source_freshness(root, config, job) or {}
+            if fresh.get('reason') != 'content_hash_mismatch':
+                continue
         try:
             target = root / job['targetPath']
             path, _ = pending_replacement(root, wiki, job, target)
@@ -193,6 +156,8 @@ def finish(root, config, wiki, queue, state, referenced, selected):
         except FileNotFoundError:
             raw = None
         except (OSError, ValueError):
+            continue
+        if historical and (raw is None or hashlib.sha256(raw).hexdigest() != plan['sha256']):
             continue
         if raw is not None and hashlib.sha256(raw).hexdigest() == plan['sha256'] == state['owners'].get(rel):
             try:

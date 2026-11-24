@@ -9,7 +9,7 @@ from pathlib import Path
 from memvane.settings import api as settings, types as settings_types
 from memvane.store.api import regular
 from memvane.store.types import MAX_BODY
-from memvane.wiki.verify import pending_handoff as handoff
+from memvane.wiki.verify import pending_handoff as handoff, queue_batch_prepare
 from memvane.wiki.verify import wiki_verify_worker as verifier
 from memvane.wiki.verify.pending_replacement import (
     _VERIFY_QUEUE_BYTES, pending_matches_job, pending_replacement)
@@ -64,31 +64,33 @@ def prepare(root, queue, bound, config=None):
     if queue is None:
         return True
     try:
+        if not queue_batch_prepare.prepare(root, queue, bound):
+            return False
         # An unrelated audit must not block a live review, but an empty queue with an
         # unfinished retirement still needs its durable wake.
         retired = handoff.resume_retirements(root, config, queue, bound)
         if not queue.exists() or queue.stat().st_size == 0:
             # A dead verifier's claim can hold the last references. Allow native
             # claim recovery to drain it before making its audit a retry gate.
-            return retired or workspace.queue_busy(queue)
+            from memvane.wiki.verify.native_review import waiting
+            return retired or workspace.queue_busy(queue) or bool(waiting(queue))
         if bound is None:
             return True
         with workspace.card_write_lock(root), workspace.mutation_lock(root), workspace.queue_lock_path(queue).open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            # With a large backlog leave draining to the native verifier, which handles revision groups.
             if queue.stat().st_size > _VERIFY_QUEUE_BYTES:
-                return True
+                return False  # Appended after the batch preflight; retry under its adoption lock.
             rows, used = handoff._rows(queue, _VERIFY_QUEUE_BYTES)
             groups = list(_competing(rows))
             if not groups:
                 return True
             claims = list(islice(queue.parent.glob(queue.name + '.claimed.*'), 65))
             if len(claims) > 64:
-                return True
+                return False
             claimed = set()
             for claim in claims:
                 if claim.stat().st_size > _VERIFY_QUEUE_BYTES - used:
-                    return True
+                    return False
                 saved, size = handoff._rows(claim, _VERIFY_QUEUE_BYTES - used)
                 used += size
                 claimed.update(row['targetPath'] for _, row in saved if isinstance(row.get('targetPath'), str))

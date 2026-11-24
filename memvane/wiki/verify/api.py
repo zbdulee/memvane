@@ -22,6 +22,16 @@ def prepare_queue(root, queue, bound, config=None):
     return prepare(root, queue, bound, config)
 
 
+def stage_candidate(path, raw):
+    from memvane.wiki.verify.candidate_stage import write
+    return write(path, raw)
+
+
+def pending_name_reserved(queue, rel, *, fresh=False):
+    from memvane.wiki.verify.pending_handoff import reserved
+    return reserved(queue, rel, fresh=fresh)
+
+
 def enqueue_replacement(root, config, wiki, queue, job, selected, stage, *, produced_bytes=None):
     from memvane.wiki.verify.pending_handoff import enqueue
     return enqueue(root, config, wiki, queue, job, selected, stage, produced_bytes=produced_bytes)
@@ -54,3 +64,13 @@ def source_body_hash(text):
 def stamp_verification(path, status, engine, mode, body_hash, source_spans=None):
     from memvane.wiki.verify.verification_stamp import stamp_verification as implementation
     return implementation(path, status, engine, mode, body_hash, source_spans=source_spans)
+
+
+def create_first_card(root, wiki, queue, job, image, selected, *, review, manifest):
+    from memvane.wiki.verify.first_card import create
+    return create(root, wiki, queue, job, image, selected, review=review, manifest=manifest)
+
+
+def native_review_pending(queue):
+    from memvane.wiki.verify.native_review import busy
+    return busy(queue)

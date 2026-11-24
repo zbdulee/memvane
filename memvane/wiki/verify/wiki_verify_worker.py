@@ -225,29 +225,30 @@ def load_verify_suppressions(path: Path | None) -> dict[str, str]:
     return suppressions
 
 
-def record_machine_delete(root: Path, compile_cfg: dict, record: dict, verdict: str) -> None:
-    """Mark the manifest so the next compile does not tombstone this target.
+def _machine_row(record, verdict):
+    return {'ts': record['ts'], 'action': ct.MACHINE_DELETE_ACTION, 'status': 'deleted',
+            'targetPath': record['targetPath'], 'verdict': verdict, 'engine': record.get('engine', '')}
 
-    wiki_compile's delete-detection reads "manifest says it existed + file gone" as a
-    deliberate user deletion and tombstones the identity permanently. Without this
-    row, a verify delete would suppress the card forever — contradicting the reason
-    a machine delete exists (fix the source, get a fresh card). Fail-open:
-    an unwritable manifest degrades to today's tombstone behaviour, never to a crash.
-    """
+
+def _manifest_has(root, row):
+    path = qmd_config.ledger(root, ct.MANIFEST)
+    if path is None or not any(item == row for _, item in read_queue(path)):
+        return False
+    with path.open('rb') as handle:
+        os.fsync(handle.fileno())
+    fsync_dir(path.parent)
+    return True
+
+
+def record_machine_delete(root: Path, compile_cfg: dict, record: dict, verdict: str) -> bool:
+    """Durably identify a machine deletion so a later writer can distinguish a manual removal."""
     path = qmd_config.ledger(root, ct.MANIFEST)
     if path is None:
-        return
-    # targetPath만 담아 same_generated_identity가 이 카드에만 매칭되게 한다
-    # (sourceHash/canonicalKey를 넣으면 다른 카드까지 잘못 매칭될 수 있음).
-    append_jsonl(path, {
-        "ts": now_iso(),
-        "action": ct.MACHINE_DELETE_ACTION,
-        "status": "deleted",
-        "targetPath": record.get("targetPath", ""),
-        "verdict": verdict,
-        "engine": record.get("engine", ""),
-    })
+        return False
+    row = _machine_row(record, verdict)
+    append_jsonl(path, row)
     cp.compact_manifest(path)
+    return _manifest_has(root, row)
 
 
 def record_verify_deletion(
@@ -988,6 +989,13 @@ def process_verify_job(
     else:
         try:
             with cp.card_write_lock(root), workspace_files.mutation_lock(root):
+                retirement = promotion.retirement_status(root, job, manifest_has=lambda row: _manifest_has(root, row))
+                if retirement in ('fail', 'inconclusive'):
+                    reindex_wiki(root, config)
+                    promotion.finish_retirement(root, job, retirement)
+                    return True, False
+                if retirement is not None:
+                    return (True, False) if retirement == 'retired' else (False, True)
                 def still_fresh():
                     state = source_freshness(root, config, job)
                     return not state or state.get('state') == wiki_markers.FRESH
@@ -1308,19 +1316,23 @@ def apply_negative_verdict(
                                    'suppressedSources': suppressed})
             return True
         try:
-            if job is None or expected is None or not promotion.retire(root, job, target, expected, verdict):
+            if job is None or expected is None:
+                return False
+            if not promotion.retire(root, job, target, expected, verdict, _machine_row(record, verdict)):
                 return False
         except (KeyError, OSError, RuntimeError, TypeError, ValueError):
             return False
         wiki_root = (root / config.get("wikiPath", settings_types.WIKI_REL)).resolve()
         workspace_files.append_activity(root, "deleted", target.relative_to(wiki_root).as_posix(),
                                  dead_title, reason='verify_retire')
-        record_machine_delete(root, compile_cfg, record, verdict)
+        if not record_machine_delete(root, compile_cfg, record, verdict):
+            return False
         reindex_wiki(root, config)
         log_verdict(log_path, {
             **record, "result": "deleted",
             "suppressedSources": suppressed,
         })
+        promotion.finish_retirement(root, job, verdict)
         return True
     # none(선택된 route): 카드를 건드리지 않는다 — generated로 남아 recallVerifiedOnly
     # 기본값 아래 recall에서 제외된다.
@@ -1481,6 +1493,75 @@ def _cleanup_pending(root, snapshots, extra_rows, paths, uncertain):
     return not deferred
 
 
+def _process_private(root, config, compile_cfg, vcfg, work, log_path):
+    from memvane.store.api import regular
+    from memvane.store.types import MAX_BODY
+
+    job = work.state['binding']['job']
+    wiki = root / config.get('wikiPath', settings_types.WIKI_REL)
+    live = root / job['targetPath']
+    image = work.read('image')
+    try:
+        staged = pending_replacement(root, wiki, job, live)
+        path = staged[0] if staged else live
+        intent = promotion.has_intent(root, job)
+        if not intent:
+            raw, node, _ = regular(wiki, path.relative_to(wiki).as_posix(), MAX_BODY)
+            if not staged:
+                proof = work.state['proof']
+                if (node['dev'], node['ino']) != (proof.get('device'), proof.get('inode')) or raw != image:
+                    return False, True
+            original = raw == image
+            if staged and original:
+                candidate = work.state['binding'].get('candidate', {})
+                if set(candidate) != {'dev', 'ino', 'mtime_ns'} or any(node[k] != v for k, v in candidate.items()):
+                    return False, True
+            if not original:
+                text, meta, status, marker = card_state(path)
+                stamped = (status == 'verified' and marker == job.get('sourceHash')
+                           and meta.get('verifiedBodyHash') == yaml_scalars.card_body_hash(text)
+                           and meta['verifiedBodyHash'] == yaml_scalars.card_body_hash(image.decode()))
+                if not stamped:
+                    return False, True
+            if staged:
+                current, _, _ = regular(wiki, live.relative_to(wiki).as_posix(), MAX_BODY)
+                if (hashlib.sha256(current).hexdigest() != staged[1] and
+                        (source_freshness(root, config, job) or {}).get('reason') != 'content_hash_mismatch'):
+                    return False, True
+        snapshots, _ = _pending_snapshots(root, config, [(None, job)])
+    except (OSError, KeyError, RuntimeError, ValueError):
+        return False, True
+    return process_verify_job(root, config, compile_cfg, vcfg, job, log_path, snapshots=snapshots)
+
+
+def _return_cleanup(root, queue, pending_snapshots, pending_jobs, remaining, extra_rows, paths, uncertain):
+    from memvane.wiki.verify import native_review
+    refs, unknown = native_review.references(queue)
+    disposable = {p: node for p, node in pending_snapshots.items()
+                  if p.relative_to(root).as_posix() not in refs}
+    if _cleanup_pending(root, disposable, extra_rows, paths, uncertain or unknown):
+        return []
+    retry = []
+    remaining_paths = set()
+    for raw in remaining:
+        try:
+            deferred = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(deferred, dict):
+            pending = deferred.get('pendingPath')
+            if isinstance(pending, str):
+                remaining_paths.add(root / pending)
+    for path, fingerprint in disposable.items():
+        job = pending_jobs[path]
+        if path in remaining_paths and not _valid_cleanup_marker(job):
+            continue  # A deferred verify job is not terminal.
+        marker = {'fingerprint': list(fingerprint), 'jobKey': _cleanup_job_key(job)}
+        retry.append(json.dumps({**job, '_pendingCleanup': marker},
+                                ensure_ascii=False, sort_keys=True))
+    return retry
+
+
 def run(
     root: Path, config: dict, compile_cfg: dict, produced_targets: list[str] | None = None
 ) -> dict:
@@ -1498,13 +1579,19 @@ def run(
         # Selected Laya keeps wiki bytes for recovery. The legacy default
         # machine-delete verdict is never inherited by an installed route.
         vcfg = {**vcfg, 'onFail': 'none', 'onInconclusive': 'none'}
-    if not vcfg.get("enabled", True):
-        return result
     queue = _safe_queue_path(root, VERIFY_QUEUE_DEFAULT)
     from memvane.wiki.verify.upgrade_queue import prepare
-    if not prepare(root, queue, selected_route, config):
+    if queue is None:
+        return result
+    from memvane.wiki.verify import first_card, native_review
+    first_card.recover(root, root / config.get('wikiPath', settings_types.WIKI_REL), queue, selected_route)
+    if not vcfg.get("enabled", True):
+        return result
+    public_ready = prepare(root, queue, selected_route, config)
+    available = native_review.waiting(queue)
+    if not public_ready and not available:
         return {**result, 'remaining': 1, 'reason': 'verify_queue_handoff_pending'}
-    if queue is None or not queue.exists():
+    if not queue.exists() and not available and not native_review.busy(queue):
         return result
     log_path = qmd_config.ledger(root, ct.VERIFY_LOG) or cp.under(root, ct.VERIFY_LOG)
 
@@ -1523,20 +1610,17 @@ def run(
     # 식힘 중"이라는 잘못된 인상만 준다. 후보 단위 파일로 대체됐다(engine_cooldown_path).
     cp.under(root, ct.LEGACY_VERIFY_COOLDOWN).unlink(missing_ok=True)
 
-    claimed = claim_queue(queue)
-    if claimed is None:
-        return result
-    rows = read_queue(claimed)
-    if not rows:
-        # An unreadable prefix owns the next retry. A proven empty snapshot may
-        # have received complete rows on a released writer's old descriptor.
-        if not hasattr(rows, 'finish_verified'):
-            return result
-        with cp.card_write_lock(root):
-            try:
-                rows.finish_verified(queue, claimed, [], lambda *args: [])
-            except (OSError, UnicodeError):
-                pass
+    from memvane.wiki.verify import queue_batch_prepare
+    try:
+        claimed = (claim_queue(queue, before_claim=lambda path: queue_batch_prepare.guard_claim(path, selected_route))
+                   if public_ready else None)
+    except queue_batch_prepare.BatchPending:
+        claimed, public_ready = None, False
+    rows = read_queue(claimed) if claimed is not None else []
+    if claimed is not None and not hasattr(rows, 'finish_verified'):
+        claimed, public_ready = None, False
+    if not rows and not available and claimed is None:
+        result['remaining'] = int(not public_ready or native_review.busy(queue))
         return result
 
     try:
@@ -1556,6 +1640,13 @@ def run(
     # a verifier. Normal jobs continue to use target-based deduplication.
     kept = _dedup_by_target([(raw, job) for raw, job in rows
                               if not isinstance(job, dict) or '_pendingCleanup' not in job], root)
+    private = {}
+    private_jobs = []
+    for work in native_review.latest_first(available):
+        job = work.state['binding']['job']
+        private[id(job)] = work
+        private_jobs.append((None, job))
+    kept = private_jobs + kept
     max_per_run = max(1, min(
         int(engines.budget_of(compile_cfg).get("verifyPerRun", 3) or 3), settings_types.MAX_VERIFY_PER_RUN
     ))
@@ -1575,7 +1666,7 @@ def run(
         leftover = 1
     take_backlog = backlog[:leftover]
     to_process = take_fresh + take_backlog
-    deferred = [raw for raw, _ in fresh[len(take_fresh):]] + [raw for raw, _ in backlog[len(take_backlog):]]
+    deferred = [raw for raw, _ in fresh[len(take_fresh):] + backlog[len(take_backlog):] if raw is not None]
     remaining = deferred + malformed
     processed_count = 0
     try:
@@ -1589,44 +1680,30 @@ def run(
                 continue
             try:
                 wiki_selected_laya.recheck(selected_route)
-                processed, preserve = process_verify_job(root, config, compile_cfg, vcfg, job, log_path, snapshots=pending_snapshots)
+                if id(job) in private:
+                    processed, preserve = native_review.process(
+                        queue, selected_route, private[id(job)],
+                        lambda work: _process_private(root, config, compile_cfg, vcfg, work, log_path))
+                else:
+                    processed, preserve = process_verify_job(root, config, compile_cfg, vcfg, job, log_path,
+                                                             snapshots=pending_snapshots)
             except Exception:
-                remaining.append(raw_line)
-                remaining.extend(line for line, _ in to_process[idx + 1:])
+                if raw_line is not None:
+                    remaining.append(raw_line)
+                remaining.extend(line for line, _ in to_process[idx + 1:] if line is not None)
                 raise
             if processed:
                 processed_count += 1
-            if preserve:
+            if preserve and raw_line is not None:
                 remaining.append(raw_line)
     finally:
-        def cleanup(extra_rows, paths, uncertain):
-            if _cleanup_pending(root, pending_snapshots, extra_rows, paths, uncertain):
-                return []
-            retry = []
-            remaining_paths = set()
-            for raw in remaining:
-                try:
-                    deferred = json.loads(raw)
-                except ValueError:
-                    continue
-                if isinstance(deferred, dict):
-                    pending = deferred.get('pendingPath')
-                    if isinstance(pending, str):
-                        remaining_paths.add(root / pending)
-            for path, fingerprint in pending_snapshots.items():
-                job = pending_jobs[path]
-                if path in remaining_paths and not _valid_cleanup_marker(job):
-                    continue  # A deferred verify job is not terminal.
-                marker = {'fingerprint': list(fingerprint), 'jobKey': _cleanup_job_key(job)}
-                retry.append(json.dumps({**job, '_pendingCleanup': marker},
-                                        ensure_ascii=False, sort_keys=True))
-            return retry
-
-        if snapshots_valid:
+        if snapshots_valid and claimed is not None:
             with cp.card_write_lock(root):
-                rows.finish_verified(queue, claimed, remaining, cleanup)
+                rows.finish_verified(queue, claimed, remaining, lambda *args: _return_cleanup(
+                    root, queue, pending_snapshots, pending_jobs, remaining, *args))
     result["processed"] = processed_count
-    result["remaining"] = len(remaining)
+    still_waiting = native_review.waiting(queue)
+    result["remaining"] = len(remaining) + len(still_waiting) + int(bool(still_waiting.issues) or not public_ready)
     result["budget"] = budget
     result["freshProcessed"] = len(take_fresh)
     result["backlogProcessed"] = len(take_backlog)

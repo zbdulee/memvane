@@ -2,9 +2,9 @@
 from __future__ import annotations as _annotations
 
 
-def card_write_lock(root, *, folder=None):
+def card_write_lock(root, *, folder=None, blocking=True):
     from memvane.wiki.workspace.compile_paths import card_write_lock as implementation
-    return implementation(root, folder=folder)
+    return implementation(root, folder=folder, blocking=blocking)
 
 
 def write_text_atomic(path, text):
@@ -62,9 +62,9 @@ def read_queue(path):
     return implementation(path)
 
 
-def claim_queue(path, *, receipt_writer=None):
+def claim_queue(path, *, receipt_writer=None, before_claim=None):
     from memvane.wiki.workspace.queue import claim_queue as implementation
-    return implementation(path, receipt_writer=receipt_writer)
+    return implementation(path, receipt_writer=receipt_writer, before_claim=before_claim)
 
 
 def request_lifecycle(decision, trigger):

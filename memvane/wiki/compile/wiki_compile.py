@@ -417,10 +417,9 @@ def source_hash(candidate: dict) -> str:
     return hashlib.sha256(json.dumps(stable, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 
-def replacement_image(target, base, old, candidate, summary, redactions):
-    """Choose an unoccupied name or the exact image of a retry. Keep all conflicting bytes."""
-    from memvane.store.api import regular
-    from memvane.store.types import MAX_BODY
+def replacement_image(root, queue, target, base, old, candidate, summary, redactions):
+    """Choose a fresh, unreserved name; identical bytes alone cannot identify a writer."""
+    from memvane.wiki.verify.api import pending_name_reserved
     marker = base
     for slot in range(3):
         if slot == 2:
@@ -430,14 +429,11 @@ def replacement_image(target, base, old, candidate, summary, redactions):
             break
         path = target.with_name('.' + target.name + '.pending-' + marker)
         produced = page.encode('utf-8')
-        try:
-            existing, _, _ = regular(target.parent, path.name, MAX_BODY)
-        except FileNotFoundError:
-            return marker, path, page
-        except (OSError, ValueError):
-            existing = None
-        if existing == produced:
-            return marker, path, page
+        if not pending_name_reserved(queue, path.relative_to(root).as_posix(), fresh=slot == 2):
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                return marker, path, page
         # Includes the full rendered revision (mtime too), manual sections and
         # this slot's marker. A preserved older image cannot block an A/B/A edit.
         marker = hashlib.sha256(produced).hexdigest()[:16]
@@ -727,20 +723,9 @@ def compose_generated_card(old_text: str, generated_page: str) -> str | None:
 
 def write_pending_card(path: Path, text: str) -> bool:
     """Durably stage private candidate bytes without replacing the live card."""
-    from memvane.kernel.atomic_rename import write_new_file
-    from memvane.store.api import regular
-    raw = text.encode('utf-8')
-    try:
-        write_new_file(path, raw)
-        return True
-    except FileExistsError:
-        try:
-            existing, _, _ = regular(path.parent, path.name, len(raw))
-            return existing == raw
-        except (OSError, ValueError):
-            return False
-    except (OSError, ValueError):
-        return False
+    from memvane.wiki.verify.api import stage_candidate
+    return stage_candidate(path, text.encode('utf-8'))
+
 
 
 @workspace_files.guard_path
@@ -1284,7 +1269,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
             }, ensure_ascii=False))
             return 0
     if target.exists():
-        old = target.read_text(encoding="utf-8")
+        original = target.read_bytes()
+        old = original.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
         auto_writable, findings = is_auto_writable_page(target)
         if check:
             return _checked("written" if auto_writable and AUTO_BLOCK_RE.search(page)
@@ -1317,58 +1303,48 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                           composed if composed is not None else page, floor,
                           final_reason=final_reason):
             return 0
-    # 신규 생성도 같은 원자적 경로를 쓴다. `updated`는 기존 카드 파괴 방지가 이유이고,
-    # `created`는 **부분 카드가 완성된 카드처럼 보이는 것**이 이유다 — 절단된 파일도
-    # 인덱싱되고 recall이 그 본문을 완결된 요약으로 주입하며(읽기 창 안에서 끊겼는지
-    # 알 수 없다) verify는 반쪽 카드를 원문과 대조한다. 다음 회차 덮어쓰기에 의존하면
-    # 그 사이 세션이 잘린 카드를 캐논으로 본다. 실패는 아래 write_failure로 표면화한다.
-    # A selected wiki that is already verified stays published while its
-    # replacement is reviewed. The hidden pending file is a complete candidate,
-    # never part of the wiki scan. The verify worker performs the final atomic
-    # replacement after checking the old target has not changed.
+    # The first card is exposed only after its review and manifest row are reserved.
+    # Existing cards stay visible until the native verifier promotes the replacement.
     pending_path = None
     expected_target_hash = None
     verify_cfg = compile_cfg.get("verify") if isinstance(compile_cfg.get("verify"), dict) else {}
     wiki_selected_laya.recheck(selected)
-    if selected is not None and action == "updated":
-        from memvane.wiki.card.api import verified_wiki_row
-        wiki_name = next((item['name'] for item in selected[0]['collections']
+    verify_queue = qmd_config.ledger(root, ct.VERIFY_QUEUE)
+    if action == "updated":
+        wiki_name = None if selected is None else next((item['name'] for item in selected[0]['collections']
                           if item['role'] == 'wiki' and
                           Path(item['sourceRoot']).resolve() == wiki_root.resolve()), None)
-        if wiki_name is None:
+        if selected is not None and wiki_name is None:
             record['action'] = 'merge-needed'
             record['lint'] = {'verdict': 'needs_review',
                               'findings': ['selected_wiki_unresolved']}
             append_jsonl(candidate_path, record)
             return 0
-        if wiki_name is not None and verified_wiki_row(
-                {'path': wiki_name + '/' + target.relative_to(wiki_root).as_posix(),
-                 'body': old}, selected[0], current_source=False):
-            if (not verify_cfg.get("enabled", True)
-                    or qmd_config.ledger(root, ct.VERIFY_QUEUE) is None):
-                record['action'] = 'merge-needed'
-                record['lint'] = {'verdict': 'needs_review',
-                                  'findings': ['verified_replacement_requires_review']}
-                append_jsonl(candidate_path, record)
-                return 0
-            image = replacement_image(target, h, old, candidate, summary, redactions)
-            if image is None:
-                # A collision on the random final slot gets a fresh name on retry.
-                print(json.dumps({"action": "write-failed", "reason": "pending_replacement_conflict"}))
-                return 1
-            h, pending_path, pending_page = image
-            record["sourceHash"] = h
-            expected_target_hash = hashlib.sha256(target.read_bytes()).hexdigest()
-            from memvane.wiki.verify.api import enqueue_replacement
-            job = _verify_job(root, selected, candidate, record, pending_path, expected_target_hash)
-            write_ok = enqueue_replacement(root, config, wiki_root, qmd_config.ledger(root, ct.VERIFY_QUEUE),
-                                           job, selected, lambda: write_pending_card(pending_path, pending_page),
-                                           produced_bytes=pending_page.encode("utf-8"))
-        else:
-            write_ok = rewrite_generated_card(target, old, page)
+        if not verify_cfg.get("enabled", True) or verify_queue is None:
+            record['action'] = 'merge-needed'
+            record['lint'] = {'verdict': 'needs_review',
+                              'findings': ['verified_replacement_requires_review']}
+            append_jsonl(candidate_path, record)
+            return 0
+        image = replacement_image(root, verify_queue, target, h, old, candidate, summary, redactions)
+        if image is None:
+            # A collision on the random final slot gets a fresh name on retry.
+            print(json.dumps({"action": "write-failed", "reason": "pending_replacement_conflict"}))
+            return 1
+        h, pending_path, pending_page = image
+        record["sourceHash"] = h
+        expected_target_hash = hashlib.sha256(original).hexdigest()
+        from memvane.wiki.verify.api import enqueue_replacement
+        job = _verify_job(root, selected, candidate, record, pending_path, expected_target_hash)
+        write_ok = enqueue_replacement(root, config, wiki_root, verify_queue,
+                                       job, selected, lambda: write_pending_card(pending_path, pending_page),
+                                       produced_bytes=pending_page.encode("utf-8"))
     else:
-        write_ok = (rewrite_generated_card(target, old, page) if action == "updated"
-                    else write_text_atomic(target, page))
+        from memvane.wiki.verify.api import create_first_card
+        job = _verify_job(root, selected, candidate, record)
+        write_ok = create_first_card(root, wiki_root, verify_queue, job, page.encode("utf-8"), selected,
+                                     review=bool(verify_cfg.get("enabled", True) and status == "generated"),
+                                     manifest=dict(record, action=action, status=status))
     if not write_ok:
         record["action"] = "write-failed"
         append_jsonl(candidate_path, record)
@@ -1377,7 +1353,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
 
     record["action"] = action
     append_jsonl(candidate_path, record)
-    append_jsonl(manifest_path, {**record, "status": status})
+    if pending_path is not None:
+        append_jsonl(manifest_path, {**record, "status": status})
     # manifest is read for delete-detection (previous lookup); compact by folding
     # same-identity duplicates rather than size-trimming (which would drop a card's
     # entry and break tombstoning). Threshold-gated + atomic inside.
@@ -1393,13 +1370,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
 
     # 기계 검수(auto-verify) enqueue: generated로 쓰인 카드만 대상. verify worker가
     # 카드 주장 vs 원문을 대조해 verified 승격 또는 (onFail) 삭제한다.
-    verify_queued = pending_path is not None
-    if pending_path is None and verify_cfg.get("enabled", True) and status == "generated":
-        verify_queue_path = qmd_config.ledger(root, ct.VERIFY_QUEUE)
-        if verify_queue_path is not None:
-            verify_queued = True
-            from memvane.wiki.intake.api import append_source_jobs
-            append_source_jobs(verify_queue_path, [_verify_job(root, selected, candidate, record)])
+    verify_queued = pending_path is not None or (verify_cfg.get("enabled", True) and status == "generated")
 
     result = {
         "action": action,

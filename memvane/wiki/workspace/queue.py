@@ -202,10 +202,12 @@ def read_queue(path: Path):
         return []
 
 
-def claim_queue(path: Path, *, receipt_writer=None) -> Path | None:
+def claim_queue(path: Path, *, receipt_writer=None, before_claim=None) -> Path | None:
     claimed = path.with_name(f"{path.name}.claimed.{os.getpid()}.{uuid.uuid4().hex}")
     path.parent.mkdir(parents=True, exist_ok=True)
     with queue_return.legacy_card_lock(path), queue_return.queue_locked(path):
+        if before_claim is not None:
+            before_claim(path)
         live_existed = path.exists()
         reclaim_orphaned_claimed(path, receipt_writer=receipt_writer)
         native = path.name in (cp.SOURCE_QUEUE, cp.VERIFY_QUEUE) or receipt_writer is not None

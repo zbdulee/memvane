@@ -1,4 +1,4 @@
-"""A new writer hands each old verifier just one reviewable candidate per target."""
+"""Existing-card replacements survive downgrades in private until native review."""
 from __future__ import annotations
 
 import hashlib
@@ -12,6 +12,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from memvane.wiki.compile import wiki_compile as writer
+from memvane.wiki.engines import api as engines
 from memvane.wiki.workspace import api as workspace
 from memvane.wiki.verify import api as verify
 from tests.support.case import FixtureCase
@@ -43,7 +44,8 @@ class PendingHandoff(FixtureCase):
         body = writer.markdown_page({'title': 'Decision', 'sources': [source],
                                      'sourceRevisions': [revision]}, 'Original card.', 'verified', [], 'a' * 16)
         self.target.write_text(body)
-        self.bound = ({'projectRoot': str(self.root), 'recallSettings': {'skipPaths': []},
+        self.bound = ({'projectRoot': str(self.root), 'installId': '1' * 32, 'scopeId': '2' * 32,
+                       'storeIncarnation': '3' * 32, 'recallSettings': {'skipPaths': []},
                        'collections': [{'name': self.project.raw_name, 'role': 'raw', 'sourceRoot': str(self.root)},
                                        {'name': self.project.wiki_name, 'role': 'wiki', 'sourceRoot': str(self.project.wiki)}],
                        'collectionRoots': {self.project.raw_name: str(self.root), self.project.wiki_name: str(self.project.wiki)}}, {})
@@ -64,12 +66,42 @@ class PendingHandoff(FixtureCase):
                                           self.project.wiki, candidate, False)
 
     def older(self):
-        self.assertEqual(self.write('Older source for the decision.'), 0)
-        job = json.loads(self.queue.read_text())
+        _, job = self.e8_candidate()
         job['ts'] = '2099-05-01T00:00:00Z'
         self.queue.write_text(json.dumps(job) + '\n')
         self.assertTrue((self.root / job['pendingPath']).exists())
         return job
+
+    def current_private_job(self):
+        digest = self.project.revision(self.source)['sha256']
+        jobs = []
+        for path in (self.queue.parent / '.handoff/v1/hold').glob('*/work'):
+            state = json.loads(path.read_bytes())
+            binding = state['binding']
+            if binding.get('purpose') != 'native-review' or state['phase'] != 'held' or not state.get('proof', {}).get('published'):
+                continue
+            raw = (path.parent / 'raw').read_bytes()
+            job = json.loads(raw)
+            self.assertEqual(job, binding['job'])
+            if any(r['sha256'] == digest for r in job['sourceRevisions']):
+                jobs.append(job)
+        self.assertEqual(len(jobs), 1, jobs)
+        return jobs[0]
+
+    def native_verify(self):
+        answer = {'verdict': 'pass', 'claims': [{'claim': 'Decision', 'supported': True,
+                  'quote': 'Newest source', 'sourcePath': 'docs/source.md'}], 'reasons': []}
+        with patch.object(workspace, 'selected', return_value=self.bound), patch.object(workspace, 'recheck'), \
+             patch.object(workspace, 'request_sync'), patch.object(engines, 'run_extractor',
+                                                                  return_value=(answer, None, 0)) as called:
+            result = verify.run(self.root, self.config, self.config['compile'])
+        return {'remaining': result['remaining'], 'calls': called.call_count}
+
+    def finish_after_downgrade(self, tag):
+        previous = self.target.read_bytes()
+        self.assertEqual(self.run_tag(tag), {'remaining': 0, 'calls': 0})
+        self.assertEqual(self.target.read_bytes(), previous)
+        self.assertEqual(self.native_verify(), {'remaining': 0, 'calls': 1})
 
     def run_tag(self, tag):
         repo = Path(__file__).resolve().parents[5]
@@ -82,14 +114,14 @@ class PendingHandoff(FixtureCase):
         self.assertEqual(child.returncode, 0, child.stderr)
         return json.loads(child.stdout)
 
-    def test_four_released_verifiers_publish_current_revision_despite_future_stale_timestamp(self):
+    def test_four_released_verifiers_leave_the_private_current_revision_for_native(self):
         for tag in ('v1.0.22', 'v1.0.23', 'v1.0.24', 'v1.1.0'):
             with self.subTest(tag=tag):
                 self.prepare(tag)
                 old = self.older()
                 self.assertEqual(self.write('Newest source for the decision.'), 0)
-                result = self.run_tag(tag)
-                self.assertEqual(result, {'remaining': 0, 'calls': 1})
+                self.assertEqual(self.current_private_job()['sourceRevisions'], [self.project.revision(self.source)])
+                self.finish_after_downgrade(tag)
                 self.assertIn(self.project.revision(self.source)['sha256'], self.target.read_text())
                 self.assertFalse((self.root / old['pendingPath']).exists())
                 verdicts = [json.loads(line) for line in self.queue.with_name('verify-log.jsonl').read_text().splitlines()]
@@ -115,8 +147,8 @@ class PendingHandoff(FixtureCase):
         self.assertEqual(list(self.target.parent.glob('.*.pending-*')), [self.root / old['pendingPath']])
         self.assertEqual(self.write('Newest source for the decision.'), 0)
         jobs = [j for j in map(json.loads, self.queue.read_text().splitlines()) if '_pendingCleanup' not in j]
-        self.assertEqual(len(jobs), 1)
-        self.assertEqual(jobs[0]['sourceRevisions'], [self.project.revision(self.source)])
+        self.assertEqual(jobs, [])
+        self.assertEqual(self.current_private_job()['sourceRevisions'], [self.project.revision(self.source)])
         self.assertFalse((self.root / old['pendingPath']).exists())
         self.assertEqual(len(self.audits()), 1)
 
@@ -130,10 +162,10 @@ class PendingHandoff(FixtureCase):
             changed[path] = page.encode() + b'\nOperator edit during handoff.'
             path.write_bytes(changed[path])
             return True
-        def failed_publish(src, dst):
+        def failed_publish(src, dst, *args, **kwargs):
             if Path(dst) == self.queue:
                 raise OSError('injected publication failure')
-            return replace(src, dst)
+            return replace(src, dst, *args, **kwargs)
         with patch.object(writer, 'write_pending_card', side_effect=edited_stage), \
              patch.object(os, 'replace', side_effect=failed_publish):
             self.assertNotEqual(self.write('Newest source.'), 0)
@@ -147,12 +179,11 @@ class PendingHandoff(FixtureCase):
 
     def test_recovered_source_can_return_to_its_first_content(self):
         self.prepare('return')
-        self.assertEqual(self.write('Older source for the decision.'), 0)
-        old = json.loads(self.queue.read_text())
+        old = self.older()
         self.recover(old)
         self.assertEqual(self.write('Newest source.'), 0)
         self.assertEqual(self.write('Older source for the decision.'), 0)
-        self.assertEqual(self.run_tag('v1.1.0'), {'calls': 1, 'remaining': 0})
+        self.finish_after_downgrade('v1.1.0')
         self.assertIn(self.project.revision(self.source)['sha256'], self.target.read_text())
 
     def recover(self, old):
@@ -181,8 +212,8 @@ class PendingHandoff(FixtureCase):
         self.assertEqual(path.read_bytes(), original)
         self.assertEqual(self.audits(), [])
         self.assertEqual(self.write('Older source for the decision.'), 0)
-        self.assertNotEqual(json.loads(self.queue.read_text())['pendingPath'], old['pendingPath'])
-        self.assertEqual(self.run_tag('v1.1.0'), {'calls': 1, 'remaining': 0})
+        self.assertNotEqual(self.current_private_job()['pendingPath'], old['pendingPath'])
+        self.finish_after_downgrade('v1.1.0')
         self.assertIn(self.project.revision(self.source)['sha256'], self.target.read_text())
         self.assertEqual(path.read_bytes(), original)
 
@@ -198,7 +229,7 @@ class PendingHandoff(FixtureCase):
         self.assertIn('pending_ownership_unproved', log.read_text())
         self.assertEqual(self.audits(), [])
         self.assertEqual(self.write('Older source for the decision.'), 0)
-        self.assertEqual(self.run_tag('v1.1.0'), {'calls': 1, 'remaining': 0})
+        self.finish_after_downgrade('v1.1.0')
         self.assertIn(self.project.revision(self.source)['sha256'], self.target.read_text())
         self.assertEqual(preserved.read_bytes(), edited)
 
@@ -210,10 +241,10 @@ class PendingHandoff(FixtureCase):
         self.prepare('unpublished')
         old = self.older()
         replace = os.replace
-        def interrupted(src, dst):
+        def interrupted(src, dst, *args, **kwargs):
             if Path(dst) == self.queue:
                 raise KeyboardInterrupt
-            return replace(src, dst)
+            return replace(src, dst, *args, **kwargs)
         with patch.object(os, 'replace', side_effect=interrupted), self.assertRaises(KeyboardInterrupt):
             self.write('Newest source.')
         self.queue.write_text('')  # The legacy consumer can drain/drop its job independently.
@@ -221,7 +252,7 @@ class PendingHandoff(FixtureCase):
         self.assertTrue((self.root / old['pendingPath']).exists())
         self.assertEqual(self.audits(), [])
 
-    def test_audit_retries_after_old_consumer_publishes_and_crash_precedes_unlink(self):
+    def test_audit_retries_after_old_consumer_waits_and_crash_precedes_unlink(self):
         self.prepare('failed-audit')
         old = self.older()
         retired = self.root / old['pendingPath']
@@ -229,14 +260,14 @@ class PendingHandoff(FixtureCase):
         ledger.mkdir()
         self.assertEqual(self.write('Newer source.'), 0)
         self.assertTrue(retired.exists())
-        self.assertTrue(self.resume())  # Live review is allowed while retirement is blocked.
+        self.assertTrue(self.resume())  # Private work remains discoverable during audit preflight.
+        # A legacy verifier preflights its audit even when the public queue is empty.
         ledger.rmdir()
-        self.assertEqual(self.run_tag('v1.1.0'), {'remaining': 0, 'calls': 1})
-        self.assertIn(self.project.revision(self.source)['sha256'], self.target.read_text())
+        self.assertEqual(self.run_tag('v1.1.0'), {'remaining': 0, 'calls': 0})
+        ledger.mkdir()
+        self.assertEqual(self.native_verify()['calls'], 0)
         self.assertTrue(retired.exists())
-        self.assertEqual(self.audits(), [])
-        ledger.mkdir(exist_ok=True)
-        self.assertFalse(self.resume())  # The emptied queue still owes the audit.
+        self.assertTrue(ledger.is_dir())
         ledger.rmdir()
         unlink = Path.unlink
         def crash_before_unlink(path, *args, **kwargs):
@@ -251,32 +282,87 @@ class PendingHandoff(FixtureCase):
         self.assertTrue(self.resume())
         self.assertEqual(len(self.audits()), 1)
         self.assertFalse(retired.exists())
+        self.assertEqual(self.native_verify(), {'remaining': 0, 'calls': 1})
+        self.assertIn(self.project.revision(self.source)['sha256'], self.target.read_text())
+
+    def e8_candidate(self):
+        repo = Path(__file__).resolve().parents[5]
+        bundle = archived_tag(repo, self.tmp, 'e8fdfdaa')
+        subprocess.run([sys.executable, '-B', str(repo / 'memvane/wiki/compile/tests/tagged_writer.py'),
+                        str(bundle), str(self.root), json.dumps(self.config), json.dumps(self.bound), 'single'],
+                       cwd=bundle, env={**os.environ, 'PYTHONPATH': str(bundle)}, capture_output=True, check=True)
+        return bundle, json.loads(self.queue.read_bytes())
+
+    def test_e8_retirement_needs_current_stale_evidence_and_keeps_its_original_audit_id(self):
+        self.prepare('e8-retirement')
+        bundle, old = self.e8_candidate()
+        repo = Path(__file__).resolve().parents[5]
+        script = repo / 'memvane/wiki/verify/tests/tagged_retirement.py'
+        expected = subprocess.check_output([sys.executable, '-B', str(script), str(self.root), str(self.queue),
+                                            str(self.project.wiki), json.dumps(old), json.dumps(self.config)],
+                                           cwd=bundle, env={**os.environ, 'PYTHONPATH': str(bundle)}, text=True).strip()
+        source = self.queue.with_name('.pending-ownership.json')
+        original = source.read_bytes()
+        candidate = self.root / old['pendingPath']
+        before = candidate.read_bytes()
+        self.queue.write_bytes(b'')
+        self.resume()
+        self.assertEqual(candidate.read_bytes(), before)
+        self.assertEqual(self.audits(), [])
+        self.source.write_text('The source changed after handoff.')
+        unlink = Path.unlink
+        def stop_after_audit(path, *args, **kwargs):
+            if path == candidate:
+                raise KeyboardInterrupt
+            return unlink(path, *args, **kwargs)
+        with patch.object(Path, 'unlink', stop_after_audit), self.assertRaises(KeyboardInterrupt):
+            self.resume()
+        self.assertEqual(candidate.read_bytes(), before)
+        self.assertEqual(len(self.audits()), 1)
+        self.assertTrue(self.resume())
+        self.assertTrue(self.resume())
+        self.assertFalse(candidate.exists())
+        row, = self.audits()
+        self.assertEqual(row['reasons'][-1], expected)
+        self.assertEqual(source.read_bytes(), original)
 
     def test_malformed_retirement_cannot_authorize_cleanup(self):
         self.prepare('corrupt')
-        old = self.older()
+        _, old = self.e8_candidate()
         state = self.queue.with_name('.pending-ownership.json')
-        valid = json.loads(state.read_text())
+        valid = json.loads(state.read_bytes())
+        candidate = self.root / old['pendingPath']
+        before = candidate.read_bytes()
+        self.assertEqual(valid['owners'][old['pendingPath']], hashlib.sha256(before).hexdigest())
         self.queue.write_text('')
         for plan in ({}, {'job': 1}, {'job': old, 'sha256': [], 'swap': '../wrong'}):
-            state.write_text(json.dumps({**valid, 'retirements': {old['pendingPath']: plan}}))
-            self.assertFalse(self.resume())
-            self.assertTrue((self.root / old['pendingPath']).exists())
+            raw = json.dumps({**valid, 'retirements': {old['pendingPath']: plan}}).encode()
+            state.write_bytes(raw)
+            self.assertTrue(self.resume())
+            self.assertEqual(state.read_bytes(), raw)
+            self.assertEqual(candidate.read_bytes(), before)
             self.assertEqual(self.audits(), [])
+
+        self.assertEqual(self.write('New independent revision.'), 0)
+        fresh = self.current_private_job()
+        self.assertNotEqual(fresh['pendingPath'], old['pendingPath'])
+        self.assertTrue((self.root / fresh['pendingPath']).exists())
+        self.assertEqual((state.read_bytes(), candidate.read_bytes()), (raw, before))
+        self.assertEqual(self.audits(), [])
 
     def test_crash_after_queue_rename_leaves_the_audit_recoverable(self):
         self.prepare('published')
         old = self.older()
         replace = os.replace
-        def interrupted(src, dst):
-            replace(src, dst)
+        def interrupted(src, dst, *args, **kwargs):
+            replace(src, dst, *args, **kwargs)
             if Path(dst) == self.queue:
                 raise KeyboardInterrupt
         with patch.object(os, 'replace', side_effect=interrupted), self.assertRaises(KeyboardInterrupt):
             self.write('Newest source.')
         self.assertEqual(self.audits(), [])
         self.assertTrue((self.root / old['pendingPath']).exists())
-        self.assertEqual(self.run_tag('v1.1.0'), {'remaining': 0, 'calls': 1})
+        self.finish_after_downgrade('v1.1.0')
         self.assertTrue(self.resume())
         self.assertEqual(len(self.audits()), 1)
         self.assertFalse((self.root / old['pendingPath']).exists())
@@ -286,12 +372,12 @@ class PendingHandoff(FixtureCase):
         self.assertEqual(self.write('Newest source.'), 0)
         edited = {}
         for _ in range(2):
-            job = json.loads(self.queue.read_text())
+            job = self.current_private_job()
             path = self.root / job['pendingPath']
             edited[path] = path.read_bytes() + b'\nOperator note.'
             path.write_bytes(edited[path])
             self.assertEqual(self.write('Newest source.'), 0)
-        self.assertEqual(self.run_tag('v1.1.0'), {'remaining': 0, 'calls': 1})
+        self.finish_after_downgrade('v1.1.0')
         self.assertIn(self.project.revision(self.source)['sha256'], self.target.read_text())
         self.assertEqual({path: path.read_bytes() for path in edited}, edited)
 
@@ -315,9 +401,9 @@ class PendingHandoff(FixtureCase):
         self.assertEqual(json.loads(raw[1]), marker)
         reviewable = [job for job in map(json.loads, raw) if job.get('targetPath') == old['targetPath']
                       and '_pendingCleanup' not in job]
-        self.assertEqual(len(reviewable), 1)
-        self.assertNotEqual(reviewable[0]['pendingPath'], old['pendingPath'])
-        self.run_tag('v1.1.0')
+        self.assertEqual(reviewable, [])
+        self.assertNotEqual(self.current_private_job()['pendingPath'], old['pendingPath'])
+        self.finish_after_downgrade('v1.1.0')
         self.assertFalse((self.root / old['pendingPath']).exists())
         self.assertIn(self.project.revision(self.source)['sha256'], self.target.read_text())
 
@@ -345,4 +431,5 @@ class PendingHandoff(FixtureCase):
         claimed.unlink()
         self.assertEqual(self.write('Newest source for the decision.'), 0)
         live = [j for j in map(json.loads, self.queue.read_text().splitlines()) if '_pendingCleanup' not in j]
-        self.assertEqual([j['sourceRevisions'] for j in live], [[self.project.revision(self.source)]])
+        self.assertEqual(live, [])
+        self.assertEqual(self.current_private_job()['sourceRevisions'], [self.project.revision(self.source)])

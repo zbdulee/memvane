@@ -1712,17 +1712,7 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/wiki/verify/batch_handoff.py": {
-      "context": "wiki/verify",
-      "layer": "application",
-      "pinned": false
-    },
     "memvane/wiki/verify/candidate_stage.py": {
-      "context": "wiki/verify",
-      "layer": "application",
-      "pinned": false
-    },
-    "memvane/wiki/verify/handoff_work.py": {
       "context": "wiki/verify",
       "layer": "application",
       "pinned": false
@@ -1732,7 +1722,13 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/verify/queue_batch_prepare.py": {"context": "wiki/verify", "layer": "application", "pinned": false},
     "memvane/wiki/verify/promotion.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/queue_publication.py": {
       "context": "wiki/verify",
       "layer": "application",
       "pinned": false
@@ -1833,6 +1829,31 @@
       "pinned": false
     },
     "memvane/wiki/verify/upgrade_queue.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/batch_handoff.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/first_card.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/native_review.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/handoff_work.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/legacy_handoff.py": {
       "context": "wiki/verify",
       "layer": "application",
       "pinned": false

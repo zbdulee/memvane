@@ -189,4 +189,5 @@ def _idle_locked(project: Path, source: Path, verify: Path, bound):
     # An older verifier may drain the jobs while a 1.1.1 deletion audit is still retryable.
     if not verification.prepare_queue(project, verify, bound):
         return False
-    return not (_queue_busy(source, receipt_writer=write_discard_receipt) | _queue_busy(verify))
+    return not (_queue_busy(source, receipt_writer=write_discard_receipt) | _queue_busy(verify) |
+                verification.native_review_pending(verify))

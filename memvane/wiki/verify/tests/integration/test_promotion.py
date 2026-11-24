@@ -157,7 +157,7 @@ class Ordinary(PendingCase):
 
     def test_first_pass_keeps_an_intervening_atomic_save(self):
         old = self.setup().encode()
-        job = self.job()
+        job = self.job(pendingPath=None, expectedTargetHash=None)
         engine = self.fake()
         exchange = promotion.rename_exchange
         def change(*args):
@@ -217,6 +217,47 @@ class Ordinary(PendingCase):
             self.assertEqual(self.verify_one(job), (False, True))
         self.assertEqual(self.card.read_bytes(), text.encode() + self.memo)
         self.assertFalse(any(row.get('action') == 'verify-deleted' for row in self.ledger('manifest.jsonl')))
+
+    def test_completed_negative_replays_without_touching_a_recreated_live(self):
+        old = self.setup().encode()
+        job = self.job()
+        engine = self.fake(FAIL)
+        self.assertEqual(self.verify_one(job), (True, False))
+        self.assertFalse(self.card.exists())
+        self.assertTrue(promotion.has_intent(self.root, job))
+        saved = self.root / self.records()['archivePath']
+        self.assertEqual(saved.read_bytes(), old)
+        self.card.write_bytes(b'manually recreated after machine delete')
+        for _ in range(2):
+            self.assertEqual(self.verify_one(job), (True, False))
+        self.assertEqual(len(engine.calls), 1)
+        self.assertEqual(self.card.read_bytes(), b'manually recreated after machine delete')
+        self.assertEqual(sum(row.get('action') == 'verify-deleted' for row in self.ledger('generated-manifest.jsonl')), 1)
+        self.assertEqual(len(self.ledger('verify-deleted.jsonl')), 1)
+
+    def test_negative_replays_from_the_recorded_manifest_after_a_lost_completion_marker(self):
+        self.setup()
+        job = self.job()
+        engine = self.fake(FAIL)
+        with patch.object(promotion, 'finish_retirement', side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            self.verify_one(job)
+        for _ in range(2):
+            self.assertEqual(self.verify_one(job), (True, False))
+        self.assertEqual(len(engine.calls), 1)
+        self.assertEqual(len(self.ledger('generated-manifest.jsonl')), 1)
+
+    def test_unconfirmed_negative_preserves_displaced_inode_and_stays_queued(self):
+        old = self.setup().encode()
+        job = self.job()
+        engine = self.fake(FAIL)
+        with patch.object(worker, 'record_machine_delete', side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            self.verify_one(job)
+        self.assertTrue(promotion.has_intent(self.root, job))
+        self.assertFalse(self.card.exists())
+        for _ in range(2):
+            self.assertEqual(self.verify_one(job), (False, True))
+        self.assertEqual(len(engine.calls), 1)
+        self.assertEqual((self.root / self.records()['archivePath']).read_bytes(), old)
 
 
 if __name__ == '__main__':

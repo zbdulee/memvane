@@ -18,6 +18,12 @@ class UpgradeQueue(FixtureCase):
     write = handoff.PendingHandoff.write
     run_tag = handoff.PendingHandoff.run_tag
 
+    current_private_job = handoff.PendingHandoff.current_private_job
+    native_verify = handoff.PendingHandoff.native_verify
+    finish_after_downgrade = handoff.PendingHandoff.finish_after_downgrade
+    older = handoff.PendingHandoff.older
+    e8_candidate = handoff.PendingHandoff.e8_candidate
+
     def seed(self, bundle):
         repo = Path(__file__).resolve().parents[5]
         child = repo / 'memvane/wiki/compile/tests/tagged_writer.py'
@@ -56,11 +62,11 @@ class UpgradeQueue(FixtureCase):
                 old_bytes = old_path.read_bytes()  # The legacy writer left no full-image ownership proof.
                 self.wake()
                 self.wake()  # repeated wakes keep the same work available
-                self.assertEqual([json.loads(row) for row in self.queue.read_text().splitlines()], [current])
+                self.assertEqual(self.queue.read_bytes(), b'')
+                self.assertEqual(self.current_private_job(), current)
                 self.assertEqual(old_path.read_bytes(), old_bytes)
                 self.assertIn('pending_ownership_unproved', self.queue.with_name('verify-log.jsonl').read_text())
-                result = self.run_tag(tag)
-                self.assertEqual(result, {'remaining': 0, 'calls': 1})
+                self.finish_after_downgrade(tag)
                 self.assertIn(current['sourceRevisions'][0]['sha256'], self.target.read_text())
                 self.assertNotIn(old['sourceRevisions'][0]['sha256'], self.target.read_text())
 
@@ -75,23 +81,24 @@ class UpgradeQueue(FixtureCase):
         workspace.requeue_lines(self.queue, original.decode().splitlines())
         claim.unlink()
         self.wake()
-        self.assertEqual(self.run_tag('v1.1.0'), {'remaining': 0, 'calls': 1})
+        self.finish_after_downgrade('v1.1.0')
         self.assertIn(current['sourceRevisions'][0]['sha256'], self.target.read_text())
 
     def test_wake_retries_the_last_audit_after_an_old_verifier_drains_the_queue(self):
         self.prepare('audit-after-drain')
-        self.assertEqual(self.write('Older source.'), 0)
-        previous = self.root / json.loads(self.queue.read_text())['pendingPath']
+        previous = self.root / self.older()['pendingPath']
         ledger = self.queue.with_name('verify-deleted.jsonl')
         ledger.mkdir()
         self.assertEqual(self.write('Newest source.'), 0)
         # The previous verifier must have a writable audit ledger to start.
         ledger.rmdir()
-        self.assertEqual(self.run_tag('v1.1.0'), {'remaining': 0, 'calls': 1})
+        self.assertEqual(self.run_tag('v1.1.0'), {'remaining': 0, 'calls': 0})
         ledger.mkdir()
-        self.assertEqual(self.wake()['state'], 'deferred')
+        self.assertEqual(self.native_verify()['calls'], 0)
+        self.assertEqual(self.wake()['state'], 'pending')
         self.assertTrue(previous.exists())
         ledger.rmdir()
+        self.assertEqual(self.native_verify(), {'remaining': 0, 'calls': 1})
         self.assertEqual(self.wake()['state'], 'drained')
         self.assertFalse(previous.exists())
         self.assertEqual(len(ledger.read_text().splitlines()), 1)

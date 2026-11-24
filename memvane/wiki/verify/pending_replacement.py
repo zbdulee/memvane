@@ -101,6 +101,15 @@ def pending_source_review(root, config, revision, *, reuse=True):
                                              for item in job_revisions(job))
                     if reuse and isinstance(job.get('pendingPath'), str):
                         rows.append(job)
+            from memvane.wiki.verify import native_review
+            for work in native_review.waiting(queue):
+                job = work.state['binding']['job']
+                if native_review._alive(work.state['proof'].get('owner')):
+                    claimed_source |= any(item['path'] == revision['path'] and
+                                          item['collection'] == revision['collection']
+                                          for item in job_revisions(job))
+                if reuse and isinstance(job.get('pendingPath'), str):
+                    rows.append(job)
             cleanup = {job['pendingPath'] for job in rows if '_pendingCleanup' in job}
             card_budget = 6 * MAX_BODY
             for job in reversed(rows):

@@ -40,6 +40,9 @@ def _folder(root, job, create=False):
     binding = {key: job[key] for key in ('targetPath', 'pendingPath', 'sourceHash', 'expectedTargetHash',
                'sourceRevisions', 'sourceFingerprints', 'selectedRoute', 'ts', 'visibleVerdict') if key in job}
     identity = hashlib.sha256(canonical_json_bytes(binding)).hexdigest()
+    if create:
+        fsync_dir(root)
+        fsync_dir(base.parent)
     path = base
     for part in ('retired-wiki', '.promotions', identity):
         path = path / part
@@ -81,9 +84,9 @@ def _intent(root, folder, job):
     if not isinstance(data, dict) or set(data) != {'live', 'pending', 'base', 'stamp'}:
         raise ValueError('invalid promotion binding')
     stamp = data['stamp']
-    pending_path = job.get('pendingPath', (folder / 'review.md').relative_to(root).as_posix())
+    pending_path = job.get('pendingPath') or (folder / 'review.md').relative_to(root).as_posix()
     if (data['live'] != job['targetPath'] or data['pending'] != pending_path
-            or ('expectedTargetHash' in job and data['base'] != job['expectedTargetHash']) or not isinstance(stamp, dict)
+            or (job.get('pendingPath') is not None and data['base'] != job['expectedTargetHash']) or not isinstance(stamp, dict)
             or set(stamp) != {'dev', 'ino', 'sha256'} or type(stamp['dev']) is not int
             or type(stamp['ino']) is not int or not isinstance(stamp['sha256'], str)
             or not re.fullmatch('[a-f0-9]{64}', stamp['sha256'])
@@ -98,7 +101,12 @@ def has_intent(root, job):
         _intent(root, _folder(root, job), job)
         return True
     except (KeyError, TypeError, OSError, RuntimeError, ValueError):
-        return False
+        if job.get('pendingPath') is not None:
+            return False
+        try:
+            return retirement_status(root, job) is not None
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
 
 
 def _move(source, dest, *, exchange=False):
@@ -183,7 +191,7 @@ def publish(root, job, pending, live, verified, base):
     """Called under the card/metadata locks after verifying the stamp and archiving the base."""
     folder = _folder(root, job, create=True)
     expected = hashlib.sha256(base).hexdigest()
-    if job.get('expectedTargetHash', expected) != expected:
+    if job.get('pendingPath') is not None and job.get('expectedTargetHash') != expected:
         return 'stale'
     snapshot = folder / 'base'
     if not os.path.lexists(snapshot):
@@ -285,7 +293,7 @@ def resume_stamp(root, job, live, fresh):
     return publish(root, job, review, live, review.read_bytes().decode(), (folder / 'base').read_bytes())
 
 
-def retire(root, job, live, expected, verdict):
+def retire(root, job, live, expected, verdict, manifest_row):
     """Detach the visible file without unlinking an editor's inode or a later generation."""
     folder = _folder(root, dict(job, visibleVerdict='delete-' + verdict), create=True)
     slot = folder / 'displaced.md'
@@ -295,7 +303,7 @@ def retire(root, job, live, expected, verdict):
         node = _snapshot(live)
         if node['sha256'] != hashlib.sha256(raw).hexdigest():
             return False
-        _record(intent_file, {'path': job['targetPath'], 'reviewed': node})
+        _record(intent_file, {'path': job['targetPath'], 'reviewed': node, 'manifest': manifest_row})
     intent = _record(intent_file)
     if intent['path'] != live.relative_to(root).as_posix():
         return False
@@ -317,3 +325,38 @@ def retire(root, job, live, expected, verdict):
     _record(folder / 'archive.json', {'path': intent['path'], 'archivePath': slot.relative_to(root).as_posix(),
                                       'displaced': captured, 'verdict': verdict})
     return not os.path.lexists(live)
+
+
+def retirement_status(root, job, *, manifest_has=None):
+    """An in-flight visible retirement cannot be settled from an absent ordinary card."""
+    for verdict in ('fail', 'inconclusive'):
+        try:
+            folder = _folder(root, dict(job, visibleVerdict='delete-' + verdict))
+            intent = _record(folder / 'retire')
+        except FileNotFoundError:
+            continue
+        if intent['path'] != job['targetPath']:
+            return 'retry'
+        if not os.path.lexists(folder / 'archive.json'):
+            return 'retry'
+        archived = _record(folder / 'archive.json')
+        node = (folder / 'displaced.md').lstat()
+        if (archived['path'] != intent['path'] or archived['verdict'] != verdict
+                or archived['archivePath'] != (folder / 'displaced.md').relative_to(root).as_posix()
+                or intent['reviewed'] != archived['displaced']
+                or not stat.S_ISREG(node.st_mode) or (node.st_dev, node.st_ino) !=
+                (archived['displaced']['dev'], archived['displaced']['ino'])):
+            return 'retry'
+        if os.path.lexists(folder / 'finished'):
+            return 'retired' if _record(folder / 'finished') == archived else 'retry'
+        row = intent.get('manifest')
+        if (manifest_has and isinstance(row, dict) and row.get('targetPath') == intent['path']
+                and row.get('verdict') == verdict and manifest_has(row)):
+            return verdict  # Durable machine-delete effect; re-offer the interrupted sync.
+        return 'retry'
+    return None
+
+
+def finish_retirement(root, job, verdict):
+    folder = _folder(root, dict(job, visibleVerdict='delete-' + verdict))
+    _record(folder / 'finished', _record(folder / 'archive.json'))
