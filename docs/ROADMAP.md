@@ -310,6 +310,7 @@ L2 후속 ── L3
 | 도메인 `domain/` 층 실체화 | L | 없음 | 패치 릴리스 간격이 1주 이상으로 안정된 뒤. 도메인 단위로 나눈다 |
 | 원문 소실 보류(`held_missing`)와 삭제 receipt | L | 확인 | 삭제 근거를 store에서 찾아야 하는 사례가 생길 때 |
 | 학습 중지·재개의 end-to-end 증거, 학습 자식 부하 측정 | M | 없음 | 1.1-3과 함께 |
+| 코드 구조 신호를 쓰는 recall([설계](design-code-structure-recall.md)) | L | 없음 | 카나리와 service-engineering에서 편집 recall이 놓친 직접 import 이웃의 정답 카드를 확인하고, 게시된 출처 또는 명시적 문서 인용으로 연결할 수 있을 때 |
 
 ## 2.0 후보
 
