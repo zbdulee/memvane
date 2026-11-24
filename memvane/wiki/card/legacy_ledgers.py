@@ -8,7 +8,7 @@ from pathlib import Path
 import stat
 
 from memvane.settings.api import compile_dir
-from memvane.wiki.card import types as cards
+from memvane.wiki.card import manifest_scan, types as cards
 
 MANIFEST = 'generated-manifest.jsonl'
 LIMIT = 8 * 1024 ** 2
@@ -113,22 +113,52 @@ def read_public_events(path):
     return event_rows(path, _node(path))
 
 
+def _manifest_projection(row):
+    target = row.get('targetPath')
+    if (not isinstance(target, str) or not target or
+            any(row.get(key) is not None and not isinstance(row[key], str)
+                for key in ('sourceHash', 'canonicalKey', 'targetResolution', 'action', 'status')) or
+            any(not isinstance(row.get(key, []), list) for key in ('sources', 'sourceRevisions')) or
+            row.get('action') not in ('created', 'updated', 'verify-deleted')):
+        raise ValueError('unknown_legacy_manifest')
+    return _identity(row), tuple(sorted(_sources(row))), _special(row)
+
+
+def _manifest_batch(path, node, start):
+    rows = set()
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW), 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns) != node:
+            raise OSError('legacy_generation_changed')
+        stream.seek(start)
+        offset = start
+        end = min(start + LIMIT, node[2])
+        for _ in range(LINES):
+            if offset == end:
+                break
+            raw = stream.readline(min(SLAB, end - offset))
+            if not raw.endswith(b'\n'):
+                if stream.tell() == end < node[2] and len(raw) < SLAB:
+                    break  # Retry the whole physical row at the start of the next pass.
+                raise ValueError('incomplete_or_oversized_legacy_row')
+            if raw.strip():
+                row = json.loads(raw.decode('utf8'), object_pairs_hook=_unique, parse_constant=_invalid_constant)
+                if not isinstance(row, dict):
+                    raise ValueError('unknown_legacy_row')
+                rows.add(_manifest_projection(row))
+            offset = stream.tell()
+    if _node(path) != node:
+        raise OSError('legacy_generation_changed')
+    return offset, rows
+
+
 @lru_cache(maxsize=4)
 def _inspect(folder, manifest_node, event_node):
-    if sum(node[2] for node in (manifest_node, event_node) if node) > LIMIT:
-        raise ValueError('legacy_ledger_limit')
     identities, sources, mixed = [], [], set()
-    for index, row in enumerate(_rows(folder / MANIFEST, manifest_node)):
-        target = row.get('targetPath')
-        if (not isinstance(target, str) or not target or
-                any(row.get(key) is not None and not isinstance(row[key], str)
-                    for key in ('sourceHash', 'canonicalKey', 'targetResolution', 'action', 'status')) or
-                any(not isinstance(row.get(key, []), list) for key in ('sources', 'sourceRevisions')) or
-                row.get('action') not in ('created', 'updated', 'verify-deleted')):
-            raise ValueError('unknown_legacy_manifest')
-        identities.append(_identity(row))
-        sources.append(_sources(row))
-        if _special(row):
+    for index, (identity, refs, special) in enumerate(manifest_scan.inspect(folder / MANIFEST, manifest_node, _manifest_batch)):
+        identities.append(tuple(identity))
+        sources.append(set(refs))
+        if special:
             mixed.add(index)
     ledger = event_rows(folder / cards.SOURCE_REFRESH_PENDING, event_node)
     mixed_ids = {row.get('eventId', row.get('pendingEventId')) for row in ledger if _special(row)}
