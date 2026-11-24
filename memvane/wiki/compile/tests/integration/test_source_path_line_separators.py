@@ -93,7 +93,7 @@ class SourcePathLineSeparators(FixtureCase):
         self.assertEqual(ledger.read_bytes(), before)
         self.assertFalse(any(p.exists() for p in (source_queue, self.queue, manifest, self.target)))
         self.assertEqual(self.edit(self.source), 1)
-        claim = workspace.claim_queue(source_queue)
+        claim = workspace.claim_queue(source_queue, private=True)
         _, source_job = workspace.read_queue(claim)[0]
         self.assertEqual(source_job['source']['path'], 'docs/line-name.md')
         self.assertEqual(self.write(self.source.read_text()), 0)
@@ -108,7 +108,7 @@ class SourcePathLineSeparators(FixtureCase):
         current_event = card.latest_unresolved_pending(self.root, source_job['source']['path'])
         self.assertTrue(card.resolve_pending_refresh(self.root, current_event, written, [written],
                                                     source_job['pendingRefresh']['eventId']))
-        claim.unlink()
+        workspace.read_queue(claim).finish(source_queue, claim, [])
         self.assertFalse(source_queue.exists() and source_queue.read_bytes())
         self.assertFalse(self.queue.exists() and self.queue.read_bytes())
         self.assertEqual(card.unresolved_pending_refreshes_strict(self.root), [unresolved])

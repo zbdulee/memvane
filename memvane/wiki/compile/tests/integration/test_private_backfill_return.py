@@ -31,7 +31,7 @@ class PrivateBackfillReturn(FixtureCase):
             tree = self.release_tree(tag, commit)
             for phase in ('before', 'after'):
                 with self.subTest(tag=tag, phase=phase):
-                    queue, job, cohort, key, bound = self.dispatch_frozen_job(tag + phase)
+                    queue, job, cohort, key, bound = self.dispatch_frozen_job(tree, tag + phase)
                     bound[0].update(state='candidate', generation='g-' + 'd' * 32)
                     self.assertEqual(self.native(queue, bound, phase), [1, ['First finding', 'Second finding']])
                     self.assertEqual(queue.read_bytes(), b'')

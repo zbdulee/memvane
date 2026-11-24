@@ -76,7 +76,7 @@ def process_refresh(queue, bound, config, invalid):
 def main():
     request = json.load(sys.stdin)
     phase = request['phase']
-    assert phase in ('before-unlink', 'after-unlink', 'consume', 'refresh')
+    assert phase in ('before-unlink', 'after-unlink', 'consume', 'refresh', 'record-edit', 'dispatch')
     home = Path.home().resolve()
     assert home == Path(request['home']).resolve()
     account = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
@@ -85,7 +85,23 @@ def main():
     assert queue.resolve().is_relative_to(home)
     bound = request['bound']
     with patch.object(workspace, 'selected', return_value=bound), patch.object(workspace, 'recheck'):
-        if phase == 'refresh':
+        if phase == 'record-edit':
+            from memvane.wiki.card import api as card
+            result = card.record_pending_refresh(Path(bound[0]['projectRoot']), 'one.md', 'codex')
+        elif phase == 'dispatch':
+            from memvane.settings import api as settings_api
+            decision = bound[0]
+            seen = request['snapshot']
+            intake.seed_source_snapshot(decision, seen, generation='g1')
+            grant = intake.record_grant(decision, 'sync', engine='codex')
+            assert intake.activate_grant(decision, 'sync', grant)
+            current = {'config': request['config'], 'projectRoot': decision['projectRoot']}
+            with patch.object(settings_api, 'find_project_config', return_value=current), \
+                 patch.object(settings_api, 'load_project_config', return_value=request['config']), \
+                 patch.object(workspace, 'request_compile'):
+                result = intake.drain_after_sync(decision, intake.observe_grants(decision),
+                                                 recheck=lambda: None, view_generation='g1', raw_snapshot=seen)
+        elif phase == 'refresh':
             result = process_refresh(queue, bound, request['config'], request.get('invalid', False))
         else:
             claim = workspace.claim_queue(queue, receipt_writer=intake.write_discard_receipt)

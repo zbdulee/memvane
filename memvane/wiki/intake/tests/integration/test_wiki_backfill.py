@@ -61,7 +61,7 @@ class BackfillChecks(FixtureCase):
         return backfill.dispatch(self.decision, row, self.snapshot, self.config, recheck=lambda: None)
 
     def jobs(self):
-        path = self.project / '.memvane/compile/source-queue.jsonl'
+        path = selected.safe_queue_path(self.project, '.memvane/compile/source-queue.jsonl', native=True)
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def settle(self, job):
@@ -221,6 +221,7 @@ class BackfillChecks(FixtureCase):
             job.pop('initialBackfill')
         job['_requeue_count'] = workspace_types.MAX_REQUEUE_COUNT
         queue = self.project / '.memvane/compile/source-queue.jsonl'
+        selected.safe_queue_path(self.project, '.memvane/compile/source-queue.jsonl', native=True).write_bytes(b'')
         queue.write_text('')
         orphan = queue.with_name(queue.name + '.claimed.99999999.dead')
         orphan.write_text(json.dumps(job) + '\n')

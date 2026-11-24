@@ -63,7 +63,9 @@ class SourceEnqueue(FixtureCase):
                      'updated': ['b.md', 'a.md'], 'deleted': ['gone.md']},
             'src': {'root': str(self.project.root / 'src'), 'created': ['s.md'], 'updated': [], 'deleted': []},
             'wiki': {'root': str(self.project.root / 'wiki'), 'created': ['w.md'], 'updated': [], 'deleted': []}}
-        self.queue = self.project.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+    @property
+    def queue(self):
+        return workspace.safe_queue_path(self.project.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
 
     def run_enqueue(self, **kwargs):
         return enqueue.enqueue_changed_sources(str(self.project.root), self.config,

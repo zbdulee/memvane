@@ -21,8 +21,11 @@ class PosttoolEnqueue(FixtureCase):
         selected = patch.object(workspace, 'selected', return_value=None)
         selected.start()
         self.addCleanup(selected.stop)
-        self.queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
-        self.pending = self.root / workspace.rel(card_types.SOURCE_REFRESH_PENDING)
+        self.public_queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+        self.public_pending = self.root / workspace.rel(card_types.SOURCE_REFRESH_PENDING)
+        self.queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
+        self.pending = self.public_pending.parent / '.handoff' / 'v1' / 'refresh' / 'events.jsonl'
+
 
     def run_edit(self, path, **extra):
         payload = {'hook_event_name': 'PostToolUse', 'cwd': str(self.root),
@@ -37,11 +40,12 @@ class PosttoolEnqueue(FixtureCase):
         paths = ['docs/a' + sep + '.md' for sep in ('\x85', '\u2028', '\u2029')]
         jobs = [{'source': {'kind': 'file', 'collection': self.project.raw_name, 'path': path}}
                 for path in [*paths, 'docs/source.md']]
-        intake.append_source_jobs(self.queue, jobs[:-1])
+        intake.append_source_jobs(self.public_queue, jobs[:-1])
         self.assertEqual(self.rows(self.queue), [])
         candidates = [(self.project.raw_name, job['source']['path'], job) for job in jobs]
-        enqueue._append_unqueued(self.queue, candidates, 1)
+        enqueue._append_unqueued(self.public_queue, candidates, 1)
         self.assertEqual([r['source']['path'] for r in self.rows(self.queue)], ['docs/source.md'])
+        self.assertEqual(self.rows(self.public_queue), [])
 
     def test_patch_and_edit_array_keep_each_original_path_until_admission(self):
         normal = self.project.write_note('docs/accepted.md', 'body\u2028only\n')
@@ -71,6 +75,8 @@ class PosttoolEnqueue(FixtureCase):
 
     def test_source_edit_records_pending_refresh_before_its_source_queue_job(self):
         self.assertEqual(self.run_edit(self.source), {'queued': 1, 'reason': 'queued'})
+        self.assertFalse(self.public_queue.exists())
+        self.assertFalse(self.public_pending.exists())
         pending, jobs = self.rows(self.pending), self.rows(self.queue)
         self.assertEqual(len(pending), 1)
         self.assertEqual((pending[0]['sourcePath'], pending[0]['state'], pending[0]['engine']),

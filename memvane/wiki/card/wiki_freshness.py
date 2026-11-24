@@ -18,7 +18,7 @@ from pathlib import Path
 
 from memvane.settings.api import compile_dir, ledger
 from memvane.wiki.card.types import SOURCE_REFRESH_PENDING
-from memvane.wiki.card import legacy_ledgers, yaml_scalars
+from memvane.wiki.card import legacy_ledgers, refresh_lanes, yaml_scalars
 
 from memvane.wiki.card.types import FRESH, STALE, UNKNOWN
 PENDING_REFRESH = "pending_refresh"
@@ -138,6 +138,8 @@ def _read_events_unlocked(path: Path, strict: bool = False) -> list[dict] | None
 
 
 def _append_event_unlocked(path: Path, event: dict, *, source=None) -> bool:
+    if path.name != SOURCE_REFRESH_PENDING:
+        return refresh_lanes.append_private(path, event)
     if not legacy_ledgers.writable(path.parent, append_for={'sources': [{'path': source}]} if source else None):
         return False
     try:
@@ -157,8 +159,8 @@ def record_pending_refresh(root: Path, source_path: str, engine: str) -> dict | 
     if incompatible_source(source_path, report=True):
         return None
     source = _safe_source_path(source_path)
-    path = _pending_path(root)
-    if source is None or path is None:
+    public = _pending_path(root)
+    if source is None or public is None:
         return None
     event = {
         "eventId": uuid.uuid4().hex,
@@ -168,52 +170,57 @@ def record_pending_refresh(root: Path, source_path: str, engine: str) -> dict | 
         "engine": engine if isinstance(engine, str) and engine.strip() else "unknown",
     }
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with _pending_lock_path(path).open("a", encoding="utf-8") as lock:
+        path = refresh_lanes.private_path(public, create=True)
+        with _pending_lock_path(public).open("a", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            if not _append_event_unlocked(path, event, source=source):
+            if not legacy_ledgers.writable(public.parent, append_for={'sources': [{'path': source}]}) or not _append_event_unlocked(path, event):
                 return None
-    except OSError:
+    except (OSError, ValueError):
         return None
-    compact_pending_refreshes(root)
+    _compact(path, public, False)
     return event
 
 
 def read_pending_refreshes(root: Path) -> list[dict]:
-    path = _pending_path(root)
-    if path is None:
+    try:
+        return [row for path in refresh_lanes.paths(_pending_path(root))
+                for row in _read_events_unlocked(path) or []]
+    except (OSError, ValueError):
         return []
-    rows = _read_events_unlocked(path)
-    return rows if rows is not None else []
+
+
+def _unresolved(root, strict, *, receipt=None):
+    result = []
+    ids = set()
+    for path in refresh_lanes.paths(_pending_path(root)):
+        rows = _read_events_unlocked(path, strict=strict)
+        if rows is None:
+            return None
+        latest = _ordered_latest_strict(rows) if strict else _ordered_latest(rows)
+        if latest is None:
+            return None
+        lane_ids = {row['eventId'] for row in rows if row['state'] == PENDING_REFRESH}
+        if ids.intersection(lane_ids):
+            return None
+        ids.update(lane_ids)
+        if receipt is None or any((row.get('eventId'), row.get('sourcePath')) == receipt for row in rows):
+            result.extend(pending for _, pending, resolved in latest.values() if resolved is None)
+    return result
 
 
 def unresolved_pending_refreshes(root: Path) -> list[dict]:
-    """Return the latest unresolved pending event for each source."""
-    latest = _ordered_latest(read_pending_refreshes(root))
-    return [pending for _index, pending, resolved in latest.values() if resolved is None]
+    """Each ledger owns its latest unresolved event for a source."""
+    try:
+        return _unresolved(root, False) or []
+    except (OSError, ValueError, RuntimeError):
+        return []
 
 
 def unresolved_pending_refreshes_strict(root: Path) -> list[dict] | None:
-    """Return unresolved events, or ``None`` when ledger state is unknowable.
-
-    Absent and empty ledgers are known-empty. Unsafe ledger resolution,
-    unreadable bytes, malformed JSON, duplicate keys, invalid closed-schema
-    events, and invalid timestamps are unknown so a recall caller can fail
-    closed without changing the permissive lifecycle recovery API.
-    """
     try:
-        path = _pending_path(root)
-        if path is None:
-            return None
-        rows = _read_events_unlocked(path, strict=True)
-    except (OSError, UnicodeError, RuntimeError):
+        return _unresolved(root, True)
+    except (OSError, ValueError, RuntimeError):
         return None
-    if rows is None:
-        return None
-    latest = _ordered_latest_strict(rows)
-    if latest is None:
-        return None
-    return [pending for _index, pending, resolved in latest.values() if resolved is None]
 
 
 def _ordered_latest(rows: list[dict]) -> dict[str, tuple[int, dict, tuple[int, dict] | None]]:
@@ -270,14 +277,14 @@ def _ordered_latest_strict(
     return latest
 
 
-def latest_unresolved_pending(root: Path, source_path: str) -> dict | None:
+def latest_unresolved_pending(root: Path, source_path: str, *, event_id=None) -> dict | None:
     source = _safe_source_path(source_path)
-    if source is None:
+    try:
+        receipt = (event_id, source) if event_id is not None else None
+        events = _unresolved(root, True, receipt=receipt) or []
+    except (ValueError, OSError, RuntimeError):
         return None
-    item = _ordered_latest(read_pending_refreshes(root)).get(source)
-    if item is None or item[2] is not None:
-        return None
-    return dict(item[1])
+    return next((row for row in reversed(events) if row['sourcePath'] == source), None)
 
 
 def same_revision(left, right) -> bool:
@@ -305,6 +312,7 @@ def resolve_pending_refresh(
         or captured not in compiled
     ):
         return False
+    public = path
     root = Path(root).resolve()
     source = (root / pending["sourcePath"]).resolve()
     try:
@@ -312,18 +320,23 @@ def resolve_pending_refresh(
     except ValueError:
         return False
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with _pending_lock_path(path).open("a", encoding="utf-8") as lock:
+        public.parent.mkdir(parents=True, exist_ok=True)
+        with _pending_lock_path(public).open("a", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            rows = _read_events_unlocked(path, strict=True)
-            if rows is None:
+            owners = []
+            occurrences = 0
+            for lane in refresh_lanes.paths(public):
+                rows = _read_events_unlocked(lane, strict=True)
+                latest = _ordered_latest_strict(rows) if rows is not None else None
+                if latest is None:
+                    return False
+                occurrences += sum(r.get("eventId") == pending_id for r in rows)
+                item = latest.get(pending["sourcePath"])
+                if item and item[2] is None and item[1] == pending:
+                    owners.append(lane)
+            if len(owners) != 1 or occurrences != 1:
                 return False
-            latest = _ordered_latest(rows).get(pending["sourcePath"])
-            if (
-                latest is None or latest[2] is not None
-                or latest[1].get("eventId") != pending_id
-            ):
-                return False
+            path, = owners
             current = snapshot_file(source)
             if current is None or current["sha256"] != captured["sha256"]:
                 return False
@@ -334,29 +347,36 @@ def resolve_pending_refresh(
             }
             if not _append_event_unlocked(path, event, source=pending['sourcePath']):
                 return False
-    except OSError:
+    except (OSError, ValueError):
         return False
-    compact_pending_refreshes(root)
+    _compact(path, public, False)
     return True
 
 
 def compact_pending_refreshes(root: Path, force: bool = False) -> bool:
     """Atomically retain each source's latest pending event and resolved pair."""
-    path = _pending_path(root)
-    if path is None or not path.exists():
+    public = _pending_path(root)
+    try:
+        existing = [p for p in refresh_lanes.paths(public) if p.exists()]
+        return bool(existing) and all(_compact(p, public, force) for p in existing)
+    except (ValueError, OSError):
         return False
+
+
+def _compact(path, public, force):
     try:
         if not force and path.stat().st_size < PENDING_COMPACT_BYTES:
             return True
-        with _pending_lock_path(path).open("a", encoding="utf-8") as lock:
+        with _pending_lock_path(public).open("a", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            if not legacy_ledgers.writable(path.parent):
+            if path.name == SOURCE_REFRESH_PENDING and not legacy_ledgers.writable(path.parent):
                 return False
             rows = _read_events_unlocked(path, strict=True)
-            if rows is None:
+            latest = _ordered_latest_strict(rows) if rows is not None else None
+            if latest is None:
                 return False
             kept: list[tuple[int, dict]] = []
-            for pending_index, pending, resolved in _ordered_latest(rows).values():
+            for pending_index, pending, resolved in latest.values():
                 kept.append((pending_index, pending))
                 if resolved is not None:
                     kept.append(resolved)

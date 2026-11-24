@@ -39,8 +39,42 @@ class MarkerlessBackfillRefresh(FixtureCase):
                 with self.subTest(tag=tag, markerless=markerless):
                     self.check_refresh(tree, tag, True, markerless=markerless, invalid=True)
 
+    def test_released_worker_cannot_recover_a_native_edit_or_claim_its_source(self):
+        for tag, commit in controls.RELEASES.items():
+            with self.subTest(tag=tag):
+                tree = self.release_tree(tag, commit)
+                queue, _, _, _, bound = self.dispatch_frozen_job(tree, tag + '-edit')
+                bound[0].update(state='candidate', generation='g-' + 'd' * 32)
+                root = Path(bound[0]['projectRoot'])
+                cfg = settings.find_project_config(root)['config']
+                cfg['compile']['triggers'].append('post_tool_source')
+                cfg['compile']['semanticDedup'] = {'enabled': False}
+                # Finish the old frozen job before creating any native edit.
+                self.assertEqual(self.child(tree, 'refresh', queue, bound, 0, config=cfg)['processed'], 1)
+                source = root / 'one.md'
+                with patch.object(settings, 'find_project_config', return_value={'projectRoot': str(root), 'config': cfg}), \
+                     patch.object(settings, 'load_project_config', return_value=cfg), \
+                     patch.object(workspace, 'selected', return_value=bound), patch.object(workspace, 'request_compile'):
+                    for edit in range(5):
+                        source.write_text(f'Updated fact {edit}.')
+                        result = intake.enqueue_payload({'cwd': str(root), 'engine': 'codex',
+                            'hook_event_name': 'PostToolUse', 'tool_input': {'file_path': str(source)}})
+                        self.assertEqual(result['queued'], 1)
+                private = workspace.safe_queue_path(root, workspace.rel(queue.name), native=True)
+                job, = [json.loads(line) for line in private.read_bytes().splitlines()]
+                new, = freshness.unresolved_pending_refreshes_strict(root)
+                self.assertEqual(job['pendingRefresh']['eventId'], new['eventId'])
+                self.assertEqual(job['source']['path'], 'one.md')
+                old = self.child(tree, 'refresh', queue, bound, 0, config=cfg)
+                self.assertEqual((old['processed'], old['extracts'], old['settlements']), (0, 0, []))
+                prior = self.child(tree, 'record-edit', queue, bound, 0)
+                self.assertEqual(freshness.unresolved_pending_refreshes_strict(root), [prior, new])
+                self.assertEqual(self.child(tree, 'refresh', queue, bound, 0, config=cfg)['processed'], 1)
+                self.assertEqual(freshness.unresolved_pending_refreshes_strict(root), [new])
+                self.assertEqual(json.loads(private.read_bytes()), job)
+
     def check_refresh(self, tree, tag, pending, *, markerless=False, invalid=False):
-        queue, job, cohort, key, bound = self.dispatch_frozen_job(f'{tag}-refresh-{int(pending)}-{int(markerless)}')
+        queue, job, cohort, key, bound = self.dispatch_frozen_job(tree, f'{tag}-refresh-{int(pending)}-{int(markerless)}')
         if markerless:
             del job['initialBackfill']
             queue.write_text(json.dumps(job) + '\n')
@@ -62,7 +96,7 @@ class MarkerlessBackfillRefresh(FixtureCase):
         self.assertEqual(json.loads(cohort.read_bytes())['items'][key]['stage'], 'dispatched')
 
         if pending:
-            event = freshness.record_pending_refresh(root, 'one.md', 'codex')
+            event = self.child(tree, 'record-edit', queue, bound, 0)
             self.assertIsNotNone(event)
         old = self.child(tree, 'refresh', queue, bound, 0, config=config, invalid=invalid)
         self.assertEqual(old['processed'], int(pending))

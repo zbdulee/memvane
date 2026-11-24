@@ -162,9 +162,9 @@ def resolve_pending_refresh(root, pending, captured_revision, compiled_revisions
     from memvane.wiki.card.wiki_freshness import resolve_pending_refresh as implementation
     return implementation(root, pending, captured_revision, compiled_revisions, compiled_event_id)
 
-def latest_unresolved_pending(root, source_path):
+def latest_unresolved_pending(root, source_path, *, event_id=None):
     from memvane.wiki.card.wiki_freshness import latest_unresolved_pending as implementation
-    return implementation(root, source_path)
+    return implementation(root, source_path, event_id=event_id)
 
 def unresolved_pending_refreshes(root):
     from memvane.wiki.card.wiki_freshness import unresolved_pending_refreshes as implementation

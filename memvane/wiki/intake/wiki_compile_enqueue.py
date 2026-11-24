@@ -263,6 +263,8 @@ def _append_unqueued(path, candidates, cap):
     if not candidates:
         return intent.plan_enqueue([], cap)
     path.parent.mkdir(parents=True, exist_ok=True)
+    from memvane.wiki.workspace.handoff.api import native_live, public_name
+    path = native_live(public_name(path), create=True)
     keys = {intent.operation_key(row) for _, _, row in candidates}
     original, lines, groups = source_queue.read_live(path, QUEUE_SCAN_MAX_BYTES, keys)
     revisions = {key: intent.queue_revision(group[0][1])

@@ -34,7 +34,7 @@ class BackfillReturnControls(FixtureCase):
         self.assertEqual(json.loads((tree / 'package.json').read_text())['version'], tag[1:])
         return tree
 
-    def dispatch_frozen_job(self, name):
+    def dispatch_frozen_job(self, tree, name):
         project = make_project(self.home, dirname=name, git=False)
         source = project.write_note('one.md', 'A durable fact.')
         key = project.raw_name + '/one.md'
@@ -52,15 +52,11 @@ class BackfillReturnControls(FixtureCase):
         bound = [decision, {'productRouteAllowed': True}]
         use_config(self, project, expanded(project, compile={'mode': 'auto-wiki',
                    'triggers': ['post_sync_source'], 'extractor': {'builtins': ['codex']}}))
-        intake.seed_source_snapshot(decision, snapshot, generation='g1')
-        grant = intake.record_grant(decision, 'sync', engine='codex')
-        self.assertTrue(intake.activate_grant(decision, 'sync', grant))
-        with patch.object(workspace, 'selected', return_value=bound), patch.object(workspace, 'recheck'), \
-             patch.object(workspace, 'request_compile'):
-            result = intake.drain_after_sync(decision, intake.observe_grants(decision), recheck=lambda: None,
-                                             view_generation='g1', raw_snapshot=snapshot)
-        self.assertEqual(result['initialBackfill']['dispatched'], 1, result)
         queue = project.root / '.memvane/compile/source-queue.jsonl'
+        from memvane.settings import api as settings
+        config = settings.find_project_config(project.root)['config']
+        result = self.child(tree, 'dispatch', queue, bound, 0, config=config, snapshot=snapshot)
+        self.assertEqual(result['initialBackfill']['dispatched'], 1, result)
         job = json.loads(queue.read_bytes())
         cohort, = state.glob('*.backfill.json')
         self.assertEqual(json.loads(cohort.read_bytes())['id'], job['initialBackfill'])
@@ -82,7 +78,7 @@ class BackfillReturnControls(FixtureCase):
             tree = self.release_tree(tag, commit)
             for phase in ('before-unlink', 'after-unlink'):
                 with self.subTest(tag=tag, phase=phase):
-                    queue, job, cohort, key, bound = self.dispatch_frozen_job(tag + '-' + phase)
+                    queue, job, cohort, key, bound = self.dispatch_frozen_job(tree, tag + '-' + phase)
                     owner = self.child(tree, phase, queue, bound, 17)
                     claim = queue.parent / owner['claim']
                     self.assertEqual(claim.name.split('.')[-2], str(owner['pid']))

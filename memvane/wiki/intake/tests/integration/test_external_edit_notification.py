@@ -162,7 +162,7 @@ class ExternalEditNotification(FixtureCase):
     def queue_rows(self):
         import json
         from memvane.wiki.workspace import api as workspace, types as workspace_types
-        queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
         return [json.loads(line) for line in queue.read_text().splitlines()] if queue.exists() else []
 
     def test_drain_repeats_full_proof_and_compiles_current_blob(self):

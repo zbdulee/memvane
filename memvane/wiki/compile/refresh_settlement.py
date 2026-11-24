@@ -146,3 +146,23 @@ def settle(root, pending, source_sha256, reason) -> bool:
     except (OSError, ValueError):
         return False
     return True
+
+
+def queued_events(public):
+    """A released live row can already be responsible for its exact edit."""
+    from memvane.wiki.workspace.handoff.api import bounded_rows, occurrence
+    result = set()
+    try:
+        for _, raw in bounded_rows(public):
+            row, _ = occurrence(raw)
+            if row is None:
+                continue
+            source, receipt = row.get('source'), row.get('pendingRefresh')
+            if isinstance(source, dict) and isinstance(receipt, dict):
+                path, event = source.get('path'), receipt.get('eventId')
+                if isinstance(path, str) and isinstance(event, str):
+                    result.add((path, event))
+    except (OSError, ValueError):
+        # An unreadable or concurrently claimed row cannot acknowledge an edit.
+        return set()
+    return result

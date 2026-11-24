@@ -895,7 +895,9 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     # Bind the ledger's latest unresolved event immediately before the stable
     # source capture.  A queue token is only transport metadata and may be stale
     # after a crash/replay; it never decides which edit this compile resolves.
-    bound_pending = wiki_freshness.latest_unresolved_pending(root, rel)
+    receipt = job.get("pendingRefresh")
+    event_id = receipt.get("eventId") if isinstance(receipt, dict) else None
+    bound_pending = wiki_freshness.latest_unresolved_pending(root, rel, event_id=event_id)
     stable_source = wiki_freshness.snapshot_bytes(src)
     observed_ns = time.time_ns()
     if stable_source is None:
@@ -1424,7 +1426,9 @@ def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, 
     if result[0] and not result[1] and reason not in _NOT_AN_ATTEMPT:
         raw_source = job.get("source")
         rel = raw_source.get("path") if isinstance(raw_source, dict) else None
-        pending = wiki_freshness.latest_unresolved_pending(root, rel) if isinstance(rel, str) and rel else None
+        receipt = job.get("pendingRefresh")
+        event_id = receipt.get("eventId") if isinstance(receipt, dict) else None
+        pending = wiki_freshness.latest_unresolved_pending(root, rel, event_id=event_id) if isinstance(rel, str) and rel else None
         if pending is not None:
             from memvane.wiki.compile import refresh_settlement
             sha = job.get('_processedContentRevision')
@@ -1458,7 +1462,12 @@ def recover_pending_refreshes(root: Path, config: dict, queue: Path) -> int:
     is not recovered: recovering it repeats an attempt that already ended.
     """
     records = []
-    for pending in _unsettled_refreshes(root):
+    from memvane.wiki.compile import refresh_settlement
+    pending_events = _unsettled_refreshes(root)
+    public = refresh_settlement.queued_events(queue) if pending_events else set()
+    for pending in pending_events:
+        if (pending.get('sourcePath'), pending.get('eventId')) in public:
+            continue
         from memvane.wiki.card.api import card_sources_allowed
         if not card_sources_allowed(pending):
             continue

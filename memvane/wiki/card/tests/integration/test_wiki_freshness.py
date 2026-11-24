@@ -105,6 +105,8 @@ class WikiFreshnessTests(FixtureCase):
         self.assertTrue(wiki_freshness.resolve_pending_refresh(root, other, revision, [revision]))
         self.assertTrue(wiki_freshness.compact_pending_refreshes(root, force=True))
         ledger = root / '.memvane' / 'compile' / 'source-refresh-pending.jsonl'
+        self.assertFalse(ledger.exists())
+        ledger = wiki_freshness.refresh_lanes.private_path(ledger)
         rows = [json.loads(line) for line in ledger.read_text(encoding='utf-8').splitlines()]
         self.assertEqual([row['state'] for row in rows], ['pending_refresh', 'pending_refresh', 'resolved'])
         self.assertEqual(rows[0]['eventId'], latest['eventId'])
@@ -119,7 +121,7 @@ class WikiFreshnessTests(FixtureCase):
         self.assertEqual(api.unresolved_pending_refreshes_strict(root), [])
         api.record_pending_refresh(root, 'source.md', 'claude')
         (root / '.memvane' / 'compile').mkdir(exist_ok=True)
-        ledger = next(root.rglob('source-refresh-pending.jsonl'))
+        ledger = next(root.rglob('events.jsonl'))
         ledger.write_text('{broken\n', encoding='utf-8')
         self.assertIsNone(api.unresolved_pending_refreshes_strict(root))
 
@@ -167,7 +169,8 @@ class WikiFreshnessTests(FixtureCase):
         revision = {'kind': 'file', 'path': 'source.md', 'collection': 'raw',
                     **api.snapshot_file(source)}
         self.assertTrue(wiki_freshness.resolve_pending_refresh(root, pending, revision, [revision]))
-        for content in (ledger.read_bytes(), b'', b'\n'):
+        rows = wiki_freshness.refresh_lanes.private_path(ledger).read_bytes()
+        for content in (rows, b'', b'\n'):
             with self.subTest(content=content):
                 ledger.write_bytes(content)
                 self.assertIsNone(wiki_freshness.quarantine_corrupt_pending(root))
@@ -197,6 +200,7 @@ class WikiFreshnessTests(FixtureCase):
         (root / '.memvane').mkdir(parents=True)
         api.record_pending_refresh(root, 'source.md', 'claude')
         ledger = root / '.memvane' / 'compile' / 'source-refresh-pending.jsonl'
+        ledger.write_bytes(wiki_freshness.refresh_lanes.private_path(ledger).read_bytes())
         original = ledger.read_bytes()
         read_text = Path.read_text
         def denied(path, *args, **kwargs):
