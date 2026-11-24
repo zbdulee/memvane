@@ -153,7 +153,7 @@ def create(root, wiki, queue, job, image, selected, *, review, manifest):
                    route=workspace.route_identity(selected) if selected is not None else None)
     try:
         queue.parent.mkdir(parents=True, exist_ok=True)
-        with native_review._locked(queue):
+        with native_review._locked(queue, blocking=False):
             for work in Work.entries(queue, 'hold', control_only=True):
                 state = work.state
                 old = state['binding']
