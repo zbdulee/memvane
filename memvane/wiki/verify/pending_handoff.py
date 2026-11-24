@@ -13,43 +13,37 @@ import json
 import os
 from pathlib import Path
 
-from memvane.wiki.verify import candidate_stage, native_review, queue_batch_prepare, queue_publication as publication
+from memvane.wiki.verify import candidate_stage, deferred_review, native_review, queue_batch_prepare, queue_publication as publication
 from memvane.wiki.verify.handoff_work import Work
 from memvane.store.types import MAX_BODY
 from memvane.settings import api as settings, types as settings_types
-from memvane.store.api import regular
+from memvane.wiki.workspace.handoff.api import evidence as regular
 from memvane.wiki.workspace import api as workspace
 from memvane.wiki.verify import pending_ownership as ownership
 from memvane.wiki.verify import wiki_verify_worker as verify
 from memvane.wiki.verify.pending_replacement import (
+    handoff_freshness,
     _VERIFY_QUEUE_BYTES, job_revisions, pending_replacement)
 
 
 def _rows(queue, limit):
+    from memvane.wiki.workspace.handoff.api import bounded_rows, occurrence
     try:
-        data, _, _ = regular(queue.parent, queue.name, limit)
+        rows = [(raw, occurrence(raw)[0] or {}) for _, raw in bounded_rows(queue, max_bytes=limit)]
     except FileNotFoundError:
         return [], 0
-    rows = []
-    offset = 0
-    while offset < len(data):
-        end = data.find(b'\n', offset)
-        end = len(data) if end < 0 else end + 1
-        raw = data[offset:end]
-        try:
-            value = json.loads(raw.decode('utf-8'))
-        except (ValueError, RecursionError):
-            value = None
-        rows.append((raw, value if isinstance(value, dict) else {}))
-        offset = end
-    return rows, len(data)
+    return rows, sum(len(raw) for raw, _ in rows)
 
 
 def reserved(queue, rel, *, fresh=False):
     private, uncertain = native_review.references(queue)
     if rel in private or (uncertain and not fresh) or publication.reserved(queue, rel, fresh=fresh):
         return True
-    for group in _references(queue)[1]:
+    try:
+        groups = _references(queue)[1]
+    except OSError:
+        return not fresh
+    for group in groups:
         if group.get('pendingPath') == rel:
             return True
     return False
@@ -67,9 +61,11 @@ def _references(queue, *, exclude_parent=None):
         groups.extend(job for _, job in rows)
     refs = {row['pendingPath'] for row in groups if isinstance(row.get('pendingPath'), str)}
     holds = Work.entries(queue, 'hold')
+    opaque = False
     for held in holds:
         state = held.state
         binding = state['binding']
+        opaque |= bool(binding.get('opaque'))
         if (state['phase'] != 'finished' and binding.get('purpose') == 'verify'
                 and 'image' not in state['blobs']):
             rel = binding['job'].get('pendingPath')
@@ -77,7 +73,8 @@ def _references(queue, *, exclude_parent=None):
                 refs.add(rel)
     private, uncertain = native_review.references(queue, exclude_parent=exclude_parent)
     refs.update(private)
-    complete = (not uncertain and not holds.issues and not queue_batch_prepare.unresolved(queue, holds)
+    complete = (not uncertain and not opaque and not holds.issues and not queue_batch_prepare.unresolved(queue, holds)
+                and not queue_batch_prepare.opaque_ranges(queue, holds)
                 and all(row and isinstance(row.get('targetPath'), str) for row in groups))
     return (refs if complete else None), groups
 
@@ -109,6 +106,8 @@ def _escrow(root, wiki, queue, work, removed, target):
                     pass  # A missing candidate leaves only the original row as evidence.
         binding = {'purpose': 'verify', 'parent': tx, 'base': base_work.state['id'], 'job': previous,
                    'offset': offset, 'ordinal': ordinal, 'targetPath': project_rel}
+        if not isinstance(previous.get('targetPath'), str) or not raw.endswith(b'\n'):
+            binding['opaque'] = True
         hold = Work.create(queue, 'hold', binding, raw, image=image)
         hold.read('raw')
         if image is not None:
@@ -121,24 +120,24 @@ def _escrow(root, wiki, queue, work, removed, target):
 def enqueue(root, config, wiki, queue, job, selected, stage, *, produced_bytes=None):
     try:
         with workspace.queue_lock_path(queue).open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return enqueue_locked(root, config, wiki, queue, job, selected, stage,
                                   produced_bytes=produced_bytes)
     except (OSError, RuntimeError, ValueError):
         return False
 
 
-def enqueue_locked(root, config, wiki, queue, job, selected, stage, *, produced_bytes=None):
+def enqueue_locked(root, config, wiki, queue, job, selected, stage, *, produced_bytes=None, deferred_id=None):
     """Caller owns the card, mutation and verify queue locks. Legacy jobs carry no byte proof."""
     if queue_batch_prepare.unresolved(queue):
-        return False
+        return deferred_review.reserve(queue, job, produced_bytes, selected) if deferred_id is None else False
     target = root / job['targetPath']
     base, _, _ = regular(wiki, target.relative_to(wiki).as_posix(), MAX_BODY)
     if hashlib.sha256(base).hexdigest() != job['expectedTargetHash']:
         return False
     claims = list(islice(queue.parent.glob(queue.name + '.claimed.*'), 65))
     if len(claims) > 64:
-        return False
+        return deferred_review.reserve(queue, job, produced_bytes, selected) if deferred_id is None else False
     limit = _VERIFY_QUEUE_BYTES
     referenced = set()
     for claim in claims:
@@ -161,7 +160,7 @@ def enqueue_locked(root, config, wiki, queue, job, selected, stage, *, produced_
                 # Giving the same revision a fresh filename cannot revive cleanup-only work.
                 return False
     if job.get('sourceRevisions'):
-        if verify.source_freshness(root, config, job)['state'] != 'fresh':
+        if handoff_freshness(root, config, job)['state'] != 'fresh':
             return False
     elif any(other.get('targetPath') == job['targetPath'] and job_revisions(other)
              for _, other in rows):
@@ -178,6 +177,11 @@ def enqueue_locked(root, config, wiki, queue, job, selected, stage, *, produced_
     for ordinal, (raw, previous) in enumerate(rows):
         start, offset = offset, offset + len(raw)
         path = previous.get('pendingPath')
+        if not isinstance(previous.get('targetPath'), str) or not raw.endswith(b'\n'):
+            if claims:
+                return False  # The retained public bytes may be a released owner's only reference.
+            removed.append((ordinal, start, raw, previous))
+            continue
         if previous.get('targetPath') != job['targetPath']:
             if isinstance(path, str):
                 referenced.add(path)
@@ -202,7 +206,7 @@ def enqueue_locked(root, config, wiki, queue, job, selected, stage, *, produced_
             # Saved fingerprints take precedence over every replay of the
             # job. Even conflicting receipts go through the verifier as-is.
             continue
-        freshness = verify.source_freshness(root, config, previous) or {}
+        freshness = handoff_freshness(root, config, previous) or {}
         if freshness.get('reason') != 'content_hash_mismatch':
             continue  # A second fresh source or unreadable evidence retains its independent obligation.
         reason = ownership.prepare(root, config, wiki, state, previous)
@@ -211,7 +215,8 @@ def enqueue_locked(root, config, wiki, queue, job, selected, stage, *, produced_
     if retained and not retained[-1].endswith(b'\n'):
         return False  # The intact source row owns its torn suffix.
     before = b''.join(raw for raw, _ in rows)
-    work = publication.reserve(queue, job, selected, before, produced_bytes, produced=produced_bytes is not None)
+    work = publication.reserve(queue, job, selected, before, produced_bytes, produced=produced_bytes is not None,
+                               deferred=deferred_id)
     candidate = root / job['pendingPath']
     try:
         holds = _escrow(root, wiki, queue, work, removed, target)
@@ -262,8 +267,8 @@ def resume_retirements(root, config, queue, selected):
         entries = Work.entries(queue, 'publication')
         if not entries and not ownership.has_state(queue):
             return True
-        with workspace.card_write_lock(root), workspace.mutation_lock(root), workspace.queue_lock_path(queue).open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        with workspace.card_write_lock(root, blocking=False), workspace.mutation_lock(root, blocking=False), workspace.queue_lock_path(queue).open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             entries = Work.entries(queue, 'publication')
             if entries:
                 refs, _ = _references(queue)

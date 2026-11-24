@@ -13,7 +13,7 @@ import stat
 
 from memvane.kernel.atomic_rename import fsync_dir
 from memvane.settings import api as settings
-from memvane.store.api import regular
+from memvane.wiki.workspace.handoff.api import evidence as regular
 from memvane.store.types import MAX_BODY
 from memvane.wiki.workspace import api as workspace, types as workspace_types
 from memvane.wiki.verify import legacy_handoff, wiki_verify_worker as verify

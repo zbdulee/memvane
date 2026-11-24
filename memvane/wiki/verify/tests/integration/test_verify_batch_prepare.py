@@ -47,7 +47,8 @@ class VerifyBatchPrepare(FixtureCase):
         originals = os.read, os.pread
         def check(read):
             def bounded(fd, size, *args):
-                self.assertNotEqual(os.fstat(fd).st_ino, before.st_ino)
+                if os.fstat(fd).st_ino == before.st_ino:
+                    self.assertLessEqual(size, batch_handoff.SLAB)
                 return read(fd, size, *args)
             return bounded
         with patch.object(os, 'read', check(originals[0])), patch.object(os, 'pread', check(originals[1])), \
@@ -64,7 +65,7 @@ class VerifyBatchPrepare(FixtureCase):
         self.assertEqual(self.queue.read_bytes(), b'')
         self.assertIsNone(pending_handoff._references(self.queue)[0])
         self.assertFalse(pending_handoff.enqueue_locked(self.root, {}, self.root, self.queue, {}, None, None))
-        self.assertEqual(batch.cursor, 0)
+        self.assertGreater(batch.cursor, 0)
 
     def test_prepare_resumes_process_death_on_both_sides_of_adoption(self):
         for timing in ('before', 'after'):

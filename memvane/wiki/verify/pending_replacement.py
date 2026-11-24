@@ -4,6 +4,8 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
 import re
 
@@ -67,7 +69,7 @@ def pending_matches_job(text, job):
 def pending_source_review(root, config, revision, *, reuse=True):
     """Return (proved reusable target, claim naming this source) under the same bounded queue read."""
     from itertools import islice
-    from memvane.store.api import regular
+    from memvane.wiki.workspace.handoff.api import evidence as regular
     from memvane.store.types import MAX_BODY
 
     queue = cp.safe_queue_path(root, cp.rel(ct.VERIFY_QUEUE))
@@ -86,14 +88,11 @@ def pending_source_review(root, config, revision, *, reuse=True):
             for path in ([queue, *claims] if reuse else claims):
                 if not path.exists():
                     continue
-                data, _, _ = regular(queue.parent, path.name, remaining)
-                remaining -= len(data)
-                for line in data.splitlines():
-                    try:
-                        job = json.loads(line)
-                    except (ValueError, RecursionError):
-                        continue
-                    if not isinstance(job, dict):
+                from memvane.wiki.workspace.handoff.api import bounded_rows, occurrence
+                for _, line in bounded_rows(path, max_bytes=remaining):
+                    remaining -= len(line)
+                    job, _ = occurrence(line)
+                    if job is None:
                         continue
                     if path != queue and not claimed_source and isinstance(job.get('targetPath'), str):
                         claimed_source = any(item['path'] == revision['path'] and
@@ -168,6 +167,29 @@ def incompatible_cards(paths, *, report=True):
     return False
 
 
+def handoff_freshness(root, config, job):
+    """Use the same provenance resolution as the verifier with the pass's snapshot allowance."""
+    from memvane.store.types import MAX_BODY
+    from memvane.wiki.workspace.handoff.api import evidence
+    if 'sourceRevisions' not in job:
+        return None
+    revisions = job_revisions(job)
+    if not revisions:
+        return {'state': 'unknown', 'reason': 'invalid_source_revision'}
+    allowed = yaml_scalars.allow_roots_of(config)
+    for revision in revisions:
+        path, reason = yaml_scalars.resolve_existing_source(revision['path'], root, allowed)
+        if path is None:
+            return {'state': 'stale' if reason == 'missing' else 'unknown', 'reason': reason}
+        try:
+            material, _, _ = evidence(path.parent, path.name, MAX_BODY)
+        except (OSError, ValueError):
+            return {'state': 'unknown', 'reason': 'handoff_source_snapshot_unavailable'}
+        if hashlib.sha256(material).hexdigest() != revision['sha256']:
+            return {'state': 'stale', 'reason': 'content_hash_mismatch'}
+    return {'state': 'fresh', 'checked': len(revisions)}
+
+
 def source_freshness(root: Path, config: dict, job: dict) -> dict | None:
     """Check job-owned provenance, preserving legacy jobs without the field."""
     if "sourceRevisions" not in job:
@@ -175,3 +197,60 @@ def source_freshness(root: Path, config: dict, job: dict) -> dict | None:
     revisions = job.get("sourceRevisions")
     return yaml_scalars.check_card(
         {"sourceRevisions": revisions}, root, yaml_scalars.allow_roots_of(config))
+
+
+def _cleanup_pending(root, snapshots, extra_rows, paths, uncertain):
+    """Called inside the card and queue locks, before the claim return commits."""
+    if uncertain:
+        return False
+    from memvane.wiki.workspace.handoff.api import bounded_rows, MAX_BYTES, MAX_ROWS
+    referenced = set()
+
+    def collect(raw):
+        if raw and not raw.endswith(b'\n'):
+            return False
+        for line in raw.split(b'\n'):
+            if not line.strip():
+                continue
+            try:
+                job = json.loads(line)
+            except (ValueError, UnicodeError, RecursionError):
+                return False
+            if not isinstance(job, dict):
+                return False
+            pending = job.get('pendingPath')
+            if isinstance(pending, str):
+                referenced.add(root / pending)
+        return True
+
+    if not collect(extra_rows):
+        return False
+    size, count = MAX_BYTES - len(extra_rows), MAX_ROWS - extra_rows.count(b'\n')
+    if len(paths) > 64 or size < 0 or count < 0:
+        return False
+    for path in paths:
+        try:
+            for _, row in bounded_rows(path, size, count):
+                if not collect(row):
+                    return False
+                size -= len(row)
+                count -= 1
+        except OSError:
+            return False
+    deferred = False
+    for path, old in snapshots.items():
+        if path in referenced:
+            deferred = True
+            continue
+        if path.parent.resolve() != path.parent:
+            continue
+        try:
+            info = path.lstat()
+            current = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1 and current == old:
+                path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+    return not deferred

@@ -1718,7 +1718,27 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/verify/batch_consumer.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
     "memvane/wiki/verify/candidate_stage.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/completed_review.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/copy_quota.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/deferred_review.py": {
       "context": "wiki/verify",
       "layer": "application",
       "pinned": false
@@ -1726,6 +1746,11 @@
     "memvane/wiki/verify/intent_ack.py": {
       "context": "wiki/verify",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/verify/ordinary_slot.py": {
+      "context": "wiki/verify",
+      "layer": "application",
       "pinned": false
     },
     "memvane/wiki/verify/queue_batch_prepare.py": {"context": "wiki/verify", "layer": "application", "pinned": false},

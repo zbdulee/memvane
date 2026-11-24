@@ -8,7 +8,7 @@ import re
 import uuid
 
 from memvane.kernel.atomic_rename import rename_noreplace
-from memvane.store.api import regular
+from memvane.wiki.workspace.handoff.api import evidence as regular
 
 
 _ACTIVE = ContextVar('wiki_candidate_producer', default=None)

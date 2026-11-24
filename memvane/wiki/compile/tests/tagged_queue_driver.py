@@ -14,6 +14,47 @@ from memvane.wiki.verify import api as verifier
 from memvane.wiki.workspace import api as workspace
 
 
+def raw_queue_controls(root, cfg):
+    from types import SimpleNamespace
+
+    results = []
+    for channel in ('source', 'verify'):
+        queue = root / ('.memvane/compile/' + channel + '-queue.jsonl')
+        queue.parent.mkdir(exist_ok=True, parents=True)
+        for char in ('\u0085', '\u2028', '\u2029'):
+            for escaped in (False, True):
+                def payload(label):
+                    return {'probe': label, 'source': {'path': label}, 'targetPath': '.memvane/wiki/' + label + '.md'}
+                split = dict(payload('split'), field='left' + char + 'right')
+                intact = json.dumps(payload('intact')).encode() + b'\n'
+                raw = json.dumps(split, ensure_ascii=escaped).encode() + b'\n' + b'{"torn":"\xc3\n' + intact
+                queue.write_bytes(raw)
+                def labels(path):
+                    return [j['probe'] for _, j in workspace.read_queue(path) if j is not None]
+                original = labels(queue)
+                if channel == 'source':
+                    with patch.object(worker, 'process_job', return_value=(True, False, [])) as consume, \
+                         patch.object(worker, '_run_verify_pass'), patch.object(workspace, 'selected', return_value=None):
+                        worker._main_locked(SimpleNamespace(json=False, flush_all=True), root, cfg, cfg['compile'], queue, None)
+                    dispatched = [c.args[3]['probe'] for c in consume.call_args_list]
+                else:
+                    audit = queue.with_name('verify-log.jsonl')
+                    before = audit.stat().st_size if audit.exists() else 0
+                    verifier.run(root, cfg, cfg['compile'])
+                    verdicts = [json.loads(line) for line in audit.read_bytes()[before:].splitlines()]
+                    dispatched = [Path(row['targetPath']).stem for row in verdicts]
+                queue.write_bytes(b'')
+                orphan = queue.with_name(queue.name + '.claimed.1234567.probe')
+                orphan.write_bytes(raw)
+                with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': '1234567'}):
+                    claim = workspace.claim_queue(queue)
+                recovered = labels(claim)
+                pieces = sum('left' in line or 'right' in line for line, job in workspace.read_queue(claim) if job is None)
+                claim.unlink()
+                results.append([channel, ord(char), escaped, original, dispatched, recovered, pieces])
+    return results
+
+
 def run(request):
     root = Path(request['root'])
     cfg, bound = request['config'], request['bound']
@@ -29,6 +70,8 @@ def run(request):
     action = request['action']
     with patch.object(workspace, 'selected', return_value=bound), patch.object(workspace, 'recheck'), \
          patch.object(workspace, 'request_sync'), patch.object(workspace, 'request_compile'):
+        if action == 'raw-controls':
+            return raw_queue_controls(root, cfg)
         if action == 'write':
             with patch.object(writer, 'now_iso', return_value=request['stamp']):
                 return write(root, request['card'])

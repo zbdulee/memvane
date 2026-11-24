@@ -62,7 +62,8 @@ class PendingRecovery(FixtureCase):
 
     def queued_rows(self):
         rows = []
-        for line in self.queue.read_text(encoding='utf-8').splitlines():
+        from tests.support.queue_files import pending_text
+        for line in pending_text(self.queue).splitlines():
             try:
                 rows.append(json.loads(line))
             except ValueError:
@@ -204,6 +205,8 @@ class PendingRecovery(FixtureCase):
             self.run_verify()
         self.assertEqual(call.call_count, 1)
         self.assertTrue(self.pending.exists())
+
+    def test_a_null_receipt_alone_cannot_run_verification(self):
         self.write_queue({**self.job, '_pendingCleanup': None})
         with mock.patch.object(verify, 'process_verify_job', side_effect=AssertionError('invalid must not verify')):
             self.run_verify()

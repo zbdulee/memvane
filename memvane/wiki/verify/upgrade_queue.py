@@ -6,12 +6,14 @@ import hashlib
 from itertools import islice
 from pathlib import Path
 
+from memvane.wiki.workspace.handoff import api as queue_pass
 from memvane.settings import api as settings, types as settings_types
-from memvane.store.api import regular
+from memvane.wiki.workspace.handoff.api import evidence as regular
 from memvane.store.types import MAX_BODY
 from memvane.wiki.verify import pending_handoff as handoff, queue_batch_prepare
 from memvane.wiki.verify import wiki_verify_worker as verifier
 from memvane.wiki.verify.pending_replacement import (
+    handoff_freshness,
     _VERIFY_QUEUE_BYTES, pending_matches_job, pending_replacement)
 from memvane.wiki.workspace import api as workspace
 
@@ -23,12 +25,12 @@ def _competing(rows):
         if not isinstance(target, str) or not isinstance(pending, str):
             continue
         if '_pendingCleanup' in job:
-            cleanup.add(pending)
+            if verifier._valid_cleanup_marker(job):
+                cleanup.add((target, pending))
         else:
             groups.setdefault(target, []).append(job)
     for target, jobs in groups.items():
-        if len({job['pendingPath'] for job in jobs}) > 1:
-            yield target, [job for job in jobs if job['pendingPath'] not in cleanup]
+        yield target, [job for job in jobs if (target, job['pendingPath']) not in cleanup]
 
 
 def _current(root, config, wiki, relative, jobs):
@@ -44,10 +46,10 @@ def _current(root, config, wiki, relative, jobs):
     except FileNotFoundError:
         return None
     digest = hashlib.sha256(live).hexdigest()
-    # Queue order breaks ties only between candidates for the current bytes.
-    for job in reversed(jobs):
+    # Physical FIFO breaks ties between independently fresh candidates on one base.
+    for job in jobs:
         if (job.get('expectedTargetHash') != digest or
-                (verifier.source_freshness(root, config, job) or {}).get('state') != 'fresh'):
+                (handoff_freshness(root, config, job) or {}).get('state') != 'fresh'):
             continue
         try:
             pending, _ = pending_replacement(root, wiki, job, target)
@@ -59,6 +61,7 @@ def _current(root, config, wiki, relative, jobs):
     return None
 
 
+@queue_pass.bounded
 def prepare(root, queue, bound, config=None):
     """Resume an interrupted retirement, then normalize competing jobs before any legacy claim."""
     if queue is None:
@@ -66,6 +69,14 @@ def prepare(root, queue, bound, config=None):
     try:
         if not queue_batch_prepare.prepare(root, queue, bound):
             return False
+        from memvane.wiki.verify import deferred_review
+        if deferred_review.active(queue):
+            if config is None:
+                config = settings.load_project_config(root)
+            wiki = root / config.get('wikiPath', settings_types.WIKI_REL)
+            with workspace.card_write_lock(root, blocking=False), workspace.mutation_lock(root, blocking=False), workspace.queue_lock_path(queue).open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                deferred_review.resume(root, config, wiki, queue, bound)
         # An unrelated audit must not block a live review, but an empty queue with an
         # unfinished retirement still needs its durable wake.
         retired = handoff.resume_retirements(root, config, queue, bound)
@@ -76,14 +87,12 @@ def prepare(root, queue, bound, config=None):
             return retired or workspace.queue_busy(queue) or bool(waiting(queue))
         if bound is None:
             return True
-        with workspace.card_write_lock(root), workspace.mutation_lock(root), workspace.queue_lock_path(queue).open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        with workspace.card_write_lock(root, blocking=False), workspace.mutation_lock(root, blocking=False), workspace.queue_lock_path(queue).open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if queue.stat().st_size > _VERIFY_QUEUE_BYTES:
                 return False  # Appended after the batch preflight; retry under its adoption lock.
             rows, used = handoff._rows(queue, _VERIFY_QUEUE_BYTES)
             groups = list(_competing(rows))
-            if not groups:
-                return True
             claims = list(islice(queue.parent.glob(queue.name + '.claimed.*'), 65))
             if len(claims) > 64:
                 return False
@@ -110,6 +119,17 @@ def prepare(root, queue, bound, config=None):
                 workspace.recheck(bound)
                 if not handoff.enqueue_locked(root, config, wiki, queue, job, bound, lambda: True):
                     return False
+            if not claims and queue.exists() and queue.stat().st_size:
+                from memvane.wiki.workspace.handoff.api import withdraw
+                from memvane.wiki.verify.ordinary_slot import preserve_pending
+                if config is None:
+                    config = settings.load_project_config(root)
+                wiki = root / config.get('wikiPath', settings_types.WIKI_REL)
+                preserve_pending(root, wiki, queue, handoff._rows(queue, _VERIFY_QUEUE_BYTES)[0])
+                workspace.recheck(bound)
+                withdraw(queue)
+            elif claims and rows and any(not queue_batch_prepare._dead(queue, path) for path in claims):
+                return False
         return True
     except (OSError, ValueError, RuntimeError):
         return False

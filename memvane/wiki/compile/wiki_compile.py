@@ -14,6 +14,7 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from memvane.wiki.workspace.handoff import api as queue_pass
 from memvane.kernel.paths import safe_managed_dir, read_jsonl
 from memvane.wiki.workspace.api import write_text_atomic, trim_jsonl, compact_manifest, find_wiki_collection
 from memvane.wiki.workspace import api as workspace_files
@@ -1061,6 +1062,7 @@ def _verify_job(root, selected, candidate, record, pending_path=None, expected_t
     }
 
 
+@queue_pass.bounded
 def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                     wiki_root: Path, candidate: dict, regenerate: bool, *,
                     budget_final: str | None = None, check: bool = False) -> int:

@@ -1,4 +1,5 @@
 """A new card, its manifest and its first private review share one recoverable operation."""
+import errno
 import json
 import os
 from unittest.mock import patch
@@ -64,6 +65,45 @@ class InitialCard(FixtureCase):
         first, = Work.entries(self.queue, 'hold')
         self.assertEqual(first.read('image'), self.image)
         self.assertFalse(native_review.waiting(self.queue))
+
+    def test_control_write_enospc_prevents_first_exposure_and_allows_one_retry(self):
+        commit = Work.commit
+        def no_space(work, phase, **updates):
+            if phase == 'held':
+                raise OSError(errno.ENOSPC, 'full control volume')
+            return commit(work, phase, **updates)
+        with patch.object(Work, 'commit', no_space):
+            self.assertFalse(self.create())
+            self.recover()
+            self.assertFalse(self.path.exists())
+            self.assertFalse(native_review.waiting(self.queue))
+            self.assertFalse(settings.ledger(self.root, ct.MANIFEST).exists())
+        self.recover()
+        self.recover()
+        self.assertEqual(self.path.read_bytes(), self.image)
+        job, = native_review.waiting(self.queue)
+        self.assertEqual(json.loads(job.read('raw')), self.job)
+        manifest = settings.ledger(self.root, ct.MANIFEST)
+        self.assertEqual([json.loads(line) for line in manifest.read_bytes().splitlines()], [self.manifest])
+
+    def test_sixty_fifth_claim_defers_first_exposure_until_references_are_known(self):
+        foreign = b'{"targetPath":"wiki/other.md"}\n'
+        claims = [self.queue.with_name(f'{self.queue.name}.claimed.{os.getpid()}.{i}') for i in range(65)]
+        for claim in claims:
+            claim.write_bytes(foreign)
+        self.assertFalse(self.create())
+        self.recover()
+        self.assertFalse(self.path.exists())
+        self.assertFalse(settings.ledger(self.root, ct.MANIFEST).exists())
+        held, = Work.entries(self.queue, 'hold')
+        self.assertEqual((held.read('image'), json.loads(held.read('raw'))), (self.image, self.job))
+        self.assertEqual([claim.read_bytes() for claim in claims], [foreign] * 65)
+        claims[-1].unlink()
+        self.recover()
+        self.recover()
+        self.assertEqual(self.path.read_bytes(), self.image)
+        self.assertEqual(len(native_review.waiting(self.queue)), 1)
+        self.assertEqual([json.loads(line) for line in settings.ledger(self.root, ct.MANIFEST).read_bytes().splitlines()], [self.manifest])
 
     def test_no_replace_after_editor_takes_initial_name(self):
         def editor(parent, source, target):

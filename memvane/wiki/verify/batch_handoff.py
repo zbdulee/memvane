@@ -1,11 +1,12 @@
 """Move a queued inode without reading it; checkpoint bounded, evidenced ranges under the queue lock."""
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 import base64
 import hashlib
 import os
+import re
 from pathlib import Path
 import stat
 
@@ -25,7 +26,14 @@ def _safe(info):
         raise OSError('unsafe_batch_inode')
 
 
-def _available(parent, queue, origin, orphan_dead):
+def _available(parent, queue, origin, orphan_dead, *, native=False):
+    if native:
+        if origin == queue.name or re.fullmatch(r'ready-[0-9a-f]{32}', origin):
+            return
+        if (re.fullmatch(r'native\.claimed\.\d+\.[a-f0-9]{32}', origin) and orphan_dead is not None
+                and orphan_dead(queue.with_name(origin))):
+            return
+        raise BlockingIOError('private_batch_owner_unconfirmed')
     if origin != queue.name:
         if not origin.startswith(queue.name + '.claimed.') or not orphan_dead or not orphan_dead(queue.with_name(origin)):
             raise BlockingIOError('batch_orphan_not_proven_dead')
@@ -52,13 +60,16 @@ def adopt(queue, source=None, *, binding=None, orphan_dead=None):
     """Caller holds the live queue lock and the legacy writer's card lock where applicable."""
     queue = Path(queue)
     source = queue if source is None else Path(source)
-    if source.parent != queue.parent or binding is not None and not isinstance(binding, dict):
+    from memvane.wiki.workspace.handoff.api import native_live
+    private = source.parent != queue.parent
+    if ((private and (native_live(queue) is None or source.parent != native_live(queue).parent)) or
+            binding is not None and not isinstance(binding, dict)):
         raise ValueError('invalid_batch_origin')
-    with store._opened(queue.parent, store.DIR) as parent:
-        _available(parent, queue, source.name, orphan_dead)
+    with store._opened(source.parent, store.DIR) as parent:
+        _available(parent, queue, source.name, orphan_dead, native=private)
         info = os.stat(source.name, dir_fd=parent, follow_symlinks=False)
         _safe(info)
-    prior = store.Work.entries(queue, 'hold')
+    prior = store.Work.entries(queue, 'hold', control_only=True)
     if prior.issues:
         raise BlockingIOError('uncertain_batch_reservations')
     for work in prior:
@@ -69,6 +80,8 @@ def adopt(queue, source=None, *, binding=None, orphan_dead=None):
             return batch
     value = dict(binding or {})
     value['batch'] = {'origin': source.name, 'sourceNode': _node(info)}
+    if private:
+        value['batch']['native'] = True
     blobs = {'raw': {'storage': 'inode', 'length': info.st_size, 'ino': info.st_ino}}
     batch = Batch(store.Work._reserve(queue, 'hold', value, blobs, {}))
     batch.resume(orphan_dead=orphan_dead)
@@ -77,7 +90,7 @@ def adopt(queue, source=None, *, binding=None, orphan_dead=None):
 
 def active(queue, *, orphan_dead=None):
     """Resume durable reservations under the existing queue lock; expose all unknown entries."""
-    work = store.Work.entries(queue, 'hold')
+    work = store.Work.entries(queue, 'hold', control_only=True)
     batches, issues = store.WorkEntries(), list(work.issues)
     for item in work:
         state = item.state
@@ -110,9 +123,11 @@ class Window:
     work_id: str
 
 
-def _piece(fd, start, length):
+def _piece(fd, start, length, lane):
     if not 0 <= length <= SLAB:
         raise ValueError('invalid_batch_window')
+    from memvane.wiki.workspace.handoff.api import charge
+    charge(lane, length)
     result = os.pread(fd, length, start)
     if len(result) != length:
         raise OSError('batch_short_read')
@@ -123,10 +138,10 @@ def _extend(chain, block):
     return store._sha(bytes.fromhex(chain) + hashlib.sha256(block).digest())
 
 
-def _prefix(fd, old, start, data):
+def _prefix(fd, old, start, data, lane):
     """64KiB block chain plus digest of a partial final block. At most one prior slab is reread."""
     tail_length = start % SLAB
-    tail = _piece(fd, start - tail_length, tail_length) if tail_length else b''
+    tail = _piece(fd, start - tail_length, tail_length, lane) if tail_length else b''
     if store._sha(tail) != old['tail']:
         raise OSError('batch_acknowledged_prefix_changed')
     material = tail + data
@@ -140,6 +155,7 @@ def _prefix(fd, old, start, data):
 class Batch:
     def __init__(self, work):
         self.work = work
+        self.lane = 'source' if work.queue.name.startswith('source-queue') else 'verify'
 
     @property
     def cursor(self):
@@ -153,9 +169,16 @@ class Batch:
         origin = saved['origin']
         if not isinstance(origin, str) or Path(origin).name != origin:
             raise ValueError('invalid_batch_origin')
-        with self.work._open() as private, store._opened(queue.parent, store.DIR) as parent:
+        directory = queue.parent
+        if saved.get('native') is True:
+            from memvane.wiki.workspace.handoff.api import native_live
+            path = native_live(queue)
+            if path is None:
+                raise OSError('native_batch_origin_missing')
+            directory = path.parent
+        with self.work._open() as private, store._opened(directory, store.DIR) as parent:
             if not store._exists(private, 'raw'):
-                _available(parent, queue, origin, orphan_dead)
+                _available(parent, queue, origin, orphan_dead, native=saved.get('native') is True)
                 with store._opened(origin, store.READ, parent=parent) as fd:
                     info = os.fstat(fd)
                     _safe(info)
@@ -199,7 +222,7 @@ class Batch:
         size = min(limit, state['cursor'] - start)
         if state['cursor'] > node['size']:
             raise OSError('batch_acknowledged_prefix_missing')
-        block = _piece(fd, start, size)
+        block = _piece(fd, start, size, self.lane)
         if _node(os.fstat(fd)) != node:
             raise BlockingIOError('batch_changed_during_audit')
         pending = base64.b64decode(audit.get('partial', ''), validate=True) + block
@@ -218,18 +241,20 @@ class Batch:
             self.work.commit('manual', proof=proof)
             raise OSError('batch_acknowledged_prefix_changed')
         proof.pop('audit', None)
+        proof.pop('parked', None)
         self.work.commit('held', sourceNode=node, proof=proof)
 
-    def read_window(self, max_bytes=SLAB):
+    def read_window(self, max_bytes=SLAB, *, gate=nullcontext):
         state = self.work.state
         if state['phase'] != 'held' or type(max_bytes) is not int or not 0 < max_bytes <= SLAB:
             raise ValueError('invalid_batch_window')
         with self._input() as (fd, node):
             if state['sourceNode'] != node:
-                self._audit(fd, node, state, max_bytes)
+                with gate():
+                    self._audit(fd, node, state, max_bytes)
                 return None
             offset = state['cursor']
-            data = _piece(fd, offset, min(max_bytes, node['size'] - offset))
+            data = _piece(fd, offset, min(max_bytes, node['size'] - offset), self.lane)
             if _node(os.fstat(fd)) != node:
                 raise BlockingIOError('batch_changed_during_read')
         end = offset + len(data)
@@ -246,13 +271,13 @@ class Batch:
         with self._input() as (fd, node):
             if node != window.snapshot or node != state['sourceNode']:
                 raise BlockingIOError('batch_generation_changed')
-            data = _piece(fd, window.offset, end - window.offset)
+            data = _piece(fd, window.offset, end - window.offset, self.lane)
             if data != window.data[:len(data)]:
                 raise OSError('batch_window_changed')
-            prefix = _prefix(fd, state['proof']['prefix'], window.offset, data)
+            prefix = _prefix(fd, state['proof']['prefix'], window.offset, data, self.lane)
             if _node(os.fstat(fd)) != node:
                 raise BlockingIOError('batch_changed_during_commit')
-            self.work.commit('held', cursor=end, proof={'prefix': prefix, 'handoff': proof})
+            self.work.commit('held', cursor=end, proof=dict(state['proof'], prefix=prefix, handoff=proof))
 
     def finish(self, proof):
         state = self.work.state

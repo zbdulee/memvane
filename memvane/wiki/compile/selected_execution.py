@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 
+from memvane.wiki.workspace.handoff import api as queue_pass
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.wiki.workspace.api import selected, recheck, queue_busy as _queue_busy, deferred_result
 from memvane.wiki.workspace.types import DEFERRED_REASONS as _DEFERRED_REASONS
@@ -44,6 +45,7 @@ def _worker_failure_code(stderr):
             'ResourceDeferred': 'worker_resource_deferred'}.get(match.group(1), 'worker_error') if match else 'worker_error'
 
 
+@queue_pass.bounded
 def run(project: Path):
     try:
         return _run(project)
@@ -65,8 +67,6 @@ def _run(project: Path):
     verify = _safe_queue_path(project, cp.rel(ct.VERIFY_QUEUE))
     if source is None or verify is None:
         return {'state': 'deferred', 'reason': 'unsafe_compile_queues'}
-    if not verification.prepare_queue(project, verify, bound):
-        return {'state': 'deferred', 'reason': 'verify_queue_handoff_pending'}
     from memvane.wiki.lifecycle import api as wiki_lifecycle_request
     from memvane.wiki.workspace.api import claim_lifecycle
     try:
@@ -91,7 +91,7 @@ def _run(project: Path):
     proc = subprocess.run(
         entry_argv('wiki-compile-worker', '--cwd', str(project), '--json', '--flush-all'),
         stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
-        env={**os.environ, 'QMD_RUNTIME_DISPATCH': '1'})
+        **queue_pass.child_options({**os.environ, 'QMD_RUNTIME_DISPATCH': '1'}))
     recheck(bound)
     if proc.returncode:
         return {'state': 'deferred', 'reason': 'compile_worker_failed',
@@ -140,11 +140,26 @@ def _backlog(project: Path, source: Path, bound):
             item for item in unresolved if not excluded_source(
                 item['sourcePath'], bound[0]['recallSettings']['skipPaths'], wiki_source=True)]))
         if source.parent.is_dir():
-            claim = source.name + '.claimed.'
-            for child in source.parent.iterdir():
-                if child.name == source.name or child.name.startswith(claim):
-                    count += sum(1 for line in child.read_text(
-                        encoding='utf-8', errors='replace').splitlines() if line.strip())
+            from itertools import islice
+            from memvane.wiki.workspace.handoff.api import bounded_rows, MAX_BYTES, MAX_ROWS, native_live
+            inputs = [source, *islice(source.parent.glob(source.name + '.claimed.*'), 65)]
+            if len(inputs) > 65:
+                return None
+            private = native_live(source)
+            if private is not None:
+                inputs.append(private)
+                inputs.extend(islice(private.parent.glob('native.claimed.*'), 65))
+                inputs.extend(islice(private.parent.glob('ready-*'), 65))
+            if len(inputs) > 66:
+                return None
+            size, quantity = MAX_BYTES, MAX_ROWS
+            for child in inputs:
+                if not child.exists():
+                    continue
+                for _, raw in bounded_rows(child, size, quantity):
+                    size -= len(raw)
+                    quantity -= 1
+                    count += bool(raw.strip())
         return count
     except OSError:
         return None
@@ -187,7 +202,7 @@ def _idle_locked(project: Path, source: Path, verify: Path, bound):
         return False
     from memvane.wiki.intake.api import write_discard_receipt
     # An older verifier may drain the jobs while a 1.1.1 deletion audit is still retryable.
-    if not verification.prepare_queue(project, verify, bound):
+    if verification.queue_batch_pending(source) or not verification.prepare_queue(project, verify, bound):
         return False
     return not (_queue_busy(source, receipt_writer=write_discard_receipt) | _queue_busy(verify) |
                 verification.native_review_pending(verify))

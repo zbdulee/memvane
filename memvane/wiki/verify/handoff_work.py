@@ -111,7 +111,7 @@ def private_root(queue, *, create=False):
         yield version
 
 
-def _file(parent, name, limit, *, keep=True, expected=None, budget=None):
+def _file(parent, name, limit, *, keep=True, expected=None, budget=None, lane=None):
     with _opened(name, READ, parent=parent) as fd:
         info = os.fstat(fd)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
@@ -119,6 +119,8 @@ def _file(parent, name, limit, *, keep=True, expected=None, budget=None):
             raise OSError('unsafe_handoff_file')
         if expected is not None and info.st_size != expected['length']:
             raise OSError('handoff_length_changed')
+        from memvane.wiki.workspace.handoff.api import charge
+        charge(lane or ('evidence' if name == 'image' else 'private'), info.st_size)
         if budget is not None:
             if budget[0] < info.st_size:
                 raise _ScanLimit
@@ -153,7 +155,8 @@ def _publish(parent, name, data, *, replace=False):
                 raise OSError('handoff_short_write')
             view = view[written:]
         os.fsync(fd)
-    _file(parent, temp, len(data), keep=False, expected={'length': len(data), 'sha256': _sha(data)})
+    _file(parent, temp, len(data), keep=False, expected={'length': len(data), 'sha256': _sha(data)},
+          lane='evidence' if name == 'image' else 'private')
     if replace:
         os.replace(temp, name, src_dir_fd=parent, dst_dir_fd=parent)
     else:
@@ -337,6 +340,10 @@ class Work:
                 identity = uuid.uuid4().hex
                 if closed is not None and (_exists(closed, identity) or _exists(closed, '.release-' + identity)):
                     continue
+                if _exists(parent, identity):
+                    continue
+                from memvane.wiki.verify import copy_quota
+                copy_quota.allocate(root, identity, copy_quota.charge(kind, binding, blobs))
                 try:
                     fd = stack.enter_context(_directory(parent, identity, True, exclusive=True))
                     break
@@ -353,7 +360,7 @@ class Work:
         return cls(queue, state)
 
     @classmethod
-    def entries(cls, queue, kind, *, max_bytes=8 * 1024 ** 2, max_entries=64):
+    def entries(cls, queue, kind, *, max_bytes=8 * 1024 ** 2, max_entries=64, control_only=False):
         if kind not in KINDS:
             raise ValueError('invalid_handoff_kind')
         entries, issues, budget = WorkEntries(), [], [max_bytes]
@@ -386,8 +393,9 @@ class Work:
                             state = _control(fd, kind, name, budget)
                             if state['queue'] != Path(queue).name:
                                 continue
-                            for blob, meta in state['blobs'].items():
-                                _check_blob(fd, blob, meta, state, budget=budget)
+                            if not control_only:
+                                for blob, meta in state['blobs'].items():
+                                    _check_blob(fd, blob, meta, state, budget=budget)
                         entries.append(cls(queue, state))
                     except _ScanLimit:
                         issues.append({'name': name, 'reason': 'handoff_scan_limit'})
@@ -488,6 +496,8 @@ class Work:
                     os.fsync(fd)
                 os.rmdir(identity, dir_fd=parent)
             os.fsync(parent)
+            from memvane.wiki.verify import copy_quota
+            copy_quota.release(root, identity)
             os.unlink(token, dir_fd=parent)
             os.fsync(parent)
 

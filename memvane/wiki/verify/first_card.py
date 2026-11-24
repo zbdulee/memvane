@@ -8,7 +8,7 @@ import uuid
 
 from memvane.kernel.atomic_rename import canonical_json_bytes, rename_noreplace
 from memvane.settings import api as settings
-from memvane.store.api import regular
+from memvane.wiki.workspace.handoff.api import evidence as regular
 from memvane.wiki.card.api import unresolved_pending_refreshes_strict
 from memvane.wiki.workspace import types as ct
 from memvane.wiki.verify import native_review
@@ -154,7 +154,7 @@ def create(root, wiki, queue, job, image, selected, *, review, manifest):
     try:
         queue.parent.mkdir(parents=True, exist_ok=True)
         with native_review._locked(queue):
-            for work in Work.entries(queue, 'hold'):
+            for work in Work.entries(queue, 'hold', control_only=True):
                 state = work.state
                 old = state['binding']
                 if (old.get('action') == 'create' and old.get('targetPath') == job['targetPath']
@@ -170,13 +170,13 @@ def create(root, wiki, queue, job, image, selected, *, review, manifest):
 
 
 def recover(root, wiki, queue, selected):
-    for work in Work.entries(queue, 'hold'):
+    for work in Work.entries(queue, 'hold', control_only=True):
         state = work.state
         binding = state['binding']
         if (binding.get('purpose') == 'native-review' and binding.get('action') == 'create'
                 and state['phase'] in ('reserved', 'held') and not state.get('proof', {}).get('published')):
             try:
-                with workspace.card_write_lock(root), workspace.mutation_lock(root), native_review._locked(queue):
+                with workspace.card_write_lock(root, blocking=False), workspace.mutation_lock(root, blocking=False), native_review._locked(queue, blocking=False):
                     current = Work.lookup(queue, 'hold', state['id'])
                     if current is not None and not current.state.get('proof', {}).get('published'):
                         _resume(root, wiki, queue, current, selected)

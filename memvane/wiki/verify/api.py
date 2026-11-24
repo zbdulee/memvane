@@ -74,3 +74,21 @@ def create_first_card(root, wiki, queue, job, image, selected, *, review, manife
 def native_review_pending(queue):
     from memvane.wiki.verify.native_review import busy
     return busy(queue)
+
+def claim_source_queue(queue, bound, receipt_writer, *, claim=None):
+    from memvane.wiki.verify import queue_batch_prepare
+    from memvane.wiki.workspace import api as workspace
+    try:
+        claim = workspace.claim_queue if claim is None else claim
+        try:
+            queue_batch_prepare.prepare(queue.parents[2], queue, bound)
+        except BlockingIOError:
+            pass  # An independent native source can still be available.
+        return claim(queue, private=True, receipt_writer=receipt_writer,
+                                     before_claim=lambda q: queue_batch_prepare.guard_claim(q, bound))
+    except BlockingIOError:
+        return None
+
+def queue_batch_pending(queue):
+    from memvane.wiki.verify.queue_batch_prepare import unresolved
+    return unresolved(queue)

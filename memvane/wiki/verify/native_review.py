@@ -45,12 +45,14 @@ def activate(root, queue, parent):
     if work.state['phase'] == 'reserved':
         work.commit('held', transaction=parent.state['id'], proof={'published': True})
 
+    from memvane.wiki.verify import deferred_review
+    deferred_review.activated(queue, parent, work)
     _protect_predecessors(root, queue, work)
 
 
 def _protect_predecessors(root, queue, successor):
     """Keep independently edited candidates and their original jobs outside the scheduler."""
-    from memvane.store.api import regular
+    from memvane.wiki.workspace.handoff.api import evidence as regular
     from memvane.store.types import MAX_BODY
 
     right = successor.state['binding']['job']
@@ -90,16 +92,22 @@ def _protect_predecessors(root, queue, successor):
 
 
 def cancel(queue, parent):
-    entries = Work.entries(queue, 'hold')
+    entries = Work.entries(queue, 'hold', control_only=True)
     for work in entries:
         state = work.state
         if _ours(work) and state['binding'].get('parent') == parent.state['id'] and state['phase'] == 'reserved':
             work.commit('manual', proof={'cancelled': True}).commit('finished').archive()
 
 
+def _same_job(work, job):
+    from memvane.wiki.workspace.handoff.api import occurrence
+    parsed, _ = occurrence(work.read('raw'))
+    return parsed is not None and canonical_json_bytes(parsed) == canonical_json_bytes(job)
+
+
 def waiting(queue):
     result = WorkEntries()
-    all_work = Work.entries(queue, 'hold')
+    all_work = Work.entries(queue, 'hold', control_only=True)
     issues = list(all_work.issues)
     for work in all_work:
         state = work.state
@@ -113,7 +121,7 @@ def waiting(queue):
         try:
             if (state.get('proof', {}).get('published') is not True or
                     state.get('transaction') != state['binding'].get('parent', state['id']) or
-                    work.read('raw') != canonical_json_bytes(state['binding']['job']) + b'\n'):
+                    not isinstance(state['binding'].get('job'), dict)):
                 raise ValueError('invalid_private_review')
             result.append(work)
         except (KeyError, TypeError, OSError, ValueError) as error:
@@ -123,7 +131,7 @@ def waiting(queue):
 
 
 def references(queue, *, exclude_parent=None):
-    all_work = Work.entries(queue, 'hold')
+    all_work = Work.entries(queue, 'hold', control_only=True)
     paths = set()
     uncertain = bool(all_work.issues)
     for work in all_work:
@@ -141,9 +149,9 @@ def references(queue, *, exclude_parent=None):
 
 
 @contextmanager
-def _locked(queue):
+def _locked(queue, *, blocking=True):
     with workspace.queue_lock_path(queue).open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        fcntl.flock(lock, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         yield
 
 
@@ -166,13 +174,21 @@ def process(queue, selected, work, callback):
     owner = {'pid': os.getpid(), 'attempt': uuid.uuid4().hex}
     with _locked(queue):
         work = Work.lookup(queue, 'hold', identity)
+        from memvane.wiki.verify import handoff_work as store
+        rotation = 'review-turn-' + hashlib.sha256(queue.name.encode()).hexdigest()[:24]
+        with store.private_root(queue) as fd:
+            store._publish(fd, rotation, identity.encode('ascii'), replace=store._exists(fd, rotation))
         if work is None or work.state['phase'] != 'held':
             return False, False
         state = work.state
         proof = state.get('proof', {})
         route = state['binding'].get('route')
-        if (not proof.get('published') or _alive(proof.get('owner')) or
+        if (not proof.get('published') or _alive(proof.get('owner')) or not _same_job(work, state['binding']['job']) or
                 route != (workspace.route_identity(selected) if selected is not None else None)):
+            return False, True
+        others = Work.entries(queue, 'hold', control_only=True)
+        if any(w.state['binding'].get('targetPath') == state['binding']['targetPath']
+               and _alive(w.state.get('proof', {}).get('owner')) for w in others):
             return False, True
         previous = {k: v for k, v in proof.items() if k != 'owner'}
         work.commit('held', proof=dict(previous, owner=owner))
@@ -188,11 +204,25 @@ def process(queue, selected, work, callback):
                 work.commit('finished', proof=dict(previous, completed=True)).archive()
 
 
-def latest_first(works):
-    # A newer replacement gets its decision before an older job whose source is already stale.
-    return sorted(works, key=lambda w: (w.state['binding']['job'].get('ts', ''), w.folder.name), reverse=True)
+def scheduled(queue, works):
+    """Cycle independent targets across wakes; one active attempt per target and at most sixteen per pass."""
+    from memvane.wiki.verify import handoff_work as store
+    works = sorted(works, key=lambda w: (w.state['binding']['job'].get('ts', ''), w.folder.name), reverse=True)
+    if not works:
+        return []
+    name = 'review-turn-' + hashlib.sha256(queue.name.encode()).hexdigest()[:24]
+    with store.private_root(queue) as fd:
+        try:
+            previous = store._file(fd, name, 32).decode('ascii')
+        except FileNotFoundError:
+            previous = None
+        order = [work.state['id'] for work in works]
+        start = order.index(previous) + 1 if previous in order else 0
+        chosen = (works[start:] + works[:start])[:16]
+    return chosen
 
 
 def busy(queue):
-    entries = Work.entries(queue, 'hold')
-    return bool(entries.issues or any(_ours(w) and w.state['phase'] != 'finished' for w in entries))
+    entries = Work.entries(queue, 'hold', control_only=True)
+    return bool(entries.issues or any((_ours(w) or w.state['binding'].get('purpose') == 'deferred-replacement')
+                                      and w.state['phase'] != 'finished' for w in entries))

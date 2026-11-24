@@ -47,6 +47,47 @@ class TaggedQueueControls(FixtureCase):
                 'sourceRevisions': [revision], 'sources': [{k: revision[k] for k in ('kind', 'path', 'collection')}]}
         return self.invoke(tag, 'write', card=card, stamp=stamp)['code']
 
+    def test_released_lf_reader_worker_and_orphan_for_literal_escaped_and_invalid_bytes(self):
+        for tag in TAGS:
+            with self.subTest(tag=tag):
+                self.prepare(tag)
+                result = self.invoke(tag, 'raw-controls')
+                self.assertEqual(len(result), 12)
+                for channel, code, escaped, original, dispatched, recovered, fragments in result:
+                    with self.subTest(channel=channel, code=code, escaped=escaped):
+                        expected = ['split', 'intact'] if escaped else ['intact']
+                        self.assertEqual(original, expected)
+                        self.assertCountEqual(dispatched, expected)
+                        self.assertEqual(recovered, ['intact'])
+                        self.assertEqual(fragments, 2)
+
+    def test_native_prepare_captures_returned_ordinary_and_single_pending_before_each_released_verifier(self):
+        from unittest.mock import patch
+        from memvane.wiki.verify import api as verify
+        from memvane.wiki.workspace import api as workspace
+        for tag in TAGS:
+            with self.subTest(tag=tag):
+                self.prepare(tag)
+                self.target.unlink()
+                self.assertEqual(self.candidate('v1.1.0', text='Newest source old.'), 0)
+                ordinary, = rows(self.queue)
+                self.assertEqual(self.invoke('v1.1.0', 'verify')['calls'], 1)
+                base = self.target.read_bytes()
+                self.assertEqual(self.candidate('v1.1.0', text='Newest source for replacement.'), 0)
+                current, = rows(self.queue)
+                returned = dict(ordinary, _requeue_count=1, ts='2099-01-01T00:00:00Z')
+                saved = (json.dumps(returned, ensure_ascii=False) + '\r\n').encode()
+                with self.queue.open('ab') as output:
+                    output.write(saved)
+                with patch.object(workspace, 'recheck'):
+                    self.assertTrue(verify.prepare_queue(self.root, self.queue, self.bound, self.config))
+                self.assertEqual(self.queue.read_bytes(), b'')
+                self.assertIn(saved, [p.read_bytes() for p in self.queue.parent.rglob('raw')])
+                self.assertEqual(self.invoke(tag, 'verify'), {'remaining': 0, 'calls': 0})
+                self.assertEqual(self.target.read_bytes(), base)
+                self.assertEqual(fixtures.PendingHandoff.native_verify(self), {'remaining': 0, 'calls': 1})
+                self.assertIn(current['sourceRevisions'][0]['sha256'], self.target.read_text())
+
     def test_returned_ordinary_row_shadows_new_pending(self):
         for tag in TAGS:
             with self.subTest(tag=tag):

@@ -139,12 +139,14 @@ class Publish(PendingCase):
                 job = self.stage(revision)
                 self.write_queue({**job, **overrides})
                 fake = self.fake()
-                self.assertEqual(self.run_verify()['processed'], 1)
+                original = self.queue.read_bytes()
+                self.assertEqual(self.run_verify()['processed'], 0)
                 self.assertEqual(fake.calls, [])
                 self.assertEqual(self.card_now(), self.old)
                 self.assertTrue(self.pending(revision).exists(), 'an invalid job cannot remove private bytes')
-                row = self.log()[-1]
-                self.assertEqual((row['result'], row['reason']), ('skipped', 'pending_replacement_invalid'))
+                retained = [p.read_bytes() for p in self.compile_dir.rglob('fragment-*')]
+                self.assertIn(original, retained)
+                self.assertFalse(self.log())
 
 
 class StaleSource(PendingCase):
@@ -289,7 +291,8 @@ class Cleanup(PendingCase):
         with mock.patch.object(worker, 'read_queue', side_effect=read):
             self.run_verify()
         self.assertTrue(self.pending(b).exists())
-        holders = [self.queue] + sorted(self.compile_dir.glob('verify-queue.jsonl.claimed.*'))
+        from tests.support.queue_files import pending_files
+        holders = pending_files(self.queue)
         self.assertTrue(any(pending_rel(b) in p.read_text(encoding='utf-8') for p in holders),
                         'the late append stays durable')
 
@@ -301,8 +304,10 @@ class Cleanup(PendingCase):
         self.assertEqual(self.run_verify(verify={'onFail': 'none'})['processed'], 1)
         self.assertTrue(self.pending(revision).exists())
         self.assertEqual(len(fake.calls), 1)
-        repaired = [line for line in self.queued().splitlines() if line and line != '{malformed']
-        self.queue.write_text(''.join(line + '\n' for line in repaired), encoding='utf-8')
+        from memvane.wiki.workspace.handoff.api import native_live
+        fragment, = native_live(self.queue).parent.glob('fragment-*')
+        self.assertEqual(fragment.read_bytes(), b'{malformed\n')
+        fragment.rename(fragment.with_name('operator-preserved'))
         self.run_verify(verify={'onFail': 'none'})
         self.assertFalse(self.pending(revision).exists())
         self.assertEqual(len(fake.calls), 1)

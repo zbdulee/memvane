@@ -24,6 +24,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from memvane.wiki.workspace.handoff import api as queue_pass
 from memvane.kernel.paths import now_iso
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.wiki.workspace import api as cp, types as ct
@@ -525,6 +526,7 @@ def compile_candidate(root: Path, candidate: dict, *, final_reason: str | None =
         input=json.dumps(candidate, ensure_ascii=False),
         text=True,
         capture_output=True,
+        **queue_pass.child_options(),
         shell=False,
     )
     if proc.returncode != 0:
@@ -1680,16 +1682,13 @@ def _claim_frozen_work(queue, claimed, rows, frozen_items):
     return claimed, jobs
 
 
+@queue_pass.bounded
 def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                  selected_route) -> int:
-    if selected_route is not None:
-        verify_queue = _safe_queue_path(root, cp.rel(ct.VERIFY_QUEUE))
-        if not wiki_verify.prepare_queue(root, verify_queue, selected_route, config):
-            raise ResourceDeferred('verify_queue_handoff_pending')
     recover_pending_refreshes(root, config, queue)
 
     from memvane.wiki.intake import api as laya_wiki_backfill
-    claimed = claim_queue(queue, receipt_writer=laya_wiki_backfill.write_discard_receipt)
+    claimed = wiki_verify.claim_source_queue(queue, selected_route, laya_wiki_backfill.write_discard_receipt, claim=claim_queue)
     # Reaping holds the source-queue lock. ACK outside it to preserve discovery
     # -> enqueue lock order, including the empty-queue/crash-recovery path.
     rows = read_queue(claimed) if claimed is not None else None
@@ -1697,11 +1696,12 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
     if claimed is None:
         if selected_route is not None:
             _run_verify_pass(root, config, compile_cfg)
-            if args.json:
-                print(json.dumps({"processed": 0, "remaining": 0}, ensure_ascii=False))
+        if args.json:
+            print(json.dumps({"processed": 0, "remaining": int(wiki_verify.queue_batch_pending(queue))}, ensure_ascii=False))
         return 0
     if not rows:
         if not hasattr(rows, 'finish'):
+            queue_pass.defer_unread(queue, claimed)
             raise OSError('source claim unreadable')
         rows.finish(queue, claimed, [])
         _run_verify_pass(root, config, compile_cfg)

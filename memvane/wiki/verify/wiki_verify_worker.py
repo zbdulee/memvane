@@ -50,6 +50,7 @@ import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from memvane.wiki.workspace.handoff import api as queue_pass
 from memvane.kernel.atomic_rename import fsync_dir, canonical_json_bytes
 from memvane.kernel.paths import now_iso, read_jsonl
 from memvane.kernel.persistent_identity import persistent_identity_equal
@@ -66,6 +67,7 @@ from memvane.wiki.card.api import card_sources_allowed, parse_frontmatter
 from memvane.wiki.card import api as yaml_scalars
 from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, append_jsonl, read_queue, claim_queue
 from memvane.wiki.verify import promotion
+from memvane.wiki.verify.pending_replacement import _cleanup_pending
 from memvane.wiki.verify.pending_replacement import pending_replacement, job_revisions, pending_matches_job, card_state, source_freshness, incompatible_cards
 from memvane.wiki.verify.verify_ledger import ledger_writable, source_body_hash
 from memvane.wiki.verify.verification_stamp import stamp_verification, render_verification, write_rendered_verification
@@ -1433,61 +1435,17 @@ def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict
     return found, jobs
 
 
-def _cleanup_pending(root, snapshots, extra_rows, paths, uncertain):
-    """Called inside the card and queue locks, before the claim return commits."""
-    if uncertain:
-        return False
-    referenced = set()
-
-    def collect(raw):
-        if raw and not raw.endswith(b'\n'):
-            return False
-        for line in raw.split(b'\n'):
-            if not line.strip():
-                continue
-            try:
-                job = json.loads(line)
-            except (ValueError, UnicodeError, RecursionError):
-                return False
-            if not isinstance(job, dict):
-                return False
-            pending = job.get('pendingPath')
-            if isinstance(pending, str):
-                referenced.add(root / pending)
-        return True
-
-    if not collect(extra_rows):
-        return False
-    for path in paths:
-        if not stat.S_ISREG(path.lstat().st_mode) or not collect(path.read_bytes()):
-            return False
-    deferred = False
-    for path, old in snapshots.items():
-        if path in referenced:
-            deferred = True
-            continue
-        if path.parent.resolve() != path.parent:
-            continue
-        try:
-            info = path.lstat()
-            current = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-            if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1 and current == old:
-                path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            return False
-    return not deferred
-
-
 def _process_private(root, config, compile_cfg, vcfg, work, log_path):
-    from memvane.store.api import regular
+    from memvane.wiki.workspace.handoff.api import evidence as regular
     from memvane.store.types import MAX_BODY
 
+    from memvane.wiki.verify.ordinary_slot import safe_outputs
     job = work.state['binding']['job']
+    if not safe_outputs(job):
+        return False, True
     wiki = root / config.get('wikiPath', settings_types.WIKI_REL)
     live = root / job['targetPath']
-    image = work.read('image')
+    image = work.read('image') if 'image' in work.state['blobs'] else None
     try:
         staged = pending_replacement(root, wiki, job, live)
         path = staged[0] if staged else live
@@ -1496,6 +1454,8 @@ def _process_private(root, config, compile_cfg, vcfg, work, log_path):
             raw, node, _ = regular(wiki, path.relative_to(wiki).as_posix(), MAX_BODY)
             if not staged:
                 proof = work.state['proof']
+                if image is None and hashlib.sha256(raw).hexdigest() == proof.get('sha256'):
+                    image = raw
                 if (node['dev'], node['ino']) != (proof.get('device'), proof.get('inode')) or raw != image:
                     return False, True
             original = raw == image
@@ -1526,7 +1486,8 @@ def _return_cleanup(root, queue, pending_snapshots, pending_jobs, remaining, ext
     refs, unknown = native_review.references(queue)
     disposable = {p: node for p, node in pending_snapshots.items()
                   if p.relative_to(root).as_posix() not in refs}
-    if _cleanup_pending(root, disposable, extra_rows, paths, uncertain or unknown):
+    from memvane.wiki.verify.queue_batch_prepare import opaque_ranges, unresolved
+    if _cleanup_pending(root, disposable, extra_rows, paths, uncertain or unknown or opaque_ranges(queue) or unresolved(queue)):
         return []
     retry = []
     remaining_paths = set()
@@ -1549,6 +1510,7 @@ def _return_cleanup(root, queue, pending_snapshots, pending_jobs, remaining, ext
     return retry
 
 
+@queue_pass.bounded
 def run(
     root: Path, config: dict, compile_cfg: dict, produced_targets: list[str] | None = None
 ) -> dict:
@@ -1574,11 +1536,21 @@ def run(
     first_card.recover(root, root / config.get('wikiPath', settings_types.WIKI_REL), queue, selected_route)
     if not vcfg.get("enabled", True):
         return result
+    from memvane.wiki.verify.completed_review import settle
+    if settle(root, root / config.get('wikiPath', settings_types.WIKI_REL), queue, config, selected_route):
+        result['processed'] = 1
     public_ready = prepare(root, queue, selected_route, config)
+    from memvane.wiki.verify import ordinary_slot
+    if not public_ready:
+        ordinary_slot.borrow(root, root / config.get('wikiPath', settings_types.WIKI_REL), queue, config, selected_route)
     available = native_review.waiting(queue)
-    if not public_ready and not available:
+    if not public_ready:
+        available = [work for work in available if not work.state['binding']['job'].get('pendingPath')]
+    from memvane.wiki.verify.queue_batch_prepare import delivery
+    packet = None if public_ready else delivery(queue)
+    if not public_ready and not available and packet is None:
         return {**result, 'remaining': 1, 'reason': 'verify_queue_handoff_pending'}
-    if not queue.exists() and not available and not native_review.busy(queue):
+    if not queue.exists() and not available and not cp.queue_busy(queue) and not native_review.busy(queue):
         return result
     log_path = qmd_config.ledger(root, ct.VERIFY_LOG) or cp.under(root, ct.VERIFY_LOG)
 
@@ -1597,19 +1569,12 @@ def run(
     # 식힘 중"이라는 잘못된 인상만 준다. 후보 단위 파일로 대체됐다(engine_cooldown_path).
     cp.under(root, ct.LEGACY_VERIFY_COOLDOWN).unlink(missing_ok=True)
 
-    from memvane.wiki.verify import queue_batch_prepare
-    try:
-        claimed = (claim_queue(queue, before_claim=lambda path: queue_batch_prepare.guard_claim(path, selected_route))
-                   if public_ready else None)
-    except queue_batch_prepare.BatchPending:
-        claimed, public_ready = None, False
-    rows = read_queue(claimed) if claimed is not None else []
-    if claimed is not None and not hasattr(rows, 'finish_verified'):
-        claimed, public_ready = None, False
+    claimed, rows, public_ready = ordinary_slot.claim_for_review(queue, selected_route, public_ready, claim_queue, read_queue, packet)
     if not rows and not available and claimed is None:
         result['remaining'] = int(not public_ready or native_review.busy(queue))
         return result
-
+    retained = (ordinary_slot.classify(root, root / config.get('wikiPath', settings_types.WIKI_REL), rows, queue, config, selected_route)
+                if claimed is not None and rows.native else [])
     try:
         pending_snapshots, pending_jobs = _pending_snapshots(root, config, rows)
         snapshots_valid = True
@@ -1629,7 +1594,7 @@ def run(
                               if not isinstance(job, dict) or '_pendingCleanup' not in job], root)
     private = {}
     private_jobs = []
-    for work in native_review.latest_first(available):
+    for work in native_review.scheduled(queue, available):
         job = work.state['binding']['job']
         private[id(job)] = work
         private_jobs.append((None, job))
@@ -1654,7 +1619,7 @@ def run(
     take_backlog = backlog[:leftover]
     to_process = take_fresh + take_backlog
     deferred = [raw for raw, _ in fresh[len(take_fresh):] + backlog[len(take_backlog):] if raw is not None]
-    remaining = deferred + malformed
+    remaining = deferred + malformed + retained
     processed_count = 0
     try:
         for idx, (raw_line, job) in enumerate(to_process):
@@ -1688,7 +1653,7 @@ def run(
             with cp.card_write_lock(root):
                 rows.finish_verified(queue, claimed, remaining, lambda *args: _return_cleanup(
                     root, queue, pending_snapshots, pending_jobs, remaining, *args))
-    result["processed"] = processed_count
+    result["processed"] += processed_count
     still_waiting = native_review.waiting(queue)
     result["remaining"] = len(remaining) + len(still_waiting) + int(bool(still_waiting.issues) or not public_ready)
     result["budget"] = budget

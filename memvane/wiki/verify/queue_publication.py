@@ -9,7 +9,7 @@ import stat
 import uuid
 
 from memvane.kernel.atomic_rename import fsync_dir
-from memvane.store.api import regular
+from memvane.wiki.workspace.handoff.api import evidence as regular
 from memvane.wiki.verify import candidate_stage, native_review, pending_ownership as ownership
 from memvane.wiki.verify.handoff_work import Work
 from memvane.wiki.workspace import api as workspace
@@ -36,9 +36,11 @@ def _swap(queue, work):
     return queue.with_name(name)
 
 
-def reserve(queue, job, selected, before, image, *, produced):
+def reserve(queue, job, selected, before, image, *, produced, deferred=None):
     binding = {'audience': 'native', 'job': job, 'route': job.get('selectedRoute'), 'produced': produced,
                'swap': '.verify-swap-' + uuid.uuid4().hex}
+    if deferred is not None:
+        binding['deferred'] = deferred
     if selected is not None:
         binding['route'] = workspace.route_identity(selected)
     return Work.create(queue, 'publication', binding, before, image=image)

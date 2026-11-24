@@ -1,19 +1,21 @@
 """Seal an oversized verify input before an ordinary consumer can claim it."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import fcntl
 from itertools import islice
 import os
 import stat
 
-from memvane.wiki.verify import batch_handoff
+from memvane.wiki.verify import batch_consumer, batch_handoff
 from memvane.wiki.verify.handoff_work import HEX_ID, Work
 from memvane.wiki.verify.pending_replacement import _VERIFY_QUEUE_BYTES
 from memvane.wiki.workspace import api as workspace
 
 
 def _dead(queue, claim):
-    suffix = claim.name.removeprefix(queue.name + '.claimed.')
+    prefix = 'native.claimed.' if claim.name.startswith('native.claimed.') else queue.name + '.claimed.'
+    suffix = claim.name.removeprefix(prefix)
     pid, separator, nonce = suffix.partition('.')
     if not separator or not nonce or '.' in nonce or not pid.isascii() or not pid.isdigit():
         return False
@@ -33,11 +35,18 @@ def unresolved(queue, holds=None):
     if holds is None:
         if not (queue.parent / '.handoff').exists():
             return False
-        holds = Work.entries(queue, 'hold')
+        holds = Work.entries(queue, 'hold', control_only=True)
     # A foreign generation alone has no authority over an independent native input.
     uncertain = any(issue['reason'] == 'handoff_scan_limit' or HEX_ID.fullmatch(issue['name'])
                     for issue in holds.issues)
-    return uncertain or any(item.state['blobs']['raw'].get('storage') == 'inode' for item in holds)
+    return uncertain or any(not batch_consumer.parked(batch_handoff.Batch(item)) for item in holds
+                            if item.state['blobs']['raw'].get('storage') == 'inode')
+
+
+def opaque_ranges(queue, holds=None):
+    holds = Work.entries(queue, 'hold', control_only=True) if holds is None else holds
+    return any(item.state['blobs']['raw'].get('storage') == 'inode' and
+               item.state.get('proof', {}).get('opaque') for item in holds)
 
 
 def _source(queue):
@@ -46,9 +55,28 @@ def _source(queue):
     if len(claims) > 64:
         raise BlockingIOError('verify_batch_claim_limit')
     try:
-        size = queue.lstat().st_size
+        node = queue.lstat()
+        size = node.st_size
     except FileNotFoundError:
         size = 0
+    # A large single snapshot cannot also pay for claim validation and return in this pass.
+    if size > _VERIFY_QUEUE_BYTES // 4 and not claims:
+        return queue
+    if 0 < size <= _VERIFY_QUEUE_BYTES:
+        from memvane.wiki.workspace.handoff.api import bounded_rows, budget
+        ledger = budget.current()
+        stamp = ('queue-size', node.st_dev, node.st_ino, node.st_size, node.st_ctime_ns, node.st_mtime_ns)
+        observed = ledger is not None and stamp in ledger.snapshots
+        try:
+            if not observed:
+                for _ in bounded_rows(queue):
+                    pass
+                if ledger is not None:
+                    ledger.snapshots[stamp] = True
+        except OSError as error:
+            if str(error) not in ('queue_occurrence_limit', 'handoff_source_rows_pass_limit', 'handoff_verify_rows_pass_limit'):
+                raise
+            size = _VERIFY_QUEUE_BYTES + 1
     if size > _VERIFY_QUEUE_BYTES:
         if claims:
             raise BlockingIOError('verify_batch_has_claim')
@@ -63,12 +91,39 @@ def _source(queue):
     return None
 
 
+def delivery(queue):
+    from memvane.wiki.workspace.handoff.api import delivery_pending
+    if next(queue.parent.glob(queue.name + '.claimed.*'), None) is not None:
+        return None
+    for work in Work.entries(queue, 'hold', control_only=True):
+        state = work.state
+        if state['blobs']['raw'].get('storage') != 'inode' or state['phase'] != 'held':
+            continue
+        proof = state.get('proof', {})
+        name = proof.get('lastDelivery')
+        if not name or not delivery_pending(queue, name):
+            continue
+        batch = batch_handoff.Batch(work)
+        with batch._input() as (_, node):
+            if state['sourceNode'] == node and state['cursor'] == node['size']:
+                return name
+    return None
+
+
 class BatchPending(BlockingIOError):
     pass
 
 
 def _ready_locked(queue, bound):
+    from memvane.wiki.workspace.handoff.api import public_name
+    public = public_name(queue)
     source = _source(queue)
+    if public != queue:
+        if source is None:
+            return True
+        binding = {'purpose': 'queue-batch', 'route': workspace.route_identity(bound)}
+        batch_handoff.adopt(public, source, binding=binding, orphan_dead=lambda path: _dead(public, path))
+        return False
     if source is None and not unresolved(queue):
         return True
 
@@ -76,10 +131,13 @@ def _ready_locked(queue, bound):
         return _dead(queue, claim)
 
     active = batch_handoff.active(queue, orphan_dead=dead)
-    if active or active.issues:
+    if active.issues:
         return False
+    active = [batch for batch in active if not batch_consumer.parked(batch)]
+    if active:
+        return False  # The outer prepare pass advances it without holding the queue lock.
     if source is not None:
-        binding = {'purpose': 'verify-batch', 'route': workspace.route_identity(bound)}
+        binding = {'purpose': 'queue-batch', 'route': workspace.route_identity(bound)}
         batch_handoff.adopt(queue, source, binding=binding, orphan_dead=dead)
         return False
     return True
@@ -95,10 +153,8 @@ def guard_claim(queue, bound):
         raise BatchPending('verify_batch_retained')
 
 
-def prepare(root, queue, bound):
-    """Return False while the retained ranges still own review or unknown references."""
-    if _source(queue) is None and not unresolved(queue):
-        return True
+@contextmanager
+def _locked(root, queue):
     with workspace.card_write_lock(root, blocking=False):
         name = workspace.queue_lock_path(queue)
         fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_NONBLOCK | os.O_NOFOLLOW, 0o600)
@@ -108,7 +164,35 @@ def prepare(root, queue, bound):
             if (not stat.S_ISREG(node.st_mode) or node.st_nlink != 1 or node.st_uid != os.getuid()
                     or not os.path.samestat(node, name.lstat())):
                 raise OSError('unsafe_verify_batch_lock')
-            guard_claim(queue, bound)
-            return True
+            yield
         finally:
             os.close(fd)
+
+
+def prepare(root, queue, bound):
+    """Read the current window outside both shared locks; each commit reconfirms its generation."""
+    source = _source(queue)
+    if source is None and not unresolved(queue):
+        return True
+    held = Work.entries(queue, 'hold', control_only=True)
+    for work in held:
+        state = work.state
+        if state['phase'] != 'held' or state['blobs']['raw'].get('storage') != 'inode':
+            continue
+        batch = batch_handoff.Batch(work)
+        if batch_consumer.parked(batch):
+            continue
+        @contextmanager
+        def commit():
+            with _locked(root, queue):
+                if (not state['binding']['batch'].get('native') and
+                        next(queue.parent.glob(queue.name + '.claimed.*'), None) is not None):
+                    raise BatchPending('released_claim_requires_reassessment')
+                yield
+        if held.issues:
+            return False
+        done = batch_consumer.advance(batch, gate=commit)
+        return bool(done and source is None and not unresolved(queue))
+    with _locked(root, queue):
+        guard_claim(queue, bound)
+        return True

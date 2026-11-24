@@ -97,7 +97,8 @@ class VerifyCase(FixtureCase):
         return self.ledger('verify-log.jsonl')
 
     def queued(self):
-        return self.queue.read_text(encoding='utf-8') if self.queue.exists() else ''
+        from tests.support.queue_files import pending_text
+        return pending_text(self.queue)
 
     def card_now(self):
         return self.card.read_text(encoding='utf-8')
@@ -112,3 +113,29 @@ class VerifyCase(FixtureCase):
 
     def assert_status(self, status):
         self.assertRegex(self.card_now(), '(?m)^status: %s$' % status)
+
+
+def waiting_reviews(queue):
+    from memvane.wiki.verify.native_review import waiting
+    return waiting(queue)
+
+
+def deferred_replacements(queue):
+    from memvane.wiki.verify.deferred_review import active
+    return active(queue)
+
+
+def retained_batches(queue):
+    from memvane.wiki.verify.batch_handoff import active
+    return active(queue)
+
+
+def full_copy_quota(queue):
+    from memvane.wiki.verify.copy_quota import LIMIT
+    from memvane.wiki.verify.handoff_work import Work
+    retained = []
+    for index in range(8):
+        record = Work.create(queue, 'hold', {'purpose': 'test-sole-copy', 'index': index}, bytes([index]) * (LIMIT // 8))
+        record.commit('held', proof={'validated': True}).commit('finished').archive()
+        retained.append(record)
+    return retained
