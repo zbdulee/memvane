@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import threading
 import time
+import uuid
 from unittest.mock import patch
 
 from memvane.wiki.workspace import api as workspace
@@ -61,24 +62,18 @@ class ClaimRecovery(FixtureCase):
         self.assertEqual((seen, row['backfillReceipt']), (['docs/poison.md'], {'fixture': 'receipt'}))
         self.assertFalse(orphan.exists())
 
-    def test_live_pid_older_than_backstop_is_recovered(self):
+    def test_live_pid_older_than_backstop_keeps_its_claim(self):
         orphan = self.orphan('old', {'path': 'docs/old.md'}, pid=os.getppid())
         old = time.time() - 25 * 3600
         os.utime(orphan, (old, old))
-        claimed = workspace.claim_queue(self.queue)
-        self.assertEqual(json.loads(claimed.read_text())['path'], 'docs/old.md')
-        self.assertFalse(orphan.exists())
+        self.assertIsNone(workspace.claim_queue(self.queue))
+        self.assertTrue(orphan.exists())
 
     def test_requeue_write_failure_keeps_original_claim(self):
         orphan = self.orphan('unwritable', {'path': 'docs/retry.md'})
-        real_open = Path.open
-        def guarded_open(path, *args, **kwargs):
-            if path == self.queue and args and args[0] == 'a':
-                raise OSError('synthetic queue write failure')
-            return real_open(path, *args, **kwargs)
-        with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(self.dead_pid)}), \
-             patch.object(Path, 'open', guarded_open):
-            self.assertIsNone(workspace.claim_queue(self.queue))
+        with patch.object(os, 'fsync', side_effect=OSError('synthetic ENOSPC')):
+            with self.assertRaisesRegex(OSError, 'ENOSPC'):
+                workspace.claim_queue(self.queue)
         self.assertTrue(orphan.exists())
         with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(self.dead_pid)}):
             claimed = workspace.claim_queue(self.queue)
@@ -87,29 +82,170 @@ class ClaimRecovery(FixtureCase):
     def test_unreadable_orphan_does_not_block_a_separate_backlog(self):
         orphan = self.orphan('unreadable', {'path': 'docs/orphan.md'})
         self.queue.write_text(json.dumps({'path': 'docs/backlog.md'}) + '\n')
-        real_read = Path.read_text
+        real_read = os.open
         def guarded_read(path, *args, **kwargs):
             if path == orphan:
                 raise OSError('synthetic read failure')
             return real_read(path, *args, **kwargs)
-        with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(self.dead_pid)}), \
-             patch.object(Path, 'read_text', guarded_read):
+        with patch.object(os, 'open', side_effect=guarded_read):
             claimed = workspace.claim_queue(self.queue)
         self.assertTrue(orphan.exists())
         self.assertEqual(json.loads(claimed.read_text())['path'], 'docs/backlog.md')
 
     def test_discard_ledger_extracts_targets_from_each_queue_shape(self):
-        cases = [('source-queue.jsonl', {'source': {'path': 'docs/source.md'}}, 'docs/source.md'),
-                 ('verify-queue.jsonl', {'card': {'targetPath': 'docs/card.md'}}, 'docs/card.md'),
-                 ('merge-needed.jsonl', {'candidate': {'targetPath': 'docs/candidate.md'}}, 'docs/candidate.md'),
+        cases = [('merge-needed.jsonl', {'candidate': {'targetPath': 'docs/candidate.md'}}, 'docs/candidate.md'),
                  ('dedup-needed.jsonl', {'pageA': 'a.md', 'pageB': 'b.md'}, 'a.md <-> b.md')]
-        with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(self.dead_pid)}):
-            for name, job, _ in cases:
+        for name, job, _ in cases:
+            self.queue = self.queue.parent / name
+            self.orphan('poison', {**job, '_requeue_count': 3})
+            self.assertIsNone(workspace.claim_queue(self.queue))
+        ledger = self.queue.parent / 'discard-ledger.jsonl'
+        self.assertEqual([json.loads(line)['targetPath'] for line in ledger.read_text().splitlines()],
+                         [expected for _, _, expected in cases])
+
+    def test_fourth_source_and_verify_orphan_are_native_until_completed(self):
+        for name in ('source-queue.jsonl', 'verify-queue.jsonl'):
+            with self.subTest(queue=name):
                 self.queue = self.queue.parent / name
-                self.orphan('poison', {**job, '_requeue_count': 3})
-                self.assertIsNone(workspace.claim_queue(self.queue, receipt_writer=lambda _job: None))
-        rows = [json.loads(line) for line in (self.queue.parent / 'discard-ledger.jsonl').read_text().splitlines()]
-        self.assertEqual([row['targetPath'] for row in rows], [expected for _, _, expected in cases])
+                row = {'path': 'a', 'forceRecompile': True, '_requeue_count': 3}
+                orphan = self.orphan('four', row)
+                original = orphan.read_bytes()
+                claim = workspace.claim_queue(self.queue)
+                self.assertEqual(claim.read_bytes(), original)
+                self.assertNotEqual(claim.parent, self.queue.parent)
+                self.assertFalse(orphan.exists())
+                self.assertEqual(self.queue.read_bytes(), b'')
+                self.assertTrue(workspace.queue_busy(self.queue))
+                rows = workspace.read_queue(claim)
+                rows.finish(self.queue, claim, [rows[0][0]])
+                next_claim = workspace.claim_queue(self.queue)
+                self.assertEqual(next_claim.read_bytes(), original)
+                self.assertEqual(next_claim.stat().st_mode & 0o777, 0o600)
+                workspace.read_queue(next_claim).finish(self.queue, next_claim, [])
+                self.assertFalse(workspace.queue_busy(self.queue))
+                self.assertFalse((self.queue.parent / 'discard-ledger.jsonl').exists())
+
+    def test_return_separates_late_identical_occurrence_and_retains_torn_tail(self):
+        row = b'{"forceRecompile":true}\n'
+        self.queue.write_bytes(row)
+        with self.queue.open('ab', buffering=0) as legacy:
+            claim = workspace.claim_queue(self.queue)
+            rows = workspace.read_queue(claim)
+            self.assertEqual(rows.line_ranges, [(0, len(row))])
+            legacy.write(row + b'{"partial":')
+        rows.finish(self.queue, claim, [rows[0][0]])
+        self.assertEqual(self.queue.read_bytes(), row * 2)
+        self.assertEqual([p.read_bytes() for p in self.queue.parent.rglob('fragment-*')], [b'{"partial":'])
+
+    def test_public_and_private_claim_name_collisions_keep_both_files(self):
+        nonce = uuid.UUID('1' * 32)
+        with patch.object(uuid, 'uuid4', return_value=nonce):
+            self.queue.write_bytes(b'{"one":1}\n')
+            first = workspace.claim_queue(self.queue)
+            rows = workspace.read_queue(first)
+            self.queue.write_bytes(b'{"two":2}\n')
+            with self.assertRaises(FileExistsError):
+                workspace.claim_queue(self.queue)
+            self.assertEqual(first.read_bytes(), b'{"one":1}\n')
+            self.assertEqual(self.queue.read_bytes(), b'{"two":2}\n')
+            private = rows.privatize(self.queue, first)
+            other = workspace.claim_queue(self.queue)
+            with self.assertRaises(FileExistsError):
+                workspace.read_queue(other).privatize(self.queue, other)
+            self.assertEqual(private.read_bytes(), b'{"one":1}\n')
+            self.assertEqual(other.read_bytes(), b'{"two":2}\n')
+            ready = private.parent / ('ready-' + nonce.hex)
+            ready.write_bytes(b'{"three":3}\n')
+            with self.assertRaises(FileExistsError):
+                workspace.claim_queue(self.queue)
+            self.assertEqual(ready.read_bytes(), b'{"three":3}\n')
+            self.assertEqual(private.read_bytes(), b'{"one":1}\n')
+
+    def test_changed_prefix_keeps_original_claim_and_live(self):
+        self.queue.write_bytes(b'{"a":1}\n')
+        claim = workspace.claim_queue(self.queue)
+        rows = workspace.read_queue(claim)
+        claim.write_bytes(b'{"a":2}\n')
+        with self.assertRaisesRegex(OSError, 'prefix changed'):
+            rows.finish(self.queue, claim, [])
+        self.assertTrue(claim.exists())
+        self.assertEqual(self.queue.read_bytes(), b'')
+
+    def test_consumed_swap_survives_released_owner_taking_live(self):
+        row = b'{"forceRecompile":true}\n'
+        self.queue.write_bytes(row)
+        claim = workspace.claim_queue(self.queue)
+        rows = workspace.read_queue(claim)
+        real_replace = os.replace
+        def interrupt(src, dst):
+            real_replace(src, dst)
+            if dst == self.queue:
+                raise OSError('crash before recording publication')
+        with patch.object(os, 'replace', side_effect=interrupt):
+            with self.assertRaisesRegex(OSError, 'publication'):
+                rows.finish(self.queue, claim, [rows[0][0]])
+        consumed = self.queue.with_name(self.queue.name + '.claimed.%d.old' % os.getpid())
+        self.queue.rename(consumed)
+        self.queue.write_bytes(b'')
+        self.assertTrue(workspace.queue_busy(self.queue))  # released claim remains active
+        self.assertEqual(consumed.read_bytes(), row)
+        self.assertEqual(self.queue.read_bytes(), b'')
+        consumed.unlink()
+        self.assertFalse(workspace.queue_busy(self.queue))
+
+    def test_orphan_with_unproved_legacy_return_prefix_keeps_both_occurrences(self):
+        row = {'forceRecompile': True, 'source': {'path': 'both.md'}}
+        orphan = self.orphan('legacy', row)
+        with orphan.open('a') as handle:
+            handle.write(json.dumps({'source': {'path': 'tail.md'}}) + '\n')
+        self.queue.write_bytes((json.dumps(row) + '\n').encode() + b'{"source":')
+        claim = workspace.claim_queue(self.queue)
+        paths = [job['source']['path'] for _, job in workspace.read_queue(claim)]
+        self.assertEqual(paths, ['both.md', 'both.md', 'tail.md'])
+        self.assertEqual([p.read_bytes() for p in self.queue.parent.rglob('fragment-*')], [b'{"source":'])
+
+    def test_each_return_fsync_and_rename_cut_preserves_one_occurrence(self):
+        row = {'source': {'path': 'one.md'}, 'forceRecompile': True}
+        def exercise(name, operation, stop, after):
+            directory = self.tmp / name
+            directory.mkdir()
+            live = directory / 'source-queue.jsonl'
+            claim = directory / (live.name + '.claimed.2147483647.test')
+            claim.write_text(json.dumps(row) + '\n')
+            rows = workspace.read_queue(claim)
+            actual = getattr(os, operation)
+            calls = []
+
+            def interrupted(*args, **kwargs):
+                calls.append(1)
+                if len(calls) == stop and not after:
+                    raise OSError('cut')
+                result = actual(*args, **kwargs)
+                if len(calls) == stop:
+                    raise OSError('cut')
+                return result
+
+            with patch.object(os, operation, side_effect=interrupted):
+                if stop is None:
+                    rows.finish(live, claim, [rows[0][0]])
+                else:
+                    with self.assertRaisesRegex(OSError, 'cut'):
+                        rows.finish(live, claim, [rows[0][0]])
+            with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': '2147483647'}):
+                recovered = workspace.claim_queue(live)
+            result = workspace.read_queue(recovered)
+            self.assertEqual([job['source']['path'] for _, job in result], ['one.md'])
+            self.assertTrue(result[0][1]['forceRecompile'])
+            result.finish(live, recovered, [])
+            self.assertFalse(workspace.queue_busy(live))
+            return len(calls)
+
+        for operation in ('fsync', 'replace'):
+            count = exercise('count-' + operation, operation, None, False)
+            for stop in range(1, count + 1):
+                for after in (False, True):
+                    with self.subTest(operation=operation, stop=stop, after=after):
+                        exercise('%s-%d-%d' % (operation, stop, after), operation, stop, after)
 
     def test_append_and_claim_share_lock_and_preserve_both_jobs(self):
         first = {'source': {'path': 'docs/a.md', 'collection': 'raw'}}
@@ -144,13 +280,15 @@ class ClaimRecovery(FixtureCase):
             self.assertTrue(started.wait(2))
             self.assertTrue(append_started.wait(2))
             self.assertFalse(finished.wait(0.05), 'claim must wait for the shared queue lock')
-            self.assertFalse(append_finished.wait(0.05), 'append must wait for the shared queue lock')
+            self.assertTrue(append_finished.wait(2), 'contended producer must defer without changing live')
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         thread.join(timeout=5)
         appender.join(timeout=5)
         self.assertFalse(thread.is_alive())
         self.assertFalse(appender.is_alive())
-        self.assertEqual(errors, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], BlockingIOError)
+        intake.append_source_jobs(self.queue, [second])
         claimed = outcomes[0]
         rows = [json.loads(line) for path in (claimed, self.queue) for line in path.read_text().splitlines()]
         self.assertEqual({row['source']['path'] for row in rows}, {'docs/a.md', 'docs/b.md'})

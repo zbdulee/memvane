@@ -1,7 +1,6 @@
 """Durable compile queue claim, read, and orphan recovery."""
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 from datetime import datetime
@@ -9,10 +8,11 @@ from pathlib import Path
 import time
 import uuid
 from memvane.kernel.paths import now_iso
+from memvane.kernel.atomic_rename import fsync_dir
+from memvane.wiki.workspace import queue_return
 
 from memvane.kernel import cooldown as qmd_cooldown
 from memvane.wiki.workspace import compile_paths as cp
-from memvane.wiki.workspace.queue_paths import _queue_lock_path
 from memvane.wiki.workspace.types import MAX_REQUEUE_COUNT, DEDUP_RESOLVE_IMPLICIT_TTL, CLAIMED_PID_BACKSTOP_SECS
 
 
@@ -39,7 +39,7 @@ def _is_pid_alive(pid: int) -> bool:
         return False
 
 
-def _write_discard_ledger(compile_dir: Path, queue_name: str, job: dict, requeue_count: int, *, receipt_writer=None):
+def _write_discard_ledger(compile_dir: Path, queue_name: str, job: dict, requeue_count: int, *, receipt=None):
     # 이 원장은 claim_queue 경로에서 쓰여 config 컨텍스트가 없으므로 이름을 고정한다
     ledger_path = compile_dir / cp.DISCARD_LEDGER
     source_obj = job.get("source")
@@ -71,25 +71,30 @@ def _write_discard_ledger(compile_dir: Path, queue_name: str, job: dict, requeue
         "reason": "max_requeue_exceeded",
         "requeue_count": requeue_count,
     }
-    if queue_name == cp.SOURCE_QUEUE:
-        if receipt_writer is None:
-            raise ValueError('backfill_discard_authority_unavailable')
-        receipt = receipt_writer(job)
-        if receipt is not None:
-            payload['backfillReceipt'] = receipt
-    # Audit framing is not authoritative. A torn append cannot strand a cohort:
-    # only the separate atomic private receipt may settle frozen source work.
-    append_jsonl(ledger_path, payload)
+    if queue_name not in (cp.SOURCE_QUEUE, cp.VERIFY_QUEUE) and receipt is None:
+        append_jsonl(ledger_path, payload)
+        return
+    if receipt is not None:
+        payload['backfillReceipt'] = receipt
+    # Only the atomic receipt can settle the cohort; audit durability is separate.
+    with ledger_path.open('a', encoding='utf-8') as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + '\n')
+        handle.flush()
+        os.fsync(handle.fileno())
+    fsync_dir(ledger_path.parent)
 
 
 def reclaim_orphaned_claimed(path: Path, max_requeue: int = MAX_REQUEUE_COUNT, *, receipt_writer=None):
     """
-    고아 *.claimed.* 파일들을 감지하여 원본 큐(path)로 requeue 하거나,
-    requeue 횟수가 max_requeue 초과시 폐기하고 원장에 남긴다.
+    Return dead claims under the live queue lock. Source and verify rows at
+    their retry limit stay private unless a frozen discard receipt settles them.
     MUST be called under _queue_lock_path(path) flock.
     """
     if not path.parent.exists():
         return
+    native = path.name in (cp.SOURCE_QUEUE, cp.VERIFY_QUEUE) or receipt_writer is not None
+    if native:
+        queue_return.resume(path)
     prefix = f"{path.name}.claimed."
     current_pid = os.getpid()
     now = time.time()
@@ -109,13 +114,11 @@ def reclaim_orphaned_claimed(path: Path, max_requeue: int = MAX_REQUEUE_COUNT, *
         if file_pid == current_pid:
             continue
 
-        # 1차 판정: PID 검사. PID가 죽었으면 즉시 고아 회수 대상.
-        # PID가 살아있더라도 PID 재사용(재부팅 후 root 데몬 등에 PID 겹침)에 대비해 2차 mtime backstop(≥24h)을 적용함.
-        # 임계값 선택 근거: 짧게 잡으면 안 됨. 한 run은 extractor(batch.maxPerRun=10) + dedup judge + verify 호출로
-        # 정상 동작 중 수십 분이 소요될 수 있으며, 짧은 임계는 살아있는 소유자의 배치를 탈취해 유료 CLI 이중 과금을 유발함.
-        # 24h는 정상 run 최악 소요시간보다 압도적으로 큼.
-        # 반면 file_pid가 없는 파일은 소유자가 없으므로 짧은 임계(DEDUP_RESOLVE_IMPLICIT_TTL=1h)를 적용함.
+        # Only ancillary queues use the historic PID-reuse mtime backstop.
         if file_pid and _is_pid_alive(file_pid):
+            # For source/verify, file age cannot disprove a live owner.
+            if native:
+                continue
             try:
                 mtime = child.stat().st_mtime
                 if not qmd_cooldown.window_elapsed(mtime, now, CLAIMED_PID_BACKSTOP_SECS):
@@ -131,91 +134,103 @@ def reclaim_orphaned_claimed(path: Path, max_requeue: int = MAX_REQUEUE_COUNT, *
                 continue
 
         try:
-            raw_content = child.read_text(encoding="utf-8", errors="replace")
+            if native:
+                rows = queue_return.ClaimRows(child)
+            else:
+                rows = _text_rows(child.read_text(encoding='utf-8', errors='replace'))
         except OSError:
             continue
 
-        lines_to_requeue = []
-        for line in raw_content.splitlines():
-            if not line.strip():
+        remaining, held = [], []
+        for line, data in rows:
+            if data is None:
+                remaining.append(line)
                 continue
             try:
-                data = json.loads(line)
-                if isinstance(data, dict):
-                    try:
-                        req_cnt = int(data.get("_requeue_count", 0)) + 1
-                    except (TypeError, ValueError):
-                        # 손상된 _requeue_count 값("3x" 등)은 절대 raise하지 않고 1로 수렴시켜
-                        # 큐가 영구 wedge되는 것을 막고, 다음 회차에서 수렴하여 MAX_REQUEUE_COUNT 도달 시 정리를 보장함.
-                        req_cnt = 1
-                    if req_cnt > max_requeue:
-                        _write_discard_ledger(path.parent, path.name, data, req_cnt, receipt_writer=receipt_writer)
-                    else:
-                        data["_requeue_count"] = req_cnt
-                        lines_to_requeue.append(json.dumps(data, ensure_ascii=False))
-                else:
-                    lines_to_requeue.append(line)
-            except json.JSONDecodeError:
-                lines_to_requeue.append(line)
-
-        # at-least-once append 후 unlink 성공을 전제로 MAX_REQUEUE_COUNT 상한이 유계됨.
-        # I/O 실패(권한/ENOSPC/읽기전용) 시 claim_queue 밖으로 예외를 전파하지 않고 continue하여 다른 큐 claim을 방해하지 않음.
-        if lines_to_requeue:
+                count = int(data.get('_requeue_count', 0)) + 1
+            except (TypeError, ValueError, OverflowError):
+                count = 1
+            if count <= max_requeue:
+                remaining.append(json.dumps({**data, '_requeue_count': count}, ensure_ascii=False))
+                continue
+            receipt = None
+            if path.name == cp.SOURCE_QUEUE or receipt_writer is not None:
+                if receipt_writer is not None and data.get('partialCompile') is not True:
+                    receipt = receipt_writer(data)
+                if receipt is None:
+                    held.append(line)
+                    continue
+            elif path.name == cp.VERIFY_QUEUE:
+                held.append(line)
+                continue
+            _write_discard_ledger(path.parent, path.name, data, count, receipt=receipt)
+        if native:
+            queue_return.finish_locked(path, child, remaining, rows, held=queue_return.lines_bytes(held))
+        else:
             try:
-                with path.open("a", encoding="utf-8") as handle:
-                    for rline in lines_to_requeue:
-                        handle.write(rline if rline.endswith("\n") else rline + "\n")
+                if remaining:
+                    with path.open('a', encoding='utf-8') as handle:
+                        for line in remaining:
+                            handle.write(line + '\n')
+                child.unlink(missing_ok=True)
             except OSError:
                 continue
 
-        try:
-            child.unlink(missing_ok=True)
-        except OSError:
-            continue
 
-
-def read_queue(path: Path):
-    if not path.exists():
-        return []
+def _text_rows(content):
     rows = []
-    try:
-        content = path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return []
     for line in content.splitlines():
         if not line.strip():
             continue
         try:
             parsed = json.loads(line)
         except json.JSONDecodeError:
-            rows.append((line, None))
-            continue
+            parsed = None
         rows.append((line, parsed if isinstance(parsed, dict) else None))
     return rows
+
+
+def read_queue(path: Path):
+    if path is None or not path.exists():
+        return []
+    try:
+        queue_name, separator, _owner = path.name.partition('.claimed.')
+        if separator and queue_name not in (cp.MERGE_NEEDED, cp.DEDUP_NEEDED):
+            return queue_return.ClaimRows(path)
+        return _text_rows(path.read_text(encoding='utf-8', errors='replace'))
+    except OSError:
+        return []
 
 
 def claim_queue(path: Path, *, receipt_writer=None) -> Path | None:
     claimed = path.with_name(f"{path.name}.claimed.{os.getpid()}.{uuid.uuid4().hex}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(_queue_lock_path(path), "a", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    with queue_return.legacy_card_lock(path), queue_return.queue_locked(path):
+        live_existed = path.exists()
+        reclaim_orphaned_claimed(path, receipt_writer=receipt_writer)
+        native = path.name in (cp.SOURCE_QUEUE, cp.VERIFY_QUEUE) or receipt_writer is not None
+        if native:
+            private = queue_return.take_private(path, _is_pid_alive)
+            if private is not None:
+                return private
+            if not live_existed and path.exists() and path.stat().st_size == 0:
+                return None
         try:
-            reclaim_orphaned_claimed(path, receipt_writer=receipt_writer)
-            if not path.exists():
-                return None
-            try:
+            if native:
+                queue_return._move_claim(path, claimed, private=False)
+            else:
                 os.replace(path, claimed)
-                # os.replace는 mtime을 유지하므로 오래된 backlog 큐 claim 시 claim 시각이 반영되지 않는 병리가 발생함.
-                # os.utime으로 claimed 파일의 mtime을 현재 시각(claim 시각)으로 최신화한다.
-                try:
-                    os.utime(claimed, None)
-                except OSError:
-                    pass
-                path.touch(exist_ok=True)
-            except FileNotFoundError:
-                return None
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        except FileNotFoundError:
+            return None
+        if not native:
+            try:
+                os.utime(claimed, None)
+            except OSError:
+                pass
+            path.touch(exist_ok=True)
+            return claimed
+        os.utime(claimed, None)
+        queue_return.ensure_live(path)
     return claimed
 
 

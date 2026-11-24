@@ -30,9 +30,10 @@ def _native_renamer():
     return function, flag
 
 
-def rename_noreplace(parent_fd, source, target):
+def rename_noreplace(parent_fd, source, target, *, target_parent_fd=None):
+    target_parent_fd = parent_fd if target_parent_fd is None else target_parent_fd
     function, flag = _native_renamer()
-    if function(parent_fd, os.fsencode(source), parent_fd, os.fsencode(target), flag) != 0:
+    if function(parent_fd, os.fsencode(source), target_parent_fd, os.fsencode(target), flag) != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), target)
 

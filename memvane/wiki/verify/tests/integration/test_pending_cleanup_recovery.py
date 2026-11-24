@@ -237,8 +237,9 @@ class PendingRecovery(FixtureCase):
         row = json.dumps(self.job)
         a, b = self.claim('a', row + '\n'), self.claim('b', row + '\n')
         snapshots, _ = verify._pending_snapshots(self.root, self.cfg, [(row, self.job)])
-        self.assertIs(verify._cleanup_pending(self.root, self.queue, a, snapshots, [(row, self.job)]), False)
-        self.assertIs(verify._cleanup_pending(self.root, self.queue, b, snapshots, [(row, self.job)]), False)
+        # Each held claim references the other pass's snapshot.
+        for other in (a, b):
+            self.assertFalse(verify._cleanup_pending(self.root, snapshots, b'', [other], False))
         self.assertTrue(self.pending.exists())
 
     def test_the_receipt_key_binds_the_exact_job(self):

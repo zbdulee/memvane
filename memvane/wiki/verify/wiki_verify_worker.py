@@ -42,7 +42,6 @@ path); queue/log records never store source bodies.
 
 from __future__ import annotations
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -65,7 +64,7 @@ from memvane.wiki.card import api as wsm
 from memvane.wiki.card import api as source_spans
 from memvane.wiki.card.api import card_sources_allowed, parse_frontmatter
 from memvane.wiki.card import api as yaml_scalars
-from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path, requeue_lines, append_jsonl, read_queue, claim_queue
+from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, append_jsonl, read_queue, claim_queue
 from memvane.wiki.verify.pending_replacement import pending_replacement, job_revisions, pending_matches_job
 from memvane.wiki.verify.verify_ledger import ledger_writable, source_body_hash
 from memvane.wiki.verify.verification_stamp import stamp_verification, render_verification, write_rendered_verification
@@ -1403,62 +1402,51 @@ def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict
     return found, jobs
 
 
-def _cleanup_pending(root: Path, queue: Path, claimed: Path, snapshots: dict, rows: list) -> bool | None:
-    """True: checked; False: retry cleanup; None: retain an uncertain claim."""
-    with cp.card_write_lock(root):
-        with open(_queue_lock_path(queue), 'a', encoding='utf-8') as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+def _cleanup_pending(root, snapshots, extra_rows, paths, uncertain):
+    """Called inside the card and queue locks, before the claim return commits."""
+    if uncertain:
+        return False
+    referenced = set()
+
+    def collect(raw):
+        if raw and not raw.endswith(b'\n'):
+            return False
+        for line in raw.split(b'\n'):
+            if not line.strip():
+                continue
             try:
-                # Older compilers can have an append FD open across rename.
-                # Their card lock has drained before this read. Preserve every
-                # late line before dropping the claim.
-                initial = [raw for raw, _ in rows]
-                actual = [line for line in claimed.read_text(encoding='utf-8').splitlines() if line.strip()]
-                if actual[:len(initial)] != initial:
-                    return None
-                late = actual[len(initial):]
-                if late:
-                    with queue.open('a', encoding='utf-8') as handle:
-                        for line in late:
-                            handle.write(line + '\n')
-                paths = [queue] + [p for p in queue.parent.iterdir()
-                    if p.name.startswith(queue.name + '.claimed.') and p != claimed]
-                referenced = set()
-                for path in paths:
-                    info = path.lstat()
-                    if not stat.S_ISREG(info.st_mode) or path.is_symlink():
-                        return False
-                    for line in path.read_text(encoding='utf-8').splitlines():
-                        if not line.strip():
-                            continue
-                        try:
-                            job = json.loads(line)
-                        except (ValueError, UnicodeError):
-                            return False
-                        if not isinstance(job, dict):
-                            return False
-                        pending = job.get('pendingPath')
-                        if isinstance(pending, str):
-                            referenced.add(root / pending)
-                deferred = False
-                for path, old in snapshots.items():
-                    if path in referenced:
-                        deferred = True
-                        continue
-                    if path.parent.resolve() != path.parent:
-                        continue
-                    try:
-                        info = path.lstat()
-                        current = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-                        if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1 and current == old:
-                            path.unlink()
-                    except FileNotFoundError:
-                        pass
-                    except OSError:
-                        return False
-                return not deferred
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                job = json.loads(line)
+            except (ValueError, UnicodeError, RecursionError):
+                return False
+            if not isinstance(job, dict):
+                return False
+            pending = job.get('pendingPath')
+            if isinstance(pending, str):
+                referenced.add(root / pending)
+        return True
+
+    if not collect(extra_rows):
+        return False
+    for path in paths:
+        if not stat.S_ISREG(path.lstat().st_mode) or not collect(path.read_bytes()):
+            return False
+    deferred = False
+    for path, old in snapshots.items():
+        if path in referenced:
+            deferred = True
+            continue
+        if path.parent.resolve() != path.parent:
+            continue
+        try:
+            info = path.lstat()
+            current = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1 and current == old:
+                path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+    return not deferred
 
 
 def run(
@@ -1508,15 +1496,15 @@ def run(
         return result
     rows = read_queue(claimed)
     if not rows:
-        # read_queue also returns [] on read failure; re-read under the same
-        # card/queue locks before ACK, preserving late legacy-FD appends.
-        try:
-            empty_checked = _cleanup_pending(root, queue, claimed, {}, rows)
-        except (OSError, UnicodeError):
-            empty_checked = None
-        if empty_checked is True:
-            claimed.unlink(missing_ok=True)
-        queue.touch(exist_ok=True)
+        # An unreadable prefix owns the next retry. A proven empty snapshot may
+        # have received complete rows on a released writer's old descriptor.
+        if not hasattr(rows, 'finish_verified'):
+            return result
+        with cp.card_write_lock(root):
+            try:
+                rows.finish_verified(queue, claimed, [], lambda *args: [])
+            except (OSError, UnicodeError):
+                pass
         return result
 
     try:
@@ -1579,13 +1567,9 @@ def run(
             if preserve:
                 remaining.append(raw_line)
     finally:
-        requeue_lines(queue, remaining)
-        try:
-            cleaned = (_cleanup_pending(root, queue, claimed, pending_snapshots, rows)
-                       if snapshots_valid else None)
-        except (OSError, UnicodeError):
-            cleaned = None
-        if cleaned is False:
+        def cleanup(extra_rows, paths, uncertain):
+            if _cleanup_pending(root, pending_snapshots, extra_rows, paths, uncertain):
+                return []
             retry = []
             remaining_paths = set()
             for raw in remaining:
@@ -1604,12 +1588,11 @@ def run(
                 marker = {'fingerprint': list(fingerprint), 'jobKey': _cleanup_job_key(job)}
                 retry.append(json.dumps({**job, '_pendingCleanup': marker},
                                         ensure_ascii=False, sort_keys=True))
-            requeue_lines(queue, retry)
-        # An unreadable or changed claim may contain late work: leave it intact
-        # for normal claimed-queue recovery rather than losing those rows.
-        if cleaned is not None:
-            claimed.unlink(missing_ok=True)
-        queue.touch(exist_ok=True)
+            return retry
+
+        if snapshots_valid:
+            with cp.card_write_lock(root):
+                rows.finish_verified(queue, claimed, remaining, cleanup)
     result["processed"] = processed_count
     result["remaining"] = len(remaining)
     result["budget"] = budget

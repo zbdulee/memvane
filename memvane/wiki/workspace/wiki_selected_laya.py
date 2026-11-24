@@ -202,11 +202,14 @@ def _queue_busy(queue: Path, *, receipt_writer=None):
     import fcntl
     from memvane.wiki.workspace.queue_paths import _queue_lock_path
     from memvane.wiki.workspace.queue import reclaim_orphaned_claimed
+    from memvane.wiki.workspace.queue_return import queue_recovery_pending, legacy_card_lock
     prefix = queue.name + '.claimed.'
-    with open(_queue_lock_path(queue), 'a', encoding='utf-8') as lock:
+    with legacy_card_lock(queue), open(_queue_lock_path(queue), 'a', encoding='utf-8') as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
             reclaim_orphaned_claimed(queue, receipt_writer=receipt_writer)
+            if queue_recovery_pending(queue):
+                return True
             if any(child.name.startswith(prefix) for child in queue.parent.iterdir()):
                 return True
             return bool(queue.exists() and queue.stat().st_size)

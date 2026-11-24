@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from memvane.wiki.compile import wiki_compile as writer, wiki_compile_worker as worker
 from memvane.wiki.engines import api as engines
-from memvane.wiki.verify import wiki_verify_worker as verifier
+from memvane.wiki.verify import api as verifier
 from memvane.wiki.workspace import api as workspace
 
 
@@ -42,8 +42,7 @@ def run(request):
                 worker.process_job(root, cfg, settings, job)
             return {'main': paid.call_count}
         if action == 'prepare':
-            from memvane.wiki.verify import upgrade_queue
-            return upgrade_queue.prepare(root, verify_queue, bound, cfg)
+            return verifier.prepare_queue(root, verify_queue, bound, cfg)
         if action == 'claim':
             claim = workspace.claim_queue(verify_queue)
             return claim.name

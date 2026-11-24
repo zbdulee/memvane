@@ -123,3 +123,37 @@ class TaggedQueueControls(FixtureCase):
                     self.assertEqual(sum(row.get('result') == 'stamp_failed' for row in log), count)
                     self.assertEqual(self.target.read_bytes(), before)
                     self.assertTrue((self.root / job['pendingPath']).is_file())
+
+    def test_released_claim_crosses_each_native_return_publication_boundary(self):
+        from unittest.mock import patch
+        from memvane.wiki.workspace import api as workspace
+        for tag in TAGS:
+            for boundary in ('before', 'after'):
+                with self.subTest(tag=tag, boundary=boundary):
+                    self.prepare(tag + boundary)
+                    raw = b'{"targetPath":"same","forceRecompile":true}\n'
+                    self.queue.parent.mkdir(parents=True, exist_ok=True)
+                    self.queue.write_bytes(raw * 2)
+                    claimed = workspace.claim_queue(self.queue)
+                    observed = workspace.read_queue(claimed)
+                    replace = os.replace
+
+                    def stop_at_publication(src, dst):
+                        if dst == self.queue:
+                            if boundary == 'after':
+                                replace(src, dst)
+                            raise OSError('injected publication stop')
+                        replace(src, dst)
+
+                    with patch.object(os, 'replace', side_effect=stop_at_publication):
+                        with self.assertRaisesRegex(OSError, 'injected'):
+                            observed.finish(self.queue, claimed, [observed[0][0]])
+                    self.assertFalse(claimed.exists())
+                    self.assertEqual(len(list(self.queue.parent.rglob('raw-*'))), 1)
+                    legacy = self.queue.parent / self.invoke(tag, 'claim')
+                    self.assertEqual(legacy.read_bytes(), raw if boundary == 'after' else b'')
+                    legacy.unlink()  # The released consumer finishes its claimed batch.
+                    native = workspace.claim_queue(self.queue)
+                    self.assertEqual(native.read_bytes(), raw if boundary == 'before' else b'')
+                    workspace.read_queue(native).finish(self.queue, native, [])
+                    self.assertFalse(workspace.queue_busy(self.queue))

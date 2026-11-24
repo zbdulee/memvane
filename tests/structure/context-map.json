@@ -1757,6 +1757,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/workspace/queue_return.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/workspace/types.py": {
       "context": "wiki/workspace",
       "layer": "domain",
