@@ -241,7 +241,7 @@ def _reconcile_discard_locked(decision, row):
         _emit(decision, row)
 
 
-def reconcile_discards(bound):
+def reconcile_discards(bound, *, claimed_rows=None):
     """Outside the source-queue lock; receipt ACK survives claim unlink/crash."""
     if bound is None:
         return
@@ -261,8 +261,12 @@ def reconcile_discards(bound):
             return
         _reconcile_discard_locked(decision, row)
         progress = summary(row)
+        if claimed_rows is not None:
+            frozen = _frozen_claim_items(decision, row, claimed_rows)
     if progress['pending'] and not progress['dispatched']:
         wiki_selected_laya.request_sync(Path(decision['projectRoot']), bound)
+    if claimed_rows is not None:
+        return frozen
 
 
 def summary(row):
@@ -406,3 +410,15 @@ def settled_job(bound, job):
         row = _load(decision)
         found = _authority(decision, row, job) if row is not None else None
         return found is not None and found[1]['stage'] in ('settled', 'skipped')
+
+
+def _frozen_claim_items(decision, cohort, rows):
+    """Bind marked and superseding rows to their frozen item under the discovery lock."""
+    result = {}
+    for text, job in rows:
+        if not isinstance(job, dict):
+            continue
+        found = _authority(decision, cohort, job, markerless=True)
+        if found is not None:
+            result[text] = (cohort['id'], found[0], found[1]['sha256'])
+    return result

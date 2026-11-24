@@ -38,9 +38,9 @@ from memvane.settings.api import select_collections
 from memvane.wiki.intake.api import append_source_jobs, coalesce_claimed_jobs as dedup_jobs
 from memvane.wiki.intake.api import source_record as _source_record
 from memvane.wiki.workspace.api import (queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path,
-                                        requeue_lines, append_jsonl, read_queue, claim_queue,
+                                        append_jsonl, read_queue, claim_queue,
                                         parse_ts as _parse_ts)
-from memvane.wiki.compile import wiki_compile as wc
+from memvane.wiki.compile import backfill_work, wiki_compile as wc
 from memvane.wiki.verify import api as wiki_verify
 from memvane.learning.api import card_prompt_budget, emit_card_budget
 from memvane.wiki.card import api as wiki_freshness, types as wiki_markers
@@ -54,6 +54,7 @@ DEFAULT_SOURCE_QUEUE = cp.rel(ct.SOURCE_QUEUE)
 # 엔진 라벨이 없는 후보의 cooldown 키. `extractor.argv`/`extractor.default`(엔진 귀속
 # 불가 argv)가 스키마에서 사라진 뒤 남은 유일한 쓰임은 빈 key에 대한 폴백이다 —
 # `entries[""]`가 되면 그 항목이 "모든 엔진"처럼 읽히므로 이름을 붙여 둔다.
+_FROZEN_WORK = ContextVar('wiki_frozen_work', default=None)
 _EXTRACTOR_BUDGET = ContextVar('wiki_extractor_budget', default=None)
 STALE_QUEUE_SCAN_MAX_ROWS = 4096
 STALE_QUEUE_SCAN_MAX_BYTES = 8 * 1024 * 1024
@@ -575,15 +576,7 @@ def _partition_selected_jobs(rows, bound):
     return eligible, preserved, stale
 
 
-def _return_source_claim(queue, claimed, remaining):
-    # Checked by exceptions: removing the claim before a failed append loses
-    # work. Retain the claim only when the ordinary queue return itself fails.
-    requeue_lines(queue, remaining)
-    claimed.unlink(missing_ok=True)
-    queue.touch(exist_ok=True)
-
-
-def _commit_source_claim(queue, claimed, remaining, bound, *, stale_lines):
+def _commit_source_claim(queue, claimed, remaining, bound, *, stale_lines, snapshot):
     if stale_lines:
         from memvane.wiki.workspace import api as selected
         try:
@@ -592,9 +585,9 @@ def _commit_source_claim(queue, claimed, remaining, bound, *, stale_lines):
             # A busy owner or changed proof cannot authorize stale removal.
             # Return only unfinished and stale rows, never completed current
             # jobs. Ordinary deferrals must not consume orphan retry counts.
-            _return_source_claim(queue, claimed, remaining + stale_lines)
+            snapshot.finish(queue, claimed, remaining + stale_lines)
             raise
-    _return_source_claim(queue, claimed, remaining)
+    snapshot.finish(queue, claimed, remaining)
 
 
 def batch_ready(kept: list, idle_seconds: int, max_items: int, flush_all: bool) -> bool:
@@ -726,6 +719,34 @@ def _reuse_source_revision(root, config, job, source_revision, selected_route, b
     return None
 
 
+def _bounded_candidates(candidates, max_cards, job, cpath):
+    if len(candidates) > max_cards:
+        overflow = [
+            str(item.get("title") or "")[:120] for item in candidates[max_cards:]
+            if isinstance(item, dict)
+        ]
+        append_jsonl(cpath, {
+            **bounded_failure("skipped", job, "cards_per_source_cap"),
+            "cardsReturned": len(candidates),
+            "cardsCompiled": max_cards,
+            "skippedTitles": overflow[:20],
+        })
+        candidates = candidates[:max_cards]
+    return candidates
+
+
+def _write_round_candidate(root, candidate, final_reason, frozen, index, original):
+    def write():
+        if final_reason is None:
+            return compile_candidate(root, candidate)
+        return compile_candidate(root, candidate, final_reason=final_reason)
+
+    if frozen is None:
+        return write()
+    key = backfill_work.digest(backfill_work.canonical_json_bytes([index, final_reason, original]))
+    return frozen.write_sibling(key, write)
+
+
 def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
                 checkout=None) -> tuple[bool, bool, list[str]]:
     """Return (processed, preserve_job, verify_target_paths).
@@ -757,7 +778,9 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         append_jsonl(cpath, bounded_failure('skipped', job,
                                            'selected_route_unavailable'))
         return False, True, []
-    if job.get('initialBackfill') is not None:
+    frozen = _FROZEN_WORK.get()
+    continuing = frozen is not None and frozen.has_answer
+    if job.get('initialBackfill') is not None and not continuing:
         from memvane.wiki.intake import api as laya_wiki_backfill
         if laya_wiki_backfill.settled_job(selected_route, job):
             append_jsonl(cpath, bounded_failure('skipped', job, 'initial_backfill_already_settled'))
@@ -902,6 +925,10 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         append_jsonl(cpath, bounded_failure('skipped', job, 'initial_backfill_source_changed'))
         job['_backfillSkipped'] = True
         return True, False, []
+    if frozen is not None and frozen.revision != source_revision['sha256']:
+        # A superseding unmarked edit has no authority to resume the old answer.
+        frozen = None
+        continuing = False
     max_chars = int(compile_cfg.get("maxSourceChars", 12000) or 12000)
     bounded = decode_source_bounded(source_bytes, max_chars)
     if bounded is None:
@@ -912,10 +939,10 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     # produced a card the verifier could not adjudicate and that was deleted. Retrying
     # would reproduce the verdict and re-bill the user. Edit the source and the hash
     # changes, so the source is compiled again on its own.
-    if verify_suppression_hash(root, compile_cfg, rel) == wiki_verify.source_body_hash(content):
+    if not continuing and verify_suppression_hash(root, compile_cfg, rel) == wiki_verify.source_body_hash(content):
         append_jsonl(cpath, bounded_failure("skipped", job, "verify_inconclusive_suppressed"))
         return True, False, []
-    if selected_route is not None:
+    if selected_route is not None and not continuing:
         reuse = _reuse_source_revision(root, config, job, source_revision, selected_route,
                                       bound_pending, cpath)
         if reuse is not None:
@@ -994,7 +1021,10 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         if attempt_argv is None or attempt_engine in prior_attempts:
             continue
         budget = _EXTRACTOR_BUDGET.get()
-        if budget is not None:
+        cached = continuing and attempt_engine == frozen.state['engine']
+        if continuing and not cached:
+            continue
+        if budget is not None and not cached:
             if budget['remaining'] <= 0:
                 budget['deferred'] = True
                 if len(engines) > 1:
@@ -1012,7 +1042,10 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
             'requested': qmd_config.resolve_reasoning_effort(compile_cfg, attempt_engine, 'generation'),
             'capabilityDeclared': attempt_argv == _builtin_adapter_argv(attempt_engine),
         }}}
-        extracted, reason, returncode = run_extractor(attempt_argv, attempt_payload, timeout, root)
+        if cached:
+            extracted, reason, returncode = frozen.answer(), None, 0
+        else:
+            extracted, reason, returncode = run_extractor(attempt_argv, attempt_payload, timeout, root)
         attempts.append(attempt_engine)
         if len(engines) > 1 and reason == 'resource_deferred':
             job['_fallbackAttempts'] = {
@@ -1078,18 +1111,11 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     max_cards = max(1, min(
         int(budget_of(compile_cfg).get("cardsPerSource", 10) or 10), settings_types.MAX_CARDS_PER_SOURCE
     ))
-    if len(candidates) > max_cards:
-        overflow = [
-            str(item.get("title") or "")[:120] for item in candidates[max_cards:]
-            if isinstance(item, dict)
-        ]
-        append_jsonl(cpath, {
-            **bounded_failure("skipped", job, "cards_per_source_cap"),
-            "cardsReturned": len(candidates),
-            "cardsCompiled": max_cards,
-            "skippedTitles": overflow[:20],
-        })
-        candidates = candidates[:max_cards]
+    if frozen is not None:
+        # Persist the complete answer before the first writer can change a card.
+        extracted = frozen.prepare(extracted, engine)
+        candidates = extracted['candidates']
+    candidates = _bounded_candidates(candidates, max_cards, job, cpath)
     failed_compile = False
     refresh_complete = bool(candidates)
     extracted_qmd = extracted.get("_qmd") if isinstance(extracted, dict) else None
@@ -1113,7 +1139,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         written = 0
         refused: list[dict] = []
         outcomes: list[str] = []
-        for candidate in round_candidates:
+        for index, candidate in enumerate(round_candidates):
             if not isinstance(candidate, dict):
                 outcomes.append("rejected")
                 if not check:
@@ -1182,8 +1208,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
                 outcomes.append(result.get("action") if isinstance(result, dict)
                                 and isinstance(result.get("action"), str) else "rejected")
                 continue
-            result = (compile_candidate(root, candidate, final_reason=final_reason)
-                      if final_reason is not None else compile_candidate(root, candidate))
+            result = _write_round_candidate(root, candidate, final_reason, frozen, index, original)
             action = result.get("action") if isinstance(result, dict) else None
             outcomes.append("written" if action in ("created", "updated")
                             else action if isinstance(action, str) else "rejected")
@@ -1621,6 +1646,15 @@ def _main():
         os.close(run_lock)
 
 
+def _claim_frozen_work(queue, claimed, rows, frozen_items):
+    jobs = {text: backfill_work.FrozenWork(queue, text, job, frozen_items[text])
+            for text, job in rows if text in frozen_items}
+    if jobs:
+        # The snapshot covers all occurrences before any writer changes a card.
+        claimed = rows.privatize(queue, claimed)
+    return claimed, jobs
+
+
 def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                  selected_route) -> int:
     if selected_route is not None:
@@ -1633,17 +1667,18 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
     claimed = claim_queue(queue, receipt_writer=laya_wiki_backfill.write_discard_receipt)
     # Reaping holds the source-queue lock. ACK outside it to preserve discovery
     # -> enqueue lock order, including the empty-queue/crash-recovery path.
-    laya_wiki_backfill.reconcile_discards(selected_route)
+    rows = read_queue(claimed) if claimed is not None else None
+    frozen_items = laya_wiki_backfill.reconcile_discards(selected_route, claimed_rows=rows) or {}
     if claimed is None:
         if selected_route is not None:
             _run_verify_pass(root, config, compile_cfg)
             if args.json:
                 print(json.dumps({"processed": 0, "remaining": 0}, ensure_ascii=False))
         return 0
-    rows = read_queue(claimed)
     if not rows:
-        claimed.unlink(missing_ok=True)
-        queue.touch(exist_ok=True)
+        if not hasattr(rows, 'finish'):
+            raise OSError('source claim unreadable')
+        rows.finish(queue, claimed, [])
         _run_verify_pass(root, config, compile_cfg)
         if args.json:
             print(json.dumps({"processed": 0, "remaining": 0}, ensure_ascii=False))
@@ -1654,6 +1689,7 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
     max_items = int(batch_cfg.get("maxItems", 5) or 1)
 
     original_rows = rows
+    claimed, frozen_jobs = _claim_frozen_work(queue, claimed, rows, frozen_items)
     try:
         rows, preserved, stale = _partition_selected_jobs(rows, selected_route)
         # Audit before dropping; append success has no power-loss fsync guarantee.
@@ -1663,17 +1699,22 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
     except Exception:
         # No job has run yet. Return the exact original lines on proof/audit
         # failure so repeated owner_busy does not look like worker crashes.
-        _return_source_claim(queue, claimed, [raw for raw, _ in original_rows])
+        original_rows.finish(queue, claimed, [raw for raw, _ in original_rows])
         raise
     stale_dropped = len(stale)
     stale_lines = [raw for raw, _ in stale]
     malformed = preserved + [raw for raw, job in rows if job is None]
-    kept, dropped = dedup_jobs(rows)  # dropped dup lines are discarded (latest wins)
+    if frozen_jobs:
+        # Each frozen occurrence keeps its original checkout, trigger and sibling binding.
+        kept, _ = dedup_jobs([(text, job) for text, job in rows if text not in frozen_jobs])
+        kept.extend((text, job) for text, job in rows if text in frozen_jobs)
+    else:
+        kept, _ = dedup_jobs(rows)
 
     if not batch_ready(kept, idle_seconds, max_items, args.flush_all):
         # not ready: re-queue the deduped jobs (and malformed) and exit
         _commit_source_claim(queue, claimed, [raw for raw, _ in kept] + malformed,
-                             selected_route, stale_lines=stale_lines)
+                             selected_route, stale_lines=stale_lines, snapshot=original_rows)
         _run_verify_pass(root, config, compile_cfg)
         if args.json:
             print(json.dumps({
@@ -1705,6 +1746,8 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
     try:
         for idx, (raw_line, job) in enumerate(rows):
             try:
+                frozen = frozen_jobs.get(raw_line)
+                frozen_token = _FROZEN_WORK.set(frozen)
                 budget_token = _EXTRACTOR_BUDGET.set(attempt_budget)
                 try:
                     from memvane.wiki.workspace import api as wiki_selected_laya
@@ -1719,9 +1762,12 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                             root, config, compile_cfg, job, checkout=checkout)
                 finally:
                     _EXTRACTOR_BUDGET.reset(budget_token)
+                    _FROZEN_WORK.reset(frozen_token)
                 if processed and not preserve:
                     from memvane.wiki.intake import api as laya_wiki_backfill
                     laya_wiki_backfill.settle_job(selected_route, job)
+                    if frozen is not None:
+                        frozen.settled()
                     completed_count += 1
             except Exception:
                 remaining.append(raw_line)
@@ -1731,12 +1777,14 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                 processed_count += 1
             verify_targets.extend(queued)
             if preserve:
+                if raw_line in frozen_jobs:
+                    job['engine'] = frozen_jobs[raw_line].binding['sourceJob'].get('engine')
                 remaining.append(json.dumps(job, ensure_ascii=False)
                                  if job.get("partialCompile") is True or '_fallbackAttempts' in job
                                  else raw_line)
     finally:
         _commit_source_claim(queue, claimed, remaining, selected_route,
-                             stale_lines=stale_lines)
+                             stale_lines=stale_lines, snapshot=original_rows)
     _run_verify_pass(root, config, compile_cfg, produced_targets=verify_targets)
     if attempt_budget.get('deferred') and remaining and selected_route is not None:
         # Re-offer the existing kind for extractor-budget continuation. Whether the

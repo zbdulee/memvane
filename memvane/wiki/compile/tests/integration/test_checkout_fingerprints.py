@@ -369,7 +369,7 @@ class CheckoutFingerprints(FixtureCase):
         with patch.object(workspace, 'schema3_checkout', return_value=self.checkout), \
              patch.object(intake, 'reconcile_discards'), patch.object(worker, 'recover_pending_refreshes'), \
              patch.object(worker, 'process_job', return_value=(False, True, [])), \
-             patch.object(worker, 'requeue_lines', side_effect=OSError('synthetic full disk')):
+             patch.object(worker, '_commit_source_claim', side_effect=OSError('synthetic full disk')):
             with self.assertRaisesRegex(OSError, 'synthetic full disk'):
                 worker._main_locked(SimpleNamespace(json=False, flush_all=True), self.project.root,
                                     self.config, self.config['compile'], queue, self.bound)

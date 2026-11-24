@@ -134,9 +134,9 @@ def settle_job(bound, job):
 
 
 
-def reconcile_discards(bound):
+def reconcile_discards(bound, *, claimed_rows=None):
     from memvane.wiki.intake.wiki_backfill import reconcile_discards as implementation
-    return implementation(bound)
+    return implementation(bound, claimed_rows=claimed_rows)
 
 
 
