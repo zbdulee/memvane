@@ -138,7 +138,7 @@ def coalesce_claimed_jobs(rows):
     groups = {}
     for index, (raw, job) in enumerate(rows):
         if job is not None:
-            key = live_key(job)
+            key = operation_key(job)
             groups.setdefault(index if key is None else key, []).append((raw, job))
     kept, dropped = [], []
     for group in groups.values():
@@ -164,13 +164,62 @@ def queue_revision(record):
     return None
 
 
+def operation_key(row):
+    """Force has no parent operation ID; replay of a frozen/delete/wait job needs its token."""
+    key = live_key(row)
+    if key is None or row.get('forceRecompile') is True:
+        return None
+    if (row.get('sourceDelete') is True or row.get('sharedEnqueued') is True
+            or isinstance(row.get('initialBackfill'), str)):
+        token = queue_revision(row)
+        if token is None or any(value is not None and not isinstance(value, str) for value in token):
+            return None
+        return (*key, token)
+    return key
+
+
+def plan_source_batch(candidates, revisions, cap):
+    """Each input still uses its source cap slot and keeps its original deferred filename."""
+    candidates = list(candidates)
+    observations = {}
+    for index, (_, _, row) in enumerate(candidates[:cap]):
+        key = operation_key(row)
+        if key is not None:
+            observations.setdefault(key, []).append(index)
+    for indices in observations.values():
+        if len(indices) > 1:
+            latest = candidates[indices[-1]][2]
+            merged = merge_source_job(latest, (candidates[i][2] for i in indices[:-1]))
+            for i in indices:
+                name, rel, _ = candidates[i]
+                candidates[i] = (name, rel, merged)
+
+    fresh = without_queued(candidates, revisions)
+    skipped = len(candidates) - len(fresh)
+    plan = plan_enqueue(fresh, max(0, cap - skipped))
+    # References shared by normalization represent a single admitted operation.
+    # Independent inputs (in particular identical force rows) keep every occurrence.
+    seen = set()
+    records = []
+    for row in plan['records']:
+        key = operation_key(row)
+        if key is None or key not in seen:
+            records.append(row)
+        seen.add(key)
+    plan['records'] = records
+    plan['result']['queued'] = len(records)
+    if skipped:
+        plan['result']['wakePending'] = True
+    return plan
+
+
 def without_queued(candidates, queued_revisions):
     """A single live copy of this revision already uses a slot in the wake."""
     fresh = []
     for candidate in candidates:
         row = candidate[2]
         token = queue_revision(row)
-        if token is None or row.get('partialCompile') is True or queued_revisions.get(live_key(row)) != token:
+        if token is None or row.get('partialCompile') is True or queued_revisions.get(operation_key(row)) != token:
             fresh.append(candidate)
     return fresh
 

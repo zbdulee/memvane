@@ -11,14 +11,13 @@ import hashlib
 import os
 import shutil
 import stat
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, queue_lock_path as _queue_lock_path
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
 from memvane.settings import api as qmd_config
-from memvane.wiki.intake import posttool
+from memvane.wiki.intake import posttool, source_queue
 from memvane.wiki.card import api as wiki_freshness
 from memvane.wiki.intake import wiki_source_intent as intent
 from memvane.settings.api import select_collections
@@ -52,8 +51,7 @@ COMPILE_ACCEPTED_TRIGGERS = intent.SYNC_ACCEPTED_TRIGGERS
 # 백그라운드 CLI 실행으로 번지지 않게 막는다. 상한을 넘긴 파일은 스냅샷을 진전시키지 않아
 # 다음 sync가 다시 집어 간다(조용히 유실되지 않는다).
 DEFAULT_COMPILE_MAX_FILES = 50
-# queue lock 안에서 revision 키를 찾으려고 live 큐를 읽는 상한. worker가 오래 멈춰 큐가
-# 이보다 커지면 키를 찾지 않고 기존처럼 append만 한다(중복은 가능, 유실은 없음).
+# 원행 읽기와 준비한 이미지의 재검증에 쓰는 바이트 상한. 넘으면 공용 원본을 보존한다.
 from memvane.wiki.intake.types import QUEUE_SCAN_MAX_BYTES
 
 
@@ -219,14 +217,7 @@ def _append_jsonl(path, records):
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.name == ct.SOURCE_QUEUE:
-        # Source producers also include pending-refresh recovery and shared waits.
-        # One producer batch can contain multiple observations of the same source.
-        # Keep its first position and latest row; opaque jobs each retain their slot.
-        batches = {}
-        for index, record in enumerate(records):
-            key = intent.live_key(record)
-            batches.setdefault(index if key is None else key, []).append(record)
-        candidates = [(None, None, intent.merge_source_job(batch[-1], batch[:-1])) for batch in batches.values()]
+        candidates = [(None, None, row) for row in records]
         _append_unqueued(path, candidates, len(candidates))
         return
     lock_path = _queue_lock_path(path)
@@ -238,68 +229,20 @@ def _append_jsonl(path, records):
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
-def _live_queue(path, limit):
-    """Read only the live queue under the byte cap. Retain unrelated lines verbatim."""
-    try:
-        with path.open('rb') as handle:
-            data = handle.read(limit + 1)
-    except OSError:
-        return [], {}
-    if len(data) > limit:
-        return [], {}
-    lines = data.splitlines(keepends=True)
-    groups = {}
-    for i, line in enumerate(lines):
-        try:
-            row = json.loads(line)
-        except (ValueError, UnicodeError, RecursionError):
-            continue
-        key = intent.live_key(row)
-        if key is not None:
-            groups.setdefault(key, []).append((i, row))
-    return lines, groups
-
-
 def _queued_revision_keys(path, limit=None):
-    _, groups = _live_queue(path, QUEUE_SCAN_MAX_BYTES if limit is None else limit)
+    try:
+        _, _, groups = source_queue.read_live(path, QUEUE_SCAN_MAX_BYTES if limit is None else limit)
+    except source_queue.HandoffRequired:
+        return set()
     return {key for group in groups.values() for _, row in group
             if (key := intent.revision_key(row)) is not None}
-
-
-def _store_source_rows(path, records, lines, groups):
-    """Replace all superseded live rows at their first slot and append new jobs."""
-    if not any(intent.live_key(row) in groups for row in records):
-        _write_jsonl(path, records)
-        return
-    for row in records:
-        group = groups.get(intent.live_key(row), ())
-        row = intent.merge_source_job(row, (old for _, old in group))
-        encoded = (json.dumps(row, ensure_ascii=False, sort_keys=True) + '\n').encode('utf-8')
-        if group:
-            lines[group[0][0]] = encoded
-            for index, _ in group[1:]:
-                lines[index] = b''
-        else:
-            if lines and lines[-1] and not lines[-1].endswith(b'\n'):
-                lines.append(b'\n')
-            lines.append(encoded)
-    # Keep even malformed unrelated bytes. Errors propagate before enqueue ACK.
-    with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.source-queue-', delete=False) as tmp:
-        try:
-            os.fchmod(tmp.fileno(), stat.S_IMODE(path.stat().st_mode))
-            tmp.writelines(lines)
-            tmp.flush()
-            os.fsync(tmp.fileno())
-            os.replace(tmp.name, path)
-        finally:
-            Path(tmp.name).unlink(missing_ok=True)
 
 
 def _append_unqueued(path, candidates, cap):
     """Skip identical revisions, cap fresh intents, and replace superseded live rows.
 
-    Everything happens under the one queue lock the worker's claim/requeue
-    also takes, so a skip decision and the append see the same queue. Skipped
+    The queue image is prepared outside the claim/requeue lock and its original
+    identity is rechecked under that lock before publication. Skipped
     candidates are neither queued nor deferred, and when all are skipped the
     result is the usual `no_sources`. They still use cap slots: they will be
     compiled by the same wake, so only `cap - skipped` fresh rows are appended
@@ -313,20 +256,15 @@ def _append_unqueued(path, candidates, cap):
     and is not part of any status/sync output.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(_queue_lock_path(path), "a", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            lines, groups = _live_queue(path, QUEUE_SCAN_MAX_BYTES)
-            revisions = {key: intent.queue_revision(group[0][1])
-                         for key, group in groups.items() if len(group) == 1}
-            fresh = intent.without_queued(candidates, revisions)
-            plan = intent.plan_enqueue(fresh, max(0, cap - (len(candidates) - len(fresh))))
-            if plan["records"]:
-                _store_source_rows(path, plan["records"], lines, groups)
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-    if len(fresh) < len(candidates):
-        plan["result"]["wakePending"] = True
+    keys = {intent.operation_key(row) for _, _, row in candidates}
+    original, lines, groups = source_queue.read_live(path, QUEUE_SCAN_MAX_BYTES, keys)
+    revisions = {key: intent.queue_revision(group[0][1])
+                 for key, group in groups.items() if len(group) == 1}
+    plan = intent.plan_source_batch(candidates, revisions, cap)
+    if plan["records"]:
+        source_queue.store(path, original, lines, groups, plan["records"], QUEUE_SCAN_MAX_BYTES)
+    elif plan["result"].get("wakePending"):
+        source_queue.publish(path, original)
     return plan
 
 

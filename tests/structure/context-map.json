@@ -1627,6 +1627,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/intake/source_queue.py": {
+      "context": "wiki/intake",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/intake/source_scan.py": {
       "context": "wiki/intake",
       "layer": "adapter",
