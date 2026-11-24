@@ -21,8 +21,11 @@ class PosttoolEnqueue(FixtureCase):
         selected = patch.object(workspace, 'selected', return_value=None)
         selected.start()
         self.addCleanup(selected.stop)
-        self.queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
-        self.pending = self.root / workspace.rel(card_types.SOURCE_REFRESH_PENDING)
+        self.public_queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+        self.public_pending = self.root / workspace.rel(card_types.SOURCE_REFRESH_PENDING)
+        self.queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
+        self.pending = self.public_pending.parent / '.handoff' / 'v1' / 'refresh' / 'events.jsonl'
+
 
     def run_edit(self, path, **extra):
         payload = {'hook_event_name': 'PostToolUse', 'cwd': str(self.root),
@@ -32,8 +35,48 @@ class PosttoolEnqueue(FixtureCase):
     def rows(self, path):
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
+    def test_direct_append_skips_incompatible_sources_before_the_enqueue_limit(self):
+        from memvane.wiki.intake import api as intake
+        paths = ['docs/a' + sep + '.md' for sep in ('\x85', '\u2028', '\u2029')]
+        jobs = [{'source': {'kind': 'file', 'collection': self.project.raw_name, 'path': path}}
+                for path in [*paths, 'docs/source.md']]
+        intake.append_source_jobs(self.public_queue, jobs[:-1])
+        self.assertEqual(self.rows(self.queue), [])
+        candidates = [(self.project.raw_name, job['source']['path'], job) for job in jobs]
+        enqueue._append_unqueued(self.public_queue, candidates, 1)
+        self.assertEqual([r['source']['path'] for r in self.rows(self.queue)], ['docs/source.md'])
+        self.assertEqual(self.rows(self.public_queue), [])
+
+    def test_patch_and_edit_array_keep_each_original_path_until_admission(self):
+        normal = self.project.write_note('docs/accepted.md', 'body\u2028only\n')
+        paths = []
+        commands = []
+        for sep in ('\x85', '\u2028', '\u2029'):
+            ending = 'docs/source.md' + sep
+            parent = 'docs/a' + sep + '/note.md'
+            paths.extend([ending, parent])
+            for name in (ending, parent):
+                self.project.write_note(name, 'original bytes\n')
+            commands.extend(['*** Add File: ' + ending, '*** Delete File: ' + parent,
+                             '*** Update File: ' + ending, '*** Move to: ' + parent])
+        payload = {'tool_name': 'apply_patch', 'tool_input': {
+            'command': '\r\n'.join(commands + ['*** Update File: docs/accepted.md']),
+            'edits': [{'file_path': path} for path in paths]}}
+        from memvane.diagnostics import api as diagnostics
+        with patch.object(diagnostics, 'emit') as log:
+            self.assertEqual(self.run_edit(normal, **payload)['queued'], 1)
+        reasons = [call for call in log.call_args_list if
+                   call.kwargs.get('reason') == 'compile_source_path_line_separator']
+        self.assertEqual(len(reasons), len(paths))
+        self.assertEqual([r['source']['path'] for r in self.rows(self.queue)], ['docs/accepted.md'])
+        self.assertEqual([r['sourcePath'] for r in self.rows(self.pending)], ['docs/accepted.md'])
+        for path in paths:
+            self.assertEqual((self.root / path).read_bytes(), b'original bytes\n')
+
     def test_source_edit_records_pending_refresh_before_its_source_queue_job(self):
         self.assertEqual(self.run_edit(self.source), {'queued': 1, 'reason': 'queued'})
+        self.assertFalse(self.public_queue.exists())
+        self.assertFalse(self.public_pending.exists())
         pending, jobs = self.rows(self.pending), self.rows(self.queue)
         self.assertEqual(len(pending), 1)
         self.assertEqual((pending[0]['sourcePath'], pending[0]['state'], pending[0]['engine']),
@@ -106,3 +149,13 @@ class PosttoolEnqueue(FixtureCase):
         self.assertEqual((child.returncode, child.stdout, child.stderr), (0, '', ''))
         self.assertEqual(self.rows(self.queue), [])
         self.assertEqual(self.rows(self.pending), [])
+
+    def test_five_edits_keep_one_job_with_the_latest_refresh_and_host(self):
+        for index in range(5):
+            self.source.write_text('revision %d' % index)
+            engine = 'claude' if index == 4 else 'codex'
+            self.assertEqual(self.run_edit(self.source, engine=engine)['queued'], 1)
+        job, = self.rows(self.queue)
+        pending = self.rows(self.pending)[-1]
+        self.assertEqual(job['pendingRefresh'], {key: pending[key] for key in ('eventId', 'ts', 'engine')})
+        self.assertEqual(job['engine'], 'claude')

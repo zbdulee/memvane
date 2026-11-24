@@ -1,7 +1,29 @@
 """Provider runtime values."""
 from __future__ import annotations
 
+from contextlib import contextmanager
+import errno
 from typing import Protocol
+
+from memvane.kernel.errors import IndexContractError
+
+
+class AttestationReadError(OSError):
+    """This installation's evidence could not be read before launching a worker."""
+
+
+@contextmanager
+def attestation_reads():
+    """Mark read errors at the proof boundary before the shared process starts."""
+    try:
+        yield
+    except (OSError, ValueError) as exc:
+        cause = exc if isinstance(exc, OSError) else exc.__cause__
+        if isinstance(cause, OSError):
+            if cause.errno == errno.ELOOP:
+                raise IndexContractError('provider_attestation_invalid') from exc
+            raise AttestationReadError(cause.errno, cause.strerror) from exc
+        raise
 
 
 class BundleEvidenceError(ValueError):
@@ -12,6 +34,7 @@ class BundleEvidenceError(ValueError):
 LLAMA_VERSION = '3.18.1'
 
 FILES_SHA = 'runtimeFilesSha256'
+QUERY_IDENTITY_ERRORS = frozenset(('provider_identity_mismatch', 'provider_socket_changed'))
 
 # The test runtime root's fixture provider port file (``fixture_port.resolve``).
 FIXTURE_FILE = 'provider-fixture.json'

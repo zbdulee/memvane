@@ -138,6 +138,29 @@ class Lines(unittest.TestCase):
         line = by_name(rows)['semantic']
         self.assertEqual((line['status'], line['complete'], line['deferred_work_budget']), ('over', 0.9, 1))
 
+    def test_partial_queries_count_as_semantic_use_and_report_full_coverage_separately(self):
+        rows = [recall(i, semantic='partial', vectorSource='arena', vectorCache='ok',
+                       vectorCoveredMembers=1, vectorEligibleMembers=2) for i in range(20)]
+        rows[0].update(vectorCoveredMembers=2)
+        rows[1].update(semantic='complete')
+        report = by_name(rows)
+        overall = report['semantic']
+        self.assertEqual((overall['status'], overall['complete'], overall['arenaComplete']), ('ok', 1, 1))
+        self.assertEqual((overall['fullCoverage'], overall['arenaFullCoverage']), (0.1, 0.1))
+        self.assertEqual((report['host claude']['complete'], report['host claude']['fullCoverage']), (1, 0.1))
+
+    def test_lexical_only_rows_do_not_count_as_arena_misses(self):
+        # Older bundles recorded the selected kernel's source even when the scan had no members.
+        lexical = [recall(i, semantic='lexical_only', vectorSource='store',
+                          vectorEligibleMembers=0, vectorCoveredMembers=0) for i in range(20)]
+        hits = [recall(20 + i, semantic='complete', vectorSource='arena', vectorCache='ok')
+                for i in range(190)]
+        line = by_name(lexical + hits)['semantic']
+        self.assertEqual((line['arena'], line['n'], line['complete'], line['status']),
+                         (1.0, 210, 0.9048, 'over'))
+        # With healthy completion, the empty scans alone cannot take the line over its target.
+        self.assertEqual(by_name(lexical[:5] + hits)['semantic']['status'], 'ok')
+
     def test_semantic_judges_the_arena_share_once_an_arena_answers(self):
         rows = [recall(i, semantic='complete', vectorSource='arena') for i in range(99)]
         rows.append(recall(99, semantic='complete', vectorSource='store'))

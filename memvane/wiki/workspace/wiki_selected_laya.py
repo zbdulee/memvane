@@ -193,7 +193,7 @@ def deferred_result(exc):
 def _queue_busy(queue: Path, *, receipt_writer=None):
     """True if ``queue`` holds rows or a live claim, decided under its lock.
 
-    Dead-owner ``<queue>.claimed.*`` rows are requeued first. Claim presence and
+    The native consumer recovers dead owners on source and verify queues. Claim presence and
     queue content are read under the same lock ``claim_queue`` moves rows
     under, so a concurrent claim is seen as either the queue or its claim.
     """
@@ -202,11 +202,19 @@ def _queue_busy(queue: Path, *, receipt_writer=None):
     import fcntl
     from memvane.wiki.workspace.queue_paths import _queue_lock_path
     from memvane.wiki.workspace.queue import reclaim_orphaned_claimed
+    from memvane.wiki.workspace.queue_return import queue_recovery_pending, legacy_card_lock
+    from memvane.wiki.workspace import types as ct
     prefix = queue.name + '.claimed.'
-    with open(_queue_lock_path(queue), 'a', encoding='utf-8') as lock:
+    with legacy_card_lock(queue), open(_queue_lock_path(queue), 'a', encoding='utf-8') as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
-            reclaim_orphaned_claimed(queue, receipt_writer=receipt_writer)
+            if queue.name in (ct.SOURCE_QUEUE, ct.VERIFY_QUEUE):
+                if next(queue.parent.glob(prefix + '*'), None) is not None:
+                    return True  # The bounded native claimant owns orphan recovery.
+            else:
+                reclaim_orphaned_claimed(queue, receipt_writer=receipt_writer)
+            if queue_recovery_pending(queue):
+                return True
             if any(child.name.startswith(prefix) for child in queue.parent.iterdir()):
                 return True
             return bool(queue.exists() and queue.stat().st_size)

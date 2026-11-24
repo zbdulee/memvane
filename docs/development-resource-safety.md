@@ -26,7 +26,7 @@ the guard runs three files at a time when the memory pressure of its baseline
 sample is `normal` and one at a time otherwise, without refusing the run. The
 run state records `testConcurrencyRequested`, `testConcurrency` and `pressure`.
 CI asks for one (`MEMVANE_TEST_CONCURRENCY=1`) and splits the suite by shard.
-`npm test` runs four exclusive guarded parts (`test:part1` to `test:part4`),
+`npm test` runs five exclusive guarded parts (`test:part1` to `test:part5`),
 each with a 1,800-second budget. `scripts/test_part.mjs <k>/<n>` runs one
 part: the Python test modules are spread over the parts by their recorded
 durations (`tests/support/durations.json`, longest first to the part with the
@@ -34,7 +34,7 @@ smallest load), and the last part also runs every other node test file.
 `node scripts/test_part.mjs --plan` prints the recorded seconds of each part;
 a structure test keeps every part at 1,200 seconds or less. Focused checks
 keep the wrapper's 900-second default; run the sync and registry runners in
-separate focused runs. CI runs `npm run test:partN` as four jobs per Node
+separate focused runs. CI runs `npm run test:partN` as five jobs per Node
 version.
 
 Ordinary mock, regression and integration tests (`--kind test`, including CI),

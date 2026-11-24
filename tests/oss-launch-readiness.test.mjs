@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
+import { PARTS } from './support/parts.mjs';
 
 const read = (path) => readFileSync(path, 'utf8');
 
@@ -45,10 +46,10 @@ test('CI installs the declared Node versions and runs the deterministic suite', 
   const workflow = read('.github/workflows/test.yml');
   assert.match(workflow, /actions\/setup-node/);
   assert.match(workflow, /node-version/);
-  // The deterministic suite is npm test's four guarded parts, one CI job per part.
-  assert.match(workflow, /shard: \[1, 2, 3, 4\]/);
+  const shards = Array.from({ length: PARTS }, (_, i) => i + 1);
+  assert.ok(workflow.includes(`shard: [${shards.join(', ')}]`));
   assert.match(workflow, /npm run test:part\$\{\{ matrix\.shard \}\}/);
   const scripts = JSON.parse(read('package.json')).scripts;
-  assert.equal(scripts.test, 'npm run test:part1 && npm run test:part2 && npm run test:part3 && npm run test:part4');
+  assert.equal(scripts.test, shards.map((shard) => `npm run test:part${shard}`).join(' && '));
   assert.match(workflow, /python3/);
 });

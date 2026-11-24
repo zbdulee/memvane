@@ -11,14 +11,13 @@ class AtomicRenameUnavailable(ValueError):
     """The OS has no atomic no-replace rename primitive."""
 
 
-def _native_renamer():
+def _rename(parent_fd, source, target_fd, target, *, exchange):
     library = ctypes.CDLL(None, use_errno=True)
-    # macOS SDK sys/stdio.h: RENAME_EXCL = 0x00000004.
-    # Linux UAPI include/uapi/linux/fs.h: RENAME_NOREPLACE = (1 << 0).
+    # Darwin RENAME_SWAP and Linux RENAME_EXCHANGE use 2; the exclusive flags differ.
     if sys.platform == 'darwin':
-        name, flag = 'renameatx_np', 4
+        name, flag = 'renameatx_np', 2 if exchange else 4
     elif sys.platform.startswith('linux'):
-        name, flag = 'renameat2', 1
+        name, flag = 'renameat2', 2 if exchange else 1
     else:
         raise ValueError('reader_atomic_create_unavailable')
     function = getattr(library, name, None)
@@ -27,14 +26,19 @@ def _native_renamer():
     function.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
                          ctypes.c_char_p, ctypes.c_uint)
     function.restype = ctypes.c_int
-    return function, flag
-
-
-def rename_noreplace(parent_fd, source, target):
-    function, flag = _native_renamer()
-    if function(parent_fd, os.fsencode(source), parent_fd, os.fsencode(target), flag) != 0:
+    if function(parent_fd, os.fsencode(source), target_fd, os.fsencode(target), flag) != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), target)
+
+
+def rename_noreplace(parent_fd, source, target, *, target_parent_fd=None):
+    dest = parent_fd if target_parent_fd is None else target_parent_fd
+    _rename(parent_fd, source, dest, target, exchange=False)
+
+
+def rename_exchange(parent_fd, source, target_fd, target):
+    """Swap both existing names, preserving both inodes."""
+    _rename(parent_fd, source, target_fd, target, exchange=True)
 
 
 def partial_path(target):
@@ -53,11 +57,7 @@ def discard_partial(path, *suffixes):
 
 
 def publish_new(temp, target):
-    """Rename a complete ``temp`` onto ``target``, which must not exist.
-
-    Raises FileExistsError when ``target`` exists; the directory entry is
-    durable on return.
-    """
+    """Durably rename a complete temp onto target, raising FileExistsError if occupied."""
     temp, target = Path(temp), Path(target)
     if temp.parent != target.parent:
         raise ValueError('publish_new_parent_mismatch')

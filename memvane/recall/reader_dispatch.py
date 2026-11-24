@@ -7,7 +7,7 @@ from pathlib import Path
 import time
 
 from memvane.journal import api as journal
-from memvane.recall.types import ReaderResult
+from memvane.recall.types import HostResponseError, ReaderResult
 
 _approved_vectors=ContextVar('schema3_approved_vectors',default=())
 _PROVIDER_ERRORS=frozenset(('provider_unavailable','provider_identity_mismatch','provider_result_invalid',
@@ -151,8 +151,11 @@ def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline
         vectors,requested=_provider_vector(provider,prompt,remaining,chunks=edit_recall() is None)
     except IndexContractError as exc:
         # ``provider_process_failed``: whatever else the round trip raised. The recall goes on without a vector.
-        if str(exc) not in ('provider_unavailable','provider_identity_mismatch','provider_process_failed',
-                            'provider_result_invalid','provider_socket_invalid','provider_socket_changed'):
+        from memvane.provider.types import QUERY_IDENTITY_ERRORS
+        if str(exc) in QUERY_IDENTITY_ERRORS:
+            raise HostResponseError('selected_provider_identity_transition') from exc
+        if str(exc) not in ('provider_unavailable','provider_process_failed',
+                            'provider_result_invalid','provider_socket_invalid'):
             raise
         if _vector_proof(authority,snapshot,decision,provider,deadline)!=proof:
             raise ValueError('reader_vector_caller_unproved')
@@ -346,7 +349,20 @@ def _excluded_hits(store, pin, queries, excluded, status, timings, deadline):
                 pin, query, HYBRID_LIST_LIMIT, deadline_seconds=_reader_remaining(deadline)))
     except (BlobStoreError, ValueError):
         pass  # A count that could not be read leaves the recall's own empty reason.
-    return hits + (timings.get('vectorExcluded', 0) if status == 'complete' else 0)
+    return hits + (timings.get('vectorExcluded', 0) if status in ('complete', 'partial') else 0)
+
+
+def _proved_search_spec(store, record, vector, proof, *, partial):
+    """Resolve the pinned or partial spec under the query provider's active proof."""
+    from memvane.store import api as store_api
+    if partial:
+        vector = store_api.provider_spec(proof['providerManifest'], proof['vectorProfile'])
+        if (vector is not None and record.get('vector_profile') is not None
+                and (vector['profile_id'], vector['recipe_id']) != (record['vector_profile'], record['vector_recipe'])):
+            raise ValueError('reader_vector_caller_unproved')
+    elif not _approved_profile_matches(store_api.vector_profile(store, vector['profile_id'], session=False), proof):
+        raise ValueError('reader_vector_caller_unproved')
+    return vector
 
 
 def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,snapshot,decision,
@@ -360,8 +376,8 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
 
     With ``linked`` the pinned view is that linked worktree's own (see
     ``_schema3_pin``); its wiki collection is the main one rebased onto the
-    worktree project root. A view sealed without vectors answers lexical
-    lists only (``lexical_only``).
+    worktree project root. A lexical-first view can use the selected provider's
+    complete content sets for members of this pin.
     """
     selected=journal.reader_selection(endpoint)
     if (not _persisted_schema3(endpoint) or selected is None
@@ -404,13 +420,12 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                 timings['readerSetupMs'] = round(max(0, (time.monotonic() - opened) * 1000
                     - timings.get('checkoutMs', 0) - timings.get('pinMs', 0)), 3)
             vector=store_api.pinned_vector(store,pin)
-            # A lexical head (vectors pending) answers lexical lists only.
-            semantic=query_vector is not None and vector is not None
-            if semantic:
+            partial = vector is None or record.get('vector_profile') is None
+            if query_vector is not None:
                 proof=_vector_proof(authority,None,decision,provider,deadline)
-                if (vector is None or not _approved_profile_matches(store_api.vector_profile(store,vector['profile_id'],session=False),proof)
-                        or proof!=valid[-1][7]):
+                if proof != valid[-1][7]:
                     raise ValueError('reader_vector_caller_unproved')
+                vector = _proved_search_spec(store, record, vector, proof, partial=partial)
             saved=store_api.worktree_wiki_root(store,handle.worktree_id,deadline=time.monotonic()+_reader_remaining(deadline))
             def rooted(source):
                 if linked is None:
@@ -450,7 +465,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                 _need_signals(store, pin, queries, timings, deadline, HYBRID_LIST_LIMIT, roots)  # Diagnostic only, never checked.
             status='provider_absent' if query_vector is None else 'lexical_only' if vector is None else 'complete'
             nearest=None
-            if semantic:
+            if query_vector is not None and vector is not None:
                 started = time.monotonic()
                 try:
                     # Reserve time for lexical locations, selector and rendering.
@@ -460,17 +475,23 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                     preferred = list(dict.fromkeys(row['path'][len(name) + 1:]
                                                    for lane in lexical for row in lane))[:100]
                     # Bound large scans before they consume the semantic time budget.
+                    stats = timings if timings is not None else {}
+                    partial_args = {'partial_recipe_id': vector['recipe_id']} if partial else {}
                     nearest=shaped(store.search_exact(pin,query_vector,HYBRID_LIST_LIMIT,
                                                       profile_id=vector['profile_id'],
                                                       max_float_work=6000000,
-                                                      deadline_seconds=min(SEMANTIC_DEADLINE_SECONDS, remaining), timings=timings,
-                                                      preferred_paths=preferred, excluded_cards=excluded))
+                                                      deadline_seconds=min(SEMANTIC_DEADLINE_SECONDS, remaining), timings=stats,
+                                                      preferred_paths=preferred, excluded_cards=excluded, **partial_args))
+                    if partial:
+                        status = 'partial' if stats['vectorCoveredMembers'] else 'lexical_only'
                 except (BlobStoreError, ValueError) as exc:
                     status = _semantic_error_status(exc, timings)
                 finally:
                     if timings is not None:
                         timings['semanticMs'] = round((time.monotonic() - started) * 1000, 3)
 
+            if status == 'lexical_only' and query_vector is not None:
+                lexical = _atom_fallback(store,pin,queries,lexical,shaped,excluded,None,timings,deadline)
             rows = _fused_sources(lexical, nearest, timings, emptied=(store, pin, queries, excluded, status, deadline))
             started = time.monotonic()
             try:

@@ -12,9 +12,9 @@ import os
 import re
 import sqlite3
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from memvane.wiki.workspace.handoff import api as queue_pass
 from memvane.kernel.paths import safe_managed_dir, read_jsonl
 from memvane.wiki.workspace.api import write_text_atomic, trim_jsonl, compact_manifest, find_wiki_collection
 from memvane.wiki.workspace import api as workspace_files
@@ -418,6 +418,29 @@ def source_hash(candidate: dict) -> str:
     return hashlib.sha256(json.dumps(stable, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 
+def replacement_image(root, queue, target, base, old, candidate, summary, redactions):
+    """Choose a fresh, unreserved name; identical bytes alone cannot identify a writer."""
+    from memvane.wiki.verify.api import pending_name_reserved
+    marker = base
+    for slot in range(3):
+        if slot == 2:
+            marker = os.urandom(8).hex()
+        page = compose_generated_card(old, markdown_page(candidate, summary, 'generated', redactions, marker))
+        if page is None:
+            break
+        path = target.with_name('.' + target.name + '.pending-' + marker)
+        produced = page.encode('utf-8')
+        if not pending_name_reserved(queue, path.relative_to(root).as_posix(), fresh=slot == 2):
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                return marker, path, page
+        # Includes the full rendered revision (mtime too), manual sections and
+        # this slot's marker. A preserved older image cannot block an A/B/A edit.
+        marker = hashlib.sha256(produced).hexdigest()[:16]
+    return None
+
+
 def lint_candidate(candidate: dict, target: Path | None, max_lines: int) -> dict:
     findings = []
     title = str(candidate.get("title") or "").strip()
@@ -435,6 +458,19 @@ def lint_candidate(candidate: dict, target: Path | None, max_lines: int) -> dict
     if len(summary.splitlines()) > max_lines:
         findings.append("too_many_lines")
     return {"verdict": "clean" if not findings else "reject", "findings": findings}
+
+
+def public_history(record, **fields):
+    """Project only the displayed summary, then check the complete row as a 1.x compactor reads it."""
+    public = dict(record, **fields)
+    public['summary'] = public['summary'].translate({0x85: '\n', 0x2028: '\n', 0x2029: '\n'})
+    try:
+        line, = json.dumps(public, ensure_ascii=False, allow_nan=False).splitlines()
+        if json.loads(line) == public:
+            return public
+    except (TypeError, ValueError, RecursionError):
+        pass
+    return None
 
 
 def append_jsonl(path: Path, payload: dict) -> None:
@@ -701,29 +737,9 @@ def compose_generated_card(old_text: str, generated_page: str) -> str | None:
 
 def write_pending_card(path: Path, text: str) -> bool:
     """Durably stage private candidate bytes without replacing the live card."""
-    if path.exists():
-        return path.is_file() and not path.is_symlink() and path.read_text(encoding='utf-8') == text
-    name = None
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
-                                         dir=path.parent, prefix='.qmd-pending-',
-                                         delete=False) as handle:
-            name = handle.name
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(name, path)
-        directory = os.open(path.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-        return True
-    except OSError:
-        return False
-    finally:
-        if name is not None and os.path.exists(name):
-            os.unlink(name)
+    from memvane.wiki.verify.api import stage_candidate
+    return stage_candidate(path, text.encode('utf-8'))
+
 
 
 @workspace_files.guard_path
@@ -1014,6 +1030,39 @@ def main() -> int:
         return 1
 
 
+def _verify_job(root, selected, candidate, record, pending_path=None, expected_target_hash=None):
+    # 실제 소스를 별도 필드로 넘긴다 — verifier가 `MAX_SOURCES` 상한과 무관하게
+    # 반드시 읽어야 하는 근거다(모델이 준 `sources` 항목이 밀어낼 수 없다).
+    authoritative = authoritative_sources(candidate)
+    observed = candidate.get('sourceFingerprints')
+    fingerprints = None
+    if selected is not None and isinstance(observed, dict):
+        rows = observed.get('fingerprints')
+        if isinstance(rows, list) and rows and all(isinstance(row, dict) for row in rows):
+            first = rows[0]
+            if (all(row.get('scan_id') == first.get('scan_id')
+                    and row.get('observed_ns') == first.get('observed_ns') for row in rows)
+                    and isinstance(first.get('scan_id'), str)
+                    and type(first.get('observed_ns')) is int):
+                fingerprints = {**observed, 'scanId': first['scan_id'],
+                                'observedNs': first['observed_ns']}
+    return {
+        "ts": now_iso(),
+        "targetPath": record["targetPath"],
+        **({'pendingPath': pending_path.relative_to(root).as_posix(),
+            'expectedTargetHash': expected_target_hash}
+           if pending_path is not None else {}),
+        "sources": record["sources"],
+        "sourceRevisions": record["sourceRevisions"],
+        **({"sourceFingerprints": fingerprints} if fingerprints is not None else {}),
+        **({"authoritativeSources": authoritative} if authoritative else {}),
+        "sourceHash": record["sourceHash"],
+        "engine": candidate.get("engine") if isinstance(candidate.get("engine"), str) else "",
+        "trigger": record["trigger"],
+    }
+
+
+@queue_pass.bounded
 def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                     wiki_root: Path, candidate: dict, regenerate: bool, *,
                     budget_final: str | None = None, check: bool = False) -> int:
@@ -1062,11 +1111,6 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         print(json.dumps({"action": "rejected", "reason": "unsafe_compile_path"}, ensure_ascii=False))
         return 1
 
-    # candidates.jsonl is a write-only audit log (every compile attempt appends a
-    # row, no reader) -- cap it up front so it can't grow unbounded.
-    if not check:
-        trim_jsonl(candidate_path)
-
     record = {
         "ts": now_iso(),
         "trigger": candidate.get("trigger", "manual"),
@@ -1088,6 +1132,16 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         "_qmd": effort_audit(candidate),
     }
 
+    missing = record if target is not None and not target.exists() else None
+    if yaml_scalars.unresolved_pending_refreshes_strict(root, before_ledger_write=True,
+                                                   missing_target=missing, append_for=missing, read_only=check) is None:
+        print(json.dumps({'action': 'deferred', 'reason': 'legacy_ledger_requires_reassessment'}))
+        return 1
+    if (not check and candidate_path.exists() and candidate_path.stat().st_size > ct.LOG_MAX_BYTES and
+            yaml_scalars.unresolved_pending_refreshes_strict(root, before_ledger_write=True,
+                                                           trimming_candidates=True) is not None):
+        trim_jsonl(candidate_path)
+
     if check and target_reason.startswith("ambiguous_"):
         return _checked("merge-needed", [target_reason])
     if check and (lint["verdict"] != "clean" or target is None):
@@ -1108,6 +1162,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         print(json.dumps({"action": "rejected", "findings": lint["findings"]}, ensure_ascii=False))
         return 0
 
+    if public_history(record) is None:
+        print(json.dumps({'action': 'write-failed', 'reason': 'history_row_incompatible'}))
+        return 1
+
     tombstones = read_jsonl(tombstone_path)
     if any(same_generated_identity(row, record) for row in tombstones) and not regenerate:
         if check:
@@ -1121,20 +1179,27 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         row for row in read_jsonl(manifest_path)
         if same_generated_identity(row, record)
     ]
-    if (
-        previous
-        and not target.exists()
-        and not regenerate
-        and previous[-1].get("action") != MACHINE_DELETE_ACTION
-    ):
-        if check:
-            return _checked("tombstoned")
-        tombstone = {**record, "action": "deleted", "status": "deleted", "previousStatus": previous[-1].get("status", "generated")}
-        append_jsonl(tombstone_path, tombstone)
-        record["action"] = "tombstoned"
-        append_jsonl(candidate_path, record)
-        print(json.dumps({"action": "tombstoned", "targetPath": record["targetPath"]}, ensure_ascii=False))
-        return 0
+    # Recover a proved prior retirement before any new generation. A forced
+    # creation can otherwise equal the predecessor row at the same timestamp.
+    if not target.exists() and (not previous or previous[-1].get("action") != MACHINE_DELETE_ACTION):
+        from memvane.wiki.verify.api import missing_retirement
+        retirement = missing_retirement(root, config, record['targetPath'], check=check)
+        if retirement == 'retry':
+            print(json.dumps({'action': 'deferred', 'reason': 'machine_deletion_unconfirmed'}))
+            return 1
+        if not regenerate and previous and retirement == 'manual':
+            if check:
+                return _checked("tombstoned")
+            tombstone = public_history(record, action='deleted', status='deleted',
+                                       previousStatus=previous[-1].get('status', 'generated'))
+            if tombstone is None:
+                print(json.dumps({'action': 'write-failed', 'reason': 'history_row_incompatible'}))
+                return 1
+            append_jsonl(tombstone_path, tombstone)
+            record["action"] = "tombstoned"
+            append_jsonl(candidate_path, record)
+            print(json.dumps({"action": "tombstoned", "targetPath": record["targetPath"]}, ensure_ascii=False))
+            return 0
 
     # Card body budget before the paid duplicate judge (wiki_card_budget): an
     # over-budget card is held back once for a split; the caller's trusted
@@ -1235,7 +1300,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
             }, ensure_ascii=False))
             return 0
     if target.exists():
-        old = target.read_text(encoding="utf-8")
+        original = target.read_bytes()
+        old = original.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
         auto_writable, findings = is_auto_writable_page(target)
         if check:
             return _checked("written" if auto_writable and AUTO_BLOCK_RE.search(page)
@@ -1268,61 +1334,53 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                           composed if composed is not None else page, floor,
                           final_reason=final_reason):
             return 0
-    # 신규 생성도 같은 원자적 경로를 쓴다. `updated`는 기존 카드 파괴 방지가 이유이고,
-    # `created`는 **부분 카드가 완성된 카드처럼 보이는 것**이 이유다 — 절단된 파일도
-    # 인덱싱되고 recall이 그 본문을 완결된 요약으로 주입하며(읽기 창 안에서 끊겼는지
-    # 알 수 없다) verify는 반쪽 카드를 원문과 대조한다. 다음 회차 덮어쓰기에 의존하면
-    # 그 사이 세션이 잘린 카드를 캐논으로 본다. 실패는 아래 write_failure로 표면화한다.
-    # A selected wiki that is already verified stays published while its
-    # replacement is reviewed. The hidden pending file is a complete candidate,
-    # never part of the wiki scan. The verify worker performs the final atomic
-    # replacement after checking the old target has not changed.
+    # The first card is exposed only after its review and manifest row are reserved.
+    # Existing cards stay visible until the native verifier promotes the replacement.
     pending_path = None
     expected_target_hash = None
     verify_cfg = compile_cfg.get("verify") if isinstance(compile_cfg.get("verify"), dict) else {}
     wiki_selected_laya.recheck(selected)
-    if selected is not None and action == "updated":
-        from memvane.wiki.card.api import verified_wiki_row
-        wiki_name = next((item['name'] for item in selected[0]['collections']
+    verify_queue = qmd_config.ledger(root, ct.VERIFY_QUEUE)
+    manifest = public_history(record, action=action, status=status)
+    if manifest is None:
+        print(json.dumps({'action': 'write-failed', 'reason': 'history_row_incompatible'}))
+        return 1
+    if action == "updated":
+        wiki_name = None if selected is None else next((item['name'] for item in selected[0]['collections']
                           if item['role'] == 'wiki' and
                           Path(item['sourceRoot']).resolve() == wiki_root.resolve()), None)
-        if wiki_name is None:
+        if selected is not None and wiki_name is None:
             record['action'] = 'merge-needed'
             record['lint'] = {'verdict': 'needs_review',
                               'findings': ['selected_wiki_unresolved']}
             append_jsonl(candidate_path, record)
             return 0
-        if wiki_name is not None and verified_wiki_row(
-                {'path': wiki_name + '/' + target.relative_to(wiki_root).as_posix(),
-                 'body': old}, selected[0], current_source=False):
-            if (not verify_cfg.get("enabled", True)
-                    or qmd_config.ledger(root, ct.VERIFY_QUEUE) is None):
-                record['action'] = 'merge-needed'
-                record['lint'] = {'verdict': 'needs_review',
-                                  'findings': ['verified_replacement_requires_review']}
-                append_jsonl(candidate_path, record)
-                return 0
-            pending_page = compose_generated_card(old, page)
-            if pending_page is None:
-                record['action'] = 'merge-needed'
-                append_jsonl(candidate_path, record)
-                return 0
-            pending_path = target.with_name('.' + target.name + '.pending-' + h[:16])
-            expected_target_hash = hashlib.sha256(target.read_bytes()).hexdigest()
-            if pending_path.is_symlink() or (pending_path.exists() and
-                    (not pending_path.is_file() or
-                     pending_path.read_text(encoding='utf-8') != pending_page)):
-                record['action'] = 'merge-needed'
-                record['lint'] = {'verdict': 'needs_review',
-                                  'findings': ['pending_replacement_conflict']}
-                append_jsonl(candidate_path, record)
-                return 0
-            write_ok = write_pending_card(pending_path, pending_page)
-        else:
-            write_ok = rewrite_generated_card(target, old, page)
+        if not verify_cfg.get("enabled", True) or verify_queue is None:
+            record['action'] = 'merge-needed'
+            record['lint'] = {'verdict': 'needs_review',
+                              'findings': ['verified_replacement_requires_review']}
+            append_jsonl(candidate_path, record)
+            return 0
+        image = replacement_image(root, verify_queue, target, h, old, candidate, summary, redactions)
+        if image is None:
+            # A collision on the random final slot gets a fresh name on retry.
+            print(json.dumps({"action": "write-failed", "reason": "pending_replacement_conflict"}))
+            return 1
+        h, pending_path, pending_page = image
+        record["sourceHash"] = h
+        manifest["sourceHash"] = h
+        expected_target_hash = hashlib.sha256(original).hexdigest()
+        from memvane.wiki.verify.api import enqueue_replacement
+        job = _verify_job(root, selected, candidate, record, pending_path, expected_target_hash)
+        write_ok = enqueue_replacement(root, config, wiki_root, verify_queue,
+                                       job, selected, lambda: write_pending_card(pending_path, pending_page),
+                                       produced_bytes=pending_page.encode("utf-8"))
     else:
-        write_ok = (rewrite_generated_card(target, old, page) if action == "updated"
-                    else write_text_atomic(target, page))
+        from memvane.wiki.verify.api import create_first_card
+        job = _verify_job(root, selected, candidate, record)
+        write_ok = create_first_card(root, wiki_root, verify_queue, job, page.encode("utf-8"), selected,
+                                     review=bool(verify_cfg.get("enabled", True) and status == "generated"),
+                                     manifest=manifest)
     if not write_ok:
         record["action"] = "write-failed"
         append_jsonl(candidate_path, record)
@@ -1331,7 +1389,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
 
     record["action"] = action
     append_jsonl(candidate_path, record)
-    append_jsonl(manifest_path, {**record, "status": status})
+    if pending_path is not None:
+        append_jsonl(manifest_path, manifest)
     # manifest is read for delete-detection (previous lookup); compact by folding
     # same-identity duplicates rather than size-trimming (which would drop a card's
     # entry and break tombstoning). Threshold-gated + atomic inside.
@@ -1347,41 +1406,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
 
     # 기계 검수(auto-verify) enqueue: generated로 쓰인 카드만 대상. verify worker가
     # 카드 주장 vs 원문을 대조해 verified 승격 또는 (onFail) 삭제한다.
-    verify_queued = False
-    if verify_cfg.get("enabled", True) and status == "generated":
-        verify_queue_path = qmd_config.ledger(root, ct.VERIFY_QUEUE)
-        if verify_queue_path is not None:
-            verify_queued = True
-            # 실제 소스를 별도 필드로 넘긴다 — verifier가 `MAX_SOURCES` 상한과 무관하게
-            # 반드시 읽어야 하는 근거다(모델이 준 `sources` 항목이 밀어낼 수 없다).
-            authoritative = authoritative_sources(candidate)
-            observed = candidate.get('sourceFingerprints')
-            fingerprints = None
-            if selected is not None and isinstance(observed, dict):
-                rows = observed.get('fingerprints')
-                if isinstance(rows, list) and rows and all(isinstance(row, dict) for row in rows):
-                    first = rows[0]
-                    if (all(row.get('scan_id') == first.get('scan_id')
-                            and row.get('observed_ns') == first.get('observed_ns') for row in rows)
-                            and isinstance(first.get('scan_id'), str)
-                            and type(first.get('observed_ns')) is int):
-                        fingerprints = {**observed, 'scanId': first['scan_id'],
-                                        'observedNs': first['observed_ns']}
-            from memvane.wiki.intake.api import append_source_jobs as _append_jsonl
-            _append_jsonl(verify_queue_path, [{
-                "ts": now_iso(),
-                "targetPath": record["targetPath"],
-                **({'pendingPath': pending_path.relative_to(root).as_posix(),
-                    'expectedTargetHash': expected_target_hash}
-                   if pending_path is not None else {}),
-                "sources": record["sources"],
-                "sourceRevisions": record["sourceRevisions"],
-                **({"sourceFingerprints": fingerprints} if fingerprints is not None else {}),
-                **({"authoritativeSources": authoritative} if authoritative else {}),
-                "sourceHash": h,
-                "engine": candidate.get("engine") if isinstance(candidate.get("engine"), str) else "",
-                "trigger": record["trigger"],
-            }])
+    verify_queued = pending_path is not None or (verify_cfg.get("enabled", True) and status == "generated")
 
     result = {
         "action": action,

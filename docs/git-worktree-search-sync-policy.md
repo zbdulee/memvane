@@ -40,14 +40,12 @@ SessionStart grant는 `compile.triggers`의 `session_start_source`만 인정하�
 sync grant는 `post_sync_source` 또는 `post_tool_source`를 인정한다. minimal
 settings의 `compile.triggers`는 `post_tool_source`·`post_sync_source`·`manual`이다.
 
-위키 source queue를 채우는 경로는 각자 상태를 사용한다. 해시를 계산하는
-경로(raw discovery)의 행은 원문 revision(`contentRevision`)을 가진다. enqueue는
-`(collection, path, revision, trigger)`가 같은 행이 아직 live queue에 있으면 새
-행을 넣지 않는다(`wiki_source_intent.revision_key`). 이 키는 trigger를 포함하고
-이미 claim·소진된 행은 보지 못하므로 경로 간·회차 간 중복 등록은 막지 않는다.
-PostToolUse(`compile`) 행에는 revision이 없다. compile worker는 신뢰 카드가 같은
-revision을 이미 증명하면 trigger와 무관하게 extractor를 실행하지 않는다
-(`already_compiled_revision`).
+위키 source queue는 같은 설치·컬렉션·경로·trigger의 live 행을 최신 편집으로 교체한다.
+raw discovery와 수동 sync는 `contentRevision`을, PostToolUse는 `pendingRefresh`의
+이벤트 ID를 기록한다. 이미 claim한 행은 worker가 소유한다. 삭제·강제 재컴파일·
+공유 카드 대기·initial backfill은 각각의 작업으로 유지한다. worker는 현재 원문
+revision을 증명하는 신뢰 카드가 있으면 `already_compiled_revision`으로 마친다. 같은 원문을
+기록한 교체본과 검수 job이 있으면 `awaiting_pending_verification`을 기록하고 추출을 생략한다.
 
 ## linked git worktree
 

@@ -111,6 +111,11 @@ def append_source_jobs(path, records):
 
 
 
+def coalesce_claimed_jobs(rows):
+    from memvane.wiki.intake.wiki_source_intent import coalesce_claimed_jobs as implementation
+    return implementation(rows)
+
+
 def revision_key(record):
     from memvane.wiki.intake.wiki_source_intent import revision_key as implementation
     return implementation(record)
@@ -129,9 +134,9 @@ def settle_job(bound, job):
 
 
 
-def reconcile_discards(bound):
+def reconcile_discards(bound, *, claimed_rows=None):
     from memvane.wiki.intake.wiki_backfill import reconcile_discards as implementation
-    return implementation(bound)
+    return implementation(bound, claimed_rows=claimed_rows)
 
 
 

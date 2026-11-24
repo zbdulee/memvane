@@ -99,6 +99,132 @@ class ReattestationTest(unittest.TestCase):
             with self.assertRaises(OSError):
                 reattest.write(state, original, self.current, self.identity, self.identity)
 
+    def test_legacy_ledger_read_failure_reaches_the_caller(self):
+        import errno
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root).resolve()
+            original = reattest.LEGACY_PAIR
+            reattest.write(state, original, self.current, self.identity, self.identity)
+            (state / reattest.PAIRS_FILE).unlink()
+            with patch.object(reattest, '_read', side_effect=OSError(errno.EIO, 'fixture read')), \
+                 self.assertRaises(OSError) as failure:
+                reattest.valid(state, original, self.current, self.identity)
+            self.assertEqual(failure.exception.errno, errno.EIO)
+            self.assertTrue(reattest.valid(state, original, self.current, self.identity))
+
+    def modern_pair(self):
+        from memvane.kernel.bundle_paths import bundle_file, PROVIDER_RELATIVE_PATH, WORKER_RELATIVE_PATH
+        from memvane.provider.api import hash_file
+        provider = str(bundle_file(PROVIDER_RELATIVE_PATH))
+        return {'providerPath': provider, 'providerArtifactSha256': hash_file(provider),
+                'workerPath': str(bundle_file(WORKER_RELATIVE_PATH)), 'workerSha256': '1' * 64,
+                'modelSha256': self.identity['modelSha256'], 'dimension': 768}
+
+    def test_modern_pair_rejects_missing_corrupt_and_unsafe_proof(self):
+        manifest = self.modern_pair()
+        cases = [('unregistered', None), ('corrupt', b'{corrupt'), ('invalid', b'{}'),
+                 ('invalid_utf8', b'\xff'), ('nested', b'[' * 1500 + b']' * 1500),
+                 ('permissive', b'{}'), ('symlink', None)]
+        for label, content in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as folder:
+                state = Path(folder).resolve()
+                path = state / reattest.PAIRS_FILE
+                if content is not None:
+                    path.write_bytes(content)
+                    path.chmod(0o644 if label == 'permissive' else 0o600)
+                if label == 'symlink':
+                    target = state / 'other.json'
+                    target.write_text('{}')
+                    path.symlink_to(target)
+                self.assertFalse(reattest.check(state, manifest))
+                with self.assertRaisesRegex(ValueError, '^reattest_not_authorized$'):
+                    reattest.authorize(state, manifest)
+
+    def test_socket_and_fifo_are_unsafe_ledgers(self):
+        import os
+        import socket
+        manifest = self.modern_pair()
+        for name in (reattest.PAIRS_FILE, reattest.FILE):
+            for kind in ('socket', 'fifo'):
+                with self.subTest(name=name, kind=kind), tempfile.TemporaryDirectory(dir='/tmp') as folder:
+                    state = Path(folder).resolve()
+                    path = state / name
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as endpoint:
+                        if kind == 'socket':
+                            endpoint.bind(str(path))
+                        else:
+                            os.mkfifo(path, 0o600)
+                        if name == reattest.FILE:
+                            self.assertFalse(reattest.valid(state, reattest.LEGACY_PAIR, self.current, self.identity))
+                        else:
+                            self.assertFalse(reattest.check(state, manifest))
+                            with self.assertRaisesRegex(ValueError, '^reattest_not_authorized$'):
+                                reattest.authorize(state, manifest)
+
+    def test_state_metadata_io_remains_retryable(self):
+        import errno
+        from unittest.mock import patch
+        manifest = self.modern_pair()
+        with tempfile.TemporaryDirectory() as folder:
+            state = Path(folder).resolve()
+            original = Path.stat
+            for code in (errno.EACCES, errno.EIO):
+                def state_stat(path, *args, **kwargs):
+                    if path == state:
+                        raise OSError(code, 'state metadata unavailable')
+                    return original(path, *args, **kwargs)
+                with patch.object(Path, 'stat', state_stat), self.assertRaises(OSError) as failure:
+                    reattest.check(state, manifest)
+                self.assertEqual(failure.exception.errno, code)
+
+    def test_modern_pair_ledger_io_reaches_both_callers_then_recovers(self):
+        import errno
+        import os
+        from unittest.mock import patch
+        manifest = self.modern_pair()
+        original = {'worker': manifest['workerSha256'], 'provider': manifest['providerArtifactSha256']}
+        current, identity = reattest._current(manifest)
+        with tempfile.TemporaryDirectory() as folder:
+            state = Path(folder).resolve()
+            reattest.write(state, original, current, identity, identity)
+            opening = os.open
+            for code in (errno.EIO, errno.EACCES, errno.ENXIO, errno.EOPNOTSUPP):
+                def fail_ledger(path, *args, **kwargs):
+                    if path == state / reattest.PAIRS_FILE:
+                        raise OSError(code, 'fixture ledger I/O')
+                    return opening(path, *args, **kwargs)
+                with patch.object(os, 'open', side_effect=fail_ledger):
+                    for read in (reattest.check, reattest.authorize):
+                        with self.subTest(errno=code, caller=read.__name__), self.assertRaises(OSError) as failure:
+                            read(state, manifest)
+                        self.assertEqual(failure.exception.errno, code)
+            self.assertEqual(reattest.authorize(state, manifest), current)
+            self.assertTrue(reattest.check(state, manifest))
+
+    def test_ledger_changed_while_reading_is_retryable(self):
+        import errno
+        import json
+        import os
+        from unittest.mock import patch
+        manifest = self.modern_pair()
+        original = {'worker': manifest['workerSha256'], 'provider': manifest['providerArtifactSha256']}
+        current, identity = reattest._current(manifest)
+        with tempfile.TemporaryDirectory() as folder:
+            state = Path(folder).resolve()
+            reattest.write(state, original, current, identity, identity)
+            path = state / reattest.PAIRS_FILE
+            read = json.load
+            def change_during_read(stream, **kwargs):
+                row = read(stream, **kwargs)
+                info = path.stat()
+                os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+                return row
+            with patch.object(json, 'load', side_effect=change_during_read), self.assertRaises(OSError) as failure:
+                reattest.check(state, manifest)
+            self.assertEqual(failure.exception.errno, errno.EAGAIN)
+            self.assertTrue(reattest.check(state, manifest))
+
     def test_two_host_versions_alternate_authorization(self):
         import json
         from unittest.mock import patch

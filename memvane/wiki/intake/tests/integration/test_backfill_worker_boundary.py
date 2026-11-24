@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 from memvane.wiki.intake import wiki_backfill as backfill
 from tests.support.case import FixtureCase
+from tests.support.queue_files import pending_text
+from memvane.wiki.workspace.api import safe_queue_path
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded
@@ -33,9 +35,9 @@ class BackfillWorkerBoundary(FixtureCase):
         with patch.object(enqueue, 'compile_max_files', return_value=1):
             backfill.dispatch(decision, row, snapshot, config, recheck=lambda: None)
         queue = project.root / '.memvane/compile/source-queue.jsonl'
-        job = json.loads(queue.read_text().splitlines()[0])
+        job = json.loads(pending_text(queue).splitlines()[0])
         job['_requeue_count'] = workspace_types.MAX_REQUEUE_COUNT
-        queue.write_text('')
+        safe_queue_path(project.root, native=True).write_text('')
         orphan = queue.with_name(queue.name + '.claimed.99999999.dead')
         orphan.write_text(json.dumps(job) + '\n')
         marker = self.home / 'extractor-was-called'
@@ -57,7 +59,7 @@ class BackfillWorkerBoundary(FixtureCase):
         row = backfill._load(decision)
         self.assertEqual(backfill.summary(row)['skipped'], 1)
         self.assertEqual(backfill.dispatch(decision, row, snapshot, config, recheck=lambda: None)['dispatched'], 1)
-        self.assertEqual(json.loads(queue.read_text().splitlines()[0])['source']['path'], 'docs/two.md')
+        self.assertEqual(json.loads(pending_text(queue).splitlines()[0])['source']['path'], 'docs/two.md')
 
     def test_settled_job_does_not_extract_again_after_continuation_wake_failure(self):
         import json
@@ -78,7 +80,7 @@ class BackfillWorkerBoundary(FixtureCase):
         with patch.object(enqueue, 'compile_max_files', return_value=1):
             backfill.dispatch(decision, row, snapshot, config, recheck=lambda: None)
         queue = project.root / '.memvane/compile/source-queue.jsonl'
-        job = json.loads(queue.read_text().splitlines()[0])
+        job = json.loads(pending_text(queue).splitlines()[0])
         bound = workspace.selected(project.root)
         with patch.object(workspace, 'request_sync', side_effect=OSError('synthetic wake failure')):
             with self.assertRaises(OSError):
@@ -145,7 +147,7 @@ class BackfillWorkerBoundary(FixtureCase):
         row = backfill.discover(decision, snapshot, config, ('sync',), {'sync': 'codex'})
         backfill.dispatch(decision, row, snapshot, config, recheck=lambda: None)
         queue = project.root / '.memvane/compile/source-queue.jsonl'
-        job = json.loads(queue.read_text().splitlines()[0])
+        job = json.loads(pending_text(queue).splitlines()[0])
         job.pop('initialBackfill')
         marker = self.home / 'extractor-was-called'
         fake = self.home / 'fake-extractor'
@@ -159,7 +161,7 @@ class BackfillWorkerBoundary(FixtureCase):
             with self.subTest(field=field):
                 changed = copy.deepcopy(job)
                 changed['selectedRoute'][field] = 'f' * 32
-                queue.write_text(json.dumps(changed) + '\n')
+                safe_queue_path(project.root, native=True).write_text(json.dumps(changed) + '\n')
                 child = subprocess.run([sys.executable, '-B', str(root / 'entry/run.py'),
                                         'wiki-compile-worker', '--cwd', str(project.root), '--json', '--flush-all'],
                                        cwd=str(project.root), env=env, capture_output=True, text=True, timeout=90)
@@ -283,7 +285,7 @@ class BackfillWorkerBoundary(FixtureCase):
         self.assertEqual(child.returncode, 0, child.stderr)
         self.assertEqual(calls.read_text().splitlines(), ['codex'])
         self.assertEqual(backfill.summary(backfill._load(decision))['dispatched'], 1)
-        self.assertTrue((project.root / '.memvane/compile/source-queue.jsonl').read_text().strip())
+        self.assertTrue(pending_text(project.root / '.memvane/compile/source-queue.jsonl').strip())
 
     def test_deferral_after_failed_host_only_records_the_failed_attempt(self):
         import json
@@ -319,7 +321,7 @@ class BackfillWorkerBoundary(FixtureCase):
         self.assertEqual(child.returncode, 0, child.stderr)
         self.assertEqual(calls.read_text().splitlines(), ['codex', 'claude'])
         queue = project.root / '.memvane/compile/source-queue.jsonl'
-        jobs = [json.loads(line) for line in queue.read_text().splitlines()]
+        jobs = [json.loads(line) for line in pending_text(queue).splitlines()]
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0]['_fallbackAttempts']['engines'], ['codex'])
         self.assertEqual(backfill.summary(backfill._load(decision))['dispatched'], 1)
@@ -387,7 +389,7 @@ class BackfillWorkerBoundary(FixtureCase):
                 row = backfill.discover(decision, snapshot, config, ('sync',), {'sync': 'unknown'})
                 backfill.dispatch(decision, row, snapshot, config, recheck=lambda: None)
                 queue = project.root / '.memvane/compile/source-queue.jsonl'
-                special_job = json.loads(queue.read_text().splitlines()[0])
+                special_job = json.loads(pending_text(queue).splitlines()[0])
                 jobs = []
                 for source in pads:
                     job = copy.deepcopy(special_job)
@@ -396,7 +398,7 @@ class BackfillWorkerBoundary(FixtureCase):
                     job['source']['path'] = source.relative_to(project.root).as_posix()
                     job['contentRevision'] = hashlib.sha256(source.read_bytes()).hexdigest()
                     jobs.append(job)
-                queue.write_text(''.join(json.dumps(job) + '\n' for job in jobs + [special_job]))
+                safe_queue_path(project.root, native=True).write_text(''.join(json.dumps(job) + '\n' for job in jobs + [special_job]))
                 calls = self.home / ('calls-%d.jsonl' % remaining)
                 scripts = {}
                 for engine in ('codex', 'claude', 'hermes'):
@@ -418,7 +420,7 @@ class BackfillWorkerBoundary(FixtureCase):
                 first = subprocess.run(command, cwd=str(project.root), env=env,
                                        capture_output=True, text=True, timeout=90)
                 self.assertEqual(first.returncode, 0, first.stderr)
-                kept = [json.loads(line) for line in queue.read_text().splitlines()]
+                kept = [json.loads(line) for line in pending_text(queue).splitlines()]
                 self.assertEqual(len(kept), 1, first.stdout + first.stderr)
                 expected = ['codex', 'claude'][:remaining]
                 self.assertEqual(kept[0]['_fallbackAttempts']['engines'], expected)
@@ -432,4 +434,4 @@ class BackfillWorkerBoundary(FixtureCase):
                 self.assertEqual([call['engine'] for call in all_calls if call['special']],
                                  ['codex', 'claude', 'hermes'])
                 self.assertEqual(backfill.summary(backfill._load(decision))['settled'], 1)
-                self.assertFalse(queue.read_text().strip())
+                self.assertFalse(pending_text(queue).strip())

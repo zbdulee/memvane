@@ -107,6 +107,9 @@ def owner_for(path, targets):
 
 
 def _safe_path(path, cwd):
+    from memvane.wiki.card.api import card_sources_allowed
+    if not card_sources_allowed({'path': str(path)}, report=True):
+        return None
     path = Path(path)
     path = Path(os.path.abspath(path if path.is_absolute() else Path(cwd) / path))
     if any(part.is_symlink() for part in (path, *path.parents)):
@@ -132,7 +135,7 @@ def _eligible(path, decision):
             and not any(part.startswith('.') or part in DENIED_SOURCE_SEGMENTS
                         for part in rel.parts)
             and not excluded_source(rel.as_posix(),
-                                    decision.get('recallSettings', {}).get('skipPaths', [])))
+                                    decision.get('recallSettings', {}).get('skipPaths', []), wiki_source=True))
 
 
 def _revision(path):

@@ -240,6 +240,7 @@ _TEST_G1_EXEMPT_DIRS = ('tests/structure/',)
 # Each entry: (test file, dotted name it may name) -> reason. An entry whose file
 # exists but never names it is itself a finding (unused_exception).
 _TEST_G1_EXCEPTIONS = {
+    ('tests/support/wiki_handoff.py', 'memvane.wiki.verify.tests.support'): 'compiler tests drive verifier-owned claims and recovery copies',
     ('tests/e2e/handoff_four_processes.py', 'memvane.runtime.runtime_work'): 'two-bundle timer and worker handoff boundary',
     ('tests/e2e/handoff_four_processes.py', 'memvane.runtime.host_bundle'): 'synthetic installed bundle inventory',
     ('tests/e2e/handoff_four_processes.py', 'memvane.runtime.runtime_monitor'): 'two-bundle monitor handoff boundary',

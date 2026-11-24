@@ -1,5 +1,4 @@
 import json
-import os
 from unittest.mock import patch
 
 from tests.support.case import FixtureCase
@@ -37,16 +36,19 @@ class VerificationAtomicWriteTests(FixtureCase):
 
     def test_failed_stamp_keeps_original_bytes_and_cleans_temporary_file(self):
         project, cfg, card, original = self.prepare_case()
-        real_replace = os.replace
-        attempted = []
-        def fail_card(src, dst, *args, **kwargs):
-            if str(dst) == str(card):
-                attempted.append(str(dst))
-                raise OSError('synthetic write failure')
-            return real_replace(src, dst, *args, **kwargs)
-        with patch('os.replace', side_effect=fail_card):
+        from memvane.kernel import atomic_rename
+        real = atomic_rename._rename
+        with patch.object(atomic_rename, '_rename') as operation:
+            def fail_exchange(parent, src, target_parent, dst, *, exchange):
+                if exchange and dst == card.name:
+                    raise OSError('synthetic exchange failure')
+                return real(parent, src, target_parent, dst, exchange=exchange)
+
+            operation.side_effect = fail_exchange
             verify.run(project.root, cfg, cfg['compile'])
-        self.assertEqual(attempted, [str(card)])
+            attempts = [call for call in operation.call_args_list
+                        if call.kwargs.get('exchange') and call.args[-1] == card.name]
+        self.assertEqual(len(attempts), 1)
         self.assertEqual(card.read_text(encoding='utf-8'), original)
         self.assertEqual(list(card.parent.glob('.card.md.tmp-*')), [])
 

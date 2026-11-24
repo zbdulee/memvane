@@ -81,8 +81,6 @@ class Pass(VerifyCase):
     def test_skips_that_change_nothing(self):
         table = [
             ({'sourceHash': 'deadbeef'}, 'stale_job'),
-            ({'targetPath': ''}, 'missing_target_path'),
-            ({'targetPath': 'docs/source.md'}, 'unsafe_target_path'),
             ({'targetPath': '.memvane/wiki/concepts/absent.md'}, 'card_missing'),
         ]
         for overrides, reason in table:
@@ -94,6 +92,24 @@ class Pass(VerifyCase):
                 self.assertEqual(self.log()[-1]['reason'], reason)
                 self.assertEqual(self.card_now(), before)
                 self.assertEqual(self.queued(), '')
+
+    def test_released_rows_with_missing_or_unsafe_targets_keep_their_original_bytes(self):
+        fake = self.fake()
+        expected = []
+        for target in ('', SOURCE_REL):
+            with self.subTest(target=target):
+                before = self.setup(targetPath=target)
+                source = self.source.read_bytes()
+                expected.append(self.queue.read_bytes())
+                for _ in range(2):
+                    self.assertEqual(self.run_verify()['processed'], 0)
+                    self.assertEqual(self.queued(), '')
+                    private = self.compile_dir / '.handoff/v1/returns'
+                    self.assertCountEqual([p.read_bytes() for p in private.rglob('fragment-*')], expected)
+                    self.assertEqual(fake.calls, [])
+                    self.assertEqual(self.log(), [])
+                    self.assertEqual(self.card_now(), before)
+                    self.assertEqual(self.source.read_bytes(), source)
 
     def test_a_card_without_any_readable_source_stays_generated(self):
         before = self.setup(with_source=False)
@@ -210,16 +226,24 @@ class NegativeVerdicts(VerifyCase):
         self.assertEqual(verify.load_verify_suppressions(self.compile_dir / 'absent.jsonl'), {})
 
     def test_a_selected_route_keeps_every_card_and_wakes_sync_after_a_pass(self):
-        decision = {'recallSettings': {'skipPaths': []}, 'projectRoot': str(self.root)}
+        from memvane.wiki.card import api as cards
+        decision = {'recallSettings': {'skipPaths': []}, 'projectRoot': str(self.root),
+                    'installId': 'a' * 32, 'scopeId': 'b' * 32, 'storeIncarnation': 'c' * 32}
+        self.project.write_note(SOURCE_REL, SOURCE)
+        job = self.job(sourceHash='a' * 16)
+        revisions = cards.dump_source_revisions(job['sourceRevisions'])
+        frontmatter = 'sourceRevisions:\n' + '\n'.join('  - ' + entry for entry in revisions)
+        self.card.parent.mkdir(parents=True, exist_ok=True)
         for answer, expected, card_left in ((FAIL, 'kept', True), (INCONCLUSIVE, 'inconclusive', True),
                                             (PASS, 'verified', True)):
             with self.subTest(verdict=answer['verdict']):
-                self.setup()
+                self.card.write_text(card_text(source_hash=job['sourceHash'], extra_fm=frontmatter), encoding='utf-8')
+                self.write_queue(job)
                 self.fake(answer)
                 with mock.patch('memvane.wiki.workspace.api.selected', return_value=(decision, {})), \
                         mock.patch('memvane.wiki.workspace.api.recheck') as recheck, \
                         mock.patch('memvane.wiki.workspace.api.request_sync') as wake:
-                    self.run_verify()
+                    self.assertEqual(self.run_verify()['processed'], 1)
                 self.assertEqual(self.card.exists(), card_left)
                 self.assertEqual(self.log()[-1]['result'], expected)
                 self.assertGreater(recheck.call_count, 0)
@@ -455,7 +479,11 @@ class Budget(VerifyCase):
         result = self.run_verify()
         self.assertEqual((result['processed'], len(fake.calls)), (1, 1))
         self.assert_status('verified')
-        self.assertEqual(self.queued(), '{malformed\n')
+        self.assertEqual(self.queued(), '')
+        self.assertEqual(self.run_verify()['processed'], 0)
+        self.assertEqual(len(fake.calls), 1)
+        private = self.compile_dir / '.handoff/v1/returns'
+        self.assertEqual([p.read_bytes() for p in private.rglob('fragment-*')], [b'{malformed\n'])
 
 
 class SourceSnapshot(VerifyCase):

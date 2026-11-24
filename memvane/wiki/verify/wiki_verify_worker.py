@@ -42,16 +42,15 @@ path); queue/log records never store source bodies.
 
 from __future__ import annotations
 import argparse
-import fcntl
 import hashlib
 import json
 import os
-import re
 import sqlite3
 import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from memvane.wiki.workspace.handoff import api as queue_pass
 from memvane.kernel.atomic_rename import fsync_dir, canonical_json_bytes
 from memvane.kernel.paths import now_iso, read_jsonl
 from memvane.kernel.persistent_identity import persistent_identity_equal
@@ -66,7 +65,10 @@ from memvane.wiki.card import api as wsm
 from memvane.wiki.card import api as source_spans
 from memvane.wiki.card.api import card_sources_allowed, parse_frontmatter
 from memvane.wiki.card import api as yaml_scalars
-from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path, requeue_lines, append_jsonl, read_queue, claim_queue
+from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, append_jsonl, read_queue, claim_queue
+from memvane.wiki.verify import promotion
+from memvane.wiki.verify.pending_replacement import _cleanup_pending, finish_stale_work
+from memvane.wiki.verify.pending_replacement import pending_replacement, job_revisions, pending_matches_job, card_state, source_freshness, incompatible_cards
 from memvane.wiki.verify.verify_ledger import ledger_writable, source_body_hash
 from memvane.wiki.verify.verification_stamp import stamp_verification, render_verification, write_rendered_verification
 # 경로는 전부 `compile_paths` 상수 테이블에서 온다(설정 키 4개는 제거됐다 —
@@ -225,29 +227,37 @@ def load_verify_suppressions(path: Path | None) -> dict[str, str]:
     return suppressions
 
 
-def record_machine_delete(root: Path, compile_cfg: dict, record: dict, verdict: str) -> None:
-    """Mark the manifest so the next compile does not tombstone this target.
+def _machine_row(record, verdict):
+    return {'ts': record['ts'], 'action': ct.MACHINE_DELETE_ACTION, 'status': 'deleted',
+            'targetPath': record['targetPath'], 'verdict': verdict, 'engine': record.get('engine', '')}
 
-    wiki_compile's delete-detection reads "manifest says it existed + file gone" as a
-    deliberate user deletion and tombstones the identity permanently. Without this
-    row, a verify delete would suppress the card forever — contradicting the reason
-    a machine delete exists (fix the source, get a fresh card). Fail-open:
-    an unwritable manifest degrades to today's tombstone behaviour, never to a crash.
-    """
+
+def _manifest_has(root, row, *, latest=False):
     path = qmd_config.ledger(root, ct.MANIFEST)
     if path is None:
-        return
-    # targetPath만 담아 same_generated_identity가 이 카드에만 매칭되게 한다
-    # (sourceHash/canonicalKey를 넣으면 다른 카드까지 잘못 매칭될 수 있음).
-    append_jsonl(path, {
-        "ts": now_iso(),
-        "action": ct.MACHINE_DELETE_ACTION,
-        "status": "deleted",
-        "targetPath": record.get("targetPath", ""),
-        "verdict": verdict,
-        "engine": record.get("engine", ""),
-    })
+        return False
+    rows = (item for _, item in reversed(read_queue(path)) if item and item.get('targetPath') == row['targetPath'])
+    present = next(rows, None) == row if latest else row in rows
+    if not present:
+        return False
+    with path.open('rb') as handle:
+        os.fsync(handle.fileno())
+    fsync_dir(path.parent)
+    return True
+
+
+def record_machine_delete(root: Path, compile_cfg: dict, record: dict, verdict: str) -> bool:
+    """Durably identify a machine deletion so a later writer can distinguish a manual removal."""
+    path = qmd_config.ledger(root, ct.MANIFEST)
+    row = _machine_row(record, verdict)
+    if path is None or wiki_freshness.unresolved_pending_refreshes_strict(
+            root, before_ledger_write=True, append_for=row) is None:
+        return False
+    if _manifest_has(root, row, latest=True):
+        return True
+    append_jsonl(path, row)
     cp.compact_manifest(path)
+    return _manifest_has(root, row, latest=True)
 
 
 def record_verify_deletion(
@@ -369,32 +379,6 @@ def wake_pending_retirement(root: Path) -> None:
         wiki_selected_laya.request_compile(root, selected)
 
 
-def pending_replacement(root: Path, wiki_root: Path, job: dict,
-                        live_target: Path) -> tuple[Path, str] | None:
-    """Accept only the compiler's hidden pending path for this exact target/job.
-
-    ``sourceHash`` is ``wiki_compile.source_hash``: 16 lowercase hex, the same
-    value in the auto marker and the pending filename suffix.
-    ``expectedTargetHash`` is the full SHA-256 of the prior live card bytes.
-    """
-    rel = job.get('pendingPath')
-    if rel is None:
-        return None
-    job_hash = job.get('sourceHash')
-    expected = job.get('expectedTargetHash')
-    if (not isinstance(job_hash, str) or not re.fullmatch(r'[0-9a-f]{16}', job_hash)
-            or not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected)
-            or not isinstance(rel, str)):
-        raise ValueError('pending_replacement_invalid')
-    root = root.resolve()
-    pending = live_target.with_name('.' + live_target.name + '.pending-' + job_hash)
-    if (pending.is_symlink() or pending.relative_to(root).as_posix() != rel
-            or pending.parent != live_target.parent
-            or not pending.is_relative_to(wiki_root)):
-        raise ValueError('pending_replacement_invalid')
-    return pending, expected
-
-
 def publish_pending_replacement(root: Path, config: dict, job: dict,
                                 pending: Path, live_target: Path,
                                 expected: str) -> str:
@@ -412,21 +396,21 @@ def publish_pending_replacement(root: Path, config: dict, job: dict,
             old_bytes = live_target.read_bytes()
         except (FileNotFoundError, IsADirectoryError):
             return 'stale'
+        if (not card_sources_allowed(job, report=True) or not card_sources_allowed(pending_text, report=True)
+                or not card_sources_allowed(old_bytes.decode('utf-8'), report=True)):
+            return 'retry'
         if hashlib.sha256(old_bytes).hexdigest() != expected:
             return 'stale'
         # Once the reviewed candidate is published, the previous completed
         # card must remain recoverable just like a source-deletion retirement.
         from memvane.wiki.card.api import archive_card
         if not archive_card(
-                root, live_target, live_target.read_text(encoding='utf-8'), expected):
+                root, live_target, old_bytes.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n'), expected):
             return 'retry'
-        os.replace(pending, live_target)
-        directory = os.open(live_target.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    except OSError:
+        outcome = promotion.publish(root, job, pending, live_target, pending_text, old_bytes)
+        if outcome != 'published':
+            return outcome
+    except (OSError, ValueError):
         return 'retry'
     wiki_root = (root / config.get('wikiPath', settings_types.WIKI_REL)).resolve()
     workspace_files.append_activity(root, 'updated', live_target.relative_to(wiki_root).as_posix(),
@@ -455,18 +439,44 @@ def finish_stale_pending(root: Path, pending: Path, job: dict,
     return True, False
 
 
-def card_state(target: Path) -> tuple[str | None, dict, str, str]:
-    """(text, frontmatter, status, block sourceHash) — 읽기 실패 시 text None."""
-    try:
-        text = target.read_text(encoding="utf-8")
-    except OSError:
-        return None, {}, "", ""
-    meta, ok = parse_frontmatter(text)
-    if not ok:
-        meta = {}
-    status = str(meta.get("status") or "").strip() or "generated"
-    match = wiki_markers.AUTO_START_RE.search(text)
-    return text, meta, status, (match.group(1) if match else "")
+def _unproved_pending(job, pending, snapshots, log_path):
+    # A replay cannot authorize cleanup of a different file at the same path.
+    if snapshots is not None:
+        snapshots.pop(pending, None)
+    log_verdict(log_path, {**base_record(job), 'result': 'skipped',
+                           'reason': 'pending_replacement_changed'})
+    return True, False
+
+
+def _settle_stale_revision(root, config, job, pending, text, snapshots, log_path, selected, stale_work=None):
+    """Under the writer lock, authorize cleanup only for this exact obsolete candidate."""
+    reason = 'pending_source_changed'
+    if pending.resolve() != pending or snapshots is None or pending not in snapshots:
+        return _unproved_pending(job, pending, snapshots, log_path)
+    info = pending.lstat()
+    fingerprint = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    fresh, _, status, _ = card_state(pending)
+    if (fingerprint != snapshots[pending] or not fresh or fresh != text
+            or not pending_matches_job(fresh, job)):
+        return _unproved_pending(job, pending, snapshots, log_path)
+    observed = source_freshness(root, config, job)
+    if not observed or observed.get('reason') != 'content_hash_mismatch':
+        return False, True
+    if status == 'verified' and selected is not None:
+        _supersede_job_intent(root, config, job, pending, selected[0])
+    record = {**base_record(job), 'targetPath': job['pendingPath'], 'reasons': [reason]}
+    # No retirement without a durable explanation; the requeued job protects the file.
+    if not record_verify_deletion(root, {}, job_revisions(job), record, 'stale_replacement'):
+        return False, True
+    log_verdict(log_path, {**base_record(job), 'result': 'stale_replacement', 'reason': reason})
+    # Diagnostic only: the deletion ledger records the reason even if the event write fails.
+    wiki = root / config.get('wikiPath', settings_types.WIKI_REL)
+    workspace_files.append_activity(root, 'stale_replacement', pending.relative_to(wiki).as_posix(),
+                                    '', bound=selected, reason=reason)
+    wake_pending_retirement(root)
+    if stale_work is not None:
+        return finish_stale_work(root, config, stale_work, job, fingerprint=fingerprint)
+    return True, False
 
 
 def load_sources(
@@ -589,26 +599,8 @@ def snapshot_revision_evidence(
 
 
 def base_record(job: dict) -> dict:
-    """attempt 이전에도 쓸 수 있는 레코드 필드.
-
-    `engine`은 여기에 두지 않는다 — 시도가 있기 전에는 "검수 엔진"이 없고, 같은 키가
-    줄에 따라 생성 엔진/검수 엔진 두 의미를 가지면 집계가 오염된다. 생성 엔진은 항상
-    `producedBy`, 실제로 판정을 낸 엔진은 항상 `engine`이다.
-    """
-    return {
-        "ts": now_iso(),
-        "targetPath": job.get("targetPath", ""),
-        "producedBy": job.get("engine", ""),
-    }
-
-
-def source_freshness(root: Path, config: dict, job: dict) -> dict | None:
-    """Check job-owned provenance, preserving legacy jobs without the field."""
-    if "sourceRevisions" not in job:
-        return None
-    revisions = job.get("sourceRevisions")
-    return wiki_freshness.check_card(
-        {"sourceRevisions": revisions}, root, wsm.allow_roots_of(config))
+    """Before a verifier is chosen, identify only the producing engine."""
+    return {"ts": now_iso(), "targetPath": job.get("targetPath", ""), "producedBy": job.get("engine", "")}
 
 
 def card_changed_during_verify(
@@ -762,6 +754,10 @@ def apply_verify_verdict_locked(
     ``sha256`` they are bound to; they are further narrowed to the card's own
     ``sourceRevisions`` so recall can bind them to what the card claims.
     """
+    if wiki_freshness.unresolved_pending_refreshes_strict(root, before_ledger_write=True, append_for=job) is None:
+        return False, True
+    if incompatible_cards((target, root / job['targetPath']) if job.get('pendingPath') else (target,)):
+        return False, True
     fresh_text, fresh_meta, fresh_status, fresh_hash = card_state(target)
     if card_changed_during_verify(job_hash, fresh_meta, fresh_status, fresh_hash,
                                   payload_text, fresh_text):
@@ -821,9 +817,10 @@ def apply_verify_verdict_locked(
                 if gate_reason:
                     log_verdict(log_path, {**base_record(job), 'result': 'skipped', 'reason': gate_reason})
         stamped = (stamp_verification(target, 'verified', engine, verified_mode,
-                                      yaml_scalars.card_body_hash(payload_text), source_spans=bound or None)
+                                      yaml_scalars.card_body_hash(payload_text), source_spans=bound or None,
+                                      owner=(root, job), expected=fresh_text)
                    if rendered is None and (checkout is None or not isinstance(job.get('sourceFingerprints'), dict)) else
-                   rendered is not None and write_rendered_verification(target, rendered, fresh_text))
+                   rendered is not None and write_rendered_verification(target, rendered, fresh_text, owner=(root, job)))
         if not stamped:
             if intent_path is not None:
                 _supersede_compile_intent(intent_path)
@@ -854,17 +851,94 @@ def apply_verify_verdict_locked(
     applied = apply_negative_verdict(
         root, config, compile_cfg, vcfg, target, engine, verified_mode, action, verdict,
         sources, {**record, 'pendingOnly': True} if pending_only else record,
-        log_path, yaml_scalars.card_body_hash(payload_text), pending_only=pending_only
+        log_path, yaml_scalars.card_body_hash(payload_text), pending_only=pending_only, job=job, expected=fresh_text
     )
     return (True, False) if applied else (False, True)
 
 
+def _replay_pending(root, config, job, target, live_target, expected, log_path,
+                    snapshots, checkout, selected_route, stale_work=None):
+    try:
+        with cp.card_write_lock(root), workspace_files.mutation_lock(root):
+            recovered = promotion.recover(root, job, target, live_target)
+    except (KeyError, OSError, TypeError, RuntimeError, ValueError):
+        return False, True
+    if recovered == 'retry':
+        return False, True
+    if not target.exists():
+        # A crash after atomic replacement but before queue ACK is a
+        # completed replay. Otherwise the pending candidate is missing.
+        live_text, live_meta, live_status, live_hash = card_state(live_target)
+        if recovered == 'published' or (live_text is not None and live_status == 'verified'
+                and live_hash == job.get('sourceHash')
+                and live_meta.get('verifiedBodyHash') ==
+                    yaml_scalars.card_body_hash(live_text)):
+            if checkout is not None:
+                try:
+                    with cp.card_write_lock(root), workspace_files.mutation_lock(root):
+                        current_text, _, _, _ = card_state(live_target)
+                        if current_text == live_text:
+                            _, gate_reason = _provenance_gate(job, checkout)
+                            if gate_reason == 'provenance_checkout_changed':
+                                _supersede_job_intent(root, config, job, live_target, selected_route[0])
+                except (OSError, RuntimeError, ValueError):
+                    return False, True
+            reindex_wiki(root, config)
+            wake_pending_retirement(root)
+            log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
+            return True, False
+        log_verdict(log_path, {**base_record(job), 'result': 'skipped',
+                               'reason': 'pending_replacement_missing'})
+        return True, False
+    if target.is_symlink():
+        log_verdict(log_path, {**base_record(job), 'result': 'skipped',
+                               'reason': 'pending_replacement_unsafe'})
+        return True, False
+    staged_text, _, staged_status, staged_hash = card_state(target)
+    if staged_status == 'verified' and staged_hash == job.get('sourceHash'):
+        try:
+            with cp.card_write_lock(root), workspace_files.mutation_lock(root):
+                current, current_meta, _, _ = card_state(target)
+                if (current != staged_text or ('sourceRevisions' in current_meta and 'sourceRevisions' in job
+                        and not pending_matches_job(current, job))):
+                    return _unproved_pending(job, target, snapshots, log_path)
+                freshness = source_freshness(root, config, job)
+                if freshness and freshness.get('state') != wiki_markers.FRESH:
+                    if freshness.get('reason') == 'content_hash_mismatch':
+                        return _settle_stale_revision(root, config, job, target, staged_text,
+                                                      snapshots, log_path, selected_route, stale_work)
+                    return False, True
+                _, gate_reason = _provenance_gate(job, checkout)
+                if gate_reason == 'provenance_checkout_changed':
+                    _supersede_job_intent(root, config, job, target, selected_route[0])
+                if incompatible_cards((target, live_target)):
+                    return False, True
+                outcome = publish_pending_replacement(
+                    root, config, job, target, live_target, expected)
+                if outcome == 'published':
+                    wake_pending_retirement(root)
+                    log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
+                    return True, False
+                if outcome == 'stale':
+                    if selected_route is not None:
+                        _supersede_job_intent(root, config, job, target, selected_route[0])
+                    return finish_stale_pending(root, target, job, log_path, snapshots)
+        except (OSError, RuntimeError, ValueError):
+            pass
+        return False, True
+
+    return None
+
+
 def process_verify_job(
     root: Path, config: dict, compile_cfg: dict, vcfg: dict, job: dict, log_path: Path,
-    *, snapshots: dict | None = None,
+    *, snapshots: dict | None = None, stale_work=None,
 ) -> tuple[bool, bool]:
     """Return (processed, preserve_job) — wiki_compile_worker.process_job과 동일 계약."""
     from memvane.wiki.workspace import api as wiki_selected_laya
+    from memvane.wiki.card.api import card_sources_allowed
+    if not card_sources_allowed(job, report=True):
+        return False, True
     selected_route = wiki_selected_laya.selected(root)
     checkout = None
     if selected_route is not None and isinstance(job.get('sourceFingerprints'), dict):
@@ -873,6 +947,8 @@ def process_verify_job(
         except (OSError, RuntimeError, ValueError, sqlite3.Error):
             log_verdict(log_path, {**base_record(job), 'result': 'skipped',
                                    'reason': 'provenance_checkout_unavailable'})
+    if wiki_freshness.unresolved_pending_refreshes_strict(root, before_ledger_write=True, append_for=job) is None:
+        return False, True
     rel = job.get("targetPath")
     if not isinstance(rel, str) or not rel:
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "missing_target_path"})
@@ -896,62 +972,52 @@ def process_verify_job(
         log_verdict(log_path, {**base_record(job), 'result': 'skipped',
                                'reason': 'pending_replacement_invalid'})
         return True, False
+    if incompatible_cards((target, staged[0]) if staged is not None else (target,)):
+        return False, True
     if staged is not None:
         target, expected = staged
-        if not target.exists():
-            # A crash after atomic replacement but before queue ACK is a
-            # completed replay. Otherwise the pending candidate is missing.
-            live_text, live_meta, live_status, live_hash = card_state(live_target)
-            if (live_text is not None and live_status == 'verified'
-                    and live_hash == job.get('sourceHash')
-                    and live_meta.get('verifiedBodyHash') ==
-                        yaml_scalars.card_body_hash(live_text)):
-                if checkout is not None:
-                    try:
-                        with cp.card_write_lock(root), workspace_files.mutation_lock(root):
-                            current_text, _, _, _ = card_state(live_target)
-                            if current_text == live_text:
-                                _, gate_reason = _provenance_gate(job, checkout)
-                                if gate_reason == 'provenance_checkout_changed':
-                                    _supersede_job_intent(root, config, job, live_target, selected_route[0])
-                    except (OSError, RuntimeError, ValueError):
-                        return False, True
-                reindex_wiki(root, config)
-                wake_pending_retirement(root)
-                log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
-                return True, False
-            log_verdict(log_path, {**base_record(job), 'result': 'skipped',
-                                   'reason': 'pending_replacement_missing'})
+        replay = _replay_pending(root, config, job, target, live_target, expected, log_path,
+                                 snapshots, checkout, selected_route, stale_work)
+        if replay is not None:
+            return replay
+
+    else:
+        try:
+            with cp.card_write_lock(root), workspace_files.mutation_lock(root):
+                retirement = promotion.retirement_status(
+                    root, job, manifest_has=lambda row: _manifest_has(root, row, latest=True),
+                    repair=lambda row: record_machine_delete(root, compile_cfg, row, row['verdict']))
+                if retirement in ('fail', 'inconclusive'):
+                    reindex_wiki(root, config)
+                    promotion.finish_retirement(root, job, retirement)
+                    return True, False
+                if retirement is not None:
+                    return (True, False) if retirement == 'retired' else (False, True)
+                def still_fresh():
+                    state = source_freshness(root, config, job)
+                    return not state or state.get('state') == wiki_markers.FRESH
+                stamped = promotion.resume_stamp(root, job, live_target, still_fresh)
+                if stamped == 'published' and checkout is not None:
+                    _, reason = _provenance_gate(job, checkout)
+                    if reason == 'provenance_checkout_changed':
+                        _supersede_job_intent(root, config, job, live_target, selected_route[0])
+        except (KeyError, OSError, TypeError, RuntimeError, ValueError):
+            return False, True
+        if stamped == 'published':
+            reindex_wiki(root, config)
+            wake_pending_retirement(root)
+            log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
             return True, False
-        if target.is_symlink():
-            log_verdict(log_path, {**base_record(job), 'result': 'skipped',
-                                   'reason': 'pending_replacement_unsafe'})
-            return True, False
-        staged_text, _, staged_status, staged_hash = card_state(target)
-        if staged_status == 'verified' and staged_hash == job.get('sourceHash'):
-            try:
-                with cp.card_write_lock(root), workspace_files.mutation_lock(root):
-                    _, gate_reason = _provenance_gate(job, checkout)
-                    if gate_reason == 'provenance_checkout_changed':
-                        _supersede_job_intent(root, config, job, target, selected_route[0])
-                    outcome = publish_pending_replacement(
-                        root, config, job, target, live_target, expected)
-                    if outcome == 'published':
-                        wake_pending_retirement(root)
-                        log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
-                        return True, False
-                    if outcome == 'stale':
-                        if selected_route is not None:
-                            _supersede_job_intent(root, config, job, target, selected_route[0])
-                        return finish_stale_pending(root, target, job, log_path, snapshots)
-            except (OSError, RuntimeError, ValueError):
-                pass
+        if stamped is not None:
             return False, True
 
     text, meta, status, block_hash = card_state(target)
     if text is None:
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "card_missing"})
         return True, False
+    if (staged is not None and 'sourceRevisions' in meta and 'sourceRevisions' in job
+            and not pending_matches_job(text, job)):
+        return _unproved_pending(job, target, snapshots, log_path)
     if status != "generated" or meta.get("createdBy") not in wiki_markers.CREATED_BY_NAMES:
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "not_generated"})
         return True, False
@@ -992,6 +1058,10 @@ def process_verify_job(
     snapshot_sources, freshness, span_evidence = snapshot_revision_evidence(
         root, config, job, max_chars)
     if freshness is not None and freshness.get("state") != wiki_markers.FRESH:
+        if staged is not None and freshness.get('reason') == 'content_hash_mismatch':
+            with cp.card_write_lock(root), workspace_files.mutation_lock(root):
+                return _settle_stale_revision(root, config, job, target, text, snapshots,
+                                              log_path, selected_route, stale_work)
         log_verdict(log_path, {
             **base_record(job), "result": "deferred", "reason": "source_changed_before_verify",
             "freshnessReason": freshness.get("reason", ""),
@@ -1196,7 +1266,7 @@ def defer_or_drop(
 def apply_negative_verdict(
     root: Path, config: dict, compile_cfg: dict, vcfg: dict, target: Path, engine: str,
     verified_mode: str, action: str, verdict: str, sources: list[dict], record: dict,
-    log_path: Path, body_hash: str | None = None, *, pending_only: bool = False,
+    log_path: Path, body_hash: str | None = None, *, pending_only: bool = False, job=None, expected=None,
 ) -> bool:
     """Apply a fail/inconclusive verdict. Only inconclusive leaves a suppression marker.
 
@@ -1237,20 +1307,29 @@ def apply_negative_verdict(
         # 제목은 **삭제 전에** 읽는다 — unlink 후에는 프론트매터를 더 못 읽는다.
         _, dead_meta, _, _ = card_state(target)
         dead_title = str(dead_meta.get("title") or target.stem)
-        target.unlink(missing_ok=True)
         if pending_only:
+            target.unlink(missing_ok=True)
             log_verdict(log_path, {**record, 'result': 'pending_deleted',
                                    'suppressedSources': suppressed})
             return True
+        try:
+            if job is None or expected is None:
+                return False
+            if not promotion.retire(root, job, target, expected, verdict, _machine_row(record, verdict)):
+                return False
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
         wiki_root = (root / config.get("wikiPath", settings_types.WIKI_REL)).resolve()
         workspace_files.append_activity(root, "deleted", target.relative_to(wiki_root).as_posix(),
                                  dead_title, reason='verify_retire')
-        record_machine_delete(root, compile_cfg, record, verdict)
+        if not record_machine_delete(root, compile_cfg, record, verdict):
+            return False
         reindex_wiki(root, config)
         log_verdict(log_path, {
             **record, "result": "deleted",
             "suppressedSources": suppressed,
         })
+        promotion.finish_retirement(root, job, verdict)
         return True
     # none(선택된 route): 카드를 건드리지 않는다 — generated로 남아 recallVerifiedOnly
     # 기본값 아래 recall에서 제외된다.
@@ -1268,6 +1347,11 @@ def _dedup_by_target(rows: list, root: Path | None = None) -> list:
         if job is None:
             continue
         key = job.get("targetPath", "")
+        revisions = job_revisions(job) if job.get('pendingPath') else []
+        if revisions:
+            # A stale replay can arrive last. Preserve the review of each distinct
+            # source content until its own freshness and file identity are checked.
+            key = (key, tuple((r['path'], r['collection'], r['sha256']) for r in revisions))
         ts = cp.parse_ts(job.get("ts")) or 0.0
         if key not in latest:
             order.append(key)
@@ -1319,6 +1403,9 @@ def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict
                 if staged is None:
                     continue
                 path = staged[0]
+                from memvane.wiki.card.api import card_sources_allowed
+                if not card_sources_allowed(job) or incompatible_cards((path, target), report=False):
+                    continue
                 info = path.lstat()
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
                     continue
@@ -1359,89 +1446,95 @@ def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict
     return found, jobs
 
 
-def _cleanup_pending(root: Path, queue: Path, claimed: Path, snapshots: dict, rows: list) -> bool | None:
-    """True: checked; False: retry cleanup; None: retain an uncertain claim."""
-    with cp.card_write_lock(root):
-        with open(_queue_lock_path(queue), 'a', encoding='utf-8') as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            try:
-                # Older compilers can have an append FD open across rename.
-                # Their card lock has drained before this read. Preserve every
-                # late line before dropping the claim.
-                initial = [raw for raw, _ in rows]
-                actual = [line for line in claimed.read_text(encoding='utf-8').splitlines() if line.strip()]
-                if actual[:len(initial)] != initial:
-                    return None
-                late = actual[len(initial):]
-                if late:
-                    with queue.open('a', encoding='utf-8') as handle:
-                        for line in late:
-                            handle.write(line + '\n')
-                paths = [queue] + [p for p in queue.parent.iterdir()
-                    if p.name.startswith(queue.name + '.claimed.') and p != claimed]
-                referenced = set()
-                for path in paths:
-                    info = path.lstat()
-                    if not stat.S_ISREG(info.st_mode) or path.is_symlink():
-                        return False
-                    for line in path.read_text(encoding='utf-8').splitlines():
-                        if not line.strip():
-                            continue
-                        try:
-                            job = json.loads(line)
-                        except (ValueError, UnicodeError):
-                            return False
-                        if not isinstance(job, dict):
-                            return False
-                        pending = job.get('pendingPath')
-                        if isinstance(pending, str):
-                            referenced.add(root / pending)
-                deferred = False
-                for path, old in snapshots.items():
-                    if path in referenced:
-                        deferred = True
-                        continue
-                    if path.parent.resolve() != path.parent:
-                        continue
-                    try:
-                        info = path.lstat()
-                        current = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-                        if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1 and current == old:
-                            path.unlink()
-                    except FileNotFoundError:
-                        pass
-                    except OSError:
-                        return False
-                return not deferred
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+def _process_private(root, config, compile_cfg, vcfg, work, log_path):
+    from memvane.wiki.workspace.handoff.api import evidence as regular
+    from memvane.store.types import MAX_BODY
+
+    from memvane.wiki.verify.ordinary_slot import safe_outputs
+    job = work.state['binding']['job']
+    if not safe_outputs(job):
+        return False, True
+    wiki = root / config.get('wikiPath', settings_types.WIKI_REL)
+    live = root / job['targetPath']
+    image = work.read('image') if 'image' in work.state['blobs'] else None
+    try:
+        staged = pending_replacement(root, wiki, job, live)
+        if 'staleCleanup' in work.state['proof']:
+            if not staged or staged[0].parent.resolve() != staged[0].parent:
+                return False, True
+            with cp.card_write_lock(root), workspace_files.mutation_lock(root):
+                return finish_stale_work(root, config, work, job)
+        path = staged[0] if staged else live
+        intent = promotion.has_intent(root, job)
+        if not intent:
+            raw, node, _ = regular(wiki, path.relative_to(wiki).as_posix(), MAX_BODY)
+            if not staged:
+                proof = work.state['proof']
+                if image is None and hashlib.sha256(raw).hexdigest() == proof.get('sha256'):
+                    image = raw
+                if (node['dev'], node['ino']) != (proof.get('device'), proof.get('inode')) or raw != image:
+                    return False, True
+            original = raw == image
+            if staged and original:
+                candidate = work.state['binding'].get('candidate', {})
+                if set(candidate) != {'dev', 'ino', 'mtime_ns'} or any(node[k] != v for k, v in candidate.items()):
+                    return False, True
+            if not original:
+                text, meta, status, marker = card_state(path)
+                stamped = (status == 'verified' and marker == job.get('sourceHash')
+                           and meta.get('verifiedBodyHash') == yaml_scalars.card_body_hash(text)
+                           and meta['verifiedBodyHash'] == yaml_scalars.card_body_hash(image.decode()))
+                if not stamped:
+                    return False, True
+            if staged:
+                current, _, _ = regular(wiki, live.relative_to(wiki).as_posix(), MAX_BODY)
+                if (hashlib.sha256(current).hexdigest() != staged[1] and
+                        (source_freshness(root, config, job) or {}).get('reason') != 'content_hash_mismatch'):
+                    return False, True
+        snapshots, _ = _pending_snapshots(root, config, [(None, job)])
+    except (OSError, KeyError, RuntimeError, ValueError):
+        return False, True
+    return process_verify_job(root, config, compile_cfg, vcfg, job, log_path, snapshots=snapshots, stale_work=work)
 
 
+def _return_cleanup(root, queue, pending_snapshots, pending_jobs, remaining, extra_rows, paths, uncertain):
+    from memvane.wiki.verify import native_review
+    refs, unknown = native_review.references(queue)
+    disposable = {p: node for p, node in pending_snapshots.items()
+                  if p.relative_to(root).as_posix() not in refs}
+    from memvane.wiki.verify.queue_batch_prepare import opaque_ranges, unresolved
+    if _cleanup_pending(root, disposable, extra_rows, paths, uncertain or unknown or opaque_ranges(queue) or unresolved(queue)):
+        return []
+    retry = []
+    remaining_paths = set()
+    for raw in remaining:
+        try:
+            deferred = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(deferred, dict):
+            pending = deferred.get('pendingPath')
+            if isinstance(pending, str):
+                remaining_paths.add(root / pending)
+    for path, fingerprint in disposable.items():
+        job = pending_jobs[path]
+        if path in remaining_paths and not _valid_cleanup_marker(job):
+            continue  # A deferred verify job is not terminal.
+        marker = {'fingerprint': list(fingerprint), 'jobKey': _cleanup_job_key(job)}
+        retry.append(json.dumps({**job, '_pendingCleanup': marker},
+                                ensure_ascii=False, sort_keys=True))
+    return retry
+
+
+@queue_pass.bounded
 def run(
     root: Path, config: dict, compile_cfg: dict, produced_targets: list[str] | None = None
 ) -> dict:
-    """Drain (part of) the verify queue. Caller has already passed compile gating.
+    """Prepare the pending handoff, then drain one bounded verification batch.
 
-    `produced_targets` = card paths the CALLING run just enqueued. Two things depend
-    on it and both were wrong before:
-
-    **Budget.** A fixed `maxPerRun` makes the queue grow faster than it drains
-    whenever a run compiles more cards than it verifies, and a `generated` card is
-    invisible to recall under the default `compile.recallVerifiedOnly: true` — so
-    editing ten documents left accurate cards unusable for several runs. The budget
-    is therefore `max(maxPerRun, min(len(produced_targets), VERIFY_PRODUCED_HARD_CAP))`:
-      - a human's explicit `maxPerRun` is always honoured (it is a human decision),
-      - the part derived from **model output** is capped, because `produced` comes
-        from `len(candidates)` and the model decides that number. Without the cap a
-        single degenerate extractor response (40 cards) drove 200 paid verify calls
-        in one run — the model deciding how much the user is billed.
-
-    **Order.** Sizing the budget is not enough: the queue is FIFO, so `kept[:budget]`
-    spent the enlarged budget on the OLDEST backlog and left this run's own cards
-    `generated` — the exact outcome the enlargement was meant to prevent (measured:
-    4 backlog + 2 new, budget 2 → the 2 backlog cards verified, both new ones not).
-    This run's cards are processed first; leftover budget drains backlog, and one
-    slot is always reserved for backlog so it cannot starve during a bulk period.
+    The caller checks compile eligibility. This run keeps the configured review
+    budget and can expand it for just-produced targets up to VERIFY_PRODUCED_HARD_CAP.
+    It prioritizes those cards and reserves one slot for an existing backlog.
     """
     result = {"processed": 0, "remaining": 0}
     vcfg = verify_cfg_of(compile_cfg)
@@ -1451,10 +1544,29 @@ def run(
         # Selected Laya keeps wiki bytes for recovery. The legacy default
         # machine-delete verdict is never inherited by an installed route.
         vcfg = {**vcfg, 'onFail': 'none', 'onInconclusive': 'none'}
+    queue = _safe_queue_path(root, VERIFY_QUEUE_DEFAULT)
+    from memvane.wiki.verify.upgrade_queue import prepare
+    if queue is None:
+        return result
+    from memvane.wiki.verify import first_card, native_review
+    first_card.recover(root, root / config.get('wikiPath', settings_types.WIKI_REL), queue, selected_route)
     if not vcfg.get("enabled", True):
         return result
-    queue = _safe_queue_path(root, VERIFY_QUEUE_DEFAULT)
-    if queue is None or not queue.exists():
+    from memvane.wiki.verify.completed_review import settle
+    if settle(root, root / config.get('wikiPath', settings_types.WIKI_REL), queue, config, selected_route):
+        result['processed'] = 1
+    public_ready = prepare(root, queue, selected_route, config)
+    from memvane.wiki.verify import ordinary_slot
+    if not public_ready:
+        ordinary_slot.borrow(root, root / config.get('wikiPath', settings_types.WIKI_REL), queue, config, selected_route)
+    available = native_review.waiting(queue)
+    if not public_ready:
+        available = [work for work in available if not work.state['binding']['job'].get('pendingPath')]
+    from memvane.wiki.verify.queue_batch_prepare import delivery
+    packet = None if public_ready else delivery(queue)
+    if not public_ready and not available and packet is None:
+        return {**result, 'remaining': 1, 'reason': 'verify_queue_handoff_pending'}
+    if not queue.exists() and not available and not cp.queue_busy(queue) and not native_review.busy(queue):
         return result
     log_path = qmd_config.ledger(root, ct.VERIFY_LOG) or cp.under(root, ct.VERIFY_LOG)
 
@@ -1473,22 +1585,12 @@ def run(
     # 식힘 중"이라는 잘못된 인상만 준다. 후보 단위 파일로 대체됐다(engine_cooldown_path).
     cp.under(root, ct.LEGACY_VERIFY_COOLDOWN).unlink(missing_ok=True)
 
-    claimed = claim_queue(queue)
-    if claimed is None:
+    claimed, rows, public_ready = ordinary_slot.claim_for_review(queue, selected_route, public_ready, claim_queue, read_queue, packet)
+    if not rows and not available and claimed is None:
+        result['remaining'] = int(not public_ready or native_review.busy(queue))
         return result
-    rows = read_queue(claimed)
-    if not rows:
-        # read_queue also returns [] on read failure; re-read under the same
-        # card/queue locks before ACK, preserving late legacy-FD appends.
-        try:
-            empty_checked = _cleanup_pending(root, queue, claimed, {}, rows)
-        except (OSError, UnicodeError):
-            empty_checked = None
-        if empty_checked is True:
-            claimed.unlink(missing_ok=True)
-        queue.touch(exist_ok=True)
-        return result
-
+    retained = (ordinary_slot.classify(root, root / config.get('wikiPath', settings_types.WIKI_REL), rows, queue, config, selected_route)
+                if claimed is not None and rows.native else [])
     try:
         pending_snapshots, pending_jobs = _pending_snapshots(root, config, rows)
         snapshots_valid = True
@@ -1506,6 +1608,13 @@ def run(
     # a verifier. Normal jobs continue to use target-based deduplication.
     kept = _dedup_by_target([(raw, job) for raw, job in rows
                               if not isinstance(job, dict) or '_pendingCleanup' not in job], root)
+    private = {}
+    private_jobs = []
+    for work in native_review.scheduled(queue, available):
+        job = work.state['binding']['job']
+        private[id(job)] = work
+        private_jobs.append((None, job))
+    kept = private_jobs + kept
     max_per_run = max(1, min(
         int(engines.budget_of(compile_cfg).get("verifyPerRun", 3) or 3), settings_types.MAX_VERIFY_PER_RUN
     ))
@@ -1525,8 +1634,8 @@ def run(
         leftover = 1
     take_backlog = backlog[:leftover]
     to_process = take_fresh + take_backlog
-    deferred = [raw for raw, _ in fresh[len(take_fresh):]] + [raw for raw, _ in backlog[len(take_backlog):]]
-    remaining = deferred + malformed
+    deferred = [raw for raw, _ in fresh[len(take_fresh):] + backlog[len(take_backlog):] if raw is not None]
+    remaining = deferred + malformed + retained
     processed_count = 0
     try:
         for idx, (raw_line, job) in enumerate(to_process):
@@ -1539,49 +1648,30 @@ def run(
                 continue
             try:
                 wiki_selected_laya.recheck(selected_route)
-                processed, preserve = process_verify_job(root, config, compile_cfg, vcfg, job, log_path, snapshots=pending_snapshots)
+                if id(job) in private:
+                    processed, preserve = native_review.process(
+                        queue, selected_route, private[id(job)],
+                        lambda work: _process_private(root, config, compile_cfg, vcfg, work, log_path))
+                else:
+                    processed, preserve = process_verify_job(root, config, compile_cfg, vcfg, job, log_path,
+                                                             snapshots=pending_snapshots)
             except Exception:
-                remaining.append(raw_line)
-                remaining.extend(line for line, _ in to_process[idx + 1:])
+                if raw_line is not None:
+                    remaining.append(raw_line)
+                remaining.extend(line for line, _ in to_process[idx + 1:] if line is not None)
                 raise
             if processed:
                 processed_count += 1
-            if preserve:
+            if preserve and raw_line is not None:
                 remaining.append(raw_line)
     finally:
-        requeue_lines(queue, remaining)
-        try:
-            cleaned = (_cleanup_pending(root, queue, claimed, pending_snapshots, rows)
-                       if snapshots_valid else None)
-        except (OSError, UnicodeError):
-            cleaned = None
-        if cleaned is False:
-            retry = []
-            remaining_paths = set()
-            for raw in remaining:
-                try:
-                    deferred = json.loads(raw)
-                except ValueError:
-                    continue
-                if isinstance(deferred, dict):
-                    pending = deferred.get('pendingPath')
-                    if isinstance(pending, str):
-                        remaining_paths.add(root / pending)
-            for path, fingerprint in pending_snapshots.items():
-                job = pending_jobs[path]
-                if path in remaining_paths and not _valid_cleanup_marker(job):
-                    continue  # A deferred verify job is not terminal.
-                marker = {'fingerprint': list(fingerprint), 'jobKey': _cleanup_job_key(job)}
-                retry.append(json.dumps({**job, '_pendingCleanup': marker},
-                                        ensure_ascii=False, sort_keys=True))
-            requeue_lines(queue, retry)
-        # An unreadable or changed claim may contain late work: leave it intact
-        # for normal claimed-queue recovery rather than losing those rows.
-        if cleaned is not None:
-            claimed.unlink(missing_ok=True)
-        queue.touch(exist_ok=True)
-    result["processed"] = processed_count
-    result["remaining"] = len(remaining)
+        if snapshots_valid and claimed is not None:
+            with cp.card_write_lock(root):
+                rows.finish_verified(queue, claimed, remaining, lambda *args: _return_cleanup(
+                    root, queue, pending_snapshots, pending_jobs, remaining, *args))
+    result["processed"] += processed_count
+    still_waiting = native_review.waiting(queue)
+    result["remaining"] = len(remaining) + len(still_waiting) + int(bool(still_waiting.issues) or not public_ready)
     result["budget"] = budget
     result["freshProcessed"] = len(take_fresh)
     result["backlogProcessed"] = len(take_backlog)

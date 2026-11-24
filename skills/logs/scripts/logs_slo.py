@@ -31,7 +31,8 @@ LEXICAL_LARGE = 150
 LARGE_CARDS = 1000
 VECTOR_CACHE = ('ok', 'building', 'absent', 'disabled', 'inconsistent')
 SEMANTIC_COMPLETE, ARENA_SHARE = 0.95, 0.99
-SEMANTIC_COUNTS = ('deferred_deadline', 'provider_absent', 'deferred_work_budget', 'deferred_cache_building')
+SEMANTIC_USED = ('complete', 'partial')
+SEMANTIC_COUNTS = ('partial', 'deferred_deadline', 'provider_absent', 'deferred_work_budget', 'deferred_cache_building')
 SELECTOR = (1000, 1500)
 SELECTOR_OVER_BUDGET = 0.02
 REPEAT_SHARE = 0.05
@@ -198,20 +199,35 @@ def _arena(window):
     return values
 
 
+def full_coverage(row):
+    """A sealed search, or a partial search that covered every eligible member."""
+    if row.get('semantic') == 'complete':
+        return True
+    covered = _count(row.get('vectorCoveredMembers'))
+    eligible = _count(row.get('vectorEligibleMembers'))
+    return row.get('semantic') == 'partial' and eligible is not None and eligible > 0 and covered == eligible
+
+
+def _semantic_shares(rows):
+    return (round(sum(row['semantic'] in SEMANTIC_USED for row in rows) / len(rows), 4),
+            round(sum(full_coverage(row) for row in rows) / len(rows), 4))
+
+
 def _semantic(prompt, window=()):
     stated = [row for row in prompt if _text(row.get('semantic'))]
     asked = [row for row in stated if row['semantic'] != 'provider_absent']
     counts = Counter(row['semantic'] for row in stated)
     values = {name: counts.get(name, 0) for name in SEMANTIC_COUNTS}
-    # A recall whose arena was switched off on purpose is not an arena miss.
-    sourced = [row for row in asked if _text(row.get('vectorSource')) and row.get('vectorCache') != 'disabled']
+    # Older lexical-only rows may name the selected kernel's source even though it read no vectors.
+    sourced = [row for row in asked if row['semantic'] != 'lexical_only'
+               and _text(row.get('vectorSource')) and row.get('vectorCache') != 'disabled']
     arena = sum(row['vectorSource'] == 'arena' for row in sourced)
     cache = Counter(row['vectorCache'] for row in stated if row.get('vectorCache') in VECTOR_CACHE)
     # Rows from before the field existed do not say: unmeasured, not zero.
     values['vectorCache'] = dict(sorted(cache.items())) if cache else 'unmeasured'
     values['vectorCacheInconsistent'] = cache.get('inconsistent', 0)
     if asked:
-        values['complete'] = round(counts.get('complete', 0) / len(asked), 4)
+        values['complete'], values['fullCoverage'] = _semantic_shares(asked)
         values['completeTarget'] = SEMANTIC_COMPLETE
     # Before a bundle that reports the cache state no recall says anything about an arena:
     # nothing to judge. Once a recall reports it, no arena answer at all is a share of 0.
@@ -222,7 +238,7 @@ def _semantic(prompt, window=()):
     answered = [row for row in sourced if row['vectorSource'] == 'arena']
     if answered:
         # The recalls the arena answered, on their own: their completion and their semantic stage.
-        values['arenaComplete'] = round(sum(row['semantic'] == 'complete' for row in answered) / len(answered), 4)
+        values['arenaComplete'], values['arenaFullCoverage'] = _semantic_shares(answered)
         timed = [row['semanticMs'] for row in answered
                  if _one_query(row) and _number(row.get('semanticMs')) is not None]
         if timed:
@@ -294,7 +310,7 @@ def _hosts(prompt):
         if data:
             values.update(p50=round(_percentile(data, .5), 3), p95=round(_percentile(data, .95), 3))
         if asked:
-            values['complete'] = round(sum(row['semantic'] == 'complete' for row in asked) / len(asked), 4)
+            values['complete'], values['fullCoverage'] = _semantic_shares(asked)
         # Shown, never judged.
         result.append(_line('host ' + host, 'no-data' if len(data) < FLOOR else 'shown', len(data), **values))
     return result

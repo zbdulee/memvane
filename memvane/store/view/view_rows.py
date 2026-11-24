@@ -1342,8 +1342,9 @@ class RowsMixin:
                     deferred=deferred)
 
     def _rows_search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work, deadline_seconds,
-                           path_prefixes, excluded_paths, timings=None, preferred_paths=None, excluded_cards=None):
-        """Exact max-cosine over the pinned head's eligible cards and the sealed spec's sets."""
+                           path_prefixes, excluded_paths, timings=None, preferred_paths=None, excluded_cards=None,
+                           partial_recipe_id=None):
+        """Exact max-cosine over the pin and its sealed or explicitly requested content sets."""
         from memvane.store.view import view_vectors as vectors
         vectors._check_preferred(preferred_paths)
         deadline = time.monotonic() + vectors.options(limit, max_float_work, deadline_seconds,
@@ -1362,36 +1363,31 @@ class RowsMixin:
             generation, original = self._rows_verified(db, head, entry['handle'], deadline, record)
             if _pin_seal(generation) != record['seal']:
                 v.fail('view_pin_changed')
-            if generation['coverage'] != 'complete':
-                v.fail('vector_coverage_absent')
-            if profile_id != generation['profile_id']:
-                v.fail('vector_profile_mismatch')
-            recipe_id = generation['recipe_id']
-            dimension = self._profile(profile_id)['dimension']
-            if any(len(item) != dimension for item in query):
-                v.fail('vector_query_invalid')
+            from memvane.store.view import view_accel_search
+            recipe_id = view_accel_search.search_recipe(generation, profile_id, partial_recipe_id)
             vectors.mark(timings, 'vectorOpenMs', started);started = vectors.clock()
             every = [row for row in self._rows_open(db, pin.view_id, head.ordinal) if row['eligible']
                      and _path_allowed(row['path'], path_prefixes, excluded_paths)]
-            cards = [row for row in every if (row['path'], row['blob_sha']) not in dropped]
-            from memvane.store.view import view_accel_search
-            heads = view_accel_search.heads(self, db, cards, generation, deadline)
-            groups = {}
-            for row in cards:
-                groups.setdefault(row['blob_sha'], []).append(row)
+            stats = timings if timings is not None else {}
+            groups, heads, dimension = view_accel_search.member_sets(
+                self, db, every, dropped, recipe_id, profile_id, query, deadline, stats,
+                partial=partial_recipe_id is not None)
             vectors.mark(timings, 'vectorCardsMs', started);from memvane.store.view import vector_accel
             native = vector_accel.kernel()
-            stats = timings if timings is not None else {}
             stats.update(vectorKernel='accelerate' if native is not None else 'python',
-                         vectorSource='store' if native is not None else 'python',
                          vectorRows=0, vectorVerified=0, vectorScanBlocks=0,
                          vectorLoadMs=0.0, vectorScanMs=0.0, vectorVerifyMs=0.0,
                          vectorReadMs=0.0, vectorUnpackMs=0.0, vectorDotMs=0.0)
-            stats['vectorKernelUnavailable'] = native is None and vector_accel.requested();stats['vectorExcluded'] = len(every) - len(cards)
-            if native is not None:
+            stats['vectorKernelUnavailable'] = native is None and vector_accel.requested()
+            if dimension is None:
+                stats.pop('vectorSource', None)
+                top = []
+            elif native is not None:
+                stats['vectorSource'] = 'store'
                 top = view_accel_search.search(self, db, groups, heads, recipe_id, profile_id,
                                               dimension, query, limit, deadline, stats, native)
             else:
+                stats['vectorSource'] = 'python'
                 top = vectors._python_top(self, db, groups, heads, recipe_id, profile_id,
                                           dimension, query, limit, max_float_work, deadline,
                                           stats, preferred_paths)

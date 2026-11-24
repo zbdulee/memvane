@@ -9,14 +9,10 @@ owner-only (0700 directories, 0600/0700 files), no symlinks::
       previous.json          the generation active.json named before the last switch
       generations/g-<id>/    runtime.json, bin/node, node_modules/..., models/<gguf>
 
-The root sits beside the install state roots and the per-user service under
-the same private MemVane state base, outside ``~/.cache`` (a cache may be purged;
-the attested provider files must not be).
-
-A generation is content addressed: ``<id>`` is the digest of its sealed
-``runtime.json`` (every file's relative path, sha256, size and exec bit), so
-the same bytes always land on the same absolute paths. ``select`` re-hashes
-every file and refuses a missing, extra, changed or symlinked file.
+The private MemVane state base keeps attested files outside the purgeable cache.
+A generation ID hashes its sealed ``runtime.json``, which records every file's
+relative path, SHA-256, size and exec bit. ``select`` verifies this inventory
+and rejects missing, extra, changed or symlinked files.
 
 Provisioning copies bytes into a private staging directory and renames it in
 place. It never hardlinks: a second link would let the source tree rewrite
@@ -237,7 +233,10 @@ def _verify_generation(generation):
         _fail('laya_embed_runtime_corrupt')
     expected = {row[0]: row for row in manifest['files']}
     found = set()
-    for directory, dirs, files in os.walk(generation, followlinks=False):
+    def cannot_list(exc):
+        # An incomplete enumeration cannot establish that sealed files are missing.
+        raise exc
+    for directory, dirs, files in os.walk(generation, onerror=cannot_list, followlinks=False):
         here = Path(directory)
         for name in dirs:
             info = (here / name).lstat()

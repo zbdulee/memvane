@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
+import errno
 import hashlib
 import json
 import os
@@ -71,12 +72,14 @@ def _nonfinite(_value):
 def _attestation(path):
     """Read installer-owned bytes; a declaration inside the plugin is not proof."""
     target = Path(path).parent / PRODUCTION_ATTESTATION
-    if not target.exists() and not target.is_symlink():
-        return None, None
     try:
-        if target.is_symlink():
+        try:
+            mode = target.lstat().st_mode
+        except FileNotFoundError:
+            return None, None
+        if not stat.S_ISREG(mode):
             _fail('unsafe_production_attestation')
-        fd = os.open(target, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        fd = os.open(target, os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
         try:
             before = os.fstat(fd)
             if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
@@ -91,14 +94,19 @@ def _attestation(path):
                 _fail('production_attestation_changed')
         finally:
             os.close(fd)
-        parsed = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs,
-                            parse_constant=_nonfinite)
-        if not isinstance(parsed, dict) or raw != _canon(parsed).encode('utf-8'):
+        try:
+            parsed = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs, parse_constant=_nonfinite)
+            canonical = _canon(parsed).encode('utf-8')
+        except (ValueError, RecursionError) as exc:
+            raise JournalEvidenceError('production_attestation_invalid') from exc
+        if not isinstance(parsed, dict) or raw != canonical:
             _fail('production_attestation_noncanonical')
         if parsed.get('journalPath') != str(Path(path)):
             _fail('production_attestation_journal_mismatch')
         return parsed, hashlib.sha256(raw).hexdigest()
-    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise JournalEvidenceError('unsafe_production_attestation') from exc
         raise JournalEvidenceError('production_attestation_unavailable') from exc
 
 
@@ -654,7 +662,7 @@ _SELECTION_TRANSITIONS = frozenset((
     ('restoring', 'selected'), ('restoring', 'restored'), ('restored', 'restored')))
 
 
-def _verify_v1_selected(decision, stages=None):
+def _verify_v1_selected(decision, stages=None, *, for_write=False):
     """Reprove the selected v1 journal, route, ledger and provider.
 
     ``stages`` (a dict) receives the milliseconds of each part of the proof:
@@ -722,7 +730,7 @@ def _verify_v1_selected(decision, stages=None):
         _fail('worker_attestation_changed')
     mark('attestation')
     manifest, provider_available = _v1_provider_manifest(
-        attestation, row['vectorProfile'], allow_local_unavailable=True)
+        attestation, row['vectorProfile'], allow_local_unavailable=True, strict_reattest_io=for_write)
     mark('provider')
     if (inspect_journal(path) != row or read_v1(path.parent) != build
             or _read_json(path.parent / 'ledger.json') != ledger
@@ -739,16 +747,16 @@ def _verify_v1_selected(decision, stages=None):
             'providerManifest': manifest, 'providerAvailable': provider_available}
 
 
-def verify_selected_route(decision, stages=None):
+def verify_selected_route(decision, stages=None, *, for_write=False):
     """Verify the selected 1.0 route, journal, store and provider identity (``stages``: see ``_verify_v1_selected``)."""
     if not isinstance(decision, dict) or decision.get('routeSchema') != 'memvane-route-v4':
         _fail('unselected_host_route')
-    return _verify_v1_selected(decision, stages)
+    return _verify_v1_selected(decision, stages, for_write=for_write)
 
 
 def verify_selected_route_for_write(decision, action='update'):
     """Prove the selected route before a write."""
-    proof = verify_selected_route(decision)
+    proof = verify_selected_route(decision, for_write=True)
     if decision.get('routeSchema') == 'memvane-route-v4':
         if not proof.get('providerAvailable'):
             _fail('provider_identity_changed')
@@ -814,9 +822,9 @@ def verify_notification_target(decision):
 
 def verify_worker_attestation(decision):
     """Rehash model, worker and native closure once before an owned worker starts."""
-    selected = verify_selected_route(decision)
+    selected = verify_selected_route(decision, for_write=True)
     manifest = _worker_attestation_manifest(selected)
-    if verify_selected_route(decision) != selected:
+    if verify_selected_route(decision, for_write=True) != selected:
         _fail('worker_selection_changed')
     return manifest
 
@@ -846,7 +854,21 @@ def _worker_attestation_manifest(selected):
 
 
 
-def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False, provider=None):
+def _raise_if_proof_unavailable(exc):
+    """Do not classify an interrupted read as a comparison of sealed bytes."""
+    from memvane.provider.types import RuntimeUnavailable
+    cause = exc
+    while cause is not None:
+        if ((isinstance(cause, OSError) and cause.errno != errno.ELOOP)
+                or str(cause) in ('provider_artifact_changed', 'reattest_pairs_changed')
+                or isinstance(cause, RuntimeUnavailable) and str(cause) not in
+                ('laya_embed_runtime_corrupt', 'laya_embed_runtime_mismatch', 'laya_embed_runtime_unowned',
+                 'laya_embed_runtime_source_unsafe', 'laya_embed_runtime_unsafe')):
+            raise JournalEvidenceError('worker_attestation_unavailable') from exc
+        cause = cause.__cause__
+
+
+def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False, provider=None, strict_reattest_io=False):
     """Verify provider bytes and runtime identity using this plugin copy.
 
     A fixture provider port (``provider``, or the test runtime root's) proves instead.
@@ -888,7 +910,10 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False, pro
         try:
             from memvane.provider.api import reattestation_check
             local_available = reattestation_check(Path(record['journalPath']).parent, manifest)
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            # A reader may still use lexical rows. A writer needs the reason its proof failed.
+            if not allow_local_unavailable or strict_reattest_io:
+                _raise_if_proof_unavailable(exc)
             local_available = False
         if not local_available:
             if allow_local_unavailable:
@@ -900,30 +925,22 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False, pro
                                        ('moduleEntryPath', 'moduleEntrySha256'), ('modelPath', 'modelSha256')):
                 if laya_embed_runtime.runtime_file_sha256(manifest[path_key]) != manifest[hash_key]:
                     _fail('provider_identity_changed')
-            _verify_runtime_files(record)
+            laya_embed_runtime.verify_attested_files(manifest, record[RUNTIME_FILES_FIELD])
             active = laya_embed_runtime.select()
             if any(active[key] != manifest[key] for key in
                    ('runtimeId', 'nodeSha256', 'moduleEntrySha256', 'modelSha256')):
                 _fail('provider_identity_changed')
             if active[laya_embed_runtime.FILES_SHA] != record[RUNTIME_FILES_FIELD]:
                 _fail('provider_identity_changed')
-        except (JournalEvidenceError, laya_embed_runtime.RuntimeUnavailable, OSError):
-            _fail('provider_identity_changed')
+        except (laya_embed_runtime.RuntimeUnavailable, OSError) as exc:
+            _raise_if_proof_unavailable(exc)
+            raise JournalEvidenceError('provider_identity_changed') from exc
+    except JournalEvidenceError:
+        raise
     except (OSError, KeyError, TypeError, ValueError) as exc:
-        if isinstance(exc, JournalEvidenceError):
-            raise
+        _raise_if_proof_unavailable(exc)
         raise JournalEvidenceError('worker_attestation_invalid') from exc
     return (manifest, True) if allow_local_unavailable else manifest
-
-
-def _verify_runtime_files(record):
-    """Re-hash every runtime file (node, JS dependencies, native, model)."""
-    from memvane.provider.api import verify_attested_files
-    from memvane.provider.types import RuntimeUnavailable
-    try:
-        verify_attested_files(record['providerManifest'], record.get(RUNTIME_FILES_FIELD))
-    except (RuntimeUnavailable, OSError, KeyError, TypeError) as exc:
-        raise JournalEvidenceError('worker_runtime_files_invalid') from exc
 
 
 def verify_preview_worker_attestation(journal_path, provider_manifest):

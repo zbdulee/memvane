@@ -69,13 +69,13 @@ def _eligible(decision, snapshot, config):
             project_rel = (Path(roots[name]) / rel).relative_to(project).as_posix()
         except ValueError:
             continue
-        if source_text.is_denied_source_path(project_rel) or excluded_source(project_rel, skips):
+        if source_text.is_denied_source_path(project_rel) or excluded_source(project_rel, skips, wiki_source=True):
             continue
         out[path] = sha
     return out
 
 
-def _authority(decision, row, job, *, markerless=False):
+def _authority(decision, row, job, *, markerless=False, markerless_stages=('dispatched',)):
     """Validate frozen source authority against the selected store."""
     from memvane.wiki.workspace import api as wiki_selected_laya
     old = job.get('selectedRoute')
@@ -110,7 +110,7 @@ def _authority(decision, row, job, *, markerless=False):
         return None
     marker = job.get('initialBackfill')
     if marker != row['id']:
-        if not markerless or marker is not None or item['stage'] != 'dispatched':
+        if not markerless or marker is not None or item['stage'] not in markerless_stages:
             return None
     revision = job.get('contentRevision')
     if revision is not None and revision != item['sha256']:
@@ -241,7 +241,7 @@ def _reconcile_discard_locked(decision, row):
         _emit(decision, row)
 
 
-def reconcile_discards(bound):
+def reconcile_discards(bound, *, claimed_rows=None):
     """Outside the source-queue lock; receipt ACK survives claim unlink/crash."""
     if bound is None:
         return
@@ -261,8 +261,12 @@ def reconcile_discards(bound):
             return
         _reconcile_discard_locked(decision, row)
         progress = summary(row)
+        if claimed_rows is not None:
+            frozen = _frozen_claim_items(decision, row, claimed_rows)
     if progress['pending'] and not progress['dispatched']:
         wiki_selected_laya.request_sync(Path(decision['projectRoot']), bound)
+    if claimed_rows is not None:
+        return frozen
 
 
 def summary(row):
@@ -306,6 +310,9 @@ def discover(decision, snapshot, config, live, engines):
     for path, item in row['items'].items():
         if item['stage'] in ('pending', 'dispatched') and eligible.get(path) != item['sha256']:
             item['stage'] = 'skipped'
+            from memvane.wiki.card.api import card_sources_allowed
+            name, _, rel = path.partition('/')
+            card_sources_allowed({'path': str(Path(decision['collectionRoots'][name]) / rel)}, report=True, decision=decision)
             changed = True
     if changed:
         d._write(_path(decision), row)
@@ -406,3 +413,18 @@ def settled_job(bound, job):
         row = _load(decision)
         found = _authority(decision, row, job) if row is not None else None
         return found is not None and found[1]['stage'] in ('settled', 'skipped')
+
+
+def _frozen_claim_items(decision, cohort, rows):
+    """Bind marked and superseding rows to their frozen item under the discovery lock."""
+    result = {}
+    for text, job in rows:
+        if not isinstance(job, dict):
+            continue
+        found = _authority(decision, cohort, job, markerless=True, markerless_stages=('dispatched', 'settled', 'skipped'))
+        if found is not None:
+            item = (cohort['id'], found[0], found[1]['sha256'])
+            # Released workers may finish the public item while a private sibling is outstanding.
+            resume_only = job.get('initialBackfill') is None and found[1]['stage'] in ('settled', 'skipped')
+            result[text] = item, resume_only
+    return result

@@ -9,7 +9,9 @@ not interpret glob syntax or inspect a wiki card's own output path.
 from pathlib import PurePosixPath
 
 
-def excluded_source(path: str, skip_paths) -> bool:
+def excluded_source(path: str, skip_paths, *, wiki_source=False) -> bool:
+    if wiki_source and isinstance(path, str) and any(char in path for char in ('\x85', '\u2028', '\u2029')):
+        return True
     if not isinstance(path, str) or not isinstance(skip_paths, (list, tuple)):
         return False
     parts = PurePosixPath(path).parts

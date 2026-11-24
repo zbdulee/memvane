@@ -146,3 +146,36 @@ def settle(root, pending, source_sha256, reason) -> bool:
     except (OSError, ValueError):
         return False
     return True
+
+
+def queued_events(public):
+    """Suppress crash recovery only for an exact edit with a pending queue occurrence."""
+    from itertools import chain, islice
+    from memvane.wiki.workspace.handoff.api import bounded_rows, native_live, occurrence
+
+    live = native_live(public)
+    # A kept job returns under a private ready name before the next recovery pass.
+    # Leave most of the source read budget to the claimant that can advance a range.
+    ready = () if live is None else islice(live.parent.glob('ready-*'), 64)
+    budget = 64 * 1024
+    result = set()
+    for path in chain((public,), ready):
+        found = set()
+        try:
+            size = path.lstat().st_size
+            if size > budget:
+                continue
+            budget -= size
+            for _, raw in bounded_rows(path, max_bytes=size):
+                row, _ = occurrence(raw)
+                if row is None:
+                    continue
+                source, receipt = row.get('source'), row.get('pendingRefresh')
+                if isinstance(source, dict) and isinstance(receipt, dict):
+                    name, event = source.get('path'), receipt.get('eventId')
+                    if isinstance(name, str) and isinstance(event, str):
+                        found.add((name, event))
+        except (OSError, ValueError):
+            continue
+        result.update(found)
+    return result

@@ -30,7 +30,7 @@ def for_path(path):
 
 
 @contextmanager
-def lock(root):
+def lock(root, *, blocking=True):
     root = Path(root).resolve()
     held = getattr(_local, 'held', None)
     if held is None:
@@ -53,7 +53,7 @@ def lock(root):
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError('unsafe_publish_lock')
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         held[key] = (fd, 1)
         try:
             yield

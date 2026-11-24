@@ -47,6 +47,25 @@ class ExternalEditNotification(FixtureCase):
     def box(self):
         return external._read_box(external._inbox_path(self.decision), self.decision)
 
+    def test_legacy_owner_hints_are_dropped_before_replay(self):
+        from memvane.settings import api as settings
+        paths = [self.project.write_note('docs/dir' + sep + '/note.md', 'original') for sep in ('\x85', '\u2028', '\u2029')]
+        with patch.object(settings, 'excluded_source', return_value=False):
+            self.assertEqual(self.notify(*paths, self.source)['owners'], 1)
+        self.assertEqual(len(self.box()['edits']), 4)
+        self.assertEqual(self.drain()['remaining'], 0)
+        self.assertEqual([r['source']['path'] for r in self.queue_rows()], ['docs/note.md'])
+        self.assertEqual([p.read_bytes() for p in paths], [b'original'] * 3)
+
+    def test_external_source_paths_keep_separators_before_owner_routing(self):
+        paths = [self.project.write_note('docs/note.md' + sep, 'original') for sep in ('\x85', '\u2028', '\u2029')]
+        self.assertEqual(self.notify(*paths)['owners'], 0)
+        self.wake.assert_not_called()
+        self.proof_mock.assert_not_called()
+        self.assertEqual(self.notify(*paths, self.source)['owners'], 1)
+        self.assertEqual([r['path'] for r in self.box()['edits']], ['docs/note.md'])
+        self.assertEqual([p.read_bytes() for p in paths], [b'original'] * 3)
+
     def test_edit_writes_blob_hint_and_wakes_only_owner(self):
         self.assertEqual(self.notify(self.source), {'owners': 1, 'failed': 0, 'overflow': 0})
         data = self.source.read_bytes()
@@ -143,7 +162,7 @@ class ExternalEditNotification(FixtureCase):
     def queue_rows(self):
         import json
         from memvane.wiki.workspace import api as workspace, types as workspace_types
-        queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
         return [json.loads(line) for line in queue.read_text().splitlines()] if queue.exists() else []
 
     def test_drain_repeats_full_proof_and_compiles_current_blob(self):

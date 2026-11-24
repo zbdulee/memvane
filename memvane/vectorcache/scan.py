@@ -1,6 +1,8 @@
 """Scoring covered sets straight from the mapped arena."""
 from __future__ import annotations
 
+import os
+
 from memvane.vectorcache.types import GAP_ROWS, VALUE_REASONS
 
 
@@ -60,3 +62,38 @@ def scan(arena, covered, *, dimension, queries, native, deadline, stats):
                     raise
                 unreadable.append(blob)
     return scores, unreadable
+
+
+def score_sets(directory, sets, *, profile_id, recipe_id, dimension, store_incarnation,
+               queries, native, deadline, stats, clock, open_arena):
+    """Score the pinned sets covered by this arena and return the sets that need a store read."""
+    if os.environ.get('MEMVANE_VECTOR_ACCEL', '').lower() == 'store':
+        return {}, {}, list(sets), 'disabled'
+    started, scanned, missing, wrong = clock(), 0.0, (), 0
+    try:
+        with open_arena(directory, profile_id=profile_id, recipe_id=recipe_id, dimension=dimension,
+                        store_incarnation=store_incarnation) as found:
+            if found is None:
+                return {}, {}, list(sets), 'absent'
+            covered, missing, wrong = found.cover(sets)
+            mark = clock()
+            scores, unreadable = scan(found, covered, dimension=dimension, queries=queries, native=native,
+                                      deadline=deadline, stats=stats)
+            scanned = (clock() - mark) * 1000
+        for blob in unreadable:
+            del covered[blob]
+        missing = missing + unreadable
+        stats['vectorRows'] += sum(rows for _first, rows in covered.values())
+        state = 'inconsistent' if wrong or unreadable else 'building' if missing else 'ok'
+        return scores, covered, missing, state
+    except Exception as exc:  # A derived file can fail independently of the store.
+        if getattr(exc, 'reason', None) == 'vector_deadline_exceeded':
+            # The scan ran out of time on the arena's rows: that is where this search read.
+            stats.update(vectorSource='arena', vectorCache='inconsistent' if wrong else 'building' if missing else 'ok')
+            raise
+        return {}, {}, list(sets), 'absent'
+    finally:
+        # Opening, mapping and the crc of the member sets are the load; the kernel scan is the scan.
+        stats['vectorLoadMs'] += (clock() - started) * 1000 - scanned
+        stats['vectorScanMs'] += scanned
+        stats['vectorDotMs'] += scanned

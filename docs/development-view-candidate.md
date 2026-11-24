@@ -162,8 +162,10 @@ reader는 세대를 봉인한 원래 capture의 정합성과 검색 caller의 �
 prefix는 정확한 경로 또는 `/`로 구분한 하위 경로이며 빈 prefix 목록은 결과가 없다.
 excluded path는 정확한 경로 일치다.
 
-`search_exact`는 pin에 봉인된 recipe/profile만 사용하며 lexical-only 세대는
-`vector_coverage_absent`로 거절한다. query vector는 profile dimension과 일치하는
+`search_exact`는 기본적으로 pin에 봉인된 recipe/profile을 쓰며 lexical-only 세대에서
+`vector_coverage_absent`를 반환한다. 선택 recall이 `partial_recipe_id`와 `profile_id`를 함께
+지정하면 같은 pin의 적격 카드 중 blob SHA·recipe·profile이 맞고 chunk set digest가
+일치하는 카드만 검색한다. 이때도 완전 봉인된 세대의 recipe/profile을 따른다. query vector는 profile dimension과 일치하는
 유한한 숫자 list/tuple이며 bool과 zero norm은 거절한다. 각 카드의 모든 chunk와
 cosine을 계산한 최댓값이 카드 점수다. 점수 내림차순, 동점은 UTF-8 binary path
 오름차순이다. ANN이나 일부 chunk 절삭을 사용하지 않는다.

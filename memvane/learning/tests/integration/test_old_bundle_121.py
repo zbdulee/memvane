@@ -87,7 +87,7 @@ class OldBundles(EnabledInstall):
         rows = self.seed_122_rows(include_queued=True)
         files = self.namespace_files()
         refused = 'ValueError:project_scope_authorization_invalid'
-        for tag in [tag for tag in TAGS if tag not in ('v1.0.21', 'v1.0.22', 'v1.0.23', 'v1.0.24')]:
+        for tag in ('v1.0.18', 'v1.0.19', 'v1.0.20'):
             with self.subTest(tag=tag):
                 logged = len(self.log_lines())
                 seen = self.observe(tag)

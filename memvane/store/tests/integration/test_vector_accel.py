@@ -25,6 +25,21 @@ class AcceleratedStoreChecks(support.VectorCase):
         self.addCleanup(store.release, pin)
         return store, h, manifest, r, p, gen, pin
 
+    def test_empty_partial_scan_records_coverage_without_a_vector_source(self):
+        store, _repo, handle, manifest, recipe, profile = self.configured(1, publish=False)
+        manifest['members'] = []
+        self.lexical(store, handle, manifest)
+        pin = store.pin_view(handle)
+        self.addCleanup(store.release, pin)
+        for switch in ('on', 'off'):
+            with self.subTest(switch=switch), mock.patch.dict('os.environ', {'MEMVANE_VECTOR_ACCEL': switch}):
+                timings = {}
+                rows = store.search_exact(pin, [1., 0.], 5, profile_id=profile,
+                                          partial_recipe_id=recipe, timings=timings)
+                self.assertEqual((rows, timings['vectorRows'], timings['vectorEligibleMembers'],
+                                  timings['vectorCoveredMembers']), ([], 0, 0, 0))
+                self.assertNotIn('vectorSource', timings)
+
     def test_same_top_twenty_exact_scores_with_only_sixty_validated_candidates(self):
         store, _h, _manifest, _r, p, _gen, pin = self.ready_many()
         with mock.patch.dict('os.environ', {'MEMVANE_VECTOR_ACCEL': 'off'}):

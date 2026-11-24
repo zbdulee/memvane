@@ -64,6 +64,24 @@ class RetireFixture(FixtureCase):
             return result if full else (result['state'], wake.call_count)
 
 class DeletedSourceRetirement(RetireFixture):
+    def test_mixed_card_keeps_its_handwritten_bytes_on_retirement_and_revision_backfill(self):
+        for i, sep in enumerate(('\x85', '\u2028', '\u2029')):
+            special = 'docs/missing' + sep + '.md'
+            card = self.card(str(i) + '.md', shared=True, path=special)
+            with card.open('a') as stream:
+                stream.write('handwritten note\n')
+            original = card.read_bytes()
+            from memvane.wiki.lifecycle import wiki_lifecycle
+            self.assertIsNone(wiki_lifecycle.inspect_card(card, self.root, [self.root]))
+            self.assertEqual(self.run_retire(rel=special), ('blocked', 0))
+            digest = hashlib.sha256(original).hexdigest()
+            with patch.object(workspace, 'recheck'):
+                self.assertEqual(retire.retire_card(self.root, self.wiki.parent, self.selected, card, original.decode(), digest), 'blocked')
+                self.assertEqual(retire.record_source_revisions(self.root, self.wiki.parent, self.selected,
+                                                               card, original.decode(), []), 'blocked')
+            self.assertEqual(card.read_bytes(), original)
+        self.assertFalse((self.root / '.memvane/compile/retired-wiki').exists())
+
     def test_single_source_is_archived_and_replay_is_safe(self):
         card = self.card()
         old = card.read_bytes()

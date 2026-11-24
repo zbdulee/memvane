@@ -20,6 +20,8 @@ from __future__ import annotations
 import threading
 import time
 
+from memvane.provider.types import QUERY_IDENTITY_ERRORS
+
 WHOLE_CHARS = 6000
 RETRY_CHARS = 2000
 WINDOW_CHARS = 1200
@@ -45,7 +47,7 @@ def embed_chunks(prompt, embed, left):
     ``embed(text, seconds)`` returns a vector or raises ``ValueError(code)``;
     ``left()`` is the seconds the recall may still spend here. A failed window is
     asked once more as its second half. Windows left when the time ends are
-    dropped; the vectors already answered stand.
+    dropped. An identity change discards every vector returned during the request.
     """
     vectors, requested, error = [], 0, None
 
@@ -59,10 +61,15 @@ def embed_chunks(prompt, embed, left):
             vectors.append(embed(text, seconds))
             return True
         except ValueError as exc:
+            if str(exc) in QUERY_IDENTITY_ERRORS:
+                # An observed identity change invalidates every window of this request.
+                vectors.clear()
+                error = str(exc)
+                return False
             error = error or str(exc)
             return None
     if len(prompt) <= WHOLE_CHARS:
-        if ask(prompt) or len(prompt) <= RETRY_CHARS:
+        if ask(prompt) is not None or len(prompt) <= RETRY_CHARS:
             return vectors, requested, error
     for window in windows(prompt):
         answered = ask(window)

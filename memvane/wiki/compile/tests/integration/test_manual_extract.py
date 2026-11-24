@@ -57,7 +57,11 @@ class ManualExtract(FixtureCase):
         self.assertIn(hashlib.sha256(source.read_bytes()).hexdigest(), text)
         self.assertNotIn('decoy.md', text)
         queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
-        job = json.loads(queue.read_text().splitlines()[-1])
+        self.assertFalse(queue.exists() and queue.read_bytes())
+        active, = (queue.parent / '.handoff/v1/hold').glob('*/work')
+        state = json.loads(active.read_bytes())
+        job = json.loads((active.parent / 'raw').read_bytes())
+        self.assertEqual((state['phase'], state['binding']['job']), ('held', job))
         self.assertEqual([x['path'] for x in job['authoritativeSources']], ['docs/api.md'])
         self.assertEqual(job['sourceRevisions'][0]['sha256'], hashlib.sha256(source.read_bytes()).hexdigest())
         bad = {'durable': {'title': 'Transcript', 'summary': 'User: private\nAssistant: reply',

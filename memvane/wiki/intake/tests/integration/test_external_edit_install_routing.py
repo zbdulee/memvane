@@ -6,6 +6,7 @@ from memvane.registry import api as registry
 from memvane.runtime import api as runtime
 from memvane.wiki.intake import external_edits as external
 from tests.support.case import FixtureCase
+from tests.support.queue_files import pending_text
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
 
@@ -116,11 +117,11 @@ class ExternalInstallRouting(FixtureCase):
         self.assertEqual((result['state'], result['reason']), ('deferred', 'owner_busy'))
         self.assertEqual(external._read_box(inbox, decision)['edits'], before)
         queue = project.root / '.memvane/compile/source-queue.jsonl'
-        self.assertFalse(queue.exists() and queue.read_text().strip())
+        self.assertFalse(pending_text(queue).strip())
         result = self.b.run_sync()
         self.assertIn(result['state'], ('indexed', 'unchanged'), result)
         self.assertEqual(external._read_box(inbox, self.b.select())['edits'], [])
-        self.assertEqual([json.loads(line)['source']['path'] for line in queue.read_text().splitlines()],
+        self.assertEqual([json.loads(line)['source']['path'] for line in pending_text(queue).splitlines()],
                          ['docs/note.md'])
 
     def test_unselected_disabled_or_corrupt_owner_does_not_route(self):
@@ -224,7 +225,7 @@ class ExternalInstallRouting(FixtureCase):
         result = self.b.run_sync()
         self.assertIn(result['state'], ('indexed', 'unchanged'), result)
         queue = project.root / '.memvane/compile/source-queue.jsonl'
-        jobs = [json.loads(line) for line in queue.read_text().splitlines()]
+        jobs = [json.loads(line) for line in pending_text(queue).splitlines()]
         self.assertEqual([(job['source']['path'], job['engine']) for job in jobs],
                          [('docs/note.md', 'codex')])
         inbox = external._inbox_path(self.b.select())
@@ -260,10 +261,10 @@ class ExternalInstallRouting(FixtureCase):
                              ['docs/note.md'])
             self.assertEqual(host.serve_selected('compile', 'codex', decision, mixed), {})
             local_queue = self.a.project.root / '.memvane/compile/source-queue.jsonl'
-            jobs = [json.loads(line) for line in local_queue.read_text().splitlines()]
+            jobs = [json.loads(line) for line in pending_text(local_queue).splitlines()]
             self.assertEqual([job['source']['path'] for job in jobs], ['docs/local.md'])
             owner_queue = self.b.project.root / '.memvane/compile/source-queue.jsonl'
-            self.assertFalse(owner_queue.exists() and owner_queue.read_text().strip())
+            self.assertFalse(pending_text(owner_queue).strip())
             for tool_input in ({'file_path': str(source), 'edits': [{'old_string': 'a', 'new_string': 'b'}]},
                                {'edits': [{'file_path': str(source), 'old_string': 'a', 'new_string': 'b'}]}):
                 wake.reset_mock()

@@ -25,6 +25,8 @@ from __future__ import annotations
 from contextlib import suppress
 from memvane.kernel.bundle_paths import PROVIDER_RELATIVE_PATH, WORKER_RELATIVE_PATH, bundle_file
 from memvane.runtime.api import background_bundle, environment
+from memvane.provider.types import AttestationReadError
+from memvane.resident.types import INVALID_ATTESTATION as _INVALID_ATTESTATION, MOVED_PROOF as _MOVED_PROOF
 from memvane.resident.bundle_lifecycle import newer, wait_for_successor
 import fcntl
 import hashlib
@@ -722,11 +724,9 @@ class Service:
         self.workers = {}
         self.bindings = {}
         self.retry = {}
-        # Why an installation is not adopted yet, reported once per episode.
-        self.waiting = {}
-        self.full_proof_deferred = set()
         # Codes already reported per installation since its last bind.
         self.unproved = {}
+        self.waiting = {}
         # Consecutive moved-selection deferrals per installation (fingerprint, n).
         self.moved = {}
         self.inflight = 0
@@ -1092,13 +1092,13 @@ class Service:
     def _forget(self, project):
         with self.lock:
             self.unproved.pop(project, None)
+            self.waiting.pop(project, None)
             self.moved.pop(project, None)
-            self.full_proof_deferred.discard(project)
         name = hashlib.sha256(project.encode()).hexdigest()[:32] + '.json'
         with suppress(OSError):
             os.unlink(self.root / PROJECTS / name)
 
-    def _deferred_retry(self, project, manifest, exc):
+    def _deferred_retry(self, project, manifest, exc, prior_attempts):
         """Seconds until a deferred attestation is tried again.
 
         A busy window retries in 5 s. A moved selection does too for its
@@ -1109,8 +1109,8 @@ class Service:
         backoff (and the cooldown after the last attempt) bounds the
         re-hashing instead of a 5 s loop.
         """
-        from memvane.resident.embed_resident import _MAX_FAILURES, _write_state, read_owner_state
-        if str(exc) != 'worker_selection_changed':
+        from memvane.resident.embed_resident import _MAX_FAILURES, _write_state
+        if str(exc) not in _MOVED_PROOF:
             with self.lock:
                 self.moved.pop(project, None)
             return 5
@@ -1120,11 +1120,8 @@ class Service:
             if seen == fingerprint:
                 count += 1
             else:
-                previous = read_owner_state(manifest)
-                attempts = (previous['attempts'] if previous is not None
-                            and previous['reason'] == 'startup_failed'
-                            and previous['attempts'] < _MAX_FAILURES else 0)
-                count = (MOVED_DEFER_LIMIT + attempts + 1) if attempts else 1
+                # The cold-load 'starting' record already replaced the prior row.
+                count = (MOVED_DEFER_LIMIT + prior_attempts + 1) if prior_attempts else 1
             self.moved[project] = (fingerprint, count)
         if count <= MOVED_DEFER_LIMIT:
             return 5
@@ -1133,44 +1130,58 @@ class Service:
             _write_state(manifest, 'startup_failed', attempts=attempts)
         return min(300, 5 * 2 ** attempts)
 
+    def _attest_failed(self, project, decision, manifest, exc, prior_attempts):
+        """Record one full-proof attempt and schedule this installation only."""
+        from memvane.resident.embed_resident import _adoption_delay, _MAX_FAILURES, _write_state
+        code = _proof_code(exc.__cause__ if isinstance(exc, AttestationReadError) else exc)
+        deferred = _deferral(exc) or code in _MOVED_PROOF
+        self._report_proof_failure(project, code, 'waiting' if deferred else 'unproved', decision)
+        if deferred:
+            self._later(project, self._deferred_retry(project, manifest, exc, prior_attempts))
+            return
+        with self.lock:
+            self.moved.pop(project, None)
+        terminal = code in _INVALID_ATTESTATION
+        attempts = _MAX_FAILURES if terminal else min(_MAX_FAILURES, prior_attempts + 1)
+        # A failed atomic write leaves the old record. Keep the binding closed
+        # and back off in memory before the next proof even if storage fails.
+        try:
+            _write_state(manifest, 'attestation_invalid' if terminal else 'startup_failed',
+                         terminal=terminal, attempts=attempts)
+        except (OSError, ValueError):
+            self._later(project, 60)
+            return
+        if terminal or attempts >= _MAX_FAILURES:
+            self._later(project, _adoption_delay(manifest))
+        else:
+            self._later(project, 5 * 2 ** attempts if isinstance(exc, AttestationReadError) else 5)
+
     def _later(self, project, seconds):
         with self.lock:
             self.retry[project] = time.monotonic() + seconds
 
-    def _report_waiting(self, project, decision, reason, outcome='waiting'):
-        """One ``resident.adopt`` event per installation, outcome and reason.
-
-        Sync wakes only see ``preparing`` while the service declines to start
-        a worker; this names the cause in the installation's own log. A
-        ``waiting`` reason is reported again when it changes; each
-        ``unproved`` code once until the installation binds (at most 16).
-        ``decision`` may be a callable that finds it, called only on a new
-        episode.
-        """
+    def _report_proof_failure(self, project, reason, outcome, decision=None):
+        """Report a waiting reason on change and each unproved code once until bind."""
         with self.lock:
-            if outcome == 'unproved':
-                # One event per code until the installation binds, however
-                # the codes alternate between retries.
+            if outcome == 'waiting':
+                if self.waiting.get(project) == reason:
+                    return
+                self.waiting[project] = reason
+            else:
+                self.waiting.pop(project, None)
                 seen = self.unproved.setdefault(project, set())
                 if reason in seen or len(seen) >= 16:
                     return
                 seen.add(reason)
-            else:
-                if self.waiting.get(project) == reason:
-                    return
-                self.waiting[project] = reason
-        targets = []
+        # Diagnostics are best effort. Every failure still follows its retry policy.
         with suppress(Exception):
             from memvane.diagnostics import api as event_log
-            if callable(decision):
-                decision = decision()
-            state_root = event_log.state_root_for_decision(decision)
-            if state_root is not None:
-                targets.append((state_root, event_log.install_of(decision)))
-        _event(targets, 'resident.adopt', outcome, reason)
+            event_log.emit('resident.adopt', outcome=outcome, reason=reason, host='worker',
+                           decision=_route_hint(project) if decision is None else decision, pid=os.getpid())
 
     def _adopt(self, project):
-        from memvane.resident.embed_resident import _owner_identity, _write_state, _failure_decision
+        from memvane.resident.embed_resident import (
+            _FAILURE_COOLDOWN_SECONDS, _adoption_delay, _owner_identity, _write_state, _failure_decision)
         from memvane.provider.api import private_parent as _private_parent, remove_stale_socket as _remove_stale_socket, bind_private
         try:
             decision, proof, mode = self.prove(project)
@@ -1180,16 +1191,12 @@ class Service:
                 _fail('provider_owner_identity_invalid')
         except Exception as exc:
             if not os.path.isdir(project):
-                self._forget(project)  # the project is gone: stop re-proving it
+                self._forget(project)
             else:
-                if not _deferral(exc):
-                    with self.lock:
-                        self.full_proof_deferred.discard(project)
-                # Without this the install's resident state stays at the
-                # client's "starting" and nothing says why it is never bound.
-                self._report_waiting(project, lambda: _route_hint(project),
-                                     _proof_code(exc), outcome='unproved')
-            self._later(project, 5)
+                # No proved manifest to write. Recheck a rejected installation on the capped schedule.
+                code = _proof_code(exc)
+                self._report_proof_failure(project, code, 'unproved')
+                self._later(project, _FAILURE_COOLDOWN_SECONDS if code in _INVALID_ATTESTATION else 5)
             return
         path = manifest['serviceSocketPath']
         key = _worker_key(manifest)
@@ -1217,23 +1224,19 @@ class Service:
             # the path that binds, never on a tick that merely waits.
             try:
                 # A warm worker must honor this install's persisted cooldown too.
-                _failure_decision(manifest)
+                previous = _failure_decision(manifest, installation=True)
             except Exception:
                 os.close(owner_fd)
-                self._later(project, 5)
+                self._later(project, _adoption_delay(manifest))
                 return
             try:
                 self.attest(decision, proof, mode)
             except Exception as exc:
-                os.close(owner_fd)
-                if _deferral(exc):
-                    # A busy queue owner or v5 window, or a moved selection:
-                    # not evidence of a bad attestation, try again.
-                    self._later(project, self._deferred_retry(project, manifest, exc))
-                    return
-                with suppress(Exception):
-                    _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)
-                self._later(project, 60)
+                try:
+                    self._attest_failed(project, decision, manifest, exc,
+                                        previous['attempts'] if previous else 0)
+                finally:
+                    os.close(owner_fd)
                 return
             self.attested.add(seal)
         service_fd = listener = None
@@ -1267,8 +1270,8 @@ class Service:
                 return
             self.bindings[project] = binding
             self.retry.pop(project, None)
-            self.waiting.pop(project, None)
             self.unproved.pop(project, None)
+            self.waiting.pop(project, None)
             self.moved.pop(project, None)
         if binding.events is not None:
             _event([binding.events], 'resident.adopt', 'adopted', mode=mode,
@@ -1289,43 +1292,48 @@ class Service:
             self._later(project, 2)
 
     def _load(self, project, decision, proof, mode, manifest, key, seal):
-        from memvane.resident.embed_resident import _failure_decision, _write_state
+        from memvane.resident.embed_resident import (
+            _FAILURE_COOLDOWN_SECONDS, _adoption_delay, _expire_process_retry, _failure_decision, _record_process_outcome,
+            _restore_process_retry, _write_state)
         with self.lock:
             worker = self.workers.get(key)
             if worker is None:
-                worker = self.workers[key] = Worker(key, _worker_socket(self.root, key))
+                worker = Worker(key, _worker_socket(self.root, key))
+                try:
+                    _restore_process_retry(worker, manifest)
+                except (OSError, ValueError):
+                    self._later(project, 5)
+                    return
+                self.workers[key] = worker
             if worker.handle is not None and not worker.alive():
                 # The model process died: stop its handle, count one failure.
                 with suppress(Exception):
                     worker.handle.stop()
-                worker.handle, worker.state = None, 'failed'
-                worker.failures += 1
-                worker.retry_at = time.monotonic() + 5
+                worker.handle = None
+                _record_process_outcome(worker, manifest, 'worker_exited')
+            now = time.monotonic()
+            if worker.retry_at > now:
+                self.retry[project] = min(worker.retry_at, now + _FAILURE_COOLDOWN_SECONDS)
+                return
+            if self.draining.is_set() or worker.loading or worker.state == 'terminal':
+                return
             try:
-                # Registry adoption obeys the durable budget after a restart.
-                # Observe worker death first so its retry clock overlaps the
-                # disk backoff, rather than adding a second five-second wait.
-                previous = _failure_decision(manifest)
+                if worker.state == 'cooldown':
+                    _expire_process_retry(worker, manifest)
+                previous = _failure_decision(manifest, installation=True)
             except Exception:
-                self._later(project, 5)
+                self._later(project, _adoption_delay(manifest))
                 return
-            if previous is not None and previous['attempts'] < 3:
-                worker.failures = max(worker.failures, previous['attempts'])
-            if (self.draining.is_set() or worker.loading
-                    or worker.retry_at > time.monotonic() or worker.state == 'terminal'):
-                return
-            if worker.state == 'cooldown':
-                worker.failures = 0
-                worker.state = 'starting'
             if not self.cold_load.acquire(blocking=False):
                 return  # another profile is loading; a later tick retries
             worker.loading = True
+            prior_attempts = previous['attempts'] if previous else 0
         try:
             with suppress(Exception):
-                _write_state(manifest, 'starting', attempts=min(3, worker.failures))
+                _write_state(manifest, 'starting', attempts=prior_attempts)
             thread = threading.Thread(target=self._load_worker,
                                       args=(project, decision, proof, mode, manifest,
-                                            worker, seal),
+                                            worker, seal, prior_attempts),
                                       name='laya-service-load', daemon=True)
             thread.start()
         except BaseException:
@@ -1334,15 +1342,14 @@ class Service:
             self.cold_load.release()
             raise
 
-    def _load_worker(self, project, decision, proof, mode, manifest, worker, seal):
+    def _load_worker(self, project, decision, proof, mode, manifest, worker, seal, prior_attempts):
         try:
-            self._load_attested(project, decision, proof, mode, manifest, worker, seal)
+            self._load_attested(project, decision, proof, mode, manifest, worker, seal, prior_attempts)
         finally:
             self.cold_load.release()
 
-    def _load_attested(self, project, decision, proof, mode, manifest, worker, seal):
-        from memvane.resident.embed_resident import (_FAILURE_COOLDOWN_SECONDS,
-                                         _MAX_FAILURES, _write_state)
+    def _load_attested(self, project, decision, proof, mode, manifest, worker, seal, prior_attempts=0):
+        from memvane.resident.embed_resident import _record_process_outcome, _record_shared_wait
         reason = None
         handle = None
         try:
@@ -1358,27 +1365,18 @@ class Service:
                 # Every new model process starts only after this installation's
                 # full attestation (model, worker, native closure, runtime files)
                 # proves again; the frozen provider's own check hashes five files.
+                # A later warm bind must not reuse an earlier successful proof
+                # if this fresh attempt fails and another install loads the worker.
+                self.attested.discard(seal)
                 self.attest(decision, proof, mode)
             except Exception as exc:
-                # This installation's evidence failed, not the shared worker.
-                with self.lock:
-                    worker.loading = False
-                if _deferral(exc):
-                    # A busy window or a moved selection, not bad evidence.
+                try:
+                    self._attest_failed(project, decision, manifest, exc, prior_attempts)
+                finally:
                     with self.lock:
-                        self.full_proof_deferred.add(project)
-                    self._report_waiting(project, decision, _proof_code(exc), outcome='waiting')
-                    self._later(project, self._deferred_retry(project, manifest, exc))
-                    return
-                with self.lock:
-                    self.full_proof_deferred.discard(project)
-                with suppress(Exception):
-                    _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)
-                self._later(project, 60)
+                        worker.loading = False
                 return
-            self.attested.add(seal)
             with self.lock:
-                self.full_proof_deferred.discard(project)
                 if self.draining.is_set():
                     # The drain began during attestation: never start a model.
                     worker.loading = False
@@ -1400,10 +1398,16 @@ class Service:
             elif code in ('provider_lock_invalid', 'provider_socket_invalid',
                           'provider_socket_changed'):
                 reason = 'identity_invalid'
-            elif code in ('provider_artifact_hash_mismatch', 'provider_model_not_gguf',
-                          'provider_attestation_invalid', 'provider_closure_unapproved',
-                          'provider_recipe_mismatch'):
-                reason = 'attestation_invalid'
+            elif (isinstance(exc, AttestationReadError) or code in _INVALID_ATTESTATION
+                  or code == 'provider_artifact_changed'):
+                # The worker can also reject its proof during launch. Retry
+                # through the installation's durable attestation deadline.
+                try:
+                    self._attest_failed(project, decision, manifest, exc, prior_attempts)
+                finally:
+                    with self.lock:
+                        worker.loading = False
+                return
             else:
                 reason = 'startup_failed'
             handle = None
@@ -1414,7 +1418,10 @@ class Service:
                     with suppress(Exception):
                         handle.stop()
                     return
-                worker.handle, worker.state, worker.failures = handle, 'ready', 0
+                # A warm binding may reuse this proof only after the final artifact check succeeds.
+                self.attested.add(seal)
+                worker.handle = handle
+                _record_process_outcome(worker, manifest, 'ready')
                 self.retry.pop(project, None)
             elif reason == 'resource_deferred':
                 worker.state = 'resource_deferred'
@@ -1422,18 +1429,10 @@ class Service:
                 # independently of earlier model-start failures. Their retry
                 # budget remains on the startup-failure branch below.
                 worker.retry_at = time.monotonic() + LOAD_RETRY_SECONDS[0]
+            elif reason == 'identity_invalid':
+                worker.state = 'terminal'
             else:
-                worker.failures += 1
-                worker.failures = min(_MAX_FAILURES, worker.failures)
-                if reason in ('attestation_invalid', 'identity_invalid'):
-                    worker.state = 'terminal'
-                elif worker.failures >= _MAX_FAILURES:
-                    worker.state = 'cooldown'
-                else:
-                    worker.state = 'failed'
-                worker.retry_at = time.monotonic() + (
-                    _FAILURE_COOLDOWN_SECONDS if worker.state == 'cooldown'
-                    else 5 * 2 ** worker.failures)
+                _record_process_outcome(worker, manifest, 'startup_failed')
         if handle is not None:
             # The very next tick binds every waiting project at once.
             self.wake.set()
@@ -1447,12 +1446,10 @@ class Service:
                 continue
             if _worker_key(row) != worker.identity:
                 continue
+            # An admission wait must preserve each installation's remaining proof budget.
+            # On read/write failure, adoption retries from the existing disk state.
             with suppress(Exception):
-                if reason == 'resource_deferred':
-                    _write_state(row, 'resource_deferred', attempts=min(_MAX_FAILURES, worker.failures))
-                else:
-                    _write_state(row, reason, terminal=worker.state == 'terminal',
-                                 attempts=min(_MAX_FAILURES, worker.failures))
+                _record_shared_wait(row, reason, worker.state == 'terminal', worker.failures)
 
     # ----------------------------------------------------------- per project
     def _close_listener(self, binding):

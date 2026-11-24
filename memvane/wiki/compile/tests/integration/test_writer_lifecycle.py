@@ -15,7 +15,7 @@ from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
 
 
-class WriterLifecycle(FixtureCase):
+class WriterFixture(FixtureCase):
     def setUp(self):
         super().setUp()
         self.project = make_project(self.home, git=False)
@@ -47,6 +47,8 @@ class WriterLifecycle(FixtureCase):
         path = self.project.root / '.memvane/compile' / name
         return [json.loads(line) for line in path.read_text().splitlines()]
 
+
+class WriterLifecycle(WriterFixture):
     def test_deleted_generated_identity_is_tombstoned_then_suppressed(self):
         first = self.compile()
         self.assertEqual(first['action'], 'created')
@@ -103,7 +105,11 @@ class WriterLifecycle(FixtureCase):
             result = self.compile(summary='Replacement fact for review.')
         self.assertEqual(result['action'], 'updated')
         self.assertEqual(target.read_bytes(), original)
-        job = self.audit('verify-queue.jsonl')[-1]
+        from tests.support.wiki_handoff import waiting_reviews as waiting
+        queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
+        job, = [json.loads(work.read('raw')) for work in waiting(queue)
+                if work.state['binding']['job'].get('pendingPath')]
+        self.assertFalse(queue.exists() and queue.read_bytes())
         self.assertEqual(job['expectedTargetHash'], hashlib.sha256(original).hexdigest())
         self.assertTrue(job['pendingPath'].endswith('.pending-' + job['sourceHash']))
         self.assertIn('Replacement fact for review.', (self.project.root / job['pendingPath']).read_text())

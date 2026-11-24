@@ -675,6 +675,14 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
                             if path not in snapshot})
             pending.update({path: sha for path, sha in before.items()
                             if path not in snapshot})
+            from memvane.wiki.card.api import card_sources_allowed
+            project = Path(decision['projectRoot'])
+            for key in list(pending):
+                collection, _, rel = key.partition('/')
+                if collection in raw and Path(roots[collection]).is_relative_to(project):
+                    path = (Path(roots[collection]).relative_to(project) / rel).as_posix()
+                    if not card_sources_allowed({'path': path}, report=True, decision=decision):
+                        del pending[key]
             if len(pending) > MAX_PENDING:
                 raise _PendingOverflow(len(pending))
         overflow = None

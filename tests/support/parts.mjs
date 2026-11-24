@@ -16,7 +16,7 @@ export const TIERS = ['unit', 'integration', 'statemachine'];
 export const DEFAULT_SECONDS = 10;
 // The node test files outside the domain runners, measured on the macOS CI job.
 export const REST_SECONDS = 1000;
-export const PARTS = 4;
+export const PARTS = 5;
 
 /** `{ index, count }` of a `<k>/<n>` part with 1 <= k <= n, or null. */
 export function parsePart(value) {

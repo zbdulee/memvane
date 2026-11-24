@@ -61,12 +61,29 @@ class BackfillChecks(FixtureCase):
         return backfill.dispatch(self.decision, row, self.snapshot, self.config, recheck=lambda: None)
 
     def jobs(self):
-        path = self.project / '.memvane/compile/source-queue.jsonl'
+        path = selected.safe_queue_path(self.project, '.memvane/compile/source-queue.jsonl', native=True)
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def settle(self, job):
         job = {**job, '_processedContentRevision': job['contentRevision']}
         backfill.settle_job(self.bound, job)
+
+    def test_excluded_source_is_not_selected_and_old_dispatched_item_is_skipped(self):
+        self.add('normal.md')
+        names = ['docs/dir' + sep + '/note.md' for sep in ('\x85', '\u2028', '\u2029')]
+        for name in names:
+            self.add(name)
+        row = self.start()
+        self.assertEqual(set(row['items']), {'docs/normal.md'})
+        for name in names:
+            key = 'docs/' + name
+            row['items'][key] = {'sha256': self.snapshot[key], 'stage': 'dispatched'}
+        discovery._write(backfill._path(self.decision), row)
+        for _ in range(2):
+            row = self.start()
+            self.assertEqual({row['items']['docs/' + name]['stage'] for name in names}, {'skipped'})
+        self.assertEqual(self.dispatch(row)['dispatched'], 1)
+        self.assertEqual([r['source']['path'] for r in self.jobs()], ['normal.md'])
 
     def test_requires_selected_install_and_accepted_enabled_event(self):
         self.add('one.md')
@@ -204,6 +221,7 @@ class BackfillChecks(FixtureCase):
             job.pop('initialBackfill')
         job['_requeue_count'] = workspace_types.MAX_REQUEUE_COUNT
         queue = self.project / '.memvane/compile/source-queue.jsonl'
+        selected.safe_queue_path(self.project, '.memvane/compile/source-queue.jsonl', native=True).write_bytes(b'')
         queue.write_text('')
         orphan = queue.with_name(queue.name + '.claimed.99999999.dead')
         orphan.write_text(json.dumps(job) + '\n')

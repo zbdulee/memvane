@@ -114,9 +114,9 @@ def verified_wiki_locations(row, decision, pending_sources, source_skip_paths=()
     from memvane.wiki.card.trust import _verified_wiki_locations as implementation
     return implementation(row, decision, pending_sources, source_skip_paths, current_source=current_source, reasons=reasons)
 
-def card_sources_allowed(body, skip_paths):
+def card_sources_allowed(body, skip_paths=(), *, report=False, decision=None):
     from memvane.wiki.card.trust import card_sources_allowed as implementation
-    return implementation(body, skip_paths)
+    return implementation(body, skip_paths, report=report, decision=decision)
 
 
 # Declared sources.
@@ -162,15 +162,21 @@ def resolve_pending_refresh(root, pending, captured_revision, compiled_revisions
     from memvane.wiki.card.wiki_freshness import resolve_pending_refresh as implementation
     return implementation(root, pending, captured_revision, compiled_revisions, compiled_event_id)
 
-def latest_unresolved_pending(root, source_path):
+def latest_unresolved_pending(root, source_path, *, event_id=None):
     from memvane.wiki.card.wiki_freshness import latest_unresolved_pending as implementation
-    return implementation(root, source_path)
+    return implementation(root, source_path, event_id=event_id)
 
 def unresolved_pending_refreshes(root):
     from memvane.wiki.card.wiki_freshness import unresolved_pending_refreshes as implementation
     return implementation(root)
 
-def unresolved_pending_refreshes_strict(root):
+def unresolved_pending_refreshes_strict(root, *, before_ledger_write=False, missing_target=None,
+                                       append_for=None, trimming_candidates=False, read_only=False):
+    if before_ledger_write:
+        from memvane.wiki.card.legacy_ledgers import project_writable
+        if not project_writable(root, missing_target, append_for=append_for,
+                                trimming_candidates=trimming_candidates, read_only=read_only):
+            return None
     from memvane.wiki.card.wiki_freshness import unresolved_pending_refreshes_strict as implementation
     return implementation(root)
 

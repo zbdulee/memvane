@@ -10,6 +10,8 @@ from memvane.wiki.engines import api as engines
 from memvane.wiki.intake import api as intake
 from memvane.wiki.workspace import api as workspace
 from tests.support.case import FixtureCase
+from tests.support.queue_files import pending_text
+from memvane.wiki.workspace.api import safe_queue_path
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
@@ -50,7 +52,7 @@ class BackfillBudgetContinuation(FixtureCase):
         self.assertEqual([row['processed'] for row in reports], [3, 3, 1])
         self.assertEqual([row['remaining'] for row in reports], [4, 1, 0])
         self.assertEqual(sorted(calls), sorted(paths))
-        self.assertFalse(queue.read_text().strip())
+        self.assertFalse(pending_text(queue).strip())
 
     def test_cards_per_source_cap_records_every_excess_candidate(self):
         project = make_project(self.home)
@@ -104,10 +106,10 @@ class BackfillBudgetContinuation(FixtureCase):
             self.assertEqual(intake.enqueue_changed_sources(str(project.root), config, changed,
                                                             engine='unknown')['queued'], 10)
         queue = project.root / '.memvane/compile/source-queue.jsonl'
-        jobs = [json.loads(line) for line in queue.read_text().splitlines()]
+        jobs = [json.loads(line) for line in pending_text(queue).splitlines()]
         for index, job in enumerate(jobs):
             job['engine'] = 'claude' if index < 2 else 'unknown'
-        queue.write_text(''.join(json.dumps(job) + '\n' for job in jobs))
+        safe_queue_path(project.root, native=True).write_text(''.join(json.dumps(job) + '\n' for job in jobs))
         calls = []
         def extract(argv, payload, timeout, root):
             calls.append(payload['engine'])
@@ -125,7 +127,7 @@ class BackfillBudgetContinuation(FixtureCase):
         self.assertTrue(report['budgetDeferred'])
         self.assertGreater(report['remaining'], 0)
         wake.assert_called_once_with(project.root, bound)
-        retained = [json.loads(line) for line in queue.read_text().splitlines()]
+        retained = [json.loads(line) for line in pending_text(queue).splitlines()]
         receipts = [job['_fallbackAttempts'] for job in retained if '_fallbackAttempts' in job]
         self.assertTrue(receipts)
         self.assertTrue(all(len(receipt['engines']) < 3 for receipt in receipts))

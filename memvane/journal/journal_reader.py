@@ -301,10 +301,9 @@ def _schema3_pin(record, *, deadline, linked=None, pin_view=True, timings=None):
             if floor is not None and pin.view_id == floor['view_id']:
                 _need(pin.epoch >= floor['epoch'], 'reader_head_regressed')
             vector = store_api.pinned_vector(store, pin)
-            # A view head may be lexical (vectors pending after a lexical-first
-            # publish); a vector head must carry the endpoint's spec. A record
-            # sealed without one reads any head lexically until the owner
-            # re-seals it with the head's spec (resettle_selection).
+            # A vector head and a bound endpoint must agree. Without a bound
+            # spec, recall checks each pin member against the proved provider
+            # before using its vector set.
             if ('vector_profile' in record and vector is not None
                     and record['vector_profile'] is not None):
                 _need(vector['profile_id'] == record['vector_profile'] and

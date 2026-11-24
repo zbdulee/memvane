@@ -46,6 +46,29 @@ class PendingCase(VerifyCase):
 
 
 class Publish(PendingCase):
+    def test_old_mixed_pending_or_base_preserves_both_files_without_verification(self):
+        from memvane.wiki.verify import verification_stamp as stamp
+        revision = 'a' * 16
+        fake = self.fake()
+        cfg = self.config()
+        for sep in ('\x85', '\u2028', '\u2029'):
+            for changed in ('live', 'pending'):
+                with self.subTest(sep=repr(sep), changed=changed):
+                    job = self.stage(revision)
+                    pending = self.pending(revision)
+                    file = self.card if changed == 'live' else pending
+                    text = file.read_text().replace('\n---\n', '\nsources:\n  - {kind: "file", path: "docs/a'
+                                                   + sep + 'b.md"}\n---\n', 1)
+                    file.write_text(text + '\nhandwritten note\n')
+                    before = self.card.read_bytes(), pending.read_bytes()
+                    self.assertEqual(worker.process_verify_job(self.root, cfg, cfg['compile'], {},
+                                                               job, self.compile_dir / 'verdict.jsonl'), (False, True))
+                    self.assertFalse(stamp.write_rendered_verification(file, 'new stamp', file.read_text()))
+                    self.assertEqual((self.card.read_bytes(), pending.read_bytes()), before)
+                    self.assertEqual(self.archived(), [])
+        self.assertEqual(fake.calls, [])
+        self.assertFalse((self.compile_dir / 'verdict.jsonl').exists())
+
     def test_a_candidate_is_published_only_after_it_verifies(self):
         revision = 'a' * 16
         self.stage(revision)
@@ -116,12 +139,88 @@ class Publish(PendingCase):
                 job = self.stage(revision)
                 self.write_queue({**job, **overrides})
                 fake = self.fake()
-                self.assertEqual(self.run_verify()['processed'], 1)
+                original = self.queue.read_bytes()
+                self.assertEqual(self.run_verify()['processed'], 0)
                 self.assertEqual(fake.calls, [])
                 self.assertEqual(self.card_now(), self.old)
                 self.assertTrue(self.pending(revision).exists(), 'an invalid job cannot remove private bytes')
-                row = self.log()[-1]
-                self.assertEqual((row['result'], row['reason']), ('skipped', 'pending_replacement_invalid'))
+                retained = [p.read_bytes() for p in self.compile_dir.rglob('fragment-*')]
+                self.assertIn(original, retained)
+                self.assertFalse(self.log())
+
+
+class StaleSource(PendingCase):
+    def candidate(self, marker, job):
+        block = worker.yaml_scalars.dump_source_revisions(job['sourceRevisions'])
+        text = card_text('generated', marker, 'sourceRevisions:\n' +
+                         '\n'.join('  - ' + row for row in block))
+        self.pending(marker).write_text(text)
+        return text
+
+    def test_stale_retirement_requires_the_audit_entry_and_emits_the_reason(self):
+        marker = 'a' * 16
+        job = self.stage(marker)
+        text = self.candidate(marker, job)
+        self.source.write_text('Different current bytes')
+        fake = self.fake()
+        with mock.patch.object(worker, 'record_verify_deletion', return_value=False):
+            self.assertEqual(self.run_verify()['remaining'], 1)
+        self.assertEqual(self.pending(marker).read_text(), text)
+        with mock.patch.object(worker.workspace_files, 'append_activity') as event:
+            self.assertEqual(self.run_verify()['remaining'], 0)
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(self.card_now(), self.old)
+        self.assertFalse(self.pending(marker).exists())
+        row = self.ledger('verify-deleted.jsonl')[-1]
+        self.assertEqual((row['targetPath'], row['verdict'], row['reasons']),
+                         (job['pendingPath'], 'stale_replacement', ['pending_source_changed']))
+        self.assertEqual(self.log()[-1]['reason'], 'pending_source_changed')
+        self.assertEqual(event.call_args.kwargs['reason'], 'pending_source_changed')
+
+    def test_stamped_replay_cannot_publish_an_obsolete_source(self):
+        marker = 'b' * 16
+        job = self.stage(marker)
+        text = self.candidate(marker, job)
+        self.assertTrue(worker.stamp_verification(self.pending(marker), 'verified', 'claude', 'self',
+                                                   worker.yaml_scalars.card_body_hash(text)))
+        self.source.write_text('Changed after the verification stamp')
+        fake = self.fake()
+        self.assertEqual(self.run_verify()['processed'], 1)
+        self.assertEqual(fake.calls, [])
+        self.assertFalse(self.pending(marker).exists())
+        self.assertEqual(self.card_now(), self.old)
+
+    def test_a_replayed_job_for_newer_bytes_at_the_same_path_cannot_remove_them(self):
+        marker = 'c' * 16
+        old = self.stage(marker)
+        self.source.write_text('New content under reused marker')
+        new = {**old, 'sourceRevisions': [self.project.revision(self.source)]}
+        latest = self.candidate(marker, new)
+        fake = self.fake()
+        self.assertEqual(self.run_verify()['processed'], 1)
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(self.pending(marker).read_text(), latest)
+        self.assertEqual(self.ledger('verify-deleted.jsonl'), [])
+        self.write_queue(new)
+        self.assertEqual(self.run_verify()['processed'], 1)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertIn(worker.yaml_scalars.card_body_hash(latest), self.card_now())
+
+    def test_new_content_survives_a_later_timestamp_on_a_stale_job(self):
+        early, late = 'd' * 16, 'e' * 16
+        old = self.stage(early)
+        self.candidate(early, old)
+        self.source.write_text('New source revision')
+        new = {**old, 'sourceHash': late, 'pendingPath': pending_rel(late),
+               'sourceRevisions': [self.project.revision(self.source)]}
+        self.candidate(late, new)
+        self.write_queue(new, {**old, 'ts': '2026-07-05T00:00:00Z'})
+        fake = self.fake()
+        self.assertEqual(self.run_verify()['processed'], 2)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertIn(late, self.card_now())
+        self.assertFalse(self.pending(early).exists())
+        self.assertFalse(self.pending(late).exists())
 
 
 class Cleanup(PendingCase):
@@ -192,7 +291,8 @@ class Cleanup(PendingCase):
         with mock.patch.object(worker, 'read_queue', side_effect=read):
             self.run_verify()
         self.assertTrue(self.pending(b).exists())
-        holders = [self.queue] + sorted(self.compile_dir.glob('verify-queue.jsonl.claimed.*'))
+        from tests.support.queue_files import pending_files
+        holders = pending_files(self.queue)
         self.assertTrue(any(pending_rel(b) in p.read_text(encoding='utf-8') for p in holders),
                         'the late append stays durable')
 
@@ -204,8 +304,10 @@ class Cleanup(PendingCase):
         self.assertEqual(self.run_verify(verify={'onFail': 'none'})['processed'], 1)
         self.assertTrue(self.pending(revision).exists())
         self.assertEqual(len(fake.calls), 1)
-        repaired = [line for line in self.queued().splitlines() if line and line != '{malformed']
-        self.queue.write_text(''.join(line + '\n' for line in repaired), encoding='utf-8')
+        from memvane.wiki.workspace.handoff.api import native_live
+        fragment, = native_live(self.queue).parent.glob('fragment-*')
+        self.assertEqual(fragment.read_bytes(), b'{malformed\n')
+        fragment.rename(fragment.with_name('operator-preserved'))
         self.run_verify(verify={'onFail': 'none'})
         self.assertFalse(self.pending(revision).exists())
         self.assertEqual(len(fake.calls), 1)

@@ -19,7 +19,7 @@ from memvane.learning.tests.support import invariants
 
 EDITS = 160
 # The three releases before this one (``old_bundle_121.TAGS``).
-PREVIOUS = ('v1.0.22', 'v1.0.23', 'v1.0.24')
+PREVIOUS = ('v1.0.23', 'v1.0.24', 'v1.1.0')
 PER_PASS = 8
 TRAINED_AT, APPLIED_AT = 13, 20
 
@@ -129,8 +129,15 @@ class LearningPath(Lp1Fixture):
                                                 patched=True, resource_ready=True)
                     self.assertEqual(code, 0, err)
                     result = json.loads(out)
-                    self.assertEqual((result['teacher']['calls'], result['cycle']['status'], result['cycle']['cycle_id']),
-                                     (0, answer, second), result)
+                    # 1.1.0 excludes permanently blocked jobs from plan() and
+                    # finds the first, already applied cohort in this fixture.
+                    expected_cycle = (answer, second)
+                    if tag == 'v1.1.0' and row and row[1] in (
+                            'learning_cursor_changed', 'trainer_attempts_exhausted'):
+                        expected_cycle = ('already_applied', applied_job)
+                    self.assertEqual(result['teacher']['calls'], 0)
+                    self.assertEqual((result['cycle']['status'], result['cycle']['cycle_id']),
+                                     expected_cycle, result)
                     self.assertEqual(self.rows(), before)
                     self.assertEqual(len(self.launches()), launches)
         self.restore()

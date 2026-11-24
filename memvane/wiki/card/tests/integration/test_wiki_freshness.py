@@ -105,6 +105,8 @@ class WikiFreshnessTests(FixtureCase):
         self.assertTrue(wiki_freshness.resolve_pending_refresh(root, other, revision, [revision]))
         self.assertTrue(wiki_freshness.compact_pending_refreshes(root, force=True))
         ledger = root / '.memvane' / 'compile' / 'source-refresh-pending.jsonl'
+        self.assertFalse(ledger.exists())
+        ledger = wiki_freshness.refresh_lanes.private_path(ledger)
         rows = [json.loads(line) for line in ledger.read_text(encoding='utf-8').splitlines()]
         self.assertEqual([row['state'] for row in rows], ['pending_refresh', 'pending_refresh', 'resolved'])
         self.assertEqual(rows[0]['eventId'], latest['eventId'])
@@ -119,7 +121,7 @@ class WikiFreshnessTests(FixtureCase):
         self.assertEqual(api.unresolved_pending_refreshes_strict(root), [])
         api.record_pending_refresh(root, 'source.md', 'claude')
         (root / '.memvane' / 'compile').mkdir(exist_ok=True)
-        ledger = next(root.rglob('source-refresh-pending.jsonl'))
+        ledger = next(root.rglob('events.jsonl'))
         ledger.write_text('{broken\n', encoding='utf-8')
         self.assertIsNone(api.unresolved_pending_refreshes_strict(root))
 
@@ -146,18 +148,14 @@ class WikiFreshnessTests(FixtureCase):
             self.assertIsNone(api.unresolved_pending_refreshes_strict(root))
         ledger = root / '.memvane' / 'compile' / 'source-refresh-pending.jsonl'
         ledger.write_text('', encoding='utf-8')
-        exists, read_text = Path.exists, Path.read_text
+        exists = Path.exists
         def denied_exists(path):
             if path == ledger:
                 raise PermissionError('synthetic refusal')
             return exists(path)
-        def denied_read(path, *args, **kwargs):
-            if path == ledger:
-                raise PermissionError('synthetic refusal')
-            return read_text(path, *args, **kwargs)
         with patch.object(Path, 'exists', denied_exists):
             self.assertIsNone(api.unresolved_pending_refreshes_strict(root))
-        with patch.object(Path, 'read_text', denied_read):
+        with patch.object(wiki_freshness.legacy_ledgers, 'read_public_events', side_effect=PermissionError):
             self.assertIsNone(api.unresolved_pending_refreshes_strict(root))
 
     def test_valid_pending_ledger_is_never_quarantined(self):
@@ -171,7 +169,8 @@ class WikiFreshnessTests(FixtureCase):
         revision = {'kind': 'file', 'path': 'source.md', 'collection': 'raw',
                     **api.snapshot_file(source)}
         self.assertTrue(wiki_freshness.resolve_pending_refresh(root, pending, revision, [revision]))
-        for content in (ledger.read_bytes(), b'', b'\n'):
+        rows = wiki_freshness.refresh_lanes.private_path(ledger).read_bytes()
+        for content in (rows, b'', b'\n'):
             with self.subTest(content=content):
                 ledger.write_bytes(content)
                 self.assertIsNone(wiki_freshness.quarantine_corrupt_pending(root))
@@ -201,6 +200,7 @@ class WikiFreshnessTests(FixtureCase):
         (root / '.memvane').mkdir(parents=True)
         api.record_pending_refresh(root, 'source.md', 'claude')
         ledger = root / '.memvane' / 'compile' / 'source-refresh-pending.jsonl'
+        ledger.write_bytes(wiki_freshness.refresh_lanes.private_path(ledger).read_bytes())
         original = ledger.read_bytes()
         read_text = Path.read_text
         def denied(path, *args, **kwargs):
@@ -239,6 +239,65 @@ class WikiFreshnessTests(FixtureCase):
         self.assertFalse(ledger.exists())
         self.assertEqual((ledger.parent / result['quarantinedTo']).read_bytes(), original)
         self.assertIsNone(wiki_freshness.quarantine_corrupt_pending(root))
+
+    def test_mixed_release_pending_preserves_original_pair_and_independent_event(self):
+        import json
+        root = self.tmp / 'project'
+        ledger = root / '.memvane/compile/source-refresh-pending.jsonl'
+        ledger.parent.mkdir(parents=True)
+        pending = {'eventId': 'old', 'state': 'pending_refresh', 'ts': '2026-08-07T00:00:00Z',
+                   'sourcePath': 'docs/source.md', 'engine': 'codex'}
+        resolve = {'state': 'resolved', 'pendingEventId': 'excluded', 'ts': '2026-08-07T00:00:01Z'}
+        for separator in ('\x85', '\u2028', '\u2029'):
+            excluded = dict(pending, eventId='excluded', sourcePath='docs/a' + separator + 'b.md')
+            for escaped in (True, False):
+                for rows in ([pending, excluded], [excluded, resolve, pending]):
+                    with self.subTest(code=ord(separator), escaped=escaped, count=len(rows)):
+                        original = b''.join((json.dumps(row, ensure_ascii=escaped) + '\r\n').encode() for row in rows)
+                        ledger.write_bytes(original)
+                        expected = [pending, excluded] if len(rows) == 2 else [pending]
+                        self.assertEqual(api.unresolved_pending_refreshes_strict(root), expected)
+                        for _ in range(2):
+                            self.assertFalse(wiki_freshness.compact_pending_refreshes(root, force=True))
+                            self.assertIsNone(wiki_freshness.quarantine_corrupt_pending(root))
+                        self.assertEqual(ledger.read_bytes(), original)
+                        self.assertFalse(list(ledger.parent.glob('*.corrupt.*')))
+        ledger.write_bytes(b'{broken\n' + original)
+        self.assertIsNone(wiki_freshness.quarantine_corrupt_pending(root))
+        self.assertEqual(ledger.read_bytes(), b'{broken\n' + original)
+
+    def test_normal_refresh_in_a_mixed_public_generation_appends_only_its_exact_resolve(self):
+        import json
+        root = self.tmp / 'project'
+        ledger = root / '.memvane/compile/source-refresh-pending.jsonl'
+        ledger.parent.mkdir(parents=True)
+        (root / 'new.md').write_text('Current source.')
+        normal = {'eventId': 'normal', 'state': 'pending_refresh', 'ts': '2026-08-07T00:00:00Z',
+                  'sourcePath': 'new.md', 'engine': 'codex'}
+        special = dict(normal, sourcePath='old\u2028name.md', eventId='special')
+        original = b''.join((json.dumps(row, ensure_ascii=False) + '\r\n').encode() for row in (special, normal))
+        ledger.write_bytes(original)
+        self.assertEqual(ledger.read_bytes(), original)
+        revision = dict(wiki_freshness.snapshot_file(root / 'new.md'), kind='file', path='new.md', collection='raw')
+        self.assertTrue(api.resolve_pending_refresh(root, normal, revision, [revision]))
+        after = ledger.read_bytes()
+        self.assertTrue(after.startswith(original))
+        self.assertEqual(json.loads(after[len(original):])['pendingEventId'], normal['eventId'])
+        self.assertEqual(api.unresolved_pending_refreshes_strict(root), [special])
+        self.assertFalse(wiki_freshness.compact_pending_refreshes(root, force=True))
+        self.assertEqual(ledger.read_bytes(), after)
+
+    def test_public_refresh_symlink_cannot_quarantine_or_compact_its_target(self):
+        root = self.tmp / 'project'
+        ledger = root / '.memvane/compile/source-refresh-pending.jsonl'
+        ledger.parent.mkdir(parents=True)
+        other = ledger.with_name('other.jsonl')
+        other.write_bytes(b'incomplete')
+        ledger.symlink_to(other)
+        self.assertFalse(wiki_freshness.compact_pending_refreshes(root, force=True))
+        self.assertIsNone(wiki_freshness.quarantine_corrupt_pending(root))
+        self.assertEqual(other.read_bytes(), b'incomplete')
+        self.assertTrue(ledger.is_symlink())
 
 
 if __name__ == '__main__':

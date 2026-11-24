@@ -1432,11 +1432,18 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/card/refresh_lanes.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/card/snapshot.py": {
       "context": "wiki/card",
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/card/legacy_ledgers.py": {"context": "wiki/card", "layer": "application", "pinned": false},
+    "memvane/wiki/card/manifest_scan.py": {"context": "wiki/card", "layer": "application", "pinned": false},
     "memvane/wiki/card/source_spans.py": {
       "context": "wiki/card",
       "layer": "adapter",
@@ -1478,6 +1485,11 @@
       "pinned": false
     },
     "memvane/wiki/compile/api.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/compile/backfill_work.py": {
       "context": "wiki/compile",
       "layer": "adapter",
       "pinned": false
@@ -1627,6 +1639,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/intake/source_queue.py": {
+      "context": "wiki/intake",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/intake/source_scan.py": {
       "context": "wiki/intake",
       "layer": "adapter",
@@ -1702,9 +1719,50 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/verify/batch_consumer.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/candidate_stage.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/completed_review.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/copy_quota.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/deferred_review.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
     "memvane/wiki/verify/intent_ack.py": {
       "context": "wiki/verify",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/verify/ordinary_slot.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/queue_batch_prepare.py": {"context": "wiki/verify", "layer": "application", "pinned": false},
+    "memvane/wiki/verify/promotion.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/queue_publication.py": {
+      "context": "wiki/verify",
+      "layer": "application",
       "pinned": false
     },
     "memvane/wiki/verify/types.py": {
@@ -1732,6 +1790,16 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/workspace/handoff/api.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/handoff/budget.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/workspace/lifecycle_requests.py": {
       "context": "wiki/workspace",
       "layer": "adapter",
@@ -1748,6 +1816,11 @@
       "pinned": false
     },
     "memvane/wiki/workspace/scan_state.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/queue_return.py": {
       "context": "wiki/workspace",
       "layer": "adapter",
       "pinned": false
@@ -1795,6 +1868,51 @@
     "memvane/wiki/card/source_revisions.py": {
       "context": "wiki/card",
       "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/verify/upgrade_queue.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/batch_handoff.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/first_card.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/native_review.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/handoff_work.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/legacy_handoff.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/pending_handoff.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/pending_ownership.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/pending_replacement.py": {
+      "context": "wiki/verify",
+      "layer": "application",
       "pinned": false
     },
     "memvane/wiki/verify/wiki_verify_worker.py": {

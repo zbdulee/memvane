@@ -43,6 +43,22 @@ class DiscoveryCursor(FixtureCase):
         self.assertTrue(discovery.activate_grant(self.decision, 'sync', grant))
         return grant
 
+    def test_policy_exclusions_stay_in_raw_snapshot_without_spending_pending_capacity(self):
+        discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='before')
+        self.source.write_text('changed\n')
+        snapshot = {self.key: hashlib.sha256(self.source.read_bytes()).hexdigest()}
+        for sep in ('\x85', '\u2028', '\u2029'):
+            path = 'docs/a' + sep + '/note.md'
+            data = self.project.write_note(path, 'source\n').read_bytes()
+            snapshot[self.project.raw_name + '/' + path] = hashlib.sha256(data).hexdigest()
+        with patch.object(discovery, 'MAX_PENDING', 1):
+            self.assertEqual(self.drain('after', snapshot)['pending'], 1)
+            self.accept()
+            self.assertEqual(self.drain('after', snapshot)['queued'], 1)
+        stored = discovery._read(discovery._paths(self.decision)[0])
+        self.assertEqual(stored['rawSnapshot'], snapshot)
+        self.assertEqual(stored['pending'], {})
+
     def test_ungranted_change_waits_until_accepted_grant(self):
         discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
         self.source.write_text('changed\n')
@@ -53,7 +69,7 @@ class DiscoveryCursor(FixtureCase):
         self.accept()
         result = self.drain('g2', {self.key: changed})
         self.assertEqual((result['state'], result['queued'], result['pending']), ('drained', 1, 0))
-        queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
         self.assertIn('docs/note.md', queue.read_text())
         self.assertIn(changed, queue.read_text())
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])
@@ -138,7 +154,7 @@ class DiscoveryCursor(FixtureCase):
         with patch.object(discovery, '_write', side_effect=fail_ack):
             with self.assertRaisesRegex(OSError, 'ACK failure'):
                 self.drain('g2', {self.key: changed})
-        queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
         before = queue.read_bytes()
         self.assertEqual(len(before.splitlines()), 1)
         result = self.drain('g2', {self.key: changed})
@@ -158,7 +174,7 @@ class DiscoveryCursor(FixtureCase):
         state = discovery._read(discovery._paths(self.decision)[0])
         self.assertEqual((state['baseGen'], state['pending']), ('g2', {self.key: changed}))
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [grant])
-        queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
         self.assertFalse(queue.exists())
         self.assertEqual(self.drain('g2', {self.key: changed})['queued'], 1)
         self.assertEqual(len(queue.read_text().splitlines()), 1)
@@ -326,7 +342,7 @@ class DiscoveryCursor(FixtureCase):
                 with self.assertRaises(OSError):
                     discovery.drain_after_sync(self.decision, observed, recheck=lambda: None,
                                                view_generation='g2', raw_snapshot=snapshot)
-            queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+            queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
             self.assertEqual(len(queue.read_text().splitlines()), 1)
             state = discovery._read(discovery._paths(self.decision)[0])
             self.assertEqual(list(state['pending']), [self.project.raw_name + '/docs/second.md'])
@@ -347,7 +363,7 @@ class DiscoveryCursor(FixtureCase):
         snapshot = {self.key: hashlib.sha256(self.source.read_bytes()).hexdigest(),
                     self.project.raw_name + '/docs/second.md': hashlib.sha256(second.read_bytes()).hexdigest()}
         self.accept()
-        queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
         with patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': '1'}):
             first = self.drain('g2', snapshot)
             self.assertEqual((first['queued'], first['pending']), (1, 1))

@@ -145,35 +145,33 @@ def _writer_floor_allowed(proof):
 def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
     """Wake the off-hook provider owner and return its vector-side state code.
 
-    Proof, owner-state integrity, terminal start failure and an identity
-    transition raise. The returned codes (resource_deferred, retry_wait,
-    preparing, wake_failed) leave recall serving its lexical lists.
+    A proof mismatch, unreadable owner state or identity transition refuses
+    recall. A terminal provider start failure serves the lexical lists with
+    selected_provider_start_failed while the resident waits to retry.
     """
     if not _writer_floor_allowed(proof):
         return 'writer_floor'
     from memvane.journal.api import verify_selected_route
-    from memvane.resident.types import TRANSIENT_FAILURES as _TRANSIENT_FAILURES
     from memvane.resident.api import failure_decision as _failure_decision, read_owner_state
     current = verify_selected_route(decision)
     _recall_epoch(current)
     if current != proof:
         _fail('selected_proof_changed')
     try:
+        state = read_owner_state(proof['providerManifest'])
+    except Exception as exc:
+        raise HostResponseError('selected_provider_state_invalid') from exc
+    try:
         _failure_decision(proof['providerManifest'])
     except Exception as exc:
         from memvane.kernel.errors import IndexContractError
         from memvane.kernel.resource_deferred import ResourceDeferred
         if type(exc) is IndexContractError and str(exc) == 'provider_start_failed':
-            _fail('selected_provider_start_failed')
+            if transition:
+                _fail('selected_provider_identity_transition')
+            return 'selected_provider_start_failed'
         if not isinstance(exc, ResourceDeferred):
             raise HostResponseError('selected_provider_state_invalid') from exc
-    try:
-        state = read_owner_state(proof['providerManifest'])
-    except Exception as exc:
-        raise HostResponseError('selected_provider_state_invalid') from exc
-    if (state is not None and state['terminal']
-            and state['reason'] not in _TRANSIENT_FAILURES):
-        _fail('selected_provider_start_failed')
     try:
         # A prompt that finds no vector owner brings a backed-off sync wake
         # forward; the recorded attempts and reason stay unchanged.
@@ -191,6 +189,10 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
     if not transition:
         # Independent of the wake queue: it also helps when that queue fails.
         restart = _restart_withdrawn_owner(decision, proof, state)
+    if restart == 'laya_service_identity_transition':
+        _fail('selected_provider_identity_transition')
+    if restart == 'provider_start_failed':
+        return 'selected_provider_start_failed'
     if not isinstance(result, dict) or result.get('status') not in _DURABLE_WAKE_STATES:
         if transition:
             _fail('selected_provider_wake_failed')
@@ -220,7 +222,7 @@ def _restart_withdrawn_owner(decision: dict, proof: dict, state):
     code, or None.
     """
     if state is None or state['reason'] not in (
-            'starting', 'resource_deferred', 'startup_failed', 'worker_exited'):
+            'starting', 'resource_deferred', 'startup_failed', 'worker_exited', 'attestation_invalid'):
         return None
     manifest = proof['providerManifest']
     path = manifest.get('serviceSocketPath')
@@ -238,7 +240,7 @@ def _restart_withdrawn_owner(decision: dict, proof: dict, state):
         return None
     except IndexContractError as exc:
         if str(exc) == 'provider_start_failed':
-            _fail('selected_provider_start_failed')
+            return 'provider_start_failed'
         raise HostResponseError('selected_provider_state_invalid') from exc
     except Exception as exc:
         raise HostResponseError('selected_provider_state_invalid') from exc

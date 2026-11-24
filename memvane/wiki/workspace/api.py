@@ -2,9 +2,9 @@
 from __future__ import annotations as _annotations
 
 
-def card_write_lock(root, *, folder=None):
+def card_write_lock(root, *, folder=None, blocking=True):
     from memvane.wiki.workspace.compile_paths import card_write_lock as implementation
-    return implementation(root, folder=folder)
+    return implementation(root, folder=folder, blocking=blocking)
 
 
 def write_text_atomic(path, text):
@@ -37,9 +37,13 @@ def validate_compile_run_lock(root, fd):
     return implementation(root, fd)
 
 
-def safe_queue_path(project_root, configured_path=None):
+def safe_queue_path(project_root, configured_path=None, *, native=False):
     from memvane.wiki.workspace.queue_paths import _safe_queue_path
-    return _safe_queue_path(project_root, configured_path)
+    path = _safe_queue_path(project_root, configured_path)
+    if native and path is not None:
+        from memvane.wiki.workspace.handoff.api import native_live
+        return native_live(path, create=True)
+    return path
 
 
 def queue_lock_path(path):
@@ -62,9 +66,9 @@ def read_queue(path):
     return implementation(path)
 
 
-def claim_queue(path, *, receipt_writer=None):
+def claim_queue(path, *, receipt_writer=None, before_claim=None, private=False):
     from memvane.wiki.workspace.queue import claim_queue as implementation
-    return implementation(path, receipt_writer=receipt_writer)
+    return implementation(path, receipt_writer=receipt_writer, before_claim=before_claim, private=private)
 
 
 def request_lifecycle(decision, trigger):
@@ -144,9 +148,9 @@ def trim_jsonl(path, max_bytes=262144):
     return implementation(path, *given)
 
 
-def mutation_lock(root):
+def mutation_lock(root, *, blocking=True):
     from memvane.wiki.workspace.wiki_mutation_lock import lock as implementation
-    return implementation(root)
+    return implementation(root, blocking=blocking)
 
 
 def guard_path(func):

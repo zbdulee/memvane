@@ -113,7 +113,7 @@ def try_compile_run_lock(root, *, folder=None):
 
 
 @contextmanager
-def card_write_lock(root, *, folder=None):
+def card_write_lock(root, *, folder=None, blocking=True):
     """Serialize project card read-decision-write sections across all writers.
 
     The queue/kick locks guard their own ledgers, not wiki card bytes.  This
@@ -130,7 +130,7 @@ def card_write_lock(root, *, folder=None):
     handle = os.fdopen(fd, "a+")
     try:
         _named_lock(handle.fileno(), path)
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB)
         _named_lock(handle.fileno(), path)
         if folder is None and _lock_base(root) != base:
             raise OSError('changed compile directory for card lock')

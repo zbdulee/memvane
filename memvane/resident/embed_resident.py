@@ -20,6 +20,7 @@ import time
 
 from memvane.kernel.errors import IndexContractError
 from memvane.provider.api import private_parent as _private_parent
+from memvane.provider.types import attestation_reads
 from memvane.kernel.resource_deferred import ResourceDeferred
 
 
@@ -30,6 +31,7 @@ _REASONS = frozenset(('starting', 'ready', 'resource_deferred',
                       'attestation_invalid', 'unexpected'))
 _MAX_FAILURES = 3
 _FAILURE_COOLDOWN_SECONDS = 300
+_ATTESTATION_RETRY_SECONDS = 3600
 from memvane.resident.types import TRANSIENT_FAILURES as _TRANSIENT_FAILURES
 
 
@@ -39,12 +41,18 @@ def _state_path(socket_path):
 
 def read_owner_state(manifest):
     """Return only fixed, same-fingerprint diagnostics from private state."""
-    path = _state_path(manifest['serviceSocketPath'])
+    row, _ = _read_record(manifest)
+    return row
+
+
+def _read_record(manifest, *, path=None):
+    if path is None:
+        path = _state_path(manifest['serviceSocketPath'])
     _private_parent(manifest['serviceSocketPath'])
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
-        return None
+        return None, None
     try:
         info = os.fstat(fd)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
@@ -65,10 +73,16 @@ def read_owner_state(manifest):
             or type(row['at']) not in (int, float) or not math.isfinite(row['at'])
             or type(row['attempts']) is not int or not 0 <= row['attempts'] <= _MAX_FAILURES):
         raise IndexContractError('provider_owner_state_invalid')
-    return row if row['fingerprint'] == manifest['embeddingFingerprint'] else None
+    return (row, info) if row['fingerprint'] == manifest['embeddingFingerprint'] else (None, None)
 
 
-def _write_state(manifest, reason, *, terminal=False, attempts=0):
+def _proof_record_path(path, info):
+    # Bound to the published file, including when a 1.x writer replaces it at the same wall time.
+    return f'{path}.proof-{info.st_ino:x}-{info.st_mtime_ns:x}'
+
+
+def _write_state(manifest, reason, *, terminal=False, attempts=0, proof_attempts=None):
+    from memvane.kernel.atomic_rename import canonical_json_bytes, fsync_dir, write_new_file
     path = _state_path(manifest['serviceSocketPath'])
     _private_parent(manifest['serviceSocketPath'])
     try:
@@ -80,22 +94,56 @@ def _write_state(manifest, reason, *, terminal=False, attempts=0):
         raise IndexContractError('provider_owner_state_invalid')
     row = {'fingerprint': manifest['embeddingFingerprint'], 'reason': reason,
            'terminal': terminal, 'at': time.time(), 'attempts': attempts}
-    fd, temporary = tempfile.mkstemp(prefix='.laya-resident-state-',
-                                     dir=os.path.dirname(path))
+    fd, temporary = tempfile.mkstemp(prefix='.laya-resident-state-', dir=os.path.dirname(path))
+    checkpoint = None
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as target:
             json.dump(row, target, separators=(',', ':'))
             target.flush()
             os.fsync(target.fileno())
+            if proof_attempts is not None:
+                new_proof = _proof_record_path(path, os.fstat(target.fileno()))
+                # The proof must be durable before the rename publishes both to adoption.
+                write_new_file(new_proof, canonical_json_bytes(dict(row, attempts=proof_attempts)))
+                checkpoint = new_proof
         os.replace(temporary, path)
-        directory = os.open(os.path.dirname(path), os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        checkpoint = None  # Its lifetime now follows the published diagnostic.
+        fsync_dir(os.path.dirname(path))
+        if old is not None:
+            _discard_proof_record(_proof_record_path(path, old))
     finally:
         if os.path.lexists(temporary):
             os.unlink(temporary)
+        if checkpoint is not None:
+            _discard_proof_record(checkpoint)
+
+
+def _discard_proof_record(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass  # An unreferenced checkpoint cannot charge any other diagnostic.
+
+
+def _install_state(manifest):
+    row, info = _read_record(manifest)
+    if not row or row['reason'] not in ('startup_failed', 'resource_deferred') or not row['attempts']:
+        return row
+    path = _state_path(manifest['serviceSocketPath'])
+    proof, _ = _read_record(manifest, path=_proof_record_path(path, info))
+    current = os.lstat(path)
+    if not os.path.samestat(current, info) or current.st_mtime_ns != info.st_mtime_ns:
+        raise ResourceDeferred('laya_service_backoff')  # The pair changed during this read.
+    if proof:
+        expected = 0 if row['reason'] == 'startup_failed' else row['attempts']
+        if proof != dict(row, attempts=expected):
+            raise IndexContractError('provider_owner_state_invalid')
+        # Only the shared worker has a retry deadline for a projected launch failure.
+        return proof if expected else None
+    if row['reason'] == 'resource_deferred':
+        # Old admission diagnostics could include another installation's process failures.
+        return dict(row, attempts=0)
+    return row
 
 
 def owner_lock_held(manifest):
@@ -121,8 +169,104 @@ def owner_lock_held(manifest):
         os.close(fd)
 
 
-def _failure_decision(manifest, *, own_lock=False):
-    row = read_owner_state(manifest)
+def _failure_window_remaining(row):
+    """Seconds until this terminal or exhausted record permits another attempt."""
+    if row['reason'] in _TRANSIENT_FAILURES:
+        cooldown = _FAILURE_COOLDOWN_SECONDS
+    elif row['reason'] == 'attestation_invalid':
+        cooldown = _ATTESTATION_RETRY_SECONDS
+    else:
+        return math.inf
+    elapsed = time.time() - row['at']
+    return cooldown - elapsed if 0 <= elapsed < cooldown else 0
+
+
+def _exhausted(row):
+    return row['terminal'] or (row['reason'] in _TRANSIENT_FAILURES and row['attempts'] >= _MAX_FAILURES)
+
+
+def _record_shared_wait(manifest, reason, terminal, failures):
+    prior = _install_state(manifest)
+    if prior and not terminal and prior['reason'] in ('starting', 'ready') and prior['attempts'] >= _MAX_FAILURES:
+        return  # Only the installing owner can distinguish an interrupted last start from a live one.
+    if prior and _exhausted(prior):
+        if _failure_window_remaining(prior) and (prior['terminal'] or not terminal):
+            return  # A neighbour cannot renew or shorten this proof deadline.
+        prior = None
+    attempts = prior['attempts'] if prior else 0
+    if reason == 'startup_failed':
+        # A partial proof failure stays local. A process-only projection must never seed proof.
+        if attempts:
+            return
+        _write_state(manifest, reason, attempts=failures, proof_attempts=0)
+    elif reason == 'resource_deferred' and attempts:
+        _write_state(manifest, reason, attempts=attempts, proof_attempts=attempts)
+    else:
+        _write_state(manifest, reason, terminal=terminal, attempts=attempts)
+
+
+def _process_delay(reason, failures):
+    if failures >= _MAX_FAILURES:
+        return _FAILURE_COOLDOWN_SECONDS
+    return 5 if reason == 'worker_exited' else 5 * 2 ** failures
+
+
+def _expire_process_retry(worker, manifest):
+    # Commit expiry before admitting a load. A later clock correction cannot revive this budget.
+    _write_state(dict(manifest, serviceSocketPath=worker.socket_path), 'starting')
+    worker.failures, worker.state, worker.retry_at = 0, 'starting', 0
+
+
+def _restore_process_retry(worker, manifest):
+    # Only this socket is shared by the full worker key. Installation rows have ambiguous provenance.
+    state = dict(manifest, serviceSocketPath=worker.socket_path)
+    try:
+        row = read_owner_state(state)
+    except IndexContractError as exc:
+        if str(exc) != 'provider_owner_state_invalid':
+            raise
+        return  # No usable process history. The separate installation backoffs still apply.
+    if not row or row['reason'] not in _TRANSIENT_FAILURES or not row['attempts']:
+        return
+    failures = row['attempts']
+    elapsed = time.time() - row['at']
+    delay = _process_delay(row['reason'], failures)
+    if elapsed < 0 or (failures >= _MAX_FAILURES and elapsed >= delay):
+        _expire_process_retry(worker, manifest)
+        return
+    remaining = max(0, delay - elapsed)
+    worker.failures = failures
+    worker.state = 'cooldown' if failures >= _MAX_FAILURES else 'failed'
+    worker.retry_at = time.monotonic() + remaining
+
+
+def _record_process_outcome(worker, manifest, reason):
+    if reason == 'ready':
+        worker.failures, worker.state, worker.retry_at = 0, 'ready', 0
+    else:
+        worker.failures = min(_MAX_FAILURES, worker.failures + 1)
+        worker.state = 'cooldown' if worker.failures >= _MAX_FAILURES else 'failed'
+        worker.retry_at = time.monotonic() + _process_delay(reason, worker.failures)
+    try:
+        _write_state(dict(manifest, serviceSocketPath=worker.socket_path), reason, attempts=worker.failures)
+    except (OSError, ValueError):
+        # A failed checkpoint leaves the last atomic record. Keep enforcing the live process budget.
+        pass
+
+
+def _adoption_delay(manifest):
+    """Recheck this installation at expiry or after five minutes if its proof changes."""
+    try:
+        row = _install_state(manifest)
+    except (OSError, ValueError):
+        return 5
+    if row and _exhausted(row):
+        return min(_FAILURE_COOLDOWN_SECONDS, _failure_window_remaining(row))
+    return 5
+
+
+def _failure_decision(manifest, *, own_lock=False, installation=False):
+    row = _install_state(manifest) if installation else read_owner_state(manifest)
     if row is None:
         return row
     if (row['reason'] in _TRANSIENT_FAILURES
@@ -130,18 +274,21 @@ def _failure_decision(manifest, *, own_lock=False):
         # Older services persisted transient exhaustion as terminal. Keep one
         # fixed cooldown, including across restarts, without renewing it on
         # each prompt. A wall-clock rollback must not make it indefinite.
-        elapsed = time.time() - row['at']
-        if 0 <= elapsed < _FAILURE_COOLDOWN_SECONDS:
+        if _failure_window_remaining(row):
             raise ResourceDeferred('laya_service_backoff')
         return
     if row['terminal']:
+        if not _failure_window_remaining(row):
+            return  # A fresh full proof is due, also after a clock rollback.
         raise IndexContractError('provider_start_failed')
     delay = (5 if row['reason'] in ('resource_deferred', 'starting') else
              min(300, 5 * 2 ** max(0, row['attempts'] - 1)))
-    if time.time() - row['at'] < delay:
+    if 0 <= time.time() - row['at'] < delay:
         raise ResourceDeferred('laya_service_resource_deferred' if
                                row['reason'] == 'resource_deferred' else
                                'laya_service_backoff')
+    if row['reason'] == 'resource_deferred' and row['attempts'] >= _MAX_FAILURES:
+        return  # Old propagated admission waits do not prove a process started or exited.
     if row['attempts'] >= _MAX_FAILURES:
         # Also bounds abrupt owner death: SIGKILL cannot write an exit record,
         # but the prior start/ready record survives without its socket.
@@ -378,7 +525,14 @@ def start_attested_worker(manifest, admit, *, execution_state, provider, worker)
     from memvane.kernel.errors import IndexContractError
     from memvane.provider import api as provider_api
     local = {**manifest, 'providerPath': str(provider), 'workerPath': str(worker)}
-    if not provider_api.reattestation_check(execution_state, local):
+    try:
+        with attestation_reads():
+            approved = provider_api.reattestation_check(execution_state, local)
+    except ValueError as exc:
+        if str(exc) == 'provider_artifact_changed':
+            raise  # The file moved while being hashed; a new observation may succeed.
+        raise IndexContractError('provider_attestation_invalid') from exc
+    if not approved:
         raise IndexContractError('provider_attestation_invalid')
     if execution_state is None:
         return provider_api.start_owned_embed_service(local, admit=admit)

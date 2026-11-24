@@ -10,13 +10,14 @@ from pathlib import Path
 
 def paths_from_patch(patch: str) -> list[str]:
     paths = []
-    for line in patch.splitlines():
+    for line in patch.split('\n'):
+        line = line.removesuffix('\r')
         match = re.match(r"\*\*\* (?:Update|Add|Delete) File: (.+)", line)
         if match:
-            paths.append(match.group(1).strip())
+            paths.append(match.group(1).strip(' \t'))
         moved = re.match(r"\*\*\* Move to: (.+)", line)
         if moved:
-            paths.append(moved.group(1).strip())
+            paths.append(moved.group(1).strip(' \t'))
     return paths
 
 

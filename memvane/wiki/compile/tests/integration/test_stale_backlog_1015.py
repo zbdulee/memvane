@@ -53,7 +53,8 @@ class StaleSourceBacklog(FixtureCase):
 
     def remaining_jobs(self):
         # A failed audit/requeue may retain the claimed file for recovery.
-        files = [self.queue] + list(self.queue.parent.glob('source-queue.jsonl.claimed.*'))
+        from tests.support.queue_files import pending_files
+        files = pending_files(self.queue)
         return [json.loads(line) for path in files if path.exists()
                 for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
 
@@ -72,6 +73,28 @@ class StaleSourceBacklog(FixtureCase):
             worker._main_locked(argparse.Namespace(json=True, flush_all=True), self.project.root,
                                 self.config, self.config['compile'], self.queue, self.bound)
         return json.loads(output.getvalue()), calls
+
+    def test_private_source_larger_than_a_slab_reaches_the_actual_selected_worker(self):
+        from memvane.wiki.workspace.handoff.api import native_live
+        from tests.support.wiki_handoff import retained_batches
+        private = native_live(self.queue, create=True)
+        job = self.job(self.paths[0])
+        raw = b'!' * (65536 + 1) + b'\n' + json.dumps(job).encode() + b'\r\n'
+        private.write_bytes(raw)
+        inode = private.stat().st_ino
+        calls = []
+        for _ in range(50):
+            report, seen = self.run_pass()
+            calls += seen
+            if calls:
+                break
+        self.assertEqual(calls, self.paths[:1])
+        self.assertEqual(report['completed'], 1)
+        batch, = retained_batches(self.queue)
+        original = batch.work.folder / 'raw'
+        self.assertEqual((original.stat().st_ino, original.read_bytes()), (inode, raw))
+        self.assertFalse(self.queue.exists() and self.queue.read_bytes())
+        self.assertEqual(self.run_pass()[1], [])
 
     def test_old_install_prefix_does_not_consume_current_extractor_budget(self):
         old = [self.job('docs/old-%04d.md' % n, stale=True) for n in range(2281)]
@@ -98,23 +121,30 @@ class StaleSourceBacklog(FixtureCase):
 
     def test_stale_scan_leaves_an_over_limit_suffix_for_another_pass(self):
         self.write_jobs([self.job('docs/old-%04d.md' % n, stale=True) for n in range(5000)])
+        raw = self.queue.read_bytes()
         report, calls = self.run_pass()
-        remaining = self.remaining_jobs()
         self.assertEqual(calls, [])
-        self.assertGreater(report['staleDropped'], 0)
-        self.assertGreater(len(remaining), 0)
-        self.assertEqual(len(remaining) + report['staleDropped'], 5000)
+        self.assertEqual(report['remaining'], 1)
+        from tests.support.wiki_handoff import retained_batches as active
+        batch, = active(self.queue)
+        self.assertEqual((batch.work.folder / 'raw').read_bytes(), raw)
+        self.run_pass()
+        self.assertGreater(active(self.queue)[0].cursor, 0)
 
     def test_stale_scan_byte_budget_preserves_unscanned_large_rows(self):
         old = [self.job('docs/old-%02d.md' % n, stale=True) for n in range(10)]
         for job in old:
             job['syntheticPadding'] = 'x' * (1024 * 1024)
         self.write_jobs(old)
+        before = self.queue.stat()
         report, calls = self.run_pass()
         self.assertEqual(calls, [])
-        self.assertGreater(report['staleDropped'], 0)
-        self.assertGreater(len(self.remaining_jobs()), 0)
-        self.assertEqual(len(self.remaining_jobs()) + report['staleDropped'], 10)
+        self.assertEqual(report['remaining'], 1)
+        from tests.support.wiki_handoff import retained_batches as active
+        batch, = active(self.queue)
+        held = batch.work.folder / 'raw'
+        self.assertEqual((held.stat().st_ino, held.stat().st_size), (before.st_ino, before.st_size))
+        self.assertEqual(self.queue.read_bytes(), b'')
 
     def test_stale_audit_failure_returns_original_rows_to_normal_queue(self):
         old = self.job('docs/old.md', stale=True)
@@ -133,7 +163,9 @@ class StaleSourceBacklog(FixtureCase):
         with patch.object(worker, 'append_jsonl', side_effect=fail_stale):
             with self.assertRaisesRegex(OSError, 'synthetic audit unavailable'):
                 self.run_pass()
-        self.assertEqual(self.queue.read_text(encoding='utf-8'), original)
+        from tests.support.queue_files import pending_text
+        self.assertEqual(pending_text(self.queue), original)
+        self.assertFalse(self.queue.read_bytes())
         self.assertEqual(list(self.queue.parent.glob('source-queue.jsonl.claimed.*')), [])
 
     def test_same_install_scope_drift_is_retained_not_declared_stale_progress(self):
@@ -178,7 +210,7 @@ class StaleSourceBacklog(FixtureCase):
             # Model separate worker exits using the supported dead-pid fixture.
             # A surviving claim must go through the real orphan recovery path.
             token = claimed.name.rsplit('.', 1)[1]
-            renamed = path.with_name(path.name + '.claimed.%s.%s' % (dead_pid, token))
+            renamed = claimed.with_name('native.claimed.%s.%s' % (dead_pid, token))
             claimed.replace(renamed)
             return renamed
 
@@ -219,7 +251,7 @@ class StaleSourceBacklog(FixtureCase):
         self.assertEqual(settled, self.paths[:1])
         self.assertCountEqual(self.remaining_jobs(), [old, remaining])
         self.assertEqual(list(self.queue.parent.glob('source-queue.jsonl.claimed.*')), [])
-        self.assertEqual(len(self.queue.read_text(encoding='utf-8').splitlines()), 2)
+        self.assertEqual(len(self.remaining_jobs()), 2)
         report, calls = self.run_pass()
         self.assertEqual(calls, self.paths[1:2])
         self.assertEqual((report['completed'], report['staleDropped']), (1, 1))

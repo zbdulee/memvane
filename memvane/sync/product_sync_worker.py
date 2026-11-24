@@ -815,12 +815,19 @@ def _schema3_card_source_match(path, raw, decision, current_sources):
         return None
 
 
-def _schema3_reclassified(paths, changed, old, current, decision, sources):
+def _schema3_reclassified(paths, changed, old, carry, current, decision, sources):
+    from memvane.wiki.card.api import card_sources_allowed
     result = {}
-    for path in set(paths) - changed:
-        verdict = _schema3_card_source_match(path, current[path][1], decision, sources)
-        if verdict is not None and verdict[0] != bool(old[path]['trust_digest']):
-            result[path] = verdict
+    for path in paths:
+        # Existing heads and partially prepared generations may carry trust from an older binary.
+        if (path in old and old[path]['trust_digest']) or (path in carry and carry[path]['trust_digest']):
+            if not card_sources_allowed(current[path][1].decode('utf8', errors='replace'), ()):
+                result[path] = False, None
+                continue
+        if sources is not None and path not in changed:
+            verdict = _schema3_card_source_match(path, current[path][1], decision, sources)
+            if verdict is not None and verdict[0] != bool(old[path]['trust_digest']):
+                result[path] = verdict
     return result
 
 
@@ -886,8 +893,8 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         current_sources = ({source: (sha, length) for source, (sha, length, _tracked) in observed.items()}
                            if 'snapshot' in scanned else None)
         same_observation = not cold and v.head_same(store, head, baseline, observed, handle)
-        reclassified = (_schema3_reclassified(paths, changed, old, current, decision, current_sources)
-                        if current_sources is not None and not same_observation else {})
+        reclassified = _schema3_reclassified(paths, changed, old, carry, current, decision,
+                                              None if same_observation else current_sources)
         changed.update(reclassified)
         if (not changed and not removed and not excluded and not cold
                 and same_observation):

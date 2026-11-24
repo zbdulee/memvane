@@ -26,7 +26,7 @@ def fingerprint(path):
 class PendingRecovery(FixtureCase):
     def setUp(self):
         super().setUp()
-        project = make_project(self.home, git=False)
+        self.project = project = make_project(self.home, git=False)
         self.root = project.root.resolve()
         (project.wiki / 'concepts').mkdir(parents=True)
         compile_dir = self.root / '.memvane' / 'compile'
@@ -62,12 +62,146 @@ class PendingRecovery(FixtureCase):
 
     def queued_rows(self):
         rows = []
-        for line in self.queue.read_text(encoding='utf-8').splitlines():
+        from tests.support.queue_files import pending_text
+        for line in pending_text(self.queue).splitlines():
             try:
                 rows.append(json.loads(line))
             except ValueError:
                 pass
         return rows
+
+    def stale_work(self):
+        from memvane.wiki.verify.handoff_work import Work
+        source = self.project.write_note('docs/source.md', 'previous revision')
+        self.job['sourceRevisions'] = [self.project.revision(source)]
+        source.write_text('new revision')
+        binding = {'purpose': 'native-review', 'route': None,
+                   'targetPath': self.job['targetPath'], 'job': self.job}
+        raw = (json.dumps(self.job) + '\n').encode()
+        work = Work.create(self.queue, 'hold', binding, raw, image=self.pending.read_bytes())
+        return work.commit('held', transaction=work.state['id'], proof={'published': True})
+
+    def test_private_cleanup_reopens_after_unlink_and_before_ack(self):
+        from memvane.wiki.verify import native_review, pending_replacement
+        work = self.stale_work()
+        raw, image = work.read('raw'), work.read('image')
+        original = pending_replacement._cleanup_pending
+
+        def interrupted(*args, **kwargs):
+            self.assertTrue(original(*args, **kwargs))
+            self.assertFalse(self.pending.exists())
+            raise OSError('crash after stale candidate unlink')
+
+        def cleanup(owned):
+            return pending_replacement.finish_stale_work(self.root, self.cfg, owned, self.job,
+                                                         fingerprint=fingerprint(self.pending))
+
+        with mock.patch.object(pending_replacement, '_cleanup_pending', side_effect=interrupted):
+            self.assertEqual(native_review.process(self.queue, None, work, cleanup), (False, True))
+        waiting = native_review.waiting(self.queue)
+        self.assertEqual([w.state['id'] for w in waiting], [work.state['id']])
+        self.assertIn('staleCleanup', waiting[0].state['proof'])
+        with mock.patch.object(verify, 'process_verify_job', side_effect=AssertionError('paid review replayed')):
+            self.assertEqual(self.run_verify()['remaining'], 0)
+        archived = work.lookup(self.queue, 'hold', work.state['id'])
+        self.assertEqual((archived.state['phase'], archived.read('raw'), archived.read('image')),
+                         ('finished', raw, image))
+        self.assertEqual(self.target.read_text(), 'live')
+
+    def test_restored_source_revokes_stale_authority_before_detach(self):
+        from memvane.wiki.verify import native_review, pending_replacement
+        work = self.stale_work()
+        other = self.claim('reference', json.dumps(self.job) + '\n')
+        def cleanup(owned):
+            return pending_replacement.finish_stale_work(self.root, self.cfg, owned, self.job,
+                                                         fingerprint=fingerprint(self.pending))
+        self.assertEqual(native_review.process(self.queue, None, work, cleanup), (False, True))
+        (self.root / 'docs/source.md').write_text('previous revision')
+        other.unlink()
+        with mock.patch.object(verify, 'process_verify_job', side_effect=AssertionError('premature review')):
+            self.assertEqual(self.run_verify()['remaining'], 1)
+        active, = native_review.waiting(self.queue)
+        self.assertNotIn('staleCleanup', active.state['proof'])
+        self.assertEqual(self.pending.read_bytes(), b'candidate')
+
+    def test_private_stale_cleanup_restores_editor_inode_saved_at_detach(self):
+        from memvane.wiki.verify import native_review, pending_replacement
+        work = self.stale_work()
+        rename = pending_replacement.rename_noreplace
+        replacement = self.pending.with_name('.saving')
+        replacement.write_text('edited at rename')
+        inode = replacement.stat().st_ino
+        def edit(parent, source, dest):
+            if source == self.pending.name:
+                replacement.replace(self.pending)
+            return rename(parent, source, dest)
+        def cleanup(owned):
+            return pending_replacement.finish_stale_work(self.root, self.cfg, owned, self.job,
+                                                         fingerprint=fingerprint(self.pending))
+        with mock.patch.object(pending_replacement, 'rename_noreplace', side_effect=edit):
+            self.assertEqual(native_review.process(self.queue, None, work, cleanup), (True, False))
+        self.assertEqual((self.pending.stat().st_ino, self.pending.read_bytes()), (inode, b'edited at rename'))
+        self.assertEqual(self.target.read_text(), 'live')
+
+    def test_occurrence_with_duplicate_keys_cannot_authorize_private_cleanup(self):
+        from memvane.wiki.verify import native_review, pending_replacement
+        work = self.stale_work()
+        raw = '{"pendingPath":' + json.dumps(self.job['pendingPath']) + ',"pendingPath":"other"}\n'
+        self.claim('unknown', raw)
+        def cleanup(owned):
+            return pending_replacement.finish_stale_work(self.root, self.cfg, owned, self.job,
+                                                         fingerprint=fingerprint(self.pending))
+        self.assertEqual(native_review.process(self.queue, None, work, cleanup), (False, True))
+        self.assertEqual(self.pending.read_bytes(), b'candidate')
+        self.assertEqual(self.target.read_text(), 'live')
+
+    def test_private_detach_before_receipt_reopens_old_inode_beside_an_independent_edit(self):
+        from memvane.wiki.verify import native_review, pending_replacement
+        work = self.stale_work()
+        rename = pending_replacement.rename_noreplace
+        original = self.pending.stat().st_ino
+        def stop(parent, source, dest):
+            rename(parent, source, dest)
+            raise OSError('stopped after detach before receipt')
+        def cleanup(owned):
+            return pending_replacement.finish_stale_work(self.root, self.cfg, owned, self.job,
+                                                         fingerprint=fingerprint(self.pending))
+        with mock.patch.object(pending_replacement, 'rename_noreplace', side_effect=stop):
+            self.assertEqual(native_review.process(self.queue, None, work, cleanup), (False, True))
+        aside = self.pending.with_name('.pr-' + work.state['id'])
+        self.assertEqual(aside.stat().st_ino, original)
+        self.assertFalse(self.pending.exists())
+        self.pending.write_text('new published name')
+        with mock.patch.object(verify, 'process_verify_job', side_effect=AssertionError('paid review replayed')):
+            self.assertEqual(self.run_verify()['remaining'], 1)
+            self.assertEqual(aside.stat().st_ino, original)
+            self.assertEqual(self.pending.read_bytes(), b'new published name')
+            next_card = self.pending.with_name('independent.md')
+            self.pending.rename(next_card)
+            self.assertEqual(self.run_verify()['remaining'], 0)
+        self.assertFalse(aside.exists())
+        self.assertEqual(next_card.read_bytes(), b'new published name')
+        self.assertEqual(self.target.read_text(), 'live')
+
+    def test_private_stale_fingerprint_waits_for_other_claim_and_keeps_an_editor_replacement(self):
+        from memvane.wiki.verify import native_review, pending_replacement
+        work = self.stale_work()
+        other = self.claim('reference', json.dumps(self.job) + '\n')
+        original = self.pending.read_bytes()
+        def cleanup(owned):
+            return pending_replacement.finish_stale_work(self.root, self.cfg, owned, self.job,
+                                                         fingerprint=fingerprint(self.pending))
+        self.assertEqual(native_review.process(self.queue, None, work, cleanup), (False, True))
+        self.assertEqual(self.pending.read_bytes(), original)
+        self.assertTrue(other.exists())
+        other.unlink()
+        replacement = self.pending.with_name('.editor-temporary')
+        replacement.write_text('handwritten replacement')
+        replacement.replace(self.pending)
+        with mock.patch.object(verify, 'process_verify_job', side_effect=AssertionError('paid review replayed')):
+            self.assertEqual(self.run_verify()['remaining'], 0)
+        self.assertEqual(self.pending.read_bytes(), b'handwritten replacement')
+        self.assertEqual(self.target.read_text(), 'live')
 
     def test_a_late_append_to_an_empty_claim_is_not_lost(self):
         claim = self.claim('empty')
@@ -204,6 +338,8 @@ class PendingRecovery(FixtureCase):
             self.run_verify()
         self.assertEqual(call.call_count, 1)
         self.assertTrue(self.pending.exists())
+
+    def test_a_null_receipt_alone_cannot_run_verification(self):
         self.write_queue({**self.job, '_pendingCleanup': None})
         with mock.patch.object(verify, 'process_verify_job', side_effect=AssertionError('invalid must not verify')):
             self.run_verify()
@@ -237,8 +373,9 @@ class PendingRecovery(FixtureCase):
         row = json.dumps(self.job)
         a, b = self.claim('a', row + '\n'), self.claim('b', row + '\n')
         snapshots, _ = verify._pending_snapshots(self.root, self.cfg, [(row, self.job)])
-        self.assertIs(verify._cleanup_pending(self.root, self.queue, a, snapshots, [(row, self.job)]), False)
-        self.assertIs(verify._cleanup_pending(self.root, self.queue, b, snapshots, [(row, self.job)]), False)
+        # Each held claim references the other pass's snapshot.
+        for other in (a, b):
+            self.assertFalse(verify._cleanup_pending(self.root, snapshots, b'', [other], False))
         self.assertTrue(self.pending.exists())
 
     def test_the_receipt_key_binds_the_exact_job(self):

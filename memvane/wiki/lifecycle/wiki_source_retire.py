@@ -84,6 +84,8 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
     per-run judge; without it one is opened here.
     """
     root = Path(root).resolve()
+    if not wiki_card.card_sources_allowed({'path': rel}, report=True):
+        return {'state': 'blocked', 'survivors': []}
     source = root / rel
     if source.is_symlink() or source.exists():
         return {'state': 'source_reappeared', 'survivors': []}
@@ -124,6 +126,8 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
             if info.st_size > MAX_CARD_BYTES or total > MAX_TOTAL_BYTES:
                 return {'state': 'blocked', 'survivors': []}
             text = card.read_text(encoding='utf-8')
+            if not wiki_card.card_sources_allowed(text, ()):
+                continue
             match = FRONTMATTER_RE.match(text)
             if match is None:
                 continue
@@ -238,6 +242,8 @@ def retire_card(root: Path, wiki_root: Path, selected, card: Path,
             text = card.read_text(encoding='utf-8')
         except (OSError, UnicodeDecodeError):
             return 'blocked'
+        if not wiki_card.card_sources_allowed(text, ()):
+            return 'blocked'
         if text != expected:
             return 'changed'
         if not wiki_card.auto_writable_text(text)[0]:
@@ -288,6 +294,8 @@ def record_source_revisions(root: Path, wiki_root: Path, selected, card: Path,
     A schema3-selected install records nothing (``schema3_selected``): the
     rewritten card would be a new blob whose provenance no store holds.
     """
+    if not wiki_card.card_sources_allowed({'sourceRevisions': revisions}, report=True):
+        return 'blocked'
     root = Path(root).resolve()
     wiki_root = Path(wiki_root)
     if wiki_root.is_symlink() or not wiki_root.is_dir():
@@ -313,6 +321,8 @@ def record_source_revisions(root: Path, wiki_root: Path, selected, card: Path,
         try:
             text = card.read_text(encoding='utf-8')
         except (OSError, UnicodeDecodeError):
+            return 'blocked'
+        if not wiki_card.card_sources_allowed(text, ()):
             return 'blocked'
         if text != expected:
             return 'changed'

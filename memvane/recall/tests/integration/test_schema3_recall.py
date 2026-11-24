@@ -4,9 +4,8 @@ Recall reads the published view only: no raw source file is opened, a branch
 without a published head answers ``view_preparing`` without context (never the
 main view's rows), a checkout that keeps moving answers ``checkout_changed``,
 and a hot store journal is a recovery refusal that asks for the sync owner.
-A reader sealed without a vector spec serves lexical rows without asking the
-provider; an admitted provider makes the read semantic, and a cold one serves
-lexical rows with one owner wake.
+A lexical-first reader uses complete sets matching its current members. A
+cold provider serves lexical rows with one owner wake.
 """
 from contextlib import closing
 import json
@@ -16,6 +15,7 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -238,28 +238,51 @@ class Schema3Recall(RecallInstallCase):
         with closing(sqlite3.connect(str(self.install.journal), isolation_level=None)) as db:
             db.execute('UPDATE reader SET record=? WHERE id=1', (raw,))
 
-    def test_a_view_sealed_without_vectors_serves_lexical_rows_without_asking_the_provider(self):
-        self.install.provider.admit_queries()
-        self.forge_reader_without_vector_spec()
-        asked, reads = [], []
-        real = recall_api.query_endpoint
+    def publish_changed_lexical_head(self):
+        self.fixture.write_card('concepts/glacier.md', title='Glacier protocol', sources=[self.note],
+                                body='The current edition keeps zqneweditionx.\n')
+        # The owner publishes the real new member hashes without filling the changed card.
+        with mock.patch('memvane.store.api.provider_spec', return_value=None):
+            result = self.install.run_sync()
+        self.assertEqual(result['vector']['state'], 'off', result)
+        return result['generation']
 
-        def observed(*args, **kwargs):
-            reads.append((kwargs['query_vector'], real(*args, **kwargs)))
-            return reads[-1][1]
-        with mock.patch('memvane.recall.api.query_endpoint', side_effect=observed), \
-                mock.patch('memvane.recall.api.approved_query_vector',
-                           side_effect=lambda **kwargs: asked.append(kwargs)):
-            context, err, event = self.recall(PROMPT)
+    def test_unsealed_recall_scores_only_current_members_with_matching_sets(self):
+        generation = self.publish_changed_lexical_head()
+        self.forge_reader_without_vector_spec()
+        self.install.provider.admit_queries()
+        self.install.provider.bound_queries()
+        for switch in ('on', 'store', 'off'):
+            with self.subTest(switch=switch), mock.patch.dict(os.environ, {'MEMVANE_VECTOR_ACCEL': switch}):
+                context, _err, event = self.recall('zqnoftsmatchx')
+                self.assertIn('zqheronx', context)
+                self.assertNotIn('zqneweditionx', context)
+                self.assertEqual((event['generation'], event['semantic'], event['semanticOnlyInjected']),
+                                 (generation, 'partial', 1))
+                self.assertEqual((event['vectorCoveredMembers'], event['vectorEligibleMembers']), (1, 2))
+                self.assertIsNone(event.get('vector_fallback'))
+                context, _err, event = self.recall('zqneweditionx')
+                self.assertIn('zqneweditionx', context)
+                scores = {Path(row['path']).name: score for row, score in
+                          zip(event['cards'], event['injectedCosine'])}
+                self.assertIsNone(scores['glacier.md'])
+                self.assertEqual(scores['heron.md'], 1.0)
+        self.assertEqual(self.install.provider.query_lengths(), [len('zqnoftsmatchx'), len('zqneweditionx')] * 3)
+
+    def test_partial_recall_skips_a_mismatched_chunk_digest_and_keeps_lexical(self):
+        self.publish_changed_lexical_head()
+        self.install.provider.admit_queries()
+        with closing(sqlite3.connect(self.install.store_path)) as db, db:
+            trigger = db.execute("SELECT sql FROM sqlite_master WHERE name='chunk_sets_update'").fetchone()[0]
+            db.execute('DROP TRIGGER chunk_sets_update')
+            db.execute("UPDATE chunk_sets SET set_digest=?", ('0' * 64,))
+            db.execute(trigger)
+        context, _err, event = self.recall('zqheronx')
         self.assertIn('zqheronx', context)
-        self.assertEqual(asked, [])
-        self.assertEqual([(vector, result.semantic_status) for vector, result in reads],
-                         [(None, 'provider_absent')])
-        self.assertEqual((event['outcome'], event['vector_fallback']),
-                         ('served', 'selected_view_vectors_pending'))
-        self.assertEqual(event['notes'], ['laya_vector_selected_view_vectors_pending'])
-        self.assertIn('selected_view_vectors_pending; serving lexical results', err)
-        self.assertEqual(self.wakes, [])
+        self.assertEqual((event['semantic'], event['vectorCoveredMembers'], event['vectorEligibleMembers']),
+                         ('lexical_only', 0, 2))
+        self.assertEqual(event['vector_fallback'], 'selected_view_vectors_pending')
+        self.assertNotIn('injectedCosine', event)
 
     def observed_reads(self):
         reads = []
@@ -419,6 +442,52 @@ class Schema3Recall(RecallInstallCase):
         self.assertIn('selected_provider_preparing; serving lexical results', err)
         self.assertEqual([(kind, target, kwargs.get('pull_due')) for kind, target, kwargs in self.wakes],
                          [('laya-sync', str(self.project), True)])
+
+    def test_terminal_provider_serves_prompt_lexical_rows_and_records_the_reason(self):
+        from memvane.kernel.errors import IndexContractError
+        from memvane.provider import api as provider
+        from memvane.journal.api import select_route, verify_selected_route
+        self.publish_changed_lexical_head()
+        self.install.provider.admit_queries()
+        self.install.provider.answer_queries('provider_unavailable')
+        decision = select_route(str(self.project), action='recall')
+        manifest = verify_selected_route(decision)['providerManifest']
+        state = Path(manifest['serviceSocketPath'] + '.resident.state')
+        with os.fdopen(os.open(state, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600), 'w') as handle:
+            json.dump(dict(fingerprint=manifest['embeddingFingerprint'], reason='attestation_invalid',
+                           terminal=True, at=time.time(), attempts=3), handle)
+        context, _err, event = self.recall(PROMPT)
+        self.assertIn('zqheronx', context)
+        self.assertEqual((event['outcome'], event['vector_fallback'], event['notes']),
+                         ('served', 'selected_provider_start_failed', ['laya_vector_selected_provider_start_failed']))
+        self.assertEqual(self.wakes, [])
+
+        with mock.patch.object(provider, 'query_vectors', side_effect=IndexContractError('provider_identity_mismatch')) as asked:
+            with self.assertRaisesRegex(HostResponseError, '^selected_provider_identity_transition$'):
+                self.recall(PROMPT)
+        asked.assert_called_once()
+        refused = [row for row in self.install.events() if row.get('event') == 'recall'][-1]
+        self.assertEqual((refused['outcome'], refused['reason']), ('refused', 'selected_provider_identity_transition'))
+        self.assertFalse(refused.get('cards'))
+
+    def test_partial_vector_only_injection_counts_as_semantic_in_the_summary(self):
+        import io
+        import runpy
+        from contextlib import redirect_stdout
+        from types import SimpleNamespace
+        self.publish_changed_lexical_head()
+        self.install.provider.admit_queries()
+        with mock.patch.dict(os.environ, {'MEMVANE_VECTOR_ACCEL': 'off'}):
+            context, _, event = self.recall('zqnoftsmatchx')
+        self.assertIn('zqheronx', context)
+        self.assertEqual((event['semantic'], event['semanticOnlyInjected']), ('partial', 1))
+        logs = runpy.run_path(str(REPOSITORY / 'skills/logs/scripts/logs.py'))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            logs['summary']([event], SimpleNamespace(hours=None))
+        self.assertIn('semantic=1/1 (100.0%)', output.getvalue())
+        self.assertIn('fullCoverage=0/1', output.getvalue())
+        self.assertIn('semantic python: 1/1 (100.0%)', output.getvalue())
 
     def test_the_learning_selector_receives_the_published_rows(self):
         seen = []

@@ -45,7 +45,7 @@ from tests.support.case import FixtureCase, require_fixture_env, wait_until
 from tests.support.install_builder import ROOT, build_install
 from tests.support.project import make_project
 
-TAGS = ('v1.0.18', 'v1.0.19', 'v1.0.20', 'v1.0.21', 'v1.0.22', 'v1.0.23', 'v1.0.24')
+TAGS = ('v1.0.18', 'v1.0.19', 'v1.0.20', 'v1.0.21', 'v1.0.22', 'v1.0.23', 'v1.0.24', 'v1.1.0')
 NOTE = 'The emerald heron nests beside the north pond.\n'
 CARD_BODY = 'The emerald heron keeps marker token zqheronx beside the north pond.\n'
 PROMPT = 'what marker does the emerald heron keep?'

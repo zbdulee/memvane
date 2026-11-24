@@ -17,7 +17,7 @@ from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, queu
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
 from memvane.settings import api as qmd_config
-from memvane.wiki.intake import posttool
+from memvane.wiki.intake import posttool, source_queue
 from memvane.wiki.card import api as wiki_freshness
 from memvane.wiki.intake import wiki_source_intent as intent
 from memvane.settings.api import select_collections
@@ -51,8 +51,7 @@ COMPILE_ACCEPTED_TRIGGERS = intent.SYNC_ACCEPTED_TRIGGERS
 # 백그라운드 CLI 실행으로 번지지 않게 막는다. 상한을 넘긴 파일은 스냅샷을 진전시키지 않아
 # 다음 sync가 다시 집어 간다(조용히 유실되지 않는다).
 DEFAULT_COMPILE_MAX_FILES = 50
-# queue lock 안에서 revision 키를 찾으려고 live 큐를 읽는 상한. worker가 오래 멈춰 큐가
-# 이보다 커지면 키를 찾지 않고 기존처럼 append만 한다(중복은 가능, 유실은 없음).
+# 원행 읽기와 준비한 이미지의 재검증에 쓰는 바이트 상한. 넘으면 공용 원본을 보존한다.
 from memvane.wiki.intake.types import QUEUE_SCAN_MAX_BYTES
 
 
@@ -173,14 +172,7 @@ def enqueue_changed_sources(project_root, config, changed_files,
             if intent.revision_key(record) is None:
                 path = Path(project_root) / record['source']['path']
                 record[intent.REVISION_FIELD] = _stable_revision(path)
-    # 상한 값(env)은 여기서 읽고 분할 규칙만 순수 계획에 맡긴다.
-    # Unhashed legacy rows are still kept: an old job has no proof that its
-    # source is the same revision, so never silently suppress it.
-    if any(intent.revision_key(record) for _, _, record in candidates):
-        plan = _append_unqueued(queue_path, candidates, cap)
-    else:
-        plan = intent.plan_enqueue(candidates, cap)
-        _append_jsonl(queue_path, plan["records"])
+    plan = _append_unqueued(queue_path, candidates, cap)
     if plan["records"] or plan["result"].get("wakePending"):
         from memvane.wiki.workspace import api as wiki_selected_laya
         wiki_selected_laya.request_compile(Path(project_root),
@@ -221,9 +213,16 @@ def _write_jsonl(path, records):
 
 
 def _append_jsonl(path, records):
+    from memvane.wiki.card.api import card_sources_allowed
+    if path.name == ct.SOURCE_QUEUE:
+        records = [record for record in records if card_sources_allowed(record, report=True)]
     if not records:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.name == ct.SOURCE_QUEUE:
+        candidates = [(None, None, row) for row in records]
+        _append_unqueued(path, candidates, len(candidates))
+        return
     lock_path = _queue_lock_path(path)
     with open(lock_path, "a", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
@@ -234,37 +233,19 @@ def _append_jsonl(path, records):
 
 
 def _queued_revision_keys(path, limit=None):
-    """Revision keys of rows still in the live queue (not claimed/drained ones).
-
-    An unreadable queue, or one larger than `limit` bytes
-    (`QUEUE_SCAN_MAX_BYTES`), yields no keys: at most `limit + 1` bytes are
-    read, and the rows are appended as before the scan existed, so the failure
-    mode is a duplicate, never a lost intent or an unbounded read under the lock.
-    """
-    limit = QUEUE_SCAN_MAX_BYTES if limit is None else limit
     try:
-        with open(path, "rb") as handle:
-            data = handle.read(limit + 1)
-    except OSError:
+        _, _, groups = source_queue.read_live(path, QUEUE_SCAN_MAX_BYTES if limit is None else limit)
+    except source_queue.HandoffRequired:
         return set()
-    if len(data) > limit:
-        return set()
-    keys = set()
-    for line in data.decode("utf-8", errors="replace").splitlines():
-        try:
-            key = intent.revision_key(json.loads(line))
-        except ValueError:
-            continue
-        if key is not None:
-            keys.add(key)
-    return keys
+    return {key for group in groups.values() for _, row in group
+            if (key := intent.revision_key(row)) is not None}
 
 
 def _append_unqueued(path, candidates, cap):
-    """Skip rows still queued under the same revision key, then cap and append.
+    """Skip identical revisions, cap fresh intents, and replace superseded live rows.
 
-    Everything happens under the one queue lock the worker's claim/requeue
-    also takes, so a skip decision and the append see the same queue. Skipped
+    The queue image is prepared outside the claim/requeue lock and its original
+    identity is rechecked under that lock before publication. Skipped
     candidates are neither queued nor deferred, and when all are skipped the
     result is the usual `no_sources`. They still use cap slots: they will be
     compiled by the same wake, so only `cap - skipped` fresh rows are appended
@@ -277,18 +258,22 @@ def _append_unqueued(path, candidates, cap):
     can still kick the compile worker. It is absent when nothing was skipped
     and is not part of any status/sync output.
     """
+    from memvane.wiki.card.api import card_sources_allowed
+    candidates = [item for item in candidates if card_sources_allowed(item[2], report=True)]
+    if not candidates:
+        return intent.plan_enqueue([], cap)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(_queue_lock_path(path), "a", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            fresh = intent.without_queued(candidates, _queued_revision_keys(path))
-            plan = intent.plan_enqueue(fresh, max(0, cap - (len(candidates) - len(fresh))))
-            if plan["records"]:
-                _write_jsonl(path, plan["records"])
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-    if len(fresh) < len(candidates):
-        plan["result"]["wakePending"] = True
+    from memvane.wiki.workspace.handoff.api import native_live, public_name
+    path = native_live(public_name(path), create=True)
+    keys = {intent.operation_key(row) for _, _, row in candidates}
+    original, lines, groups = source_queue.read_live(path, QUEUE_SCAN_MAX_BYTES, keys)
+    revisions = {key: intent.queue_revision(group[0][1])
+                 for key, group in groups.items() if len(group) == 1}
+    plan = intent.plan_source_batch(candidates, revisions, cap)
+    if plan["records"]:
+        source_queue.store(path, original, lines, groups, plan["records"], QUEUE_SCAN_MAX_BYTES)
+    elif plan["result"].get("wakePending"):
+        source_queue.publish(path, original)
     return plan
 
 
@@ -314,6 +299,9 @@ def compile_gate(config, accepted_triggers):
 
 
 def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_TOOL_TRIGGER):
+    from memvane.wiki.card.api import card_sources_allowed
+    if not card_sources_allowed({'path': str(path_value)}, report=True):
+        return None
     source_path = Path(path_value)
     abs_path = source_path if source_path.is_absolute() else Path(cwd) / source_path
     try:
@@ -337,7 +325,7 @@ def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_T
         rel_path = resolved.relative_to(Path(project_root).resolve()).as_posix()
     except ValueError:
         return None
-    if _is_denied_source_path(rel_path):
+    if not card_sources_allowed({'path': rel_path}, report=True) or _is_denied_source_path(rel_path):
         return None
     # dot-prefix 정책은 유지하되 적용 범위를 "등록된 collection 루트 아래"로 좁힌다.
     # 루트 자체의 dot segment(예: `.nova/06_Sessions`)는 사용자가 collectionPaths에
@@ -398,9 +386,7 @@ def enqueue_payload(payload):
 
     records = []
     seen = set()
-    for edited_path in paths:
-        if not isinstance(edited_path, str):
-            continue
+    for edited_path in dict.fromkeys(paths):
         record = _source_record(edited_path, cwd, project_root, config, _engine(payload))
         if record is None:
             continue

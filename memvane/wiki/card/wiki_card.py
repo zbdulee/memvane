@@ -400,7 +400,7 @@ def pending_refresh_cutoffs(project_root: Path) -> dict[str, int] | None:
         cutoff = _event_time_ns(event.get("ts"))
         if not isinstance(path, str) or not path or cutoff is None:
             return None
-        cutoffs[path] = cutoff
+        cutoffs[path] = max(cutoff, cutoffs.get(path, cutoff))
     return cutoffs
 
 

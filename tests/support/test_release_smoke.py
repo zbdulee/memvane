@@ -172,6 +172,16 @@ class Verdict(FixtureCase):
         next(row for row in changed if row['event'] == 'recall')['cards'][0]['sha'] = 'f' * 64
         self.assertEqual(self.status(rows=changed)[0]['RS-RECALL-claude'], smoke.FAIL)
 
+    def test_partial_search_requires_the_target_card_to_pass(self):
+        rows = copy.deepcopy(self.rows.rows)
+        row = next(row for row in rows if row['event'] == 'recall')
+        row['semantic'] = 'partial'
+        self.assertEqual(self.status(rows=rows)[0]['RS-RECALL-claude'], smoke.PASS)
+        row['cards'][0]['sha'] = 'f' * 64
+        self.assertEqual(self.status(rows=rows)[0]['RS-RECALL-claude'], smoke.FAIL)
+        row.update(outcome='empty', reason=smoke.SELECTED_ZERO, cards=[])
+        self.assertEqual(self.status(rows=rows)[0]['RS-RECALL-claude'], smoke.FAIL)
+
     def test_an_unfinished_semantic_search_or_another_hosts_rows_fail(self):
         deferred = copy.deepcopy(self.rows.rows)
         next(row for row in deferred if row['event'] == 'recall')['semantic'] = 'deferred_deadline'

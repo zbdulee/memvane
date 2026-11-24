@@ -873,6 +873,15 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
                 return _serve_selected_once(action, host, decision, payload)
             return _serve_selected_recall(action, host, decision, payload)
         except JournalEvidenceError as exc:
+            if str(exc) == 'worker_attestation_unavailable' and action in ('recall', 'gate'):
+                # The read proof is incomplete. Never serve cards or start recovery from it.
+                _trace_final('worker_attestation_unavailable')
+                if action == 'recall':
+                    return host_payload(host, '')
+                if decision.get('state') != 'worktree':
+                    _verified_edit(decision, payload, action)
+                from memvane.host.host_rules import gate_response
+                return gate_response(host)
             if str(exc) == 'journal_recovery_required' and action == 'recall':
                 try:
                     from memvane.runtime.api import request

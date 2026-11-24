@@ -37,6 +37,39 @@ class _Store:
 
 
 class SyncPublish(SyncCase):
+    def test_previous_trust_is_removed_for_unchanged_mixed_cards_across_ingest_batches(self):
+        from memvane.settings import api as settings
+        normal = self.fixture.write_note('notes/clean.md', 'body\u2028only\n')
+        paths = {}
+        for i, sep in enumerate(('\x85', '\u2028', '\u2029')):
+            raw = self.fixture.write_note('notes/mixed' + sep + 'path.md', 'raw\n')
+            rel = 'concepts/mixed-' + str(i) + '.md'
+            card = self.fixture.write_card(rel, title='Mixed', body='handwritten note\n', sources=[normal, raw])
+            paths[rel] = (card, card.read_bytes())
+        neighbor = 'concepts/clean.md'
+        self.fixture.write_card(neighbor, title='Clean', body='normal\n', sources=[normal])
+        # Publish a real head under the earlier policy (all these source paths were eligible).
+        with mock.patch.object(settings, 'excluded_source', return_value=False):
+            previous = self.run_pass()['generation']
+        for rel in paths:
+            self.assertEqual(self.member_trust(previous, rel)[1], 1)
+        with mock.patch('memvane.sync.product_sync_worker.SCHEMA3_MAX_INGEST', 1):
+            for _ in range(len(paths) - 1):
+                self.assertEqual(self.run_pass()['state'], 'pending')
+            current = self.run_pass()
+        self.assertEqual(current['state'], 'indexed')
+        for rel, (card, original) in paths.items():
+            self.assertEqual(self.member_trust(current['generation'], rel), (None, 0))
+            self.assertEqual(card.read_bytes(), original)
+        observations = self.generation_sources(current['generation'])
+        self.assertEqual(observations, self.generation_sources(previous))
+        for sep in ('\x85', '\u2028', '\u2029'):
+            raw_path = 'notes/mixed' + sep + 'path.md'
+            self.assertEqual(observations[raw_path], raw_path)
+            self.assertEqual((self.project / raw_path).read_bytes(), b'raw\n')
+        self.assertEqual(self.member_trust(current['generation'], neighbor)[1], 1)
+        self.assertEqual(self.run_pass()['state'], 'unchanged')
+
     def test_recall_hook_during_gc_pass(self):
         ready, release = self.home / 'gc-ready', self.home / 'gc-release'
         samples = []

@@ -98,8 +98,8 @@ class OwnerContention(FixtureCase):
                 service._load_attested(decision['projectRoot'], decision, proof,
                                        'selected', manifest, worker, 'seal')
                 state = embed_resident.read_owner_state(manifest)
-                self.assertEqual((worker.state, state['reason'], state['terminal']),
-                                 ('terminal', 'identity_invalid', True))
+                self.assertEqual((worker.state, worker.failures, state['reason'], state['terminal']),
+                                 ('terminal', 0, 'identity_invalid', True))
 
     def test_incompatible_newer_service_never_spawns_or_drains(self):
         from unittest.mock import patch
@@ -142,13 +142,14 @@ class OwnerContention(FixtureCase):
         project = '/synthetic/project'
         reasons = ('provider_owner_route_unavailable', 'invalid_evidence',
                    'provider_owner_route_unavailable', 'invalid_evidence')
-        with patch.object(resident_service, '_event') as event:
+        with patch.object(resident_service, '_route_hint', return_value={}), \
+             patch('memvane.diagnostics.api.emit') as event:
             for reason in reasons:
-                service._report_waiting(project, {}, reason, outcome='unproved')
-            self.assertEqual([call.args[3] for call in event.call_args_list],
+                service._report_proof_failure(project, reason, 'unproved')
+            self.assertEqual([call.kwargs['reason'] for call in event.call_args_list],
                              ['provider_owner_route_unavailable', 'invalid_evidence'])
             service.unproved.pop(project)
-            service._report_waiting(project, {}, reasons[0], outcome='unproved')
+            service._report_proof_failure(project, reasons[0], 'unproved')
         self.assertEqual(event.call_count, 3)
 
     def test_default_admission_checks_runtime_without_provider_lane(self):
