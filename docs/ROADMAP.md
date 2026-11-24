@@ -117,6 +117,14 @@ L2 후속 ── L3
 - **시험 격리.** `test_setup_entry_inventory_119`가 Claude Code 안에서 돌면 `CLAUDECODE`·`CLAUDE_CODE_*` 환경 변수 때문에 실패한다. 시험이 host 환경 변수를 지우지 않고, host 판별이 환경 변수에 기대는지 확인한다.
 - **출시 smoke 도구.** RS-ID가 태그와 대조하지만 마켓플레이스 설치는 main HEAD라 출시 뒤 문서 커밋만큼 다르다. RS-EDIT 편집 문단이 호스트 공통이라 두 번째 호스트는 이미 있는 문단으로 보고 편집하지 않는다. Codex의 SessionStart 행은 첫 턴 제출 때 생긴다.
 - **리뷰 범위.** `vectorcache/writer.py`의 compaction·append, teacher와 `automatic_staging`의 유료 호출 경로를 독립 리뷰한다.
+- **일반 편집 후보의 부분 실패.** 한 원문에서 나온 두 후보 중 하나의 첫 쓰기가 실패하면, 재시도가 원문을 다시 추출하고 남은 후보가 사라진다. 원래 응답과 후보별 완료 기록, 혼합 버전의 재시도 경계를 설계한다.
+- **음성 판정 억제 원장.** `verify-skipped.jsonl` 쓰기가 실패하면 재시도에서 같은 음성 판정의 검수와 삭제 감사가 한 번 더 일어난다. 첫 감사 전에 판정을 대상 세대에 묶고 원문별 억제를 따로 복구한다.
+- **중단된 기계 삭제와 압축.** 카드를 퇴출한 뒤 manifest 기록 전에 끊기고 그 사이 manifest가 압축되면, verifier 재개가 `reindex_wiki`와 완료 기록 없이 작업을 끝내 색인 제거가 다음 sync까지 늦어진다.
+- **manifest 검사 경계.** 읽기 전용 검사는 8 MiB 경계에서 이미 있는 행을 다시 더해 보수적으로 미룬다. 256 KiB 이하이면서 4,096행을 넘는 manifest는 호출마다 첫 배치를 다시 읽는다.
+- **원장 전환.** 출시된 writer와 state를 함께 쓰는 프로젝트의 원장 교체는 구 writer를 멈추고 격리하는 오프라인 절차로 한다. 온라인 경로는 원본 보존, 대상별 삭제 보호, 무관한 대상의 새 생성까지만 한다.
+- **resident 진단.** 로컬 증명 이력이 있는 설치는 냉기동 실패 뒤에도 진단에 `starting`이 남아 불필요한 adopt를 요청한다. 같은 resident의 다른 worker가 정상이면 반복 adopt가 공유 cooldown 예약을 지워 증명이 요청 수만큼 반복된다. `provider-attestation.json`을 여는 중 일시 EIO가 나면 recall·gate가 exit 3이다.
+- **Hermes.** 설치 manifest가 `plugin.json`과 `plugin.yaml`로 갈리고, `pre_llm_call`이 cwd를 넘기지 않아 recall이 일어나지 않는다.
+- **새 실행 파일의 첫 실행 지연.** 보안 검사가 도는 Mac에서 시험이 새로 쓴 실행 파일의 첫 실행이 1초를 넘는다. `tests/e2e/checkout_cache_e2e.py`(`memvane/learning/tests/settings-113.test.mjs` 직후)와 `test_setup_entry_inventory_119`가 이 때문에 실패한다. 측정 전에 shim을 한 번 실행해 둔다.
 
 ## 1.0.x 패치
 
