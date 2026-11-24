@@ -1134,7 +1134,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
 
     missing = record if target is not None and not target.exists() else None
     if yaml_scalars.unresolved_pending_refreshes_strict(root, before_ledger_write=True,
-                                                   missing_target=missing, append_for=missing) is None:
+                                                   missing_target=missing, append_for=missing, read_only=check) is None:
         print(json.dumps({'action': 'deferred', 'reason': 'legacy_ledger_requires_reassessment'}))
         return 1
     if (not check and candidate_path.exists() and candidate_path.stat().st_size > ct.LOG_MAX_BYTES and

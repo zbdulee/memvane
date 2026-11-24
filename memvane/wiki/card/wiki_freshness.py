@@ -173,7 +173,9 @@ def record_pending_refresh(root: Path, source_path: str, engine: str) -> dict | 
         path = refresh_lanes.private_path(public, create=True)
         with _pending_lock_path(public).open("a", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            if not legacy_ledgers.writable(public.parent, append_for={'sources': [{'path': source}]}) or not _append_event_unlocked(path, event):
+            # This event is private. Public-ledger reassessment still gates the
+            # worker's card write; it must not discard the edit before queueing.
+            if not _append_event_unlocked(path, event):
                 return None
     except (OSError, ValueError):
         return None

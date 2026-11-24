@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,8 @@ from memvane.settings.api import compile_dir
 from memvane.wiki.card import manifest_scan, types as cards
 
 MANIFEST = 'generated-manifest.jsonl'
-LIMIT = 8 * 1024 ** 2
+LIMIT = manifest_scan.LIMIT
+BOUNDARY = 4096
 SLAB = 65536
 LINES = 4096
 SEPARATORS = frozenset(('\x85', '\u2028', '\u2029'))
@@ -124,15 +126,28 @@ def _manifest_projection(row):
     return _identity(row), tuple(sorted(_sources(row))), _special(row)
 
 
-def _manifest_batch(path, node, start):
+def _boundary(stream, offset):
+    digest = hashlib.sha256()
+    stream.seek(0)
+    digest.update(stream.read(min(BOUNDARY, offset)))
+    stream.seek(max(BOUNDARY, offset - BOUNDARY) if offset > BOUNDARY else offset)
+    digest.update(stream.read(offset - stream.tell()))
+    return digest.hexdigest()
+
+
+def _manifest_batch(path, node, start, proof):
     rows = set()
     with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW), 'rb') as stream:
         info = os.fstat(stream.fileno())
         if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns) != node:
             raise OSError('legacy_generation_changed')
+        # Released appends retain the inode and the checked LF boundary; compaction
+        # replaces the inode. A changed boundary requires reinspection from zero.
+        if start and _boundary(stream, start) != proof:
+            start = 0
         stream.seek(start)
         offset = start
-        end = min(start + LIMIT, node[2])
+        end = min(start + LIMIT - 4 * BOUNDARY, node[2])
         for _ in range(LINES):
             if offset == end:
                 break
@@ -147,15 +162,17 @@ def _manifest_batch(path, node, start):
                     raise ValueError('unknown_legacy_row')
                 rows.add(_manifest_projection(row))
             offset = stream.tell()
+        proof = _boundary(stream, offset)
     if _node(path) != node:
         raise OSError('legacy_generation_changed')
-    return offset, rows
+    return start, offset, proof, rows
 
 
 @lru_cache(maxsize=4)
-def _inspect(folder, manifest_node, event_node):
+def _inspect(folder, manifest_node, event_node, read_only=False):
     identities, sources, mixed = [], [], set()
-    for index, (identity, refs, special) in enumerate(manifest_scan.inspect(folder / MANIFEST, manifest_node, _manifest_batch)):
+    for index, (identity, refs, special) in enumerate(manifest_scan.inspect(
+            folder / MANIFEST, manifest_node, _manifest_batch, read_only=read_only)):
         identities.append(tuple(identity))
         sources.append(set(refs))
         if special:
@@ -201,7 +218,7 @@ def _receipts(folder, audit_node, deleted_node):
     return audits, deleted, mixed
 
 
-def writable(folder, missing_target=None, *, append_for=None, trimming_candidates=False):
+def writable(folder, missing_target=None, *, append_for=None, trimming_candidates=False, read_only=False):
     """Keep surviving evidence at its original name unless a reviewed target can proceed."""
     try:
         folder = Path(folder)
@@ -210,7 +227,7 @@ def writable(folder, missing_target=None, *, append_for=None, trimming_candidate
         manifest = folder / MANIFEST
         event = folder / cards.SOURCE_REFRESH_PENDING
         nodes = (_node(manifest), _node(event))
-        targets, protected, unsafe_sources = _inspect(folder, *nodes)
+        targets, protected, unsafe_sources = _inspect(folder, *nodes, read_only)
         if protected or unsafe_sources:
             if (append_for is None or not _sources(append_for).isdisjoint(unsafe_sources) or
                     any(_matches(row, _identity(append_for)) for row in protected)):
@@ -232,9 +249,10 @@ def writable(folder, missing_target=None, *, append_for=None, trimming_candidate
         return False
 
 
-def project_writable(root, missing_target=None, *, append_for=None, trimming_candidates=False):
+def project_writable(root, missing_target=None, *, append_for=None, trimming_candidates=False, read_only=False):
     folder = compile_dir(root)
-    return folder is not None and writable(folder, missing_target, append_for=append_for, trimming_candidates=trimming_candidates)
+    return folder is not None and writable(folder, missing_target, append_for=append_for,
+                                           trimming_candidates=trimming_candidates, read_only=read_only)
 
 
 def quarantine_preserves_special(path):
