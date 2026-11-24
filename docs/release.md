@@ -19,7 +19,7 @@ card bodies. Record a run with the
 | P1 static | Every host manifest, the marketplace entries and `teacher_model_tiers.RELEASE` carry the version of `package.json` (a test asserts it). The old-bundle compatibility tags are the three previous releases. Document links resolve. When a provider file changed, the known worker/provider SHA pair table holds the previous release. Every external address the product downloads from is pinned and listed (structure tests). The teacher tier table was compared with each host's model documentation (a person records the date). | PR CI |
 | P2 focused | The changed domains and what they affect, on Python 3.13 and on `/usr/bin/python3` (3.9). | guard run ids |
 | P3 PR CI | Every job green, including the macOS arm64 job on the system Python 3.9. | run URL |
-| P4 full suite | `npm test` on the final commit in its own worktree, which is not edited while the suite runs. | four guard run ids |
+| P4 full suite | `npm test` on the final commit in its own worktree, which is not edited while the suite runs. | five guard run ids |
 | P5 real model | The resident embedding smoke below. When the learning cycle path changed, also the real-model learning check. A guard refusal or stop is not a pass. | guard run id |
 | P6 independent review | A review of the final patch with no blocking finding. | review document |
 
