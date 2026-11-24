@@ -459,6 +459,19 @@ def lint_candidate(candidate: dict, target: Path | None, max_lines: int) -> dict
     return {"verdict": "clean" if not findings else "reject", "findings": findings}
 
 
+def public_history(record, **fields):
+    """Project only the displayed summary, then check the complete row as a 1.x compactor reads it."""
+    public = dict(record, **fields)
+    public['summary'] = public['summary'].translate({0x85: '\n', 0x2028: '\n', 0x2029: '\n'})
+    try:
+        line, = json.dumps(public, ensure_ascii=False, allow_nan=False).splitlines()
+        if json.loads(line) == public:
+            return public
+    except (TypeError, ValueError, RecursionError):
+        pass
+    return None
+
+
 def append_jsonl(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -1142,6 +1155,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         print(json.dumps({"action": "rejected", "findings": lint["findings"]}, ensure_ascii=False))
         return 0
 
+    if public_history(record) is None:
+        print(json.dumps({'action': 'write-failed', 'reason': 'history_row_incompatible'}))
+        return 1
+
     tombstones = read_jsonl(tombstone_path)
     if any(same_generated_identity(row, record) for row in tombstones) and not regenerate:
         if check:
@@ -1163,7 +1180,11 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
     ):
         if check:
             return _checked("tombstoned")
-        tombstone = {**record, "action": "deleted", "status": "deleted", "previousStatus": previous[-1].get("status", "generated")}
+        tombstone = public_history(record, action='deleted', status='deleted',
+                                   previousStatus=previous[-1].get('status', 'generated'))
+        if tombstone is None:
+            print(json.dumps({'action': 'write-failed', 'reason': 'history_row_incompatible'}))
+            return 1
         append_jsonl(tombstone_path, tombstone)
         record["action"] = "tombstoned"
         append_jsonl(candidate_path, record)
@@ -1310,6 +1331,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
     verify_cfg = compile_cfg.get("verify") if isinstance(compile_cfg.get("verify"), dict) else {}
     wiki_selected_laya.recheck(selected)
     verify_queue = qmd_config.ledger(root, ct.VERIFY_QUEUE)
+    manifest = public_history(record, action=action, status=status)
+    if manifest is None:
+        print(json.dumps({'action': 'write-failed', 'reason': 'history_row_incompatible'}))
+        return 1
     if action == "updated":
         wiki_name = None if selected is None else next((item['name'] for item in selected[0]['collections']
                           if item['role'] == 'wiki' and
@@ -1333,6 +1358,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
             return 1
         h, pending_path, pending_page = image
         record["sourceHash"] = h
+        manifest["sourceHash"] = h
         expected_target_hash = hashlib.sha256(original).hexdigest()
         from memvane.wiki.verify.api import enqueue_replacement
         job = _verify_job(root, selected, candidate, record, pending_path, expected_target_hash)
@@ -1344,7 +1370,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         job = _verify_job(root, selected, candidate, record)
         write_ok = create_first_card(root, wiki_root, verify_queue, job, page.encode("utf-8"), selected,
                                      review=bool(verify_cfg.get("enabled", True) and status == "generated"),
-                                     manifest=dict(record, action=action, status=status))
+                                     manifest=manifest)
     if not write_ok:
         record["action"] = "write-failed"
         append_jsonl(candidate_path, record)
@@ -1354,7 +1380,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
     record["action"] = action
     append_jsonl(candidate_path, record)
     if pending_path is not None:
-        append_jsonl(manifest_path, {**record, "status": status})
+        append_jsonl(manifest_path, manifest)
     # manifest is read for delete-detection (previous lookup); compact by folding
     # same-identity duplicates rather than size-trimming (which would drop a card's
     # entry and break tombstoning). Threshold-gated + atomic inside.
