@@ -1717,6 +1717,11 @@
       "layer": "application",
       "pinned": false
     },
+    "memvane/wiki/verify/candidate_stage.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
     "memvane/wiki/verify/handoff_work.py": {
       "context": "wiki/verify",
       "layer": "application",
