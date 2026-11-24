@@ -1,5 +1,6 @@
 """A new card, its manifest and its first private review share one recoverable operation."""
 import json
+import os
 from unittest.mock import patch
 
 from memvane.settings import api as settings
@@ -44,6 +45,25 @@ class InitialCard(FixtureCase):
         manifest = settings.ledger(self.root, ct.MANIFEST)
         self.assertEqual([json.loads(line) for line in manifest.read_bytes().splitlines()], [self.manifest])
         self.assertFalse(self.queue.exists() and self.queue.read_bytes())
+
+    def test_editor_deletion_after_first_publish_survives_an_independent_writer(self):
+        child = os.fork()
+        if child == 0:
+            with patch.object(first_card, '_record_manifest', side_effect=lambda *_: os._exit(41)):
+                self.create()
+            os._exit(42)
+        _, status = os.waitpid(child, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 41)
+        self.assertEqual(self.path.read_bytes(), self.image)
+        self.path.unlink()
+        self.recover()
+        second = dict(self.job, sourceHash='b' * 16)
+        self.assertFalse(first_card.create(self.root, self.wiki, self.queue, second, b'another image', None,
+                                           review=True, manifest=dict(self.manifest, **second)))
+        self.assertFalse(self.path.exists())
+        first, = Work.entries(self.queue, 'hold')
+        self.assertEqual(first.read('image'), self.image)
+        self.assertFalse(native_review.waiting(self.queue))
 
     def test_no_replace_after_editor_takes_initial_name(self):
         def editor(parent, source, target):

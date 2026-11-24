@@ -149,8 +149,10 @@ def create(root, wiki, queue, job, image, selected, *, review, manifest):
                 state = work.state
                 old = state['binding']
                 if (old.get('action') == 'create' and old.get('targetPath') == job['targetPath']
-                        and state['phase'] in ('reserved', 'held') and not state.get('proof', {}).get('published')
-                        and old.get('route') == binding['route'] and work.read('image') == image):
+                        and state['phase'] in ('reserved', 'held') and not state.get('proof', {}).get('published')):
+                    # A previous rename may have exposed this name before the editor unlinked it.
+                    if old.get('route') != binding['route'] or work.read('image') != image:
+                        return False
                     return _resume(root, wiki, queue, work, selected)
             work = Work.create(queue, 'hold', binding, canonical_json_bytes(job) + b'\n', image=image)
             return _resume(root, wiki, queue, work, selected)
