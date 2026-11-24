@@ -878,6 +878,8 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
                 _trace_final('worker_attestation_unavailable')
                 if action == 'recall':
                     return host_payload(host, '')
+                if decision.get('state') != 'worktree':
+                    _verified_edit(decision, payload, action)
                 from memvane.host.host_rules import gate_response
                 return gate_response(host)
             if str(exc) == 'journal_recovery_required' and action == 'recall':

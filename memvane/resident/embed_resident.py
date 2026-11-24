@@ -44,7 +44,7 @@ def read_owner_state(manifest):
     path = _state_path(manifest['serviceSocketPath'])
     _private_parent(manifest['serviceSocketPath'])
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return None
     try:
@@ -135,13 +135,72 @@ def _failure_window_remaining(row):
     return cooldown - elapsed if 0 <= elapsed < cooldown else 0
 
 
+def _exhausted(row):
+    return row['terminal'] or (row['reason'] in _TRANSIENT_FAILURES and row['attempts'] >= _MAX_FAILURES)
+
+
+def _record_shared_wait(manifest, reason, terminal, failures):
+    prior = read_owner_state(manifest)
+    if prior and not terminal and prior['reason'] in ('starting', 'ready') and prior['attempts'] >= _MAX_FAILURES:
+        return  # Only the installing owner can distinguish an interrupted last start from a live one.
+    if prior and _exhausted(prior):
+        if _failure_window_remaining(prior) and (prior['terminal'] or not terminal):
+            return  # Preserve the original timestamp, including another installation's proof cooldown.
+        prior = None  # An expired budget cannot seed an admission wait.
+    if reason == 'resource_deferred' and prior and prior['attempts'] < _MAX_FAILURES:
+        failures = max(failures, prior['attempts'])
+    _write_state(manifest, reason, terminal=terminal, attempts=failures)
+
+
+def _process_delay(reason, failures):
+    if failures >= _MAX_FAILURES:
+        return _FAILURE_COOLDOWN_SECONDS
+    return 5 if reason == 'worker_exited' else 5 * 2 ** failures
+
+
+def _restore_process_retry(worker, manifest):
+    # Only this socket is shared by the full worker key. Installation rows have ambiguous provenance.
+    state = dict(manifest, serviceSocketPath=worker.socket_path)
+    try:
+        row = read_owner_state(state)
+    except IndexContractError as exc:
+        if str(exc) != 'provider_owner_state_invalid':
+            raise
+        return  # No usable process history. The separate installation backoffs still apply.
+    if not row or row['reason'] not in _TRANSIENT_FAILURES or not row['attempts']:
+        return
+    failures = row['attempts']
+    elapsed = time.time() - row['at']
+    delay = _process_delay(row['reason'], failures)
+    remaining = delay - elapsed if 0 <= elapsed < delay else 0
+    if failures >= _MAX_FAILURES and not remaining:
+        return
+    worker.failures = failures
+    worker.state = 'cooldown' if failures >= _MAX_FAILURES else 'failed'
+    worker.retry_at = time.monotonic() + remaining
+
+
+def _record_process_outcome(worker, manifest, reason):
+    if reason == 'ready':
+        worker.failures, worker.state, worker.retry_at = 0, 'ready', 0
+    else:
+        worker.failures = min(_MAX_FAILURES, worker.failures + 1)
+        worker.state = 'cooldown' if worker.failures >= _MAX_FAILURES else 'failed'
+        worker.retry_at = time.monotonic() + _process_delay(reason, worker.failures)
+    try:
+        _write_state(dict(manifest, serviceSocketPath=worker.socket_path), reason, attempts=worker.failures)
+    except (OSError, ValueError):
+        # A failed checkpoint leaves the last atomic record. Keep enforcing the live process budget.
+        pass
+
+
 def _adoption_delay(manifest):
     """Recheck this installation at expiry or after five minutes if its proof changes."""
     try:
         row = read_owner_state(manifest)
     except (OSError, ValueError):
         return 5
-    if row and (row['terminal'] or (row['reason'] in _TRANSIENT_FAILURES and row['attempts'] >= _MAX_FAILURES)):
+    if row and _exhausted(row):
         return min(_FAILURE_COOLDOWN_SECONDS, _failure_window_remaining(row))
     return 5
 
@@ -168,6 +227,8 @@ def _failure_decision(manifest, *, own_lock=False):
         raise ResourceDeferred('laya_service_resource_deferred' if
                                row['reason'] == 'resource_deferred' else
                                'laya_service_backoff')
+    if row['reason'] == 'resource_deferred' and row['attempts'] >= _MAX_FAILURES:
+        return  # Old propagated admission waits do not prove a process started or exited.
     if row['attempts'] >= _MAX_FAILURES:
         # Also bounds abrupt owner death: SIGKILL cannot write an exit record,
         # but the prior start/ready record survives without its socket.

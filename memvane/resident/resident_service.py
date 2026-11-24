@@ -1292,18 +1292,24 @@ class Service:
             self._later(project, 2)
 
     def _load(self, project, decision, proof, mode, manifest, key, seal):
-        from memvane.resident.embed_resident import _adoption_delay, _failure_decision, _write_state
+        from memvane.resident.embed_resident import (
+            _adoption_delay, _failure_decision, _record_process_outcome, _restore_process_retry, _write_state)
         with self.lock:
             worker = self.workers.get(key)
             if worker is None:
-                worker = self.workers[key] = Worker(key, _worker_socket(self.root, key))
+                worker = Worker(key, _worker_socket(self.root, key))
+                try:
+                    _restore_process_retry(worker, manifest)
+                except (OSError, ValueError):
+                    self._later(project, 5)
+                    return
+                self.workers[key] = worker
             if worker.handle is not None and not worker.alive():
                 # The model process died: stop its handle, count one failure.
                 with suppress(Exception):
                     worker.handle.stop()
-                worker.handle, worker.state = None, 'failed'
-                worker.failures += 1
-                worker.retry_at = time.monotonic() + 5
+                worker.handle = None
+                _record_process_outcome(worker, manifest, 'worker_exited')
             try:
                 # Registry adoption obeys the durable budget after a restart.
                 # Observe worker death first so its retry clock overlaps the
@@ -1343,8 +1349,7 @@ class Service:
             self.cold_load.release()
 
     def _load_attested(self, project, decision, proof, mode, manifest, worker, seal, prior_attempts=0):
-        from memvane.resident.embed_resident import (_FAILURE_COOLDOWN_SECONDS, _MAX_FAILURES,
-                                         _failure_window_remaining, _write_state, read_owner_state)
+        from memvane.resident.embed_resident import _record_process_outcome, _record_shared_wait
         reason = None
         handle = None
         try:
@@ -1415,7 +1420,8 @@ class Service:
                     return
                 # A warm binding may reuse this proof only after the final artifact check succeeds.
                 self.attested.add(seal)
-                worker.handle, worker.state, worker.failures = handle, 'ready', 0
+                worker.handle = handle
+                _record_process_outcome(worker, manifest, 'ready')
                 self.retry.pop(project, None)
             elif reason == 'resource_deferred':
                 worker.state = 'resource_deferred'
@@ -1426,12 +1432,7 @@ class Service:
             elif reason == 'identity_invalid':
                 worker.state = 'terminal'
             else:
-                # Only failed process starts and observed process exits charge the shared worker.
-                worker.failures = min(_MAX_FAILURES, worker.failures + 1)
-                worker.state = 'cooldown' if worker.failures >= _MAX_FAILURES else 'failed'
-                worker.retry_at = time.monotonic() + (
-                    _FAILURE_COOLDOWN_SECONDS if worker.state == 'cooldown'
-                    else 5 * 2 ** worker.failures)
+                _record_process_outcome(worker, manifest, 'startup_failed')
         if handle is not None:
             # The very next tick binds every waiting project at once.
             self.wake.set()
@@ -1448,15 +1449,7 @@ class Service:
             # An admission wait must preserve each installation's remaining proof budget.
             # On read/write failure, adoption retries from the existing disk state.
             with suppress(Exception):
-                prior = read_owner_state(row)
-                if prior and _failure_window_remaining(prior):
-                    if prior['terminal'] or (worker.state != 'terminal' and prior['reason'] == 'startup_failed'
-                                             and prior['attempts'] >= _MAX_FAILURES):
-                        continue
-                attempts = worker.failures
-                if reason == 'resource_deferred' and prior:
-                    attempts = max(attempts, prior['attempts'])
-                _write_state(row, reason, terminal=worker.state == 'terminal', attempts=attempts)
+                _record_shared_wait(row, reason, worker.state == 'terminal', worker.failures)
 
     # ----------------------------------------------------------- per project
     def _close_listener(self, binding):

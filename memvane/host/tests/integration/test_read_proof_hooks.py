@@ -13,16 +13,16 @@ from tests.support.attested_install import AttestedInstall, encoded
 
 
 class ReadProofHooks(AttestedInstall):
-    def run_hook(self, action):
+    def run_hook(self, action, host='claude', *, malformed=False):
         project = str(self.project.root)
         payload = {'cwd': project, 'hook_event_name': 'UserPromptSubmit', 'prompt': 'synthetic'}
         if action == 'gate':
             payload = {'cwd': project, 'hook_event_name': 'PreToolUse', 'tool_name': 'Edit',
-                       'tool_input': {'file_path': str(self.project.root / 'notes.md')}}
+                       'tool_input': {} if malformed else {'file_path': str(self.project.root / 'notes.md')}}
         stdout, stderr = io.StringIO(), io.StringIO()
         with io.TextIOWrapper(io.BytesIO(encoded(payload))) as stdin, patch.object(sys, 'stdin', stdin), \
              redirect_stdout(stdout), redirect_stderr(stderr):
-            status = host_response.main(['serve-stdin', action, 'claude', project])
+            status = host_response.main(['serve-stdin', action, host, project])
         return status, json.loads(stdout.getvalue()) if stdout.getvalue() else None, stderr.getvalue()
 
     def test_read_hooks_handle_model_io_then_recover(self):
@@ -56,6 +56,22 @@ class ReadProofHooks(AttestedInstall):
                 else:
                     self.assertEqual(payload, {})
                 self.assertNotEqual(self.install.events()[-1].get('reason'), 'worker_attestation_unavailable')
+
+    def test_gate_validates_edit_input_even_when_model_proof_is_unavailable(self):
+        real_hash = provider.runtime_file_sha256
+        for host in ('claude', 'codex'):
+            for faulty in (False, True):
+                def hash_file(path):
+                    if faulty and path == self.manifest['modelPath']:
+                        raise OSError(errno.EIO, 'fixture model read')
+                    return real_hash(path)
+                with self.subTest(host=host, faulty=faulty), patch.object(provider, 'runtime_file_sha256',
+                                                                         side_effect=hash_file) as read:
+                    self.assertEqual(self.run_hook('gate', host), (0, {}, ''))
+                    status, payload, err = self.run_hook('gate', host, malformed=True)
+                    read.assert_any_call(self.manifest['modelPath'])
+                    self.assertEqual((status, payload), (3, None))
+                    self.assertIn('edit_path_missing', err)
 
     def test_hook_refuses_a_provider_query_with_changed_identity(self):
         from memvane.kernel.errors import IndexContractError

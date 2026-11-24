@@ -1,4 +1,5 @@
 """Project-local launch proofs and resident adoption deadlines."""
+from contextlib import contextmanager
 import errno
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -72,7 +73,79 @@ class InstallationRetry(FixtureCase):
                     launch.assert_called_once()
                 self.assertEqual(worker.state, 'ready')
 
-    def check_shared_launch_retry(self, *, prior_reads, deferred=False):
+    def restart(self):
+        self.service = svc.Service(self.root, bundle=self.service.bundle, prove=self.service.prove,
+                                   attest=self.service.attest, admit=self.service.admit)
+
+    @contextmanager
+    def inline_clock(self):
+        for project in self.projects:
+            svc.register(project, root=self.root)
+        def inline(**opts):
+            return Mock(start=lambda: opts['target'](*opts['args']))
+        with patch.object(svc.threading, 'Thread', side_effect=inline), \
+             patch.object(owner.time, 'time') as clock, patch.object(svc.time, 'monotonic', clock):
+            yield clock
+
+    def test_actual_launch_failures_survive_service_replacement(self):
+        a, b = self.projects
+        ma, mb = [self.proofs[p][1]['providerManifest'] for p in (a, b)]
+        key = svc._worker_key(ma)
+        with self.inline_clock() as clock, patch.object(provider, 'start_owned_embed_service',
+                                                       side_effect=RuntimeError('one_spawn_failure')) as launch:
+            for moment, count in ((100, 1), (110, 2)):
+                clock.return_value = moment
+                self.service._adopt(a)
+                self.assertEqual((launch.call_count, owner.read_owner_state(mb)['attempts']), (count, count))
+            self.restart()
+            clock.return_value = 129
+            self.service._adopt(b)
+            self.assertEqual(launch.call_count, 2)
+            clock.return_value = 130
+            self.service._adopt(a)
+            worker = self.service.workers[key]
+            self.assertEqual((launch.call_count, worker.failures, worker.state, worker.retry_at,
+                              owner.read_owner_state(mb)['attempts']), (3, 3, 'cooldown', 430, 3))
+            self.restart()
+            clock.return_value = 429
+            self.service._adopt(b)
+            self.assertEqual(launch.call_count, 3)
+            clock.return_value = 430
+            launch.side_effect = None
+            self.service._adopt(b)
+            self.assertEqual((launch.call_count, self.service.workers[key].failures), (4, 0))
+            self.restart()
+            clock.return_value = 440
+            launch.side_effect = RuntimeError('new_failure')
+            self.service._adopt(a)
+            self.assertEqual((launch.call_count, self.service.workers[key].failures), (5, 1))
+
+    def test_resource_wait_before_and_after_install_cooldown(self):
+        a, b = self.projects
+        mb = self.proofs[b][1]['providerManifest']
+        with self.inline_clock() as clock:
+            with patch.object(provider, 'hash_file', side_effect=OSError(errno.EIO, 'proof read')):
+                for count, moment in enumerate((70, 80, 100), 1):
+                    clock.return_value = moment
+                    self.service._adopt(b)
+                    self.assertEqual(owner.read_owner_state(mb)['attempts'], count)
+            exhausted = owner.read_owner_state(mb)
+            self.assertEqual(self.service.retry[b], 400)
+            with patch.object(self.service, 'admit', return_value=False):
+                clock.return_value = 395
+                self.service._adopt(a)
+                self.assertEqual(owner.read_owner_state(mb), exhausted)
+                clock.return_value = 401
+                self.service._adopt(a)
+                deferred = owner.read_owner_state(mb)
+                self.assertEqual((deferred['reason'], deferred['attempts']), ('resource_deferred', 0))
+            clock.return_value = 407
+            with patch.object(provider, 'start_owned_embed_service', return_value=object()) as launch:
+                self.service._adopt(b)
+                launch.assert_called_once()
+                self.assertFalse(owner.read_owner_state(mb)['terminal'])
+
+    def check_shared_launch_retry(self, *, prior_reads, deferred=False, restart=False):
         a, b = self.projects
         ma, mb = [self.proofs[p][1]['providerManifest'] for p in (a, b)]
         key = svc._worker_key(ma)
@@ -93,6 +166,8 @@ class InstallationRetry(FixtureCase):
                 self.assertIsNone(owner.read_owner_state(mb))
                 self.assertEqual(self.service.workers[key].failures, 0)
 
+            if restart:
+                self.restart()
             if deferred:
                 wall.return_value = mono.return_value = 130
                 with patch.object(self.service, 'admit', return_value=False):
@@ -118,6 +193,34 @@ class InstallationRetry(FixtureCase):
 
     def test_shared_launch_failure_after_two_install_proof_errors(self):
         self.check_shared_launch_retry(prior_reads=(100, 110))
+
+    def test_restart_does_not_restore_install_proof_errors_as_process_failures(self):
+        self.check_shared_launch_retry(prior_reads=(100, 110), restart=True)
+
+    def test_admission_propagation_normalizes_only_expired_budgets(self):
+        b = self.proofs[self.projects[1]][1]['providerManifest']
+        for reason, terminal, period in (('attestation_invalid', True, 3600),
+                                         ('startup_failed', False, 300), ('worker_exited', True, 300)):
+            for age in (period - 1, period, period + 1, -1):
+                with self.subTest(reason=reason, age=age):
+                    with patch.object(owner.time, 'time', return_value=100):
+                        owner._write_state(b, reason, terminal=terminal, attempts=3)
+                    prior = owner.read_owner_state(b)
+                    with patch.object(owner.time, 'time', return_value=100 + age):
+                        owner._record_shared_wait(b, 'resource_deferred', False, 0)
+                    row = owner.read_owner_state(b)
+                    if age == period - 1:
+                        self.assertEqual(row, prior)
+                    else:
+                        self.assertEqual((row['reason'], row['attempts']), ('resource_deferred', 0))
+
+    def test_old_saturated_admission_does_not_become_a_process_exit(self):
+        b = self.proofs[self.projects[1]][1]['providerManifest']
+        with patch.object(owner.time, 'time', return_value=100):
+            owner._write_state(b, 'resource_deferred', attempts=3)
+        with patch.object(owner.time, 'time', return_value=105):
+            self.assertIsNone(owner._failure_decision(b))
+            self.assertFalse(owner.read_owner_state(b)['terminal'])
 
     def test_shared_launch_failure_without_prior_proof_errors(self):
         self.check_shared_launch_retry(prior_reads=())
