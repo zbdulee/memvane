@@ -69,8 +69,8 @@ class BackfillReturnControls(FixtureCase):
         queue.write_text(json.dumps(job) + '\n')
         return queue, job, cohort, key, bound
 
-    def child(self, tree, phase, queue, bound, code):
-        request = {'phase': phase, 'queue': str(queue), 'bound': bound, 'home': str(self.home)}
+    def child(self, tree, phase, queue, bound, code, **fields):
+        request = {'phase': phase, 'queue': str(queue), 'bound': bound, 'home': str(self.home), **fields}
         child = subprocess.run([sys.executable, '-B', str(DRIVER)], cwd=tree, input=json.dumps(request),
                                env={**os.environ, 'PYTHONPATH': str(tree), 'PYTHONNOUSERSITE': '1'},
                                text=True, capture_output=True)
