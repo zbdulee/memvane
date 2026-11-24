@@ -109,6 +109,8 @@ L2 후속 ── L3
 - **recall resident/API 방식.** 1.2 후보다.
 - **recall 순위.** 프롬프트 앞의 일반 지시문("도구는 쓰지 말고 답만 해 줘.")이 semantic 순위를 끌어, 드문 토큰이 정확히 일치하는 카드가 상위 3장에서 빠진다. 같은 질문에서 지시문을 빼면 그 카드가 1위다. 긴 질의에서 lexical 일치의 비중과 fusion 가중을 조사한다.
 - **resident 번들 인계.** 번들 확인이 `codex plugin list --json`을 10초 안에 기다리는데 콜드 실행은 60초를 넘는다. 실패한 결과가 1시간 캐시되어 호스트 갱신 뒤 옛 resident가 최대 1시간 남는다.
+- **세션 밖 변경의 즉시 반영.** 세션 밖 변경(에디터 편집, 터미널의 `git pull`·checkout)은 다음 SessionStart, 프로젝트 안 편집(`index`), Claude의 성공한 Bash(`file-change-event`) 때 full-scan sync로 반영된다. 프롬프트(UserPromptSubmit)는 sync를 깨우지 않아서, 열린 세션에서 에이전트가 편집·Bash를 하기 전까지 색인이 옛 상태로 남는다. 후보는 셋이다. (A) resident가 선택된 프로젝트를 OS 파일 이벤트(macOS FSEvents)로 감시해 sync를 깨운다. (B) recall hook이 sync 요청을 함께 남기고 짧은 간격의 중복은 합친다. (C) resident의 주기 점검. A를 기본, B를 보조로 검토한다.
+- **resident 상시 기동(OS 로그인 항목).** 지금 resident는 hook이 처음 필요할 때 띄우고, 재부팅 뒤 첫 프롬프트가 기동과 모델 로드를 기다리며, 죽거나 영구 실패에 빠지면 다음 hook 전까지 되살리는 주체가 없다. OS 로그인 항목으로 상시 기동하는 안을 위 감시 항목과 함께 검토한다. macOS는 launchd 사용자 agent(`~/Library/LaunchAgents`, KeepAlive), Windows는 작업 스케줄러 로그온 작업 또는 시작 프로그램, Linux는 systemd `--user` unit이다(Windows·Linux는 지원 플랫폼이 되면 적용). 검토할 것: 등록·해제를 setup의 명시 승인으로만 하고 플러그인 제거 때 함께 지우는 방법, 플러그인 버전이 바뀔 때 실행 경로를 갱신하는 방법(지금의 번들 인계와의 관계), 쓰지 않는 날의 메모리(resident 약 350MB, 학습 resident는 수 GB), hook 기동 방식과의 공존. 새 로그인 항목과 설정 키는 사용자 결정 사항이다.
 - **활성화 중 편집 거절.** 온보딩 활성화 도중의 Claude Bash `file-change-event`가 `selected_wiki_grant_failed`로 exit 3이 되어 화면에 hook 오류로 보인다.
 - **학습 되돌리기 사유.** `candidate_rollback.resume`의 `rollback_pending` 사유가 `unlabeled`로 남는다. compile 진척 streak은 상태 파일을 쓰지 못하는 동안 쌓이지 않는다.
 - **문서.** `release.md`의 계약 밖 파생물 목록에 `runtime-wake-progress.json`, `source-refresh-settled.json.lock`, 세션 reset 마커가 없다.
@@ -309,6 +311,7 @@ L2 후속 ── L3
 | 도메인 `domain/` 층 실체화 | L | 없음 | 패치 릴리스 간격이 1주 이상으로 안정된 뒤. 도메인 단위로 나눈다 |
 | 원문 소실 보류(`held_missing`)와 삭제 receipt | L | 확인 | 삭제 근거를 store에서 찾아야 하는 사례가 생길 때 |
 | 학습 중지·재개의 end-to-end 증거, 학습 자식 부하 측정 | M | 없음 | 1.1-3과 함께 |
+| 코드 구조 신호를 쓰는 recall([설계](design-code-structure-recall.md)) | L | 없음 | 카나리와 service-engineering에서 편집 recall이 놓친 직접 import 이웃의 정답 카드를 확인하고, 게시된 출처 또는 명시적 문서 인용으로 연결할 수 있을 때 |
 
 ## 2.0 후보
 

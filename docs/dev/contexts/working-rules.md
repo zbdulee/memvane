@@ -74,6 +74,10 @@ host route의 분류·실패 동작은 `memvane/host/README.md`를 읽는다.
   2. **확인한다 — 거짓 성공 보고.** 그 쓰기가 연산의 **유일한 효과**일 때. 원장 행 하나가 전부인 기록 연산은 실패하면 아무 일도 안 했는데 성공을 출력하게 된다.
   3. **무시한다 — 실패 방향이 안전하고 다음 회차가 재시도하는 경로.** 원자적 쓰기라 원본이 온전하고 손해가 재처리뿐인 곳: `trim_jsonl`의 로그 압축, `compact_manifest`의 `write_jsonl_atomic`, 그리고 `write_state_atomic` 계열(스냅샷·커서). **`write_state_atomic`은 애초에 반환값이 없고 실패를 예외로 던진다** — "삼킨 반환값"이 아니다. 커서 미전진이 원장 중복을 만들지 않는 이유는 커서가 아니라 `wiki_lifecycle.run`이 카드마다 다시 하는 상태 검사다(은퇴한 카드는 이미 없어 건너뛴다. 같은 source hash의 refresh는 refresh 기록이 저장된 뒤 `REFRESH_RETRY_SECONDS`(7일) 동안 `_recently_refreshed`가 다시 넣지 않는다. 그 기록은 커서와 같은 파일에 쓰이므로 쓰기가 실패하면 다음 run이 같은 refresh를 다시 고른다. 같은 revision의 행이 큐에 남아 있으면 `wiki_compile_enqueue._append_unqueued`가 새 행을 넣지 않고 compile wake만 내며, 그 행이 이미 소비됐으면 한 번 더 넣는다).
   각 호출부에 **분류 근거를 한 줄 주석으로** 남긴다 — 다음 사람이 이 판단을 다시 하지 않게, 그리고 "전부 고쳐라" 스윕이 3번 항목을 건드리지 않게.
+- **영속 원장으로 판정하는 코드는 고치기 전에 상태 조합표를 먼저 쓴다.** 대상은 세 가지다. 첫째, `.memvane/compile/*.jsonl` 원장·manifest·tombstone·private 기록을 읽고 생성·삭제·재개를 정하는 코드다. 둘째, 중단 뒤 재개 경로다. 셋째, 출시된 1.x 버전과 state를 공유하는 경로다.
+  - 축: 대상 세대의 이력(`created`·`updated`·`verify-deleted`·사람의 삭제·압축 전후), 각 영속 쓰기 사이의 중단 지점, 같은 초에 쓰인 같은 바이트의 행, 재부팅에 따른 `st_dev` 변화, 행을 쓴 버전(현재·출시 태그).
+  - 칸마다 기대 결과(생성·tombstone·보류·재개)와 유료 호출 수를 적는다. 같은 입력으로 다음 pass에서도 계속 보류되는 칸은 두지 않는다. 증거가 모호한 칸은 사람이 지운 카드를 되살리지 않는 쪽으로 정한다.
+  - 표는 작업 계획이나 진행 기록에 둔다. 각 칸은 개수·상태로 단정하는 회귀 시험이 되고, 시험 입력은 실제 writer(출시 태그 포함)가 쓴 행이다. 판정 경로에 손으로 만든 행을 넣지 않는다.
 ## 운영상 함정 (디버깅 시 참고)
 
 - **python 하한은 3.9다 — 새 Python 모듈에 PEP 604(`X | None`) annotation을 쓰면 `from __future__ import annotations`를 함께 넣어라.** 훅은 `bare python3`을 실행하고(`hooks/run-hook`) macOS는 `/usr/bin/python3`으로 3.9를 탑재한다. annotation은 정의 시점에 평가되므로 future import가 없으면 **모듈 import 자체가 TypeError로 죽어** 훅이 exit 1(host의 "hook failed")이 되고 플러그인이 통째로 무동작한다. 이 클래스는 개발 머신 python이 3.10+면 **전혀 보이지 않는다** — 실측으로 시스템 python 3.9에서 764개 중 365개가 실패하는 동안 3.13에서는 0 실패였다. 이 클래스를 잡는 전용 테스트는 없으므로 리뷰에서 확인하고, `match`/`except*`처럼 future import로 구제되지 않는 3.10+ 전용 구문도 쓰지 않는다. 시스템 python으로 `npm test`를 돌리면 남는 실패는 제품 결함이 아니라 환경 산물이다: PyYAML 대조 테스트(시스템 python에 PyYAML 부재 — 테스트가 가용성을 의도적으로 단정한다).
