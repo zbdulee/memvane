@@ -15,7 +15,7 @@ FAIL = {'verdict': 'fail', 'claims': [{'claim': 'Decision', 'supported': False, 
 open_path = Path.open
 def interrupted(path, mode='r', *args, **kwargs):
     if path.name == 'generated-manifest.jsonl' and mode == 'a':
-        os._exit(27)
+        os._exit(27 if calls.call_count == 1 else 29)
     return open_path(path, mode, *args, **kwargs)
 
 root = Path(sys.argv[1])
@@ -30,9 +30,9 @@ else:
     os_open = os.open
     def stop_before_finished(path, *args, **kwargs):
         if isinstance(path, Path) and path.name == '.finished.partial':
-            os._exit(27)
+            os._exit(27 if calls.call_count == 1 else 29)
         return os_open(path, *args, **kwargs)
     failure = patch.object(os, 'open', stop_before_finished)
-with patch.object(engines, 'run_extractor', return_value=(FAIL, None, 0)), failure:
+with patch.object(engines, 'run_extractor', return_value=(FAIL, None, 0)) as calls, failure:
     verifier.run(root, config, config['compile'])
 raise SystemExit(28)

@@ -64,9 +64,9 @@ class DirectWriter(FixtureCase):
                 open_path = Path.open
                 def interrupted(path, mode='r', *args, **kwargs):
                     if path.name == 'generated-manifest.jsonl' and mode == 'a':
-                        os._exit(27)
+                        os._exit(27 if calls.call_count == 1 else 29)
                     return open_path(path, mode, *args, **kwargs)
-                with patch.object(engines, 'run_extractor', return_value=(fail, None, 0)), \
+                with patch.object(engines, 'run_extractor', return_value=(fail, None, 0)) as calls, \
                      patch.object(Path, 'open', interrupted):
                     verifier.run(self.root, self.config, self.config['compile'])
             finally:
@@ -82,8 +82,8 @@ class DirectWriter(FixtureCase):
         self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')], ['created'])
         self.assertFalse(list(self.queue.parent.glob('retired-wiki/.promotions/*/finished')))
         self.assertEqual(self.write(corrected), (0, 'created'))
-        for _ in range(2):
-            self.assertEqual(self.native_verify()['remaining'], 0)
+        self.assertEqual(self.native_verify(), {'calls': 1, 'remaining': 0})
+        self.assertEqual(self.native_verify(), {'calls': 0, 'remaining': 0})
         self.assertTrue(self.target.is_file())
         self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')],
                          ['created', 'verify-deleted', 'created'])
@@ -210,32 +210,39 @@ class DirectWriter(FixtureCase):
         self.assertEqual(archive.read_bytes(), before)
 
     def test_byte_identical_same_second_creation_survives_compaction_as_new_history(self):
-        manifest = self.queue.with_name('generated-manifest.jsonl')
-        source = 'Newest source used for both generations.'
-        stamp = '2026-11-24T01:00:00Z'
-        with patch.object(writer, 'now_iso', return_value=stamp), patch.object(paths, 'datetime') as clock:
-            clock.now.return_value = datetime.fromisoformat(stamp.replace('Z', '+00:00'))
-            self.assertEqual(self.write(source), (0, 'created'))
-            created, = self.rows(manifest.name)
+        for compact in (False, True):
+            with self.subTest(compact=compact):
+                self.prepare('same-second-' + str(compact))
+                self.bound = None
+                self.target.unlink()
+                manifest = self.queue.with_name('generated-manifest.jsonl')
+                source = 'Newest source used for both generations.'
+                stamp = '2026-11-24T01:00:00Z'
+                with patch.object(writer, 'now_iso', return_value=stamp), patch.object(paths, 'datetime') as clock:
+                    clock.now.return_value = datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+                    self.assertEqual(self.write(source), (0, 'created'))
+                    created, = self.rows(manifest.name)
 
-            open_file = os.open
-            def stop_at_completion(path, *args, **kwargs):
-                if isinstance(path, Path) and path.name == '.finished.partial':
-                    raise KeyboardInterrupt
-                return open_file(path, *args, **kwargs)
+                    open_file = os.open
+                    def stop_at_completion(path, *args, **kwargs):
+                        if isinstance(path, Path) and path.name == '.finished.partial':
+                            raise KeyboardInterrupt
+                        return open_file(path, *args, **kwargs)
 
-            with patch.object(os, 'open', side_effect=stop_at_completion), self.assertRaises(KeyboardInterrupt):
-                self.negative_verify('fail')
-            self.assertFalse(self.target.exists())
-            self.assertFalse(list(self.queue.parent.glob('retired-wiki/.promotions/*/finished')))
-            before, marker = self.rows(manifest.name)
-            self.assertEqual((before, marker['action'], marker['ts']), (created, 'verify-deleted', stamp))
-            self.assertEqual(self.write(source), (0, 'created'))
-            self.assertEqual(self.rows(manifest.name), [created, marker, created])
-        workspace.compact_manifest(manifest, max_bytes=0)
-        self.assertEqual(self.rows(manifest.name), [created])
-        self.assert_manual_delete()
-        self.assertEqual(self.rows(manifest.name), [created])
+                    with patch.object(os, 'open', side_effect=stop_at_completion), self.assertRaises(KeyboardInterrupt):
+                        self.negative_verify('fail')
+                    self.assertFalse(self.target.exists())
+                    self.assertFalse(list(self.queue.parent.glob('retired-wiki/.promotions/*/finished')))
+                    before, marker = self.rows(manifest.name)
+                    self.assertEqual((before, marker['action'], marker['ts']), (created, 'verify-deleted', stamp))
+                    self.assertEqual(self.write(source), (0, 'created'))
+                    self.assertEqual(self.rows(manifest.name), [created, marker, created])
+                if compact:
+                    workspace.compact_manifest(manifest, max_bytes=0)
+                expected = [created] if compact else [created, marker, created]
+                self.assertEqual(self.rows(manifest.name), expected)
+                self.assert_manual_delete()
+                self.assertEqual(self.rows(manifest.name), expected)
 
     def negative_verify(self, verdict, *, suppression_failure=False):
         answer = {'verdict': verdict, 'claims': [{'claim': 'Decision', 'supported': False, 'quote': ''}],
@@ -250,9 +257,10 @@ class DirectWriter(FixtureCase):
         with patch.object(workspace, 'selected', return_value=None), \
              patch.object(workspace, 'request_sync'), patch.object(Path, 'open', open_guard), \
              patch.object(engines, 'run_extractor', return_value=(answer, None, 0)) as calls:
-            result = verifier.run(self.root, self.config, self.config['compile'])
-        self.assertEqual(calls.call_count, 1)
-        return result
+            try:
+                return verifier.run(self.root, self.config, self.config['compile'])
+            finally:
+                self.assertEqual(calls.call_count, 1)
 
     def assert_manual_delete(self):
         self.target.unlink()
@@ -292,11 +300,49 @@ class DirectWriter(FixtureCase):
         self.assert_manual_delete()
 
     def test_released_audit_only_preserves_the_manual_deletion_rule(self):
-        self.interrupt_tag('v1.1.0')
-        self.assertEqual(self.write('Newest corrected source.', check=True), (0, 'tombstoned'))
-        self.assertEqual(self.rows('tombstones.jsonl'), [])
-        self.assertEqual(self.write('Newest corrected source.'), (0, 'tombstoned'))
-        self.assertEqual(self.write('Newest source changed again.'), (0, 'suppressed'))
-        self.assertEqual(len(self.rows('tombstones.jsonl')), 1)
-        self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')], ['created'])
-        self.assertFalse(self.target.exists())
+        for tag in ('v1.0.22', 'v1.0.23', 'v1.0.24', 'v1.1.0'):
+            with self.subTest(tag=tag):
+                self.prepare(tag)
+                self.bound = None
+                self.target.unlink()
+                self.interrupt_tag(tag)
+                self.assertEqual(self.write('Newest corrected source.', check=True), (0, 'tombstoned'))
+                self.assertEqual(self.rows('tombstones.jsonl'), [])
+                self.assertEqual(self.write('Newest corrected source.'), (0, 'tombstoned'))
+                self.assertEqual(self.write('Newest source changed again.'), (0, 'suppressed'))
+                self.assertEqual(len(self.rows('tombstones.jsonl')), 1)
+                self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')], ['created'])
+                self.assertFalse(self.target.exists())
+
+    def test_unrelated_target_append_preserves_a_proven_retirement(self):
+        self.interrupt_native()
+        manifest = self.queue.with_name('generated-manifest.jsonl')
+        node = manifest.stat()
+        before = manifest.read_bytes()
+        self.assert_unrelated_target_kept_after_retirement(
+            (0, 'created') if hasattr(node, 'st_birthtime') else (0, 'tombstoned'))
+        self.assertEqual(manifest.stat().st_ino, node.st_ino)
+        self.assertTrue(manifest.read_bytes().startswith(before))
+
+    def test_unrelated_target_append_leaves_legacy_retirement_ambiguous(self):
+        self.interrupt_tag('01136dc964e42c2c7dca2f27951612dc3cdc3dee')
+        self.assert_unrelated_target_kept_after_retirement((0, 'tombstoned'))
+
+    def assert_unrelated_target_kept_after_retirement(self, expected):
+        other = self.target.with_name('other.md')
+        archive, = self.queue.parent.glob('retired-wiki/.promotions/*/displaced.md')
+        archived = archive.read_bytes()
+        with patch.object(self, 'target', other):
+            self.assertEqual(self.write('Newest unrelated source for B.'), (0, 'created'))
+        independent = other.read_bytes()
+        self.assertEqual(self.write('Newest corrected source for A.'), expected)
+        self.assertEqual(other.read_bytes(), independent)
+        self.assertEqual(archive.read_bytes(), archived)
+        self.assertEqual(len(self.rows('verify-deleted.jsonl')), 1)
+        if expected[1] == 'tombstoned':
+            self.assertEqual(self.write('Newest source changed again.'), (0, 'suppressed'))
+            self.assertEqual(len(self.rows('tombstones.jsonl')), 1)
+            self.assertFalse(self.target.exists())
+        else:
+            self.assertEqual(self.rows('tombstones.jsonl'), [])
+            self.assertTrue(self.target.exists())
