@@ -235,6 +235,26 @@ class Ordinary(PendingCase):
         self.assertEqual(sum(row.get('action') == 'verify-deleted' for row in self.ledger('generated-manifest.jsonl')), 1)
         self.assertEqual(len(self.ledger('verify-deleted.jsonl')), 1)
 
+    def test_same_second_machine_deletions_are_recorded_once_per_generation(self):
+        self.setup()
+        job = self.job()
+        engine = self.fake(FAIL)
+        with patch.object(worker, 'now_iso', return_value='2026-11-24T01:00:00Z'):
+            self.assertEqual(self.verify_one(job), (True, False))
+            marker, = self.ledger('generated-manifest.jsonl')
+            self.setup()
+            creation = {'ts': marker['ts'], 'targetPath': job['targetPath'], 'action': 'created'}
+            with (self.compile_dir / 'generated-manifest.jsonl').open('a') as stream:
+                stream.write(json.dumps(creation) + '\n')
+            next_job = dict(self.job(), ts='2026-11-24T01:00:00Z')
+            with patch.object(worker, 'record_machine_delete', side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+                self.verify_one(next_job)
+            for _ in range(2):
+                self.assertEqual(self.verify_one(next_job), (True, False))
+        self.assertEqual(self.ledger('generated-manifest.jsonl'), [marker, creation, marker])
+        self.assertEqual(len(self.ledger('verify-deleted.jsonl')), 2)
+        self.assertEqual(len(engine.calls), 2)
+
     def test_negative_replays_from_the_recorded_manifest_after_a_lost_completion_marker(self):
         self.setup()
         job = self.job()

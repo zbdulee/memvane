@@ -154,6 +154,14 @@ class DirectWriter(FixtureCase):
             self.assertEqual(self.write('Newest corrected source.'), (1, 'deferred'))
         self.assertEqual(self.rows('tombstones.jsonl'), [])
         self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')], ['created'])
+        audit, = self.rows('verify-deleted.jsonl')
+        manifest = self.queue.with_name('generated-manifest.jsonl')
+        prior = {'ts': audit['deletedAt'], 'targetPath': audit['targetPath'], 'action': 'verify-deleted',
+                 'status': 'deleted', 'engine': audit['engine'], 'verdict': audit['verdict']}
+        creation = dict(self.rows(manifest.name)[0], ts=audit['deletedAt'])
+        manifest.write_text(json.dumps(prior) + '\n' + json.dumps(creation) + '\n')
+        self.assertEqual(self.write('Newest corrected source.'), (1, 'deferred'))
+        self.assertEqual(self.rows('tombstones.jsonl'), [])
         # A later public creation ends the old audit's ambiguity for that target.
         newer = dict(self.rows('generated-manifest.jsonl')[-1], ts='2099-01-01T00:00:00Z')
         with self.queue.with_name('generated-manifest.jsonl').open('a') as stream:

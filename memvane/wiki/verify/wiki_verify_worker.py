@@ -232,9 +232,13 @@ def _machine_row(record, verdict):
             'targetPath': record['targetPath'], 'verdict': verdict, 'engine': record.get('engine', '')}
 
 
-def _manifest_has(root, row):
+def _manifest_has(root, row, *, latest=False):
     path = qmd_config.ledger(root, ct.MANIFEST)
-    if path is None or not any(item == row for _, item in read_queue(path)):
+    if path is None:
+        return False
+    rows = (item for _, item in reversed(read_queue(path)) if item and item.get('targetPath') == row['targetPath'])
+    present = next(rows, None) == row if latest else row in rows
+    if not present:
         return False
     with path.open('rb') as handle:
         os.fsync(handle.fileno())
@@ -249,11 +253,11 @@ def record_machine_delete(root: Path, compile_cfg: dict, record: dict, verdict: 
     if path is None or wiki_freshness.unresolved_pending_refreshes_strict(
             root, before_ledger_write=True, append_for=row) is None:
         return False
-    if _manifest_has(root, row):
+    if _manifest_has(root, row, latest=True):
         return True
     append_jsonl(path, row)
     cp.compact_manifest(path)
-    return _manifest_has(root, row)
+    return _manifest_has(root, row, latest=True)
 
 
 def record_verify_deletion(

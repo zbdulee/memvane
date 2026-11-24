@@ -352,7 +352,7 @@ def resume_stamp(root, job, live, fresh):
     return publish(root, job, review, live, review.read_bytes().decode(), (folder / 'base').read_bytes())
 
 
-def _target_ledger(root, name, target, *, action=None):
+def _target_ledger(root, name, target):
     """Physical LF rows. Bind both the latest record and its occurrence at this target."""
     path = ledger(root, name)
     if path is None or path != root / CURRENT / 'compile' / name:
@@ -371,7 +371,7 @@ def _target_ledger(root, name, target, *, action=None):
             row = json.loads(line)
             if not isinstance(row, dict) or not line.endswith(b'\n'):
                 raise ValueError('invalid retirement ledger')
-            if row.get('targetPath') != target or (action is not None and row.get('action') != action):
+            if row.get('targetPath') != target:
                 continue
             if name == VERIFY_DELETED and row.get('verdict') not in ('fail', 'inconclusive'):
                 continue
@@ -404,17 +404,11 @@ def _time(value):
     return dt
 
 
-def _created_after_audit(root, target, latest, audit):
-    if not latest or latest.get('action') != 'created' or not audit.get('deletedAt'):
-        return False
-    deleted_at = _time(audit['deletedAt'])
-    if _time(latest['ts']) > deleted_at:
-        return True
-    # Released creation timestamps have one-second precision. Within that
-    # second, a later creation follows its completed deletion in manifest order.
-    _, marker = _target_ledger(root, MANIFEST, target, action=MACHINE_DELETE_ACTION)
-    return bool(marker and marker.get('verdict') == audit.get('verdict') and
-                marker.get('engine') == audit.get('engine') and _time(marker['ts']) >= deleted_at)
+def _created_after_audit(latest, audit):
+    # Released rows have one-second precision. A matching earlier marker in the
+    # same second cannot prove which generation a later interrupted audit owns.
+    return (latest and latest.get('action') == 'created' and audit.get('deletedAt')
+            and _time(latest['ts']) > _time(audit['deletedAt']))
 
 
 def _audit_owner(root, target, audit, create=False):
@@ -519,16 +513,18 @@ def _retirement_status(root, folder, target, verdict, *, manifest_has, repair, c
             or row.get('action') != MACHINE_DELETE_ACTION or row.get('status') != 'deleted'
             or not persistent_identity_equal(archived['displaced'], _snapshot(slot))):
         return 'retry'
-    if manifest_has and manifest_has(row):
-        return verdict
+    history = _target_ledger(root, MANIFEST, target)
+    if 'previous' in intent:
+        predecessor = _same_generation(intent['previous'], history)
+    else:
+        audit = _target_ledger(root, VERIFY_DELETED, target)
+        predecessor = _legacy_generation(root, folder, intent, history, audit[1])
+    if not predecessor:
+        # An identical timestamp and verdict can occur in two different generations.
+        return verdict if manifest_has and manifest_has(row) else 'retry'
     if os.path.lexists(root / target):
         return 'retry'
-    history = _target_ledger(root, MANIFEST, target)
-    audit = _target_ledger(root, VERIFY_DELETED, target)
-    if 'previous' in intent:
-        if not _same_generation(intent['previous'], history) or intent['audit'] != _digest(audit):
-            return 'retry'
-    elif not _legacy_generation(root, folder, intent, history, audit[1]):
+    if 'audit' in intent and intent['audit'] != _digest(_target_ledger(root, VERIFY_DELETED, target)):
         return 'retry'
     if check or (repair and repair(row)):
         return verdict
@@ -556,10 +552,10 @@ def missing_retirement(root, target, *, check, manifest_has, repair, sync):
         owner = _record(_audit_owner(root, target, audit) / 'owner')
     except FileNotFoundError:
         _, last = _target_ledger(root, MANIFEST, target)
-        if _created_after_audit(root, target, last, audit[1]):
-            return 'manual'
         folder = _legacy_owner(root, target, audit[1])
         if folder is None:
+            if _created_after_audit(last, audit[1]):
+                return 'manual'
             return 'retry'  # An audit alone precedes unlink and cannot prove who removed the card.
     else:
         folder = _archive_folder(root, owner['folder'])
@@ -571,10 +567,13 @@ def missing_retirement(root, target, *, check, manifest_has, repair, sync):
     if 'previous' in intent and not _same_generation(intent['previous'], history):
         status = _retirement_status(root, folder, target, verdict, manifest_has=manifest_has, repair=None)
         if (history[1] and history[1].get('action') == 'created' and
-                (status in ('retired', verdict) or _created_after_audit(root, target, history[1], audit[1]))):
+                (status in ('retired', verdict) or _created_after_audit(history[1], audit[1]))):
             return 'manual'
         return 'retry'
+    if 'previous' not in intent and _created_after_audit(history[1], audit[1]):
+        return 'manual'
     if ('previous' not in intent and history[1] and history[1].get('action') == 'created'
+            and not _legacy_generation(root, folder, intent, history, audit[1])
             and manifest_has(intent['manifest'])):
         # The recorded deletion already precedes this creation. The writer must
         # preserve a manual removal even if the old verifier did not mark completion.
