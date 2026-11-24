@@ -1,4 +1,5 @@
 """A direct writer reaches the interrupted visible deletion before the verifier retries."""
+import errno
 import io
 import json
 import os
@@ -148,22 +149,66 @@ class DirectWriter(FixtureCase):
                          ['created', 'verify-deleted', 'created'])
         self.assertEqual(self.rows('tombstones.jsonl'), [])
 
-    def test_released_audit_only_defers_the_native_direct_writer(self):
-        self.interrupt_tag('v1.1.0')
-        for _ in range(2):
-            self.assertEqual(self.write('Newest corrected source.'), (1, 'deferred'))
-        self.assertEqual(self.rows('tombstones.jsonl'), [])
-        self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')], ['created'])
-        audit, = self.rows('verify-deleted.jsonl')
-        manifest = self.queue.with_name('generated-manifest.jsonl')
-        prior = {'ts': audit['deletedAt'], 'targetPath': audit['targetPath'], 'action': 'verify-deleted',
-                 'status': 'deleted', 'engine': audit['engine'], 'verdict': audit['verdict']}
-        creation = dict(self.rows(manifest.name)[0], ts=audit['deletedAt'])
-        manifest.write_text(json.dumps(prior) + '\n' + json.dumps(creation) + '\n')
-        self.assertEqual(self.write('Newest corrected source.'), (1, 'deferred'))
-        self.assertEqual(self.rows('tombstones.jsonl'), [])
-        # A later public creation ends the old audit's ambiguity for that target.
-        newer = dict(self.rows('generated-manifest.jsonl')[-1], ts='2099-01-01T00:00:00Z')
-        with self.queue.with_name('generated-manifest.jsonl').open('a') as stream:
-            stream.write(json.dumps(newer) + '\n')
+    def negative_verify(self, verdict, *, suppression_failure=False):
+        answer = {'verdict': verdict, 'claims': [{'claim': 'Decision', 'supported': False, 'quote': ''}],
+                  'reasons': ['source contradicts claim']}
+        open_path = Path.open
+
+        def open_guard(path, mode='r', *args, **kwargs):
+            if suppression_failure and path.name == 'verify-skipped.jsonl' and mode == 'a':
+                raise OSError(errno.ENOSPC, 'fixture disk full')
+            return open_path(path, mode, *args, **kwargs)
+
+        with patch.object(workspace, 'selected', return_value=None), \
+             patch.object(workspace, 'request_sync'), patch.object(Path, 'open', open_guard), \
+             patch.object(engines, 'run_extractor', return_value=(answer, None, 0)) as calls:
+            result = verifier.run(self.root, self.config, self.config['compile'])
+        self.assertEqual(calls.call_count, 1)
+        return result
+
+    def assert_manual_delete(self):
+        self.target.unlink()
         self.assertEqual(self.write('Newest corrected source.'), (0, 'tombstoned'))
+        self.assertEqual(self.write('Newest source changed again.'), (0, 'suppressed'))
+        tombstone, = self.rows('tombstones.jsonl')
+        self.assertEqual(tombstone['targetPath'], self.target.relative_to(self.root).as_posix())
+        self.assertFalse(self.target.exists())
+
+    def test_real_pending_only_negative_audit_preserves_the_later_manual_delete(self):
+        for verdict in ('fail', 'inconclusive'):
+            with self.subTest(verdict=verdict):
+                self.prepare('pending-' + verdict)
+                self.bound = None
+                self.target.unlink()
+                self.assertEqual(self.write('Newest source.'), (0, 'created'))
+                self.assertEqual(self.native_verify(), {'calls': 1, 'remaining': 0})
+                previous = self.target.read_bytes()
+                self.assertEqual(self.write('Newest source edited.'), (0, 'updated'))
+                self.assertEqual(self.negative_verify(verdict)['remaining'], 0)
+                audit, = self.rows('verify-deleted.jsonl')
+                self.assertEqual((audit['targetPath'], audit['verdict']),
+                                 (self.target.relative_to(self.root).as_posix(), verdict))
+                self.assertEqual(self.target.read_bytes(), previous)
+                self.assertFalse(list(self.queue.parent.glob('retired-wiki/.promotions/*/retire')))
+                self.assert_manual_delete()
+
+    def test_failed_suppression_audit_alone_preserves_the_later_manual_delete(self):
+        self.assertEqual(self.write('Newest source.'), (0, 'created'))
+        before = self.target.read_bytes()
+        self.negative_verify('inconclusive', suppression_failure=True)
+        audit, = self.rows('verify-deleted.jsonl')
+        self.assertEqual(audit['verdict'], 'inconclusive')
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assertEqual(self.rows('verify-skipped.jsonl'), [])
+        self.assertFalse(list(self.queue.parent.glob('retired-wiki/.promotions/*/retire')))
+        self.assert_manual_delete()
+
+    def test_released_audit_only_preserves_the_manual_deletion_rule(self):
+        self.interrupt_tag('v1.1.0')
+        self.assertEqual(self.write('Newest corrected source.', check=True), (0, 'tombstoned'))
+        self.assertEqual(self.rows('tombstones.jsonl'), [])
+        self.assertEqual(self.write('Newest corrected source.'), (0, 'tombstoned'))
+        self.assertEqual(self.write('Newest source changed again.'), (0, 'suppressed'))
+        self.assertEqual(len(self.rows('tombstones.jsonl')), 1)
+        self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')], ['created'])
+        self.assertFalse(self.target.exists())

@@ -551,12 +551,11 @@ def missing_retirement(root, target, *, check, manifest_has, repair, sync):
     try:
         owner = _record(_audit_owner(root, target, audit) / 'owner')
     except FileNotFoundError:
-        _, last = _target_ledger(root, MANIFEST, target)
         folder = _legacy_owner(root, target, audit[1])
         if folder is None:
-            if _created_after_audit(last, audit[1]):
-                return 'manual'
-            return 'retry'  # An audit alone precedes unlink and cannot prove who removed the card.
+            # A pending replacement or interrupted suppression can leave an audit
+            # for the visible path without detaching the visible card.
+            return 'manual'
     else:
         folder = _archive_folder(root, owner['folder'])
     verdict = audit[1]['verdict']
