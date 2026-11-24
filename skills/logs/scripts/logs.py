@@ -370,19 +370,20 @@ def summary(rows, args, unified=False):
         if action == 'recall':
             semantic = [row for row in action_rows if isinstance(row.get('semantic'), str)]
             if semantic:
-                used = sum(row['semantic'] == 'complete' for row in semantic)
-                extra = f' semantic={used}/{len(semantic)} ({100 * used / len(semantic):.1f}%)'
+                used = sum(row['semantic'] in logs_slo.SEMANTIC_USED for row in semantic)
+                full = sum(logs_slo.full_coverage(row) for row in semantic)
+                extra = f' semantic={used}/{len(semantic)} ({100 * used / len(semantic):.1f}%) fullCoverage={full}/{len(semantic)}'
             extra += ' target p50=1000ms p95=1500ms large-p95=2500ms'
         print(f'{action} p50={percentile(elapsed, .5):g}ms p95={percentile(elapsed, .95):g}ms'
               f' n={len(elapsed)}{extra}')
         if action == 'recall':
             for source in sorted({row['vectorSource'] for row in action_rows
-                                  if row.get('vectorSource') in ('store', 'python')}):
+                                  if row.get('vectorSource') in ('arena', 'store', 'python')}):
                 sourced = [row for row in action_rows if row.get('vectorSource') == source
                            and isinstance(row.get('semantic'), str)]
                 if not sourced:
                     continue
-                used = sum(row['semantic'] == 'complete' for row in sourced)
+                used = sum(row['semantic'] in logs_slo.SEMANTIC_USED for row in sourced)
                 times = values(sourced, 'semanticMs')
                 latency = (f' p50={percentile(times, .5):g}ms p95={percentile(times, .95):g}ms'
                            if times else '')

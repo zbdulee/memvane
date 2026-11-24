@@ -63,6 +63,16 @@ class QueryVectors(unittest.TestCase):
             self.ask(*args, **kwargs)
         return str(caught.exception)
 
+    def test_an_identity_change_in_any_window_invalidates_the_whole_query(self):
+        for code in ('provider_identity_mismatch', 'provider_socket_changed'):
+            for allowed in ({code}, set()):
+                with self.subTest(code=code, allowed=allowed):
+                    answer = mock.Mock(side_effect=[[1.0, 0.0], IndexContractError(code)] + [[1.0, 0.0]] * 4)
+                    with self.assertRaises(IndexContractError) as failure:
+                        query_vectors(Handle(answer), 'x' * 12000, 2, chunks=True, allowed=allowed)
+                    self.assertEqual(str(failure.exception), code if allowed else 'provider_result_invalid')
+                    self.assertEqual(answer.call_count, 2)
+
     def test_the_request_is_the_handles_round_trip_on_one_named_thread_and_no_process(self):
         handle = Handle(lambda text, timeout: [1.0, 0.0])
         with mock.patch.object(subprocess, 'Popen') as popen:

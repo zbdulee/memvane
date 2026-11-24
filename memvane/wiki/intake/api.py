@@ -111,6 +111,11 @@ def append_source_jobs(path, records):
 
 
 
+def coalesce_claimed_jobs(rows):
+    from memvane.wiki.intake.wiki_source_intent import coalesce_claimed_jobs as implementation
+    return implementation(rows)
+
+
 def revision_key(record):
     from memvane.wiki.intake.wiki_source_intent import revision_key as implementation
     return implementation(record)

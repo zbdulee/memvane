@@ -138,6 +138,17 @@ class Lines(unittest.TestCase):
         line = by_name(rows)['semantic']
         self.assertEqual((line['status'], line['complete'], line['deferred_work_budget']), ('over', 0.9, 1))
 
+    def test_partial_queries_count_as_semantic_use_and_report_full_coverage_separately(self):
+        rows = [recall(i, semantic='partial', vectorSource='arena', vectorCache='ok',
+                       vectorCoveredMembers=1, vectorEligibleMembers=2) for i in range(20)]
+        rows[0].update(vectorCoveredMembers=2)
+        rows[1].update(semantic='complete')
+        report = by_name(rows)
+        overall = report['semantic']
+        self.assertEqual((overall['status'], overall['complete'], overall['arenaComplete']), ('ok', 1, 1))
+        self.assertEqual((overall['fullCoverage'], overall['arenaFullCoverage']), (0.1, 0.1))
+        self.assertEqual((report['host claude']['complete'], report['host claude']['fullCoverage']), (1, 0.1))
+
     def test_semantic_judges_the_arena_share_once_an_arena_answers(self):
         rows = [recall(i, semantic='complete', vectorSource='arena') for i in range(99)]
         rows.append(recall(99, semantic='complete', vectorSource='store'))

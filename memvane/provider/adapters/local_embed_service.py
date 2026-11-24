@@ -269,7 +269,10 @@ def start_owned_embed_service(manifest, *, admit, startup_timeout_s=15, executio
     from memvane.provider.adapters.reattest import authorize
     try:
         current = authorize(execution_state, manifest)
-    except (ValueError, OSError, KeyError, TypeError) as exc:
+    except (ValueError, KeyError, TypeError) as exc:
+        # Canonical path lookup can wrap a failed stat before any hash comparison.
+        if isinstance(exc.__cause__, OSError):
+            raise
         raise IndexContractError('provider_artifact_hash_mismatch') from exc
     original = provider.manifest
     try:

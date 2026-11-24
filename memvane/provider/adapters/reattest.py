@@ -254,10 +254,11 @@ def authorize(state, manifest):
 
 
 def check(state, manifest):
+    """Return False for a rejected pair. Artifact I/O errors reach the caller."""
     try:
         authorize(state, manifest)
         return True
-    except (OSError, KeyError, TypeError):
+    except (KeyError, TypeError):
         return False
     except ValueError as exc:
         if str(exc) == 'reattest_not_authorized':

@@ -1039,6 +1039,38 @@ def main() -> int:
         return 1
 
 
+def _verify_job(root, selected, candidate, record, pending_path=None, expected_target_hash=None):
+    # 실제 소스를 별도 필드로 넘긴다 — verifier가 `MAX_SOURCES` 상한과 무관하게
+    # 반드시 읽어야 하는 근거다(모델이 준 `sources` 항목이 밀어낼 수 없다).
+    authoritative = authoritative_sources(candidate)
+    observed = candidate.get('sourceFingerprints')
+    fingerprints = None
+    if selected is not None and isinstance(observed, dict):
+        rows = observed.get('fingerprints')
+        if isinstance(rows, list) and rows and all(isinstance(row, dict) for row in rows):
+            first = rows[0]
+            if (all(row.get('scan_id') == first.get('scan_id')
+                    and row.get('observed_ns') == first.get('observed_ns') for row in rows)
+                    and isinstance(first.get('scan_id'), str)
+                    and type(first.get('observed_ns')) is int):
+                fingerprints = {**observed, 'scanId': first['scan_id'],
+                                'observedNs': first['observed_ns']}
+    return {
+        "ts": now_iso(),
+        "targetPath": record["targetPath"],
+        **({'pendingPath': pending_path.relative_to(root).as_posix(),
+            'expectedTargetHash': expected_target_hash}
+           if pending_path is not None else {}),
+        "sources": record["sources"],
+        "sourceRevisions": record["sourceRevisions"],
+        **({"sourceFingerprints": fingerprints} if fingerprints is not None else {}),
+        **({"authoritativeSources": authoritative} if authoritative else {}),
+        "sourceHash": record["sourceHash"],
+        "engine": candidate.get("engine") if isinstance(candidate.get("engine"), str) else "",
+        "trigger": record["trigger"],
+    }
+
+
 def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                     wiki_root: Path, candidate: dict, regenerate: bool, *,
                     budget_final: str | None = None, check: bool = False) -> int:
@@ -1345,7 +1377,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                                   'findings': ['pending_replacement_conflict']}
                 append_jsonl(candidate_path, record)
                 return 0
-            write_ok = write_pending_card(pending_path, pending_page)
+            from memvane.wiki.verify.api import enqueue_replacement
+            job = _verify_job(root, selected, candidate, record, pending_path, expected_target_hash)
+            write_ok = enqueue_replacement(root, config, wiki_root, qmd_config.ledger(root, ct.VERIFY_QUEUE),
+                                           job, selected, lambda: write_pending_card(pending_path, pending_page))
         else:
             write_ok = rewrite_generated_card(target, old, page)
     else:
@@ -1375,41 +1410,13 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
 
     # 기계 검수(auto-verify) enqueue: generated로 쓰인 카드만 대상. verify worker가
     # 카드 주장 vs 원문을 대조해 verified 승격 또는 (onFail) 삭제한다.
-    verify_queued = False
-    if verify_cfg.get("enabled", True) and status == "generated":
+    verify_queued = pending_path is not None
+    if pending_path is None and verify_cfg.get("enabled", True) and status == "generated":
         verify_queue_path = qmd_config.ledger(root, ct.VERIFY_QUEUE)
         if verify_queue_path is not None:
             verify_queued = True
-            # 실제 소스를 별도 필드로 넘긴다 — verifier가 `MAX_SOURCES` 상한과 무관하게
-            # 반드시 읽어야 하는 근거다(모델이 준 `sources` 항목이 밀어낼 수 없다).
-            authoritative = authoritative_sources(candidate)
-            observed = candidate.get('sourceFingerprints')
-            fingerprints = None
-            if selected is not None and isinstance(observed, dict):
-                rows = observed.get('fingerprints')
-                if isinstance(rows, list) and rows and all(isinstance(row, dict) for row in rows):
-                    first = rows[0]
-                    if (all(row.get('scan_id') == first.get('scan_id')
-                            and row.get('observed_ns') == first.get('observed_ns') for row in rows)
-                            and isinstance(first.get('scan_id'), str)
-                            and type(first.get('observed_ns')) is int):
-                        fingerprints = {**observed, 'scanId': first['scan_id'],
-                                        'observedNs': first['observed_ns']}
-            from memvane.wiki.intake.api import append_source_jobs as _append_jsonl
-            _append_jsonl(verify_queue_path, [{
-                "ts": now_iso(),
-                "targetPath": record["targetPath"],
-                **({'pendingPath': pending_path.relative_to(root).as_posix(),
-                    'expectedTargetHash': expected_target_hash}
-                   if pending_path is not None else {}),
-                "sources": record["sources"],
-                "sourceRevisions": record["sourceRevisions"],
-                **({"sourceFingerprints": fingerprints} if fingerprints is not None else {}),
-                **({"authoritativeSources": authoritative} if authoritative else {}),
-                "sourceHash": h,
-                "engine": candidate.get("engine") if isinstance(candidate.get("engine"), str) else "",
-                "trigger": record["trigger"],
-            }])
+            from memvane.wiki.intake.api import append_source_jobs
+            append_source_jobs(verify_queue_path, [_verify_job(root, selected, candidate, record)])
 
     result = {
         "action": action,

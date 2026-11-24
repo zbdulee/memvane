@@ -111,14 +111,15 @@ def _selected_zero(row):
 
 def _recall_fault(row, card, *, chunks=None):
     """Why a prompt's recall row does not pass; None when it does."""
-    if row.get('semantic') != 'complete':
+    semantic = row.get('semantic')
+    if semantic not in ('complete', 'partial'):
         return 'semantic %s' % row.get('semantic')
     if not isinstance(row.get('candidates'), int) or row['candidates'] < 1:
         return 'no candidates'
     if row.get('outcome') == 'served':
         if not _has_card(row, card):
             return 'served without the target card hash'
-    elif not _selected_zero(row):
+    elif semantic == 'partial' or not _selected_zero(row):
         return 'outcome %s/%s' % (row.get('outcome'), row.get('reason'))
     if chunks is not None and not (isinstance(row.get('queryChunks'), int)
                                    and row['queryChunks'] >= chunks):

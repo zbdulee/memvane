@@ -1,4 +1,5 @@
 """Compile batching coalesces source edits without losing a needed wake."""
+import json
 from datetime import datetime, timedelta, timezone
 import unittest
 
@@ -25,3 +26,15 @@ class WorkerBatchRules(unittest.TestCase):
         kept, dropped = worker.dedup_jobs([('old', old), ('other', other), ('new', new)])
         self.assertEqual([raw for raw, _ in kept], ['new', 'other'])
         self.assertEqual(dropped, ['old'])
+
+    def test_claim_requeues_newest_edit_with_unfinished_observed_revision(self):
+        base = {'ts': '2026-01-01T00:00:00Z', 'trigger': 'post_sync_source',
+                'source': {'path': 'docs/a.md', 'collection': 'raw'}}
+        partial = dict(base, partialCompile=True, _processedContentRevision='b' * 64)
+        latest = dict(base, ts='2026-01-02T00:00:00Z', contentRevision='a' * 64)
+        for jobs in ((latest, partial), (partial, latest)):
+            kept, _ = worker.dedup_jobs([(json.dumps(job), job) for job in jobs])
+            self.assertEqual(len(kept), 1)
+            raw, job = kept[0]
+            self.assertEqual(job, dict(latest, partialCompile=True, _processedContentRevision='b' * 64))
+            self.assertEqual(json.loads(raw), job)

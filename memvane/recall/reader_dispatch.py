@@ -7,7 +7,7 @@ from pathlib import Path
 import time
 
 from memvane.journal import api as journal
-from memvane.recall.types import ReaderResult
+from memvane.recall.types import HostResponseError, ReaderResult
 
 _approved_vectors=ContextVar('schema3_approved_vectors',default=())
 _PROVIDER_ERRORS=frozenset(('provider_unavailable','provider_identity_mismatch','provider_result_invalid',
@@ -151,8 +151,11 @@ def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline
         vectors,requested=_provider_vector(provider,prompt,remaining,chunks=edit_recall() is None)
     except IndexContractError as exc:
         # ``provider_process_failed``: whatever else the round trip raised. The recall goes on without a vector.
-        if str(exc) not in ('provider_unavailable','provider_identity_mismatch','provider_process_failed',
-                            'provider_result_invalid','provider_socket_invalid','provider_socket_changed'):
+        from memvane.provider.types import QUERY_IDENTITY_ERRORS
+        if str(exc) in QUERY_IDENTITY_ERRORS:
+            raise HostResponseError('selected_provider_identity_transition') from exc
+        if str(exc) not in ('provider_unavailable','provider_process_failed',
+                            'provider_result_invalid','provider_socket_invalid'):
             raise
         if _vector_proof(authority,snapshot,decision,provider,deadline)!=proof:
             raise ValueError('reader_vector_caller_unproved')

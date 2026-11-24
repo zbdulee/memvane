@@ -12,6 +12,7 @@ class BundleEvidenceError(ValueError):
 LLAMA_VERSION = '3.18.1'
 
 FILES_SHA = 'runtimeFilesSha256'
+QUERY_IDENTITY_ERRORS = frozenset(('provider_identity_mismatch', 'provider_socket_changed'))
 
 # The test runtime root's fixture provider port file (``fixture_port.resolve``).
 FIXTURE_FILE = 'provider-fixture.json'

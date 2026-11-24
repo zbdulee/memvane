@@ -4,6 +4,7 @@ from pathlib import Path
 
 from tests.support.case import FixtureCase
 from unittest.mock import Mock, patch
+from memvane.provider import api as provider
 from memvane.resident import embed_resident as owner
 from memvane.resident import resident_service as svc
 from memvane.kernel.errors import IndexContractError
@@ -235,7 +236,7 @@ class RecoveryChecks(FixtureCase):
             service._adopt(project)
         self.assertEqual(attest_calls, [])
 
-    def test_attest_retries_and_logs_each_failure_on_cold_and_warm_workers(self):
+    def test_attest_retries_and_logs_distinct_failures_on_cold_and_warm_workers(self):
         for warm in (False, True):
             with self.subTest(warm=warm):
                 root = self.base / ('warm' if warm else 'cold')
@@ -245,7 +246,6 @@ class RecoveryChecks(FixtureCase):
                 decision = {'projectRoot': project, 'installId': root.name,
                             'journalPath': str(root / 'install.journal')}
                 proof = {'providerManifest': manifest}
-                # Two identical reasons must produce two diagnostic rows.
                 reasons = ['selected_route_changed', 'selected_route_changed',
                            'selection_transition_pending', 'io error', 'io error', 'io error',
                            'provider_artifact_hash_mismatch', 'provider_artifact_hash_mismatch']
@@ -286,18 +286,137 @@ class RecoveryChecks(FixtureCase):
                     service.start_worker.assert_not_called()
                     events = [json.loads(line) for line in (root / 'events.jsonl').read_text().splitlines()]
                     self.assertEqual([(e['event'], e['install'], e['outcome'], e['reason']) for e in events],
-                                     [('resident.adopt', root.name, 'waiting' if i < 3 else 'unproved',
-                                       'IndexContractError' if code == 'io error' else code)
-                                      for i, code in enumerate(reasons)])
-                    # A repaired installation actually starts or binds on the next due proof.
+                                     [('resident.adopt', root.name, outcome, code) for outcome, code in
+                                      [('waiting', 'selected_route_changed'),
+                                       ('waiting', 'selection_transition_pending'),
+                                       ('unproved', 'IndexContractError'),
+                                       ('unproved', 'provider_artifact_hash_mismatch')]])
+                    # Re-enter the first waiting reason, then bind and start a new reporting episode.
+                    service._report_proof_failure(project, reasons[0], 'waiting', decision)
                     with patch.object(service, '_accept_loop'):
                         adopt(7650)
                     self.assertEqual(attest.call_count, 9)
                     if warm:
                         self.assertEqual(owner.read_owner_state(manifest)['reason'], 'ready')
                         service._release(project, reason='starting')
+                        service._attest_failed(project, decision, manifest, IndexContractError(reasons[0]), 0)
+                        service._attest_failed(project, decision, manifest, IndexContractError(reasons[-1]), 0)
+                        events = [json.loads(line) for line in (root / 'events.jsonl').read_text().splitlines()]
+                        self.assertEqual([(e['outcome'], e['reason']) for e in events[-2:]],
+                                         [('waiting', reasons[0]), ('unproved', reasons[-1])])
                     else:
                         service.start_worker.assert_called_once()
+
+    def test_artifact_read_error_on_either_launch_check_allows_retry(self):
+        # The final authorization can also surface a stat error wrapped by the protected provider.
+        missing = IndexContractError('provider_artifact_missing')
+        missing.__cause__ = FileNotFoundError('fixture artifact')
+        for stage, failure_at, error in (('preflight', 1, OSError(5, 'fixture I/O')),
+                                         ('final', 3, OSError(5, 'fixture I/O')), ('stat', 3, missing)):
+            with self.subTest(stage=stage):
+                root = self.base / stage
+                root.mkdir(mode=0o700)
+                worker_path, provider_path = root / 'worker', root / 'provider'
+                worker_path.write_bytes(b'worker')
+                provider_path.write_bytes(b'provider')
+                node, module, model = (root / name for name in ('node', 'module', 'model'))
+                node.write_bytes(b'fixture node')
+                module.write_bytes(b'fixture module')
+                model.write_bytes(b'GGUFfixture model')
+                manifest = dict(self.manifest, serviceSocketPath=str(root / 'e.sock'),
+                                providerRelativePath=provider_path.name,
+                                workerSha256=provider.hash_file(str(worker_path)),
+                                providerArtifactSha256=provider.hash_file(str(provider_path)),
+                                nodePath=str(node), nodeSha256=provider.hash_file(str(node)),
+                                moduleEntryPath=str(module), moduleEntrySha256=provider.hash_file(str(module)),
+                                modelPath=str(model), modelSha256=provider.hash_file(str(model)),
+                                modelId=provider.default_embed_model_uri(),
+                                runtimeId='qmd-fork-f4633f9-node-llama-cpp-3.20.0',
+                                recipeId='qmd-query-format-single-document-v1',
+                                dependencyClosureApproved=True, dependencyClosureSha256='d' * 64)
+                manifest['embeddingFingerprint'] = provider.recipe_fingerprint(
+                    model_id=manifest['modelId'], model_sha256=manifest['modelSha256'],
+                    runtime_id=manifest['runtimeId'], recipe_id=manifest['recipeId'],
+                    provider_sha256=manifest['providerArtifactSha256'], worker_sha256=manifest['workerSha256'],
+                    node_sha256=manifest['nodeSha256'], module_entry_sha256=manifest['moduleEntrySha256'],
+                    closure_sha256=manifest['dependencyClosureSha256'])
+                decision = {'projectRoot': str(root)}
+                proof = {'providerManifest': manifest}
+                attempts = []
+                def start(row, admit):
+                    attempts.append(None)
+                    if len(attempts) == 1:
+                        return owner.start_attested_worker(row, admit, execution_state=root,
+                                                           worker=worker_path, provider=provider_path)
+                    return object()
+                service = svc.Service(root, bundle={'version': '1.1.1'},
+                                      prove=lambda project: (decision, proof, 'selected'),
+                                      attest=Mock(), admit=lambda: True, start_worker=start)
+                key = svc._worker_key(manifest)
+                digests = [manifest['workerSha256'], manifest['providerArtifactSha256']]
+                reads = digests[:failure_at - 1] + [error]
+                with patch.object(provider, 'hash_file', side_effect=reads) as hashed, \
+                     patch.object(svc.threading, 'Thread', InlineThread), \
+                     patch.object(svc.time, 'monotonic') as mono, patch.object(owner.time, 'time') as clock:
+                    for at in (100, 109, 110):
+                        clock.return_value = mono.return_value = at
+                        service._load(str(root), decision, proof, 'selected', manifest, key, 'seal')
+                        if at < 110:
+                            row = owner.read_owner_state(manifest)
+                            self.assertEqual((row['reason'], row['attempts'], row['terminal']),
+                                             ('startup_failed', 1, False))
+                            self.assertEqual(len(attempts), 1)
+                            self.assertNotIn('seal', service.attested)
+                    self.assertEqual((hashed.call_count, len(attempts), service.workers[key].state),
+                                     (failure_at, 2, 'ready'))
+
+    def test_compared_artifact_hash_mismatch_remains_terminal(self):
+        worker, artifact = self.base / 'worker', self.base / 'provider'
+        worker.write_bytes(b'attested worker')
+        artifact.write_bytes(b'attested provider')
+        manifest = dict(self.manifest, workerSha256=provider.hash_file(str(worker)),
+                        providerArtifactSha256=provider.hash_file(str(artifact)), modelSha256='d' * 64)
+        worker.write_bytes(b'changed worker')
+        decision = {'projectRoot': str(self.base)}
+        proof = {'providerManifest': manifest}
+        def start(row, admit):
+            return owner.start_attested_worker(row, admit, execution_state=self.base,
+                                               worker=worker, provider=artifact)
+        service = svc.Service(self.base, bundle={'version': '1.1.1'}, attest=Mock(),
+                              start_worker=start, admit=lambda: True)
+        with patch.object(svc.threading, 'Thread', InlineThread), \
+             patch.object(provider, 'start_owned_embed_service') as launch:
+            service._load(str(self.base), decision, proof, 'selected',
+                          manifest, svc._worker_key(manifest), 'seal')
+        row = owner.read_owner_state(manifest)
+        self.assertEqual((row['reason'], row['terminal'], row['attempts']), ('attestation_invalid', True, 3))
+        launch.assert_not_called()
+
+    def test_shared_worker_admission_preserves_other_install_terminal_deadline(self):
+        a, b = [str(self.base / name) for name in ('a', 'b')]
+        manifests = {}
+        for project in (a, b):
+            Path(project).mkdir(mode=0o700)
+            svc.register(project, root=self.base)
+            manifests[project] = dict(self.manifest, serviceSocketPath=str(Path(project) / 'e.sock'))
+        def prove(project):
+            return {'projectRoot': project}, {'providerManifest': manifests[project]}, 'selected'
+        attest = Mock(side_effect=IndexContractError('provider_recipe_mismatch'))
+        service = svc.Service(self.base, bundle={'version': '1.1.1'}, prove=prove, attest=attest,
+                              admit=Mock(side_effect=[True, False, True]), start_worker=Mock())
+        with patch.object(owner, '_owner_identity', side_effect=lambda d, p: d['projectRoot']), \
+             patch.object(svc.threading, 'Thread', InlineThread), \
+             patch.object(svc.time, 'monotonic') as mono, patch.object(owner.time, 'time') as clock:
+            for at, project in ((100, a), (101, b), (107, a), (3699, a), (3700, a)):
+                clock.return_value = mono.return_value = at
+                service._adopt(project)
+                row = owner.read_owner_state(manifests[a])
+                self.assertEqual((row['reason'], row['terminal'], row['at'], attest.call_count),
+                                 ('attestation_invalid', True, 100 if at < 3700 else 3700,
+                                  1 if at < 3700 else 2))
+                if project == b:
+                    self.assertEqual(owner.read_owner_state(manifests[b])['reason'], 'resource_deferred')
+        service.start_worker.assert_not_called()
 
     def test_worker_launch_rejection_also_reproves_after_one_hour(self):
         manifest = self.manifest

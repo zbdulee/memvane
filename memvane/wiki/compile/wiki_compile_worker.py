@@ -35,7 +35,7 @@ from memvane.settings import api as qmd_config, types as settings_types
 from memvane.kernel import cooldown as qmd_cooldown
 from memvane.settings import api as source_text
 from memvane.settings.api import select_collections
-from memvane.wiki.intake.api import append_source_jobs
+from memvane.wiki.intake.api import append_source_jobs, coalesce_claimed_jobs as dedup_jobs
 from memvane.wiki.intake.api import source_record as _source_record
 from memvane.wiki.workspace.api import (queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path,
                                         requeue_lines, append_jsonl, read_queue, claim_queue,
@@ -535,33 +535,6 @@ def compile_candidate(root: Path, candidate: dict, *, final_reason: str | None =
     return parsed if isinstance(parsed, dict) else None
 
 
-def _job_key(job: dict) -> tuple:
-    source = job.get("source") if isinstance(job.get("source"), dict) else {}
-    # The queue itself is project-local.  Including cwd made the same source
-    # appear distinct across macOS' /var -> /private/var spelling (and after a
-    # moved checkout), defeating crash-recovery coalescing.
-    return (source.get("path", ""), source.get("collection", ""))
-
-
-def dedup_jobs(rows: list) -> tuple[list, list]:
-    latest: dict = {}
-    order: list = []
-    for raw_line, job in rows:
-        if job is None:
-            continue
-        key = _job_key(job)
-        ts = _parse_ts(job.get("ts")) or 0.0
-        if key not in latest:
-            order.append(key)
-            latest[key] = (raw_line, job, ts)
-        elif ts >= latest[key][2]:
-            latest[key] = (raw_line, job, ts)
-    kept = [(latest[key][0], latest[key][1]) for key in order]
-    kept_lines = {latest[key][0] for key in order}
-    dropped = [raw for raw, job in rows if job is not None and raw not in kept_lines]
-    return kept, dropped
-
-
 def _partition_selected_jobs(rows, bound):
     """Separate a bounded prefix before dedup; retain unproved identities verbatim.
 
@@ -766,7 +739,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     """
     # Never accept a queue-supplied processed receipt. This field is populated
     # only from the stable source bytes this invocation actually read.
-    job.pop('_processedContentRevision', None)
+    previous_revision = job.pop('_processedContentRevision', None)
     job.pop('_backfillSkipped', None)
     from memvane.wiki.workspace import api as wiki_selected_laya
     selected_route = wiki_selected_laya.selected(root)
@@ -916,6 +889,9 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         except (OSError, RuntimeError, ValueError):
             append_jsonl(cpath, bounded_failure("deferred", job, "checkout_unavailable"))
             return False, True, []
+    if (isinstance(previous_revision, str) and re.fullmatch(r'[a-f0-9]{64}', previous_revision)
+            and previous_revision != source_revision['sha256']):
+        job.pop('partialCompile', None)
     job['_processedContentRevision'] = source_revision['sha256']
     if (job.get('initialBackfill') is not None
             and job.get('contentRevision') != source_revision['sha256']):
@@ -1403,8 +1379,12 @@ def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, 
     attempt, extractor call included, on every pass.
     """
     token = _LAST_REASON.set(None)
+    previous_revision = job.get('_processedContentRevision')
     try:
         result = process_job(root, config, compile_cfg, job, checkout=checkout)
+        if result[1] and job.get('partialCompile') is True and previous_revision is not None:
+            # A deferral before the stable read still owes the previous partial extraction.
+            job.setdefault('_processedContentRevision', previous_revision)
         reason = _LAST_REASON.get()
     finally:
         _LAST_REASON.reset(token)

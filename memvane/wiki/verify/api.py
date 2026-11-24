@@ -17,6 +17,11 @@ def run(root, config, compile_cfg, produced_targets=None):
     return implementation(root, config, compile_cfg, produced_targets=produced_targets)
 
 
+def enqueue_replacement(root, config, wiki, queue, job, selected, stage):
+    from memvane.wiki.verify.pending_handoff import enqueue
+    return enqueue(root, config, wiki, queue, job, selected, stage)
+
+
 def pending_revision_target(root, config, revision):
     from memvane.wiki.verify.pending_replacement import pending_revision_target as implementation
     return implementation(root, config, revision)

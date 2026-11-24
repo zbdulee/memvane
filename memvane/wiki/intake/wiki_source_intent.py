@@ -14,6 +14,9 @@ Hashed sync rows name a content revision. PostToolUse rows carry the latest
 pending refresh event and the worker reads its source on claim.
 """
 
+from itertools import chain
+import json
+
 # 큐 행에 원문 revision을 남기는 필드. hash가 있는 경로의 행에만 붙는다.
 REVISION_FIELD = "contentRevision"
 
@@ -80,7 +83,7 @@ def source_key(record):
     if not isinstance(record, dict) or not isinstance(record.get("source"), dict):
         return None
     source = record["source"]
-    key = (source.get("collection"), source.get("path"), record.get("trigger"))
+    key = (source.get("collection"), source.get("path"), record.get("trigger", POST_TOOL_TRIGGER))
     if not all(isinstance(value, str) and value for value in key):
         return None
     if record.get('sourceDelete') is True:
@@ -108,6 +111,47 @@ def live_key(record):
     return (*key, tuple(sorted(route.items())))
 
 
+def merge_source_job(latest, others):
+    """Carry an unfinished extraction across observations of the same live operation."""
+    if not isinstance(latest, dict):
+        return latest
+    revisions = set()
+    for row in chain((latest,), others):
+        if row.get('partialCompile') is True:
+            sha = row.get('_processedContentRevision')
+            revisions.add(sha if isinstance(sha, str) else None)
+    if not revisions:
+        return latest
+    merged = dict(latest, partialCompile=True)
+    # A queue observation can be stale. Only the worker's next stable read can dismiss the retry.
+    if len(revisions) == 1 and None not in revisions:
+        merged['_processedContentRevision'] = next(iter(revisions))
+    else:
+        # Competing partial revisions or a legacy marker: retry the current contents conservatively.
+        merged.pop('_processedContentRevision', None)
+    return latest if merged == latest else merged
+
+
+def coalesce_claimed_jobs(rows):
+    """Keep the newest observation and unfinished work per installation and source operation."""
+    from memvane.wiki.workspace.api import parse_ts
+    groups = {}
+    for index, (raw, job) in enumerate(rows):
+        if job is not None:
+            key = live_key(job)
+            groups.setdefault(index if key is None else key, []).append((raw, job))
+    kept, dropped = [], []
+    for group in groups.values():
+        # An equal timestamp means the later queue row is the newer observation.
+        newest = max(range(len(group)), key=lambda i: (parse_ts(group[i][1].get('ts')) or 0.0, i))
+        raw, latest = group[newest]
+        others = [item for i, item in enumerate(group) if i != newest]
+        merged = merge_source_job(latest, (job for _, job in others))
+        kept.append((raw if merged is latest else json.dumps(merged, ensure_ascii=False), merged))
+        dropped.extend(line for line, _ in others)
+    return kept, dropped
+
+
 def queue_revision(record):
     """The replay token already carried by this producer's row."""
     if not isinstance(record, dict):
@@ -126,7 +170,7 @@ def without_queued(candidates, queued_revisions):
     for candidate in candidates:
         row = candidate[2]
         token = queue_revision(row)
-        if token is None or queued_revisions.get(live_key(row)) != token:
+        if token is None or row.get('partialCompile') is True or queued_revisions.get(live_key(row)) != token:
             fresh.append(candidate)
     return fresh
 

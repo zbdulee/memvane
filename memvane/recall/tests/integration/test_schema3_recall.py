@@ -444,6 +444,8 @@ class Schema3Recall(RecallInstallCase):
                          [('laya-sync', str(self.project), True)])
 
     def test_terminal_provider_serves_prompt_lexical_rows_and_records_the_reason(self):
+        from memvane.kernel.errors import IndexContractError
+        from memvane.provider import api as provider
         from memvane.journal.api import select_route, verify_selected_route
         self.publish_changed_lexical_head()
         self.install.provider.admit_queries()
@@ -459,6 +461,33 @@ class Schema3Recall(RecallInstallCase):
         self.assertEqual((event['outcome'], event['vector_fallback'], event['notes']),
                          ('served', 'selected_provider_start_failed', ['laya_vector_selected_provider_start_failed']))
         self.assertEqual(self.wakes, [])
+
+        with mock.patch.object(provider, 'query_vectors', side_effect=IndexContractError('provider_identity_mismatch')) as asked:
+            with self.assertRaisesRegex(HostResponseError, '^selected_provider_identity_transition$'):
+                self.recall(PROMPT)
+        asked.assert_called_once()
+        refused = [row for row in self.install.events() if row.get('event') == 'recall'][-1]
+        self.assertEqual((refused['outcome'], refused['reason']), ('refused', 'selected_provider_identity_transition'))
+        self.assertFalse(refused.get('cards'))
+
+    def test_partial_vector_only_injection_counts_as_semantic_in_the_summary(self):
+        import io
+        import runpy
+        from contextlib import redirect_stdout
+        from types import SimpleNamespace
+        self.publish_changed_lexical_head()
+        self.install.provider.admit_queries()
+        with mock.patch.dict(os.environ, {'MEMVANE_VECTOR_ACCEL': 'off'}):
+            context, _, event = self.recall('zqnoftsmatchx')
+        self.assertIn('zqheronx', context)
+        self.assertEqual((event['semantic'], event['semanticOnlyInjected']), ('partial', 1))
+        logs = runpy.run_path(str(REPOSITORY / 'skills/logs/scripts/logs.py'))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            logs['summary']([event], SimpleNamespace(hours=None))
+        self.assertIn('semantic=1/1 (100.0%)', output.getvalue())
+        self.assertIn('fullCoverage=0/1', output.getvalue())
+        self.assertIn('semantic python: 1/1 (100.0%)', output.getvalue())
 
     def test_the_learning_selector_receives_the_published_rows(self):
         seen = []

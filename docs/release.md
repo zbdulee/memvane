@@ -97,15 +97,16 @@ whatever the window shows.
 | sessions | One interactive session per host in the project directory. | RS-HOSTENV: each session's SessionStart row exists; otherwise that host's later items are `BLOCKED` |
 | onboarding | A request to onboard the project and apply the plan. | RS-ONBOARD |
 | new sessions | The operator ends the two sessions and starts them again: a session started before the onboarding has no SessionStart row in the project's log, and every later item of that host would be `BLOCKED`. | RS-HOSTENV |
-| recall | After the vector generation is published: a short prompt and a 12,000 character prompt, each targeting a different card. | RS-RECALL per host |
+| recall | After a searchable generation is published, submit a short prompt and a 12,000 character prompt, each targeting a different card. | RS-RECALL per host |
 | repeat | The short prompt again in the same session. | RS-DEDUP |
 | edit | A request to append a fixed paragraph to one file with the host's edit tool. | RS-EDIT per host |
 | sync | The tool writes, removes and commits exactly the three changed documents and their cards (nothing else in the project is touched, and the commit names only those paths), records the time of the account's newest event row, and asks one host session to refresh the index: a change made outside a hook wakes no sync by itself. In the log of the install that recorded the request it waits for an indexed sync pass and a publish later than the request's row, and exits non-zero without them. A run cut in the middle is run again with the same record directory. A prompt then names all three documents. Only a sync pass and a publish later than the recorded time count; without the time nothing is changed. | RS-SYNC |
 | verdict | The tool copies the listed fields of the project's event rows and writes the gate files. | — |
 
-A recall passes when its row is `semantic: complete` with at least one
-candidate and is either served with the targeted card's hash or a real
-zero-card selection. The long prompt also needs at least two query chunks.
+RS-RECALL requires at least one candidate. A complete or partial semantic
+search passes when it serves the targeted card's path and hash. A complete
+search can also pass with an explicit zero-card selection. The long prompt
+also needs at least two query chunks.
 Time thresholds come from the first run of a version line, which records
 values instead of a verdict. A host outage, an expired login or an
 unreachable account is `BLOCKED`, and so is every Codex item before the user

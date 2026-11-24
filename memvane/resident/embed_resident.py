@@ -122,6 +122,17 @@ def owner_lock_held(manifest):
         os.close(fd)
 
 
+def _failure_window_active(row):
+    """Whether a terminal or exhausted record still blocks a new attempt."""
+    if row['reason'] in _TRANSIENT_FAILURES:
+        cooldown = _FAILURE_COOLDOWN_SECONDS
+    elif row['reason'] == 'attestation_invalid':
+        cooldown = _ATTESTATION_RETRY_SECONDS
+    else:
+        return True
+    return 0 <= time.time() - row['at'] < cooldown
+
+
 def _failure_decision(manifest, *, own_lock=False):
     row = read_owner_state(manifest)
     if row is None:
@@ -131,15 +142,12 @@ def _failure_decision(manifest, *, own_lock=False):
         # Older services persisted transient exhaustion as terminal. Keep one
         # fixed cooldown, including across restarts, without renewing it on
         # each prompt. A wall-clock rollback must not make it indefinite.
-        elapsed = time.time() - row['at']
-        if 0 <= elapsed < _FAILURE_COOLDOWN_SECONDS:
+        if _failure_window_active(row):
             raise ResourceDeferred('laya_service_backoff')
         return
     if row['terminal']:
-        if row['reason'] == 'attestation_invalid':
-            elapsed = time.time() - row['at']
-            if not 0 <= elapsed < _ATTESTATION_RETRY_SECONDS:
-                return  # A fresh full proof is due, also after a clock rollback.
+        if not _failure_window_active(row):
+            return  # A fresh full proof is due, also after a clock rollback.
         raise IndexContractError('provider_start_failed')
     delay = (5 if row['reason'] in ('resource_deferred', 'starting') else
              min(300, 5 * 2 ** max(0, row['attempts'] - 1)))

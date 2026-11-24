@@ -222,11 +222,11 @@ def _append_jsonl(path, records):
         # Source producers also include pending-refresh recovery and shared waits.
         # One producer batch can contain multiple observations of the same source.
         # Keep its first position and latest row; opaque jobs each retain their slot.
-        latest = {}
+        batches = {}
         for index, record in enumerate(records):
             key = intent.live_key(record)
-            latest[index if key is None else key] = record
-        candidates = [(None, None, record) for record in latest.values()]
+            batches.setdefault(index if key is None else key, []).append(record)
+        candidates = [(None, None, intent.merge_source_job(batch[-1], batch[:-1])) for batch in batches.values()]
         _append_unqueued(path, candidates, len(candidates))
         return
     lock_path = _queue_lock_path(path)
@@ -272,8 +272,9 @@ def _store_source_rows(path, records, lines, groups):
         _write_jsonl(path, records)
         return
     for row in records:
+        group = groups.get(intent.live_key(row), ())
+        row = intent.merge_source_job(row, (old for _, old in group))
         encoded = (json.dumps(row, ensure_ascii=False, sort_keys=True) + '\n').encode('utf-8')
-        group = groups.get(intent.live_key(row))
         if group:
             lines[group[0][0]] = encoded
             for index, _ in group[1:]:

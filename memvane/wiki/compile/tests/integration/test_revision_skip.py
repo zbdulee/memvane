@@ -179,26 +179,24 @@ class RevisionSkipChecks(FixtureCase):
             self.assertEqual(wiki_freshness.latest_unresolved_pending(self.root, 'docs/source.md')['eventId'],
                              event['eventId'])
 
-            # Unchanged model summary, different source bytes. Both jobs retain
-            # their exact pending path; the old verdict cannot publish the new one.
+            # The verifier returns its claim. Only the new source revision is
+            # handed to the next verifier, even though the summary is unchanged.
+            claimed.replace(verify_queue)
             self.source.write_text('Synthetic source after review was queued\n')
             self.process('post_tool_source')
-            second = json.loads(verify_queue.read_text())
+            reviewable = [row for row in map(json.loads, verify_queue.read_text().splitlines())
+                          if '_pendingCleanup' not in row]
+            self.assertEqual(len(reviewable), 1)
+            second = reviewable[0]
             newest = self.root / second['pendingPath']
             self.assertNotEqual(newest, old_pending)
             self.assertEqual(len(self.extractor_calls), 2)
             self.assertIn(second['sourceHash'], newest.read_text())
-            # Review only the stale job. A concurrent claim still owns the new job.
-            claimed.write_text(json.dumps(second) + '\n')
-            verify_queue.write_text(json.dumps(first) + '\n')
+            self.assertFalse(old_pending.exists())
+            self.assertEqual(list(live.parent.glob('.*.pending-*')), [newest])
             verifier = FakeEngines({'verify': {'verdict': 'pass', 'reasons': [],
                 'claims': [{'claim': 'Synthetic source', 'supported': True, 'quote': 'Synthetic source',
                             'sourcePath': 'docs/source.md'}]}}).install(self)
-            self.assertEqual(verification_stamp.run(self.root, self.config, cfg)['processed'], 1)
-            self.assertEqual(verifier.calls, [])
-            self.assertFalse(old_pending.exists())
-            self.assertEqual(list(live.parent.glob('.*.pending-*')), [newest])
-            claimed.replace(verify_queue)
             self.assertEqual(verification_stamp.run(self.root, self.config, cfg)['processed'], 1)
             self.assertEqual([call['task'] for call in verifier.calls], ['verify'])
             self.assertIn(second['sourceHash'], live.read_text())
@@ -302,6 +300,86 @@ class RevisionSkipChecks(FixtureCase):
         record = wiki_compile_enqueue.source_record(
             str(included), str(self.root), str(self.root), self.config, 'claude')
         self.assertEqual(record['source']['path'], 'docs/build-notes.md')
+
+    def test_claim_consumes_force_backfill_and_edit_independently(self):
+        self.compile_verified_once()
+        self.decision['storePath'] = str(self.home / 'store.sqlite')
+        self.extractor_calls.clear()
+        revision = self.revisions[0][0]['sha256']
+        queue = self.root / '.memvane/compile/source-queue.jsonl'
+        jobs = [dict(self.job('post_sync_source'), forceRecompile=True, contentRevision=revision),
+                dict(self.job('session_start_source'), initialBackfill='f' * 32, contentRevision=revision),
+                self.job('post_tool_source')]
+        wiki_compile_enqueue.append_source_jobs(queue, jobs)
+        self.assertEqual(len(queue.read_text().splitlines()), 3)
+        with patch.object(worker, '_run_verify_pass'), patch.object(wiki_compile_enqueue, 'settle_job') as settled, \
+                patch.object(worker, 'compile_candidate', return_value={'action': 'unchanged'}):
+            result = self.run_main()
+        self.assertEqual((result['processed'], result['completed'], result['remaining']), (3, 3, 0))
+        self.assertEqual([(call.args[1].get('forceRecompile'), call.args[1].get('initialBackfill'))
+                          for call in settled.call_args_list], [(True, None), (None, 'f' * 32), (None, None)])
+        self.assertEqual(self.extractor_calls, ['post_sync_source'])
+        self.assertEqual(queue.read_text(), '')
+
+    def test_partial_retry_survives_resave_and_recovered_claim(self):
+        cfg = self.config['compile']
+        cfg['semanticDedup'] = {'enabled': False}
+        queue = self.root / '.memvane/compile/source-queue.jsonl'
+        verify = queue.with_name('verify-queue.jsonl')
+        target = self.wiki / 'concepts/source-decision.md'
+        siblings = []
+
+        def write(root, candidate):
+            if candidate['title'] == 'Sibling':
+                siblings.append(candidate['title'])
+                if len(siblings) == 1:
+                    return {'action': 'rejected'}
+            out = io.StringIO()
+            with redirect_stdout(out):
+                wc._compile_locked(root, self.config, cfg, self.wiki, candidate, False)
+            return json.loads(out.getvalue() or '{}')
+
+        def edit():
+            wiki_compile_enqueue.enqueue_payload({'hook_event_name': 'PostToolUse', 'cwd': str(self.root),
+                'engine': 'claude', 'tool_input': {'file_path': str(self.source)}})
+
+        with patch.object(worker, 'compile_candidate', side_effect=write), \
+                patch.object(wiki_selected_laya, 'request_sync'), patch.object(wiki_selected_laya, 'request_compile'), \
+                patch.object(worker, '_run_verify_pass'):
+            self.process('post_tool_source')
+            self.verify(target)
+            verify.write_text('')
+            self.source.write_text('changed source\n')
+            edit()
+            two = {'candidates': [{'title': 'Source decision', 'summary': 'Cards cite source.'},
+                                  {'title': 'Sibling', 'summary': 'Additional fact.'}]}
+            with patch.object(worker, 'run_extractor', return_value=(two, None, 0)) as extract:
+                first = self.run_main()
+                self.assertEqual(first['remaining'], 1)
+                old = json.loads(queue.read_text())
+                self.assertTrue(old['partialCompile'])
+                revision = self.project.revision(self.source)['sha256']
+                self.assertEqual(old['_processedContentRevision'], revision)
+                self.assertTrue((self.root / json.loads(verify.read_text())['pendingPath']).is_file())
+                self.source.write_bytes(self.source.read_bytes())
+                edit()
+                retry = json.loads(queue.read_text())
+                self.assertNotEqual(retry['pendingRefresh'], old['pendingRefresh'])
+                self.assertEqual((retry.get('partialCompile'), retry.get('_processedContentRevision')),
+                                 (True, revision))
+                # An orphan or a concurrent requeue can put a newer, unmarked edit beside the retry.
+                with queue.open('a') as stream:
+                    stream.write(json.dumps(dict(self.job('post_tool_source'), ts='2099-01-01T00:00:00Z')) + '\n')
+                result = self.run_main()
+            self.assertEqual((result['completed'], result['remaining'], extract.call_count), (1, 0, 2))
+            self.assertEqual(siblings, ['Sibling', 'Sibling'])
+            self.assertTrue((target.parent / 'sibling.md').is_file())
+
+    def test_old_partial_retry_does_not_force_a_different_verified_revision(self):
+        self.compile_verified_once()
+        retry = dict(self.job('post_tool_source'), partialCompile=True, _processedContentRevision='0' * 64)
+        self.assertEqual(worker.process_job(self.root, self.config, self.config['compile'], retry), (True, False, []))
+        self.assertEqual(self.extractor_calls, ['post_tool_source'])
 
     def test_partial_failure_is_retried_even_after_a_sibling_is_verified(self):
         calls = []
