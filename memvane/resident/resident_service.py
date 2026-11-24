@@ -1224,7 +1224,7 @@ class Service:
             # the path that binds, never on a tick that merely waits.
             try:
                 # A warm worker must honor this install's persisted cooldown too.
-                previous = _failure_decision(manifest)
+                previous = _failure_decision(manifest, installation=True)
             except Exception:
                 os.close(owner_fd)
                 self._later(project, _adoption_delay(manifest))
@@ -1293,7 +1293,8 @@ class Service:
 
     def _load(self, project, decision, proof, mode, manifest, key, seal):
         from memvane.resident.embed_resident import (
-            _adoption_delay, _failure_decision, _record_process_outcome, _restore_process_retry, _write_state)
+            _FAILURE_COOLDOWN_SECONDS, _adoption_delay, _expire_process_retry, _failure_decision, _record_process_outcome,
+            _restore_process_retry, _write_state)
         with self.lock:
             worker = self.workers.get(key)
             if worker is None:
@@ -1310,27 +1311,26 @@ class Service:
                     worker.handle.stop()
                 worker.handle = None
                 _record_process_outcome(worker, manifest, 'worker_exited')
+            now = time.monotonic()
+            if worker.retry_at > now:
+                self.retry[project] = min(worker.retry_at, now + _FAILURE_COOLDOWN_SECONDS)
+                return
+            if self.draining.is_set() or worker.loading or worker.state == 'terminal':
+                return
             try:
-                # Registry adoption obeys the durable budget after a restart.
-                # Observe worker death first so its retry clock overlaps the
-                # disk backoff, rather than adding a second five-second wait.
-                previous = _failure_decision(manifest)
+                if worker.state == 'cooldown':
+                    _expire_process_retry(worker, manifest)
+                previous = _failure_decision(manifest, installation=True)
             except Exception:
                 self._later(project, _adoption_delay(manifest))
                 return
-            if (self.draining.is_set() or worker.loading
-                    or worker.retry_at > time.monotonic() or worker.state == 'terminal'):
-                return
-            if worker.state == 'cooldown':
-                worker.failures = 0
-                worker.state = 'starting'
             if not self.cold_load.acquire(blocking=False):
                 return  # another profile is loading; a later tick retries
             worker.loading = True
             prior_attempts = previous['attempts'] if previous else 0
         try:
             with suppress(Exception):
-                _write_state(manifest, 'starting', attempts=min(3, max(prior_attempts, worker.failures)))
+                _write_state(manifest, 'starting', attempts=prior_attempts)
             thread = threading.Thread(target=self._load_worker,
                                       args=(project, decision, proof, mode, manifest,
                                             worker, seal, prior_attempts),
