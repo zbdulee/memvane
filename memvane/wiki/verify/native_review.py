@@ -61,7 +61,8 @@ def _protect_predecessors(root, queue, successor):
     for work in waiting(queue):
         state = work.state
         left = state['binding']['job']
-        if left['targetPath'] != right['targetPath'] or _alive(state['proof'].get('owner')):
+        if (left['targetPath'] != right['targetPath'] or _alive(state['proof'].get('owner'))
+                or 'staleCleanup' in state['proof']):
             continue
         if state['binding'].get('action') == 'create':
             from memvane.wiki.verify.pending_replacement import job_revisions
@@ -130,13 +131,13 @@ def waiting(queue):
     return result
 
 
-def references(queue, *, exclude_parent=None):
+def references(queue, *, exclude_parent=None, exclude_work=None):
     all_work = Work.entries(queue, 'hold', control_only=True)
     paths = set()
     uncertain = bool(all_work.issues)
     for work in all_work:
         state = work.state
-        if (_ours(work) and state['phase'] != 'finished' and
+        if (_ours(work) and state['phase'] != 'finished' and state['id'] != exclude_work and
                 not (exclude_parent and state['binding'].get('parent') == exclude_parent and state['phase'] == 'reserved')):
             job = state['binding'].get('job')
             if not isinstance(job, dict) or not isinstance(job.get('targetPath'), str):
@@ -198,6 +199,7 @@ def process(queue, selected, work, callback):
         return outcome, keep
     finally:
         with _locked(queue):
+            previous = {k: v for k, v in work.state['proof'].items() if k != 'owner'}
             if keep:
                 work.commit('held', proof=previous)
             else:

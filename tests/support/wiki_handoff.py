@@ -9,3 +9,15 @@ waiting_reviews = verifier.waiting_reviews
 deferred_replacements = verifier.deferred_replacements
 retained_batches = verifier.retained_batches
 full_copy_quota = verifier.full_copy_quota
+
+
+def held_replacement(queue, sha):
+    matching = [work for work in waiting_reviews(queue)
+                if work.state['binding']['job'].get('pendingPath') and
+                any(row['sha256'] == sha for row in work.state['binding']['job']['sourceRevisions'])]
+    work, = matching
+    return work
+
+
+def during_native_review(queue, bound, work, callback):
+    return verifier.during_native_review(queue, bound, work, callback)

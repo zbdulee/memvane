@@ -9,6 +9,7 @@ import stat
 from pathlib import Path
 import re
 
+from memvane.kernel.atomic_rename import rename_noreplace
 from memvane.settings import types as settings_types
 from memvane.wiki.card import api as yaml_scalars, types as wiki_markers
 from memvane.wiki.workspace import api as cp, types as ct
@@ -199,11 +200,11 @@ def source_freshness(root: Path, config: dict, job: dict) -> dict | None:
         {"sourceRevisions": revisions}, root, yaml_scalars.allow_roots_of(config))
 
 
-def _cleanup_pending(root, snapshots, extra_rows, paths, uncertain):
+def _cleanup_pending(root, snapshots, extra_rows, paths, uncertain, *, detach=None):
     """Called inside the card and queue locks, before the claim return commits."""
     if uncertain:
         return False
-    from memvane.wiki.workspace.handoff.api import bounded_rows, MAX_BYTES, MAX_ROWS
+    from memvane.wiki.workspace.handoff.api import bounded_rows, occurrence, MAX_BYTES, MAX_ROWS
     referenced = set()
 
     def collect(raw):
@@ -212,11 +213,8 @@ def _cleanup_pending(root, snapshots, extra_rows, paths, uncertain):
         for line in raw.split(b'\n'):
             if not line.strip():
                 continue
-            try:
-                job = json.loads(line)
-            except (ValueError, UnicodeError, RecursionError):
-                return False
-            if not isinstance(job, dict):
+            job, _ = occurrence(line + b'\n')
+            if job is None:
                 return False
             pending = job.get('pendingPath')
             if isinstance(pending, str):
@@ -242,6 +240,10 @@ def _cleanup_pending(root, snapshots, extra_rows, paths, uncertain):
         if path in referenced:
             deferred = True
             continue
+        if detach is not None:
+            if not detach(path, old):
+                deferred = True
+            continue
         if path.parent.resolve() != path.parent:
             continue
         try:
@@ -254,3 +256,93 @@ def _cleanup_pending(root, snapshots, extra_rows, paths, uncertain):
         except OSError:
             return False
     return not deferred
+
+
+def _owned_stale(aside, old, digest):
+    from memvane.wiki.workspace.handoff.api import evidence
+    st = aside.lstat()
+    if ((st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != old[:4]
+            or not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != os.getuid()):
+        return False
+    raw, _, _ = evidence(aside.parent, aside.name, old[2])
+    return hashlib.sha256(raw).hexdigest() == digest
+
+
+def _detach_stale(work, path, old):
+    from memvane.wiki.verify.candidate_stage import _parent, _present
+    proof = work.state['proof']
+    evidence_key = proof['staleImage']
+    aside = path.with_name('.pr-' + work.state['id'])
+    with _parent(path, evidence_key['parentInode']) as parent:
+        moved_here = False
+        if not _present(aside):
+            if not _present(path):
+                os.fsync(parent)
+                return True
+            st = path.lstat()
+            current = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+            if current != old or proof.get('staleDetached'):
+                return True  # A different generation remains at the original name.
+            rename_noreplace(parent, path.name, aside.name)
+            moved_here = True
+            os.fsync(parent)
+        if _present(path):
+            return False  # A new occupant and the detached occurrence must both remain available.
+        if not _owned_stale(aside, old, evidence_key['sha256']):
+            if not moved_here:
+                return False
+            rename_noreplace(parent, aside.name, path.name)
+            os.fsync(parent)
+            return True
+        if not proof.get('staleDetached'):
+            work.commit('held', proof=dict(proof, staleDetached=True))
+        if not _owned_stale(aside, old, evidence_key['sha256']):
+            return False
+        os.unlink(aside.name, dir_fd=parent)
+        os.fsync(parent)
+        return True
+
+
+def finish_stale_work(root, config, work, job, *, fingerprint=None):
+    """Once audited, retry only cleanup of this exact obsolete candidate under the card lock."""
+    from memvane.wiki.workspace.handoff.api import check_cleanup, evidence
+    from memvane.wiki.verify import pending_handoff
+    from memvane.wiki.verify.wiki_verify_worker import _cleanup_job_key, _valid_cleanup_marker
+    path = root / job['pendingPath']
+    try:
+        if fingerprint is not None:
+            if os.path.lexists(path.with_name('.pr-' + work.state['id'])):
+                return False, True
+            raw, node, directory = evidence(path.parent, path.name, fingerprint[2])
+            identity = tuple(node[key] for key in ('dev', 'ino', 'size', 'mtime_ns', 'ctime_ns'))
+            if identity != tuple(fingerprint):
+                return False, True
+            marker = {'fingerprint': list(fingerprint), 'jobKey': _cleanup_job_key(job)}
+            image = {'parentInode': directory['ino'], 'sha256': hashlib.sha256(raw).hexdigest()}
+            work.commit('held', proof=dict(work.state['proof'], staleCleanup=marker, staleImage=image))
+        marker = work.state['proof']['staleCleanup']
+        if not _valid_cleanup_marker(dict(job, _pendingCleanup=marker)):
+            return False, True
+    except (KeyError, OSError, ValueError):
+        return False, True
+
+    def checked(paths, unknown):
+        refs = pending_handoff.retained_references(work.queue, exclude_work=work.state['id'])
+        if refs is None or job['pendingPath'] in refs:
+            return False
+        aside = path.with_name('.pr-' + work.state['id'])
+        if not work.state['proof'].get('staleDetached') and not os.path.lexists(aside) and os.path.lexists(path):
+            freshness = source_freshness(root, config, job) or {}
+            if freshness.get('reason') != 'content_hash_mismatch':
+                if freshness.get('state') == 'fresh':
+                    proof = {key: value for key, value in work.state['proof'].items()
+                             if key not in ('staleCleanup', 'staleImage')}
+                    work.commit('held', proof=proof)
+                return False
+        return _cleanup_pending(root, {path: tuple(marker['fingerprint'])}, b'', paths, unknown,
+                                detach=lambda path, old: _detach_stale(work, path, old))
+    try:
+        finished = check_cleanup(work.queue, checked)
+    except (KeyError, OSError, ValueError):
+        return False, True
+    return finished, not finished

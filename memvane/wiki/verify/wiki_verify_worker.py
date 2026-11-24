@@ -67,7 +67,7 @@ from memvane.wiki.card.api import card_sources_allowed, parse_frontmatter
 from memvane.wiki.card import api as yaml_scalars
 from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, append_jsonl, read_queue, claim_queue
 from memvane.wiki.verify import promotion
-from memvane.wiki.verify.pending_replacement import _cleanup_pending
+from memvane.wiki.verify.pending_replacement import _cleanup_pending, finish_stale_work
 from memvane.wiki.verify.pending_replacement import pending_replacement, job_revisions, pending_matches_job, card_state, source_freshness, incompatible_cards
 from memvane.wiki.verify.verify_ledger import ledger_writable, source_body_hash
 from memvane.wiki.verify.verification_stamp import stamp_verification, render_verification, write_rendered_verification
@@ -441,7 +441,7 @@ def _unproved_pending(job, pending, snapshots, log_path):
     return True, False
 
 
-def _settle_stale_revision(root, config, job, pending, text, snapshots, log_path, selected):
+def _settle_stale_revision(root, config, job, pending, text, snapshots, log_path, selected, stale_work=None):
     """Under the writer lock, authorize cleanup only for this exact obsolete candidate."""
     reason = 'pending_source_changed'
     if pending.resolve() != pending or snapshots is None or pending not in snapshots:
@@ -467,6 +467,8 @@ def _settle_stale_revision(root, config, job, pending, text, snapshots, log_path
     workspace_files.append_activity(root, 'stale_replacement', pending.relative_to(wiki).as_posix(),
                                     '', bound=selected, reason=reason)
     wake_pending_retirement(root)
+    if stale_work is not None:
+        return finish_stale_work(root, config, stale_work, job, fingerprint=fingerprint)
     return True, False
 
 
@@ -848,7 +850,7 @@ def apply_verify_verdict_locked(
 
 
 def _replay_pending(root, config, job, target, live_target, expected, log_path,
-                    snapshots, checkout, selected_route):
+                    snapshots, checkout, selected_route, stale_work=None):
     try:
         with cp.card_write_lock(root), workspace_files.mutation_lock(root):
             recovered = promotion.recover(root, job, target, live_target)
@@ -897,7 +899,7 @@ def _replay_pending(root, config, job, target, live_target, expected, log_path,
                 if freshness and freshness.get('state') != wiki_markers.FRESH:
                     if freshness.get('reason') == 'content_hash_mismatch':
                         return _settle_stale_revision(root, config, job, target, staged_text,
-                                                      snapshots, log_path, selected_route)
+                                                      snapshots, log_path, selected_route, stale_work)
                     return False, True
                 _, gate_reason = _provenance_gate(job, checkout)
                 if gate_reason == 'provenance_checkout_changed':
@@ -923,7 +925,7 @@ def _replay_pending(root, config, job, target, live_target, expected, log_path,
 
 def process_verify_job(
     root: Path, config: dict, compile_cfg: dict, vcfg: dict, job: dict, log_path: Path,
-    *, snapshots: dict | None = None,
+    *, snapshots: dict | None = None, stale_work=None,
 ) -> tuple[bool, bool]:
     """Return (processed, preserve_job) — wiki_compile_worker.process_job과 동일 계약."""
     from memvane.wiki.workspace import api as wiki_selected_laya
@@ -968,7 +970,7 @@ def process_verify_job(
     if staged is not None:
         target, expected = staged
         replay = _replay_pending(root, config, job, target, live_target, expected, log_path,
-                                 snapshots, checkout, selected_route)
+                                 snapshots, checkout, selected_route, stale_work)
         if replay is not None:
             return replay
 
@@ -1050,7 +1052,7 @@ def process_verify_job(
         if staged is not None and freshness.get('reason') == 'content_hash_mismatch':
             with cp.card_write_lock(root), workspace_files.mutation_lock(root):
                 return _settle_stale_revision(root, config, job, target, text, snapshots,
-                                              log_path, selected_route)
+                                              log_path, selected_route, stale_work)
         log_verdict(log_path, {
             **base_record(job), "result": "deferred", "reason": "source_changed_before_verify",
             "freshnessReason": freshness.get("reason", ""),
@@ -1448,6 +1450,11 @@ def _process_private(root, config, compile_cfg, vcfg, work, log_path):
     image = work.read('image') if 'image' in work.state['blobs'] else None
     try:
         staged = pending_replacement(root, wiki, job, live)
+        if 'staleCleanup' in work.state['proof']:
+            if not staged or staged[0].parent.resolve() != staged[0].parent:
+                return False, True
+            with cp.card_write_lock(root), workspace_files.mutation_lock(root):
+                return finish_stale_work(root, config, work, job)
         path = staged[0] if staged else live
         intent = promotion.has_intent(root, job)
         if not intent:
@@ -1478,7 +1485,7 @@ def _process_private(root, config, compile_cfg, vcfg, work, log_path):
         snapshots, _ = _pending_snapshots(root, config, [(None, job)])
     except (OSError, KeyError, RuntimeError, ValueError):
         return False, True
-    return process_verify_job(root, config, compile_cfg, vcfg, job, log_path, snapshots=snapshots)
+    return process_verify_job(root, config, compile_cfg, vcfg, job, log_path, snapshots=snapshots, stale_work=work)
 
 
 def _return_cleanup(root, queue, pending_snapshots, pending_jobs, remaining, extra_rows, paths, uncertain):

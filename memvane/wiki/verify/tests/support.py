@@ -115,6 +115,16 @@ class VerifyCase(FixtureCase):
         self.assertRegex(self.card_now(), '(?m)^status: %s$' % status)
 
 
+def during_native_review(queue, bound, work, callback):
+    from memvane.wiki.verify import native_review
+
+    def retry(owned):
+        callback(owned.read('raw'))
+        return False, True
+
+    assert native_review.process(queue, bound, work, retry) == (False, True)
+
+
 def waiting_reviews(queue):
     from memvane.wiki.verify.native_review import waiting
     return waiting(queue)

@@ -177,6 +177,13 @@ def withdraw(queue):
     return ready
 
 
+def check_cleanup(queue, check):
+    """Reconcile returns and inspect every candidate reference under the queue lock."""
+    with queue_return.queue_locked(queue):
+        queue_return.resume(queue)
+        return check(*queue_return.cleanup_inputs(queue))
+
+
 def delivery_pending(queue, name):
     folder = queue_return._dir(queue)
     return folder is not None and ((folder / ('ready-' + name)).exists() or

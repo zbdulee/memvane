@@ -392,21 +392,28 @@ def _privatize_claim(queue, claim, rows):
         return private
 
 
+def cleanup_inputs(queue, claim=None):
+    """Bound all sibling occurrences under the verify queue lock."""
+    folder = _dir(queue)
+    from itertools import chain, islice
+    public = (p for p in queue.parent.glob(queue.name + '.claimed.*') if p != claim)
+    private = () if folder is None else (p for p in folder.iterdir()
+                if p != claim and (p.name == queue.name or p.name.startswith(('native.claimed.', 'ready-', 'fragment-'))))
+    other = list(islice(chain(public, private), 65))
+    uncertain = len(other) > 64
+    if queue.exists():
+        other.append(queue)
+    return other, uncertain
+
+
 def _finish_verified(queue, claim, rows, remaining, cleanup):
     """Under the caller's card lock, check all remaining references before ACK."""
     with queue_locked(queue):
         resume(queue)
         original = _snapshot(claim, rows)
         tail, torn = _split_tail(original, rows.size, native=rows.native)
-        folder = _dir(queue)
-        from itertools import chain, islice
-        public = (p for p in queue.parent.glob(queue.name + '.claimed.*') if p != claim)
-        private = () if folder is None else (p for p in folder.iterdir()
-                    if p != claim and (p.name == queue.name or p.name.startswith(('native.claimed.', 'ready-', 'fragment-'))))
-        other = list(islice(chain(public, private), 65))
-        uncertain = len(other) > 64 or bool(torn or rows.quarantined)
-        if queue.exists():
-            other.append(queue)
+        other, unknown = cleanup_inputs(queue, claim)
+        uncertain = unknown or bool(torn or rows.quarantined)
         extra = cleanup(lines_bytes(remaining) + tail, other, uncertain)
         finish_locked(queue, claim, list(remaining) + extra, rows)
 

@@ -60,7 +60,15 @@ def _references(queue, *, exclude_parent=None):
         budget -= used
         groups.extend(job for _, job in rows)
     refs = {row['pendingPath'] for row in groups if isinstance(row.get('pendingPath'), str)}
+    held_refs = retained_references(queue, exclude_parent=exclude_parent)
+    if held_refs is None or any(not row or not isinstance(row.get('targetPath'), str) for row in groups):
+        return None, groups
+    return refs | held_refs, groups
+
+
+def retained_references(queue, *, exclude_parent=None, exclude_work=None):
     holds = Work.entries(queue, 'hold')
+    refs = set()
     opaque = False
     for held in holds:
         state = held.state
@@ -71,12 +79,11 @@ def _references(queue, *, exclude_parent=None):
             rel = binding['job'].get('pendingPath')
             if isinstance(rel, str):
                 refs.add(rel)
-    private, uncertain = native_review.references(queue, exclude_parent=exclude_parent)
+    private, uncertain = native_review.references(queue, exclude_parent=exclude_parent, exclude_work=exclude_work)
     refs.update(private)
     complete = (not uncertain and not opaque and not holds.issues and not queue_batch_prepare.unresolved(queue, holds)
-                and not queue_batch_prepare.opaque_ranges(queue, holds)
-                and all(row and isinstance(row.get('targetPath'), str) for row in groups))
-    return (refs if complete else None), groups
+                and not queue_batch_prepare.opaque_ranges(queue, holds))
+    return refs if complete else None
 
 
 def _escrow(root, wiki, queue, work, removed, target):
