@@ -106,6 +106,14 @@ L2 후속 ── L3
 - **wiki.** 편집 뒤 원문이 root 안 symlink로 바뀌면 refresh pending이 해결·종결되지 않는다.
 - **구조.** `shared.py`·`checkout_view.py`가 줄 수 한도에 닿아 있다. 분해가 1.1.x의 첫 리팩터링이다.
 - **recall resident/API 방식.** 1.2 후보다.
+- **recall 순위.** 프롬프트 앞의 일반 지시문("도구는 쓰지 말고 답만 해 줘.")이 semantic 순위를 끌어, 드문 토큰이 정확히 일치하는 카드가 상위 3장에서 빠진다. 같은 질문에서 지시문을 빼면 그 카드가 1위다. 긴 질의에서 lexical 일치의 비중과 fusion 가중을 조사한다.
+- **resident 번들 인계.** 번들 확인이 `codex plugin list --json`을 10초 안에 기다리는데 콜드 실행은 60초를 넘는다. 실패한 결과가 1시간 캐시되어 호스트 갱신 뒤 옛 resident가 최대 1시간 남는다.
+- **활성화 중 편집 거절.** 온보딩 활성화 도중의 Claude Bash `file-change-event`가 `selected_wiki_grant_failed`로 exit 3이 되어 화면에 hook 오류로 보인다.
+- **학습 되돌리기 사유.** `candidate_rollback.resume`의 `rollback_pending` 사유가 `unlabeled`로 남는다. compile 진척 streak은 상태 파일을 쓰지 못하는 동안 쌓이지 않는다.
+- **문서.** `release.md`의 계약 밖 파생물 목록에 `runtime-wake-progress.json`, `source-refresh-settled.json.lock`, 세션 reset 마커가 없다.
+- **시험 격리.** `test_setup_entry_inventory_119`가 Claude Code 안에서 돌면 `CLAUDECODE`·`CLAUDE_CODE_*` 환경 변수 때문에 실패한다. 시험이 host 환경 변수를 지우지 않고, host 판별이 환경 변수에 기대는지 확인한다.
+- **출시 smoke 도구.** RS-ID가 태그와 대조하지만 마켓플레이스 설치는 main HEAD라 출시 뒤 문서 커밋만큼 다르다. RS-EDIT 편집 문단이 호스트 공통이라 두 번째 호스트는 이미 있는 문단으로 보고 편집하지 않는다. Codex의 SessionStart 행은 첫 턴 제출 때 생긴다.
+- **리뷰 범위.** `vectorcache/writer.py`의 compaction·append, teacher와 `automatic_staging`의 유료 호출 경로를 독립 리뷰한다.
 
 ## 1.0.x 패치
 
