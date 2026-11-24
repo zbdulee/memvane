@@ -1712,6 +1712,16 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/verify/batch_handoff.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/handoff_work.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
     "memvane/wiki/verify/intent_ack.py": {
       "context": "wiki/verify",
       "layer": "adapter",
