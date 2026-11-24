@@ -1,0 +1,161 @@
+"""A direct writer reaches the interrupted visible deletion before the verifier retries."""
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+from contextlib import redirect_stdout
+from unittest.mock import patch
+
+from memvane.wiki.compile import wiki_compile as writer
+from memvane.wiki.compile.tests.integration import test_pending_handoff as cases
+from memvane.wiki.engines import api as engines
+from memvane.wiki.verify import api as verifier
+from memvane.wiki.workspace import api as workspace
+from tests.support.case import FixtureCase
+
+
+class DirectWriter(FixtureCase):
+    prepare = cases.PendingHandoff.prepare
+    native_verify = cases.PendingHandoff.native_verify
+
+    def setUp(self):
+        super().setUp()
+        self.prepare('decision')
+        self.bound = None
+        self.target.unlink()
+
+    def candidate(self, text):
+        self.source.write_text(text)
+        revision = self.project.revision(self.source)
+        return {'title': 'Decision', 'summary': 'Decision in the current source.', 'engine': 'claude',
+                'trigger': 'post_tool_source', 'targetPath': self.target.relative_to(self.root).as_posix(),
+                'sourceRevisions': [revision], 'sources': [{k: revision[k] for k in ('kind', 'path', 'collection')}]}
+
+    def write(self, text, *, check=False):
+        candidate = self.candidate(text)
+        with workspace.card_write_lock(self.root), workspace.mutation_lock(self.root), \
+             patch.object(workspace, 'selected', return_value=None), redirect_stdout(io.StringIO()) as output:
+            rc = writer._compile_locked(self.root, self.config, self.config['compile'],
+                                        self.project.wiki, candidate, False, check=check)
+        return rc, json.loads(output.getvalue())['action']
+
+    def rows(self, name):
+        path = self.queue.with_name(name)
+        return [json.loads(line) for line in path.read_bytes().split(b'\n') if line] if path.exists() else []
+
+    def interrupt_native(self, *, duplicate=False):
+        self.assertEqual(self.write('Newest source for decision.'), (0, 'created'))
+        if duplicate:
+            manifest = self.queue.with_name('generated-manifest.jsonl')
+            manifest.write_bytes(manifest.read_bytes() * 2)
+        child = os.fork()
+        if child == 0:
+            try:
+                fail = {'verdict': 'fail', 'claims': [{'claim': 'Decision', 'supported': False, 'quote': ''}],
+                        'reasons': ['source contradicts claim']}
+                open_path = Path.open
+                def interrupted(path, mode='r', *args, **kwargs):
+                    if path.name == 'generated-manifest.jsonl' and mode == 'a':
+                        os._exit(27)
+                    return open_path(path, mode, *args, **kwargs)
+                with patch.object(engines, 'run_extractor', return_value=(fail, None, 0)), \
+                     patch.object(Path, 'open', interrupted):
+                    verifier.run(self.root, self.config, self.config['compile'])
+            finally:
+                os._exit(28)
+        self.assertEqual(os.waitpid(child, 0)[1], 27 << 8)
+        self.assertFalse(self.target.exists())
+        self.assertEqual(len(self.rows('verify-deleted.jsonl')), 1)
+
+    def test_direct_writer_recovers_once_then_respects_a_manual_delete_of_the_new_generation(self):
+        self.interrupt_native()
+        corrected = 'Newest corrected source after machine removal.'
+        self.assertEqual(self.write(corrected, check=True), (0, 'written'))
+        self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')], ['created'])
+        self.assertFalse(list(self.queue.parent.glob('retired-wiki/.promotions/*/finished')))
+        self.assertEqual(self.write(corrected), (0, 'created'))
+        for _ in range(2):
+            self.assertEqual(self.native_verify()['remaining'], 0)
+        self.assertTrue(self.target.is_file())
+        self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')],
+                         ['created', 'verify-deleted', 'created'])
+        self.assertEqual(len(self.rows('verify-deleted.jsonl')), 1)
+        self.assertEqual(self.rows('tombstones.jsonl'), [])
+        self.target.unlink()
+        self.assertEqual(self.write(corrected), (0, 'tombstoned'))
+        self.assertEqual(self.write(corrected), (0, 'suppressed'))
+
+    def append_hidden_audits(self):
+        target = self.target.relative_to(self.root).as_posix()
+        rows = [{'targetPath': target, 'verdict': 'stale_replacement'},
+                {'targetPath': target + '.pending-' + 'a' * 16, 'verdict': 'inconclusive'}]
+        with self.queue.with_name('verify-deleted.jsonl').open('a') as stream:
+            for row in rows:
+                stream.write(json.dumps(row) + '\n')
+
+    def test_hidden_deletion_audits_preserve_a_manual_removal(self):
+        self.assertEqual(self.write('Newest source.'), (0, 'created'))
+        self.append_hidden_audits()
+        self.target.unlink()
+        self.assertEqual(self.write('Newest corrected source.'), (0, 'tombstoned'))
+
+    def test_hidden_deletion_audits_do_not_replace_the_interrupted_visible_deletion(self):
+        self.interrupt_native()
+        self.append_hidden_audits()
+        self.assertEqual(self.write('Newest corrected source.'), (0, 'created'))
+        self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')],
+                         ['created', 'verify-deleted', 'created'])
+        self.assertEqual(self.rows('tombstones.jsonl'), [])
+
+    def test_compaction_of_earlier_rows_preserves_the_same_retired_generation(self):
+        self.interrupt_native(duplicate=True)
+        manifest = self.queue.with_name('generated-manifest.jsonl')
+        workspace.compact_manifest(manifest, max_bytes=0)
+        self.assertEqual([r['action'] for r in self.rows(manifest.name)], ['created'])
+        self.assertEqual(self.write('Newest corrected source.'), (0, 'created'))
+        self.assertEqual([r['action'] for r in self.rows(manifest.name)], ['created', 'verify-deleted', 'created'])
+
+    def test_changed_archive_content_or_inode_does_not_authorize_a_machine_or_manual_delete(self):
+        self.interrupt_native()
+        slot, = self.queue.parent.glob('retired-wiki/.promotions/*/displaced.md')
+        original = slot.read_bytes()
+        slot.write_bytes(original + b'editor append')
+        self.assertEqual(self.write('Newest corrected source.'), (1, 'deferred'))
+        replacement = slot.with_name('replacement')
+        replacement.write_bytes(original)
+        replacement.replace(slot)
+        self.assertEqual(self.write('Newest corrected source.'), (1, 'deferred'))
+        self.assertEqual(self.rows('tombstones.jsonl'), [])
+        self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')], ['created'])
+
+    def interrupt_tag(self, revision):
+        repo = Path.cwd()
+        tag = cases.archived_tag(repo, self.tmp, revision)
+        script = Path(__file__).resolve().parents[1] / 'tagged_retirement.py'
+        r = subprocess.run([sys.executable, '-B', str(script), str(self.root)], cwd=tag, capture_output=True,
+                           text=True, timeout=20, input=json.dumps([self.config, self.candidate('Newest source.')]),
+                           env={**os.environ, 'PYTHONPATH': os.pathsep.join((str(tag), str(repo)))})
+        self.assertEqual(r.returncode, 27, r.stderr)
+        self.assertEqual(len(self.rows('verify-deleted.jsonl')), 1)
+        self.assertFalse(self.target.exists())
+
+    def test_first_native_format_recovers_the_actual_displaced_generation(self):
+        self.interrupt_tag('01136dc964e42c2c7dca2f27951612dc3cdc3dee')
+        self.assertEqual(self.write('Newest corrected source.'), (0, 'created'))
+        self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')],
+                         ['created', 'verify-deleted', 'created'])
+        self.assertEqual(self.rows('tombstones.jsonl'), [])
+
+    def test_released_audit_only_defers_the_native_direct_writer(self):
+        self.interrupt_tag('v1.1.0')
+        for _ in range(2):
+            self.assertEqual(self.write('Newest corrected source.'), (1, 'deferred'))
+        self.assertEqual(self.rows('tombstones.jsonl'), [])
+        self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')], ['created'])
+        # A later public creation ends the old audit's ambiguity for that target.
+        newer = dict(self.rows('generated-manifest.jsonl')[-1], ts='2099-01-01T00:00:00Z')
+        with self.queue.with_name('generated-manifest.jsonl').open('a') as stream:
+            stream.write(json.dumps(newer) + '\n')
+        self.assertEqual(self.write('Newest corrected source.'), (0, 'tombstoned'))

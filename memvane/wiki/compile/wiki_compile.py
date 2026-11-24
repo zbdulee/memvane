@@ -1179,24 +1179,25 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         row for row in read_jsonl(manifest_path)
         if same_generated_identity(row, record)
     ]
-    if (
-        previous
-        and not target.exists()
-        and not regenerate
-        and previous[-1].get("action") != MACHINE_DELETE_ACTION
-    ):
-        if check:
-            return _checked("tombstoned")
-        tombstone = public_history(record, action='deleted', status='deleted',
-                                   previousStatus=previous[-1].get('status', 'generated'))
-        if tombstone is None:
-            print(json.dumps({'action': 'write-failed', 'reason': 'history_row_incompatible'}))
+    if not target.exists() and not regenerate and (not previous or previous[-1].get("action") != MACHINE_DELETE_ACTION):
+        from memvane.wiki.verify.api import missing_retirement
+        retirement = missing_retirement(root, config, record['targetPath'], check=check)
+        if retirement == 'retry':
+            print(json.dumps({'action': 'deferred', 'reason': 'machine_deletion_unconfirmed'}))
             return 1
-        append_jsonl(tombstone_path, tombstone)
-        record["action"] = "tombstoned"
-        append_jsonl(candidate_path, record)
-        print(json.dumps({"action": "tombstoned", "targetPath": record["targetPath"]}, ensure_ascii=False))
-        return 0
+        if previous and retirement == 'manual':
+            if check:
+                return _checked("tombstoned")
+            tombstone = public_history(record, action='deleted', status='deleted',
+                                       previousStatus=previous[-1].get('status', 'generated'))
+            if tombstone is None:
+                print(json.dumps({'action': 'write-failed', 'reason': 'history_row_incompatible'}))
+                return 1
+            append_jsonl(tombstone_path, tombstone)
+            record["action"] = "tombstoned"
+            append_jsonl(candidate_path, record)
+            print(json.dumps({"action": "tombstoned", "targetPath": record["targetPath"]}, ensure_ascii=False))
+            return 0
 
     # Card body budget before the paid duplicate judge (wiki_card_budget): an
     # over-budget card is held back once for a split; the caller's trusted

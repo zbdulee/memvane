@@ -245,9 +245,12 @@ def _manifest_has(root, row):
 def record_machine_delete(root: Path, compile_cfg: dict, record: dict, verdict: str) -> bool:
     """Durably identify a machine deletion so a later writer can distinguish a manual removal."""
     path = qmd_config.ledger(root, ct.MANIFEST)
-    if path is None or wiki_freshness.unresolved_pending_refreshes_strict(root, before_ledger_write=True) is None:
-        return False
     row = _machine_row(record, verdict)
+    if path is None or wiki_freshness.unresolved_pending_refreshes_strict(
+            root, before_ledger_write=True, append_for=row) is None:
+        return False
+    if _manifest_has(root, row):
+        return True
     append_jsonl(path, row)
     cp.compact_manifest(path)
     return _manifest_has(root, row)
@@ -977,7 +980,9 @@ def process_verify_job(
     else:
         try:
             with cp.card_write_lock(root), workspace_files.mutation_lock(root):
-                retirement = promotion.retirement_status(root, job, manifest_has=lambda row: _manifest_has(root, row))
+                retirement = promotion.retirement_status(
+                    root, job, manifest_has=lambda row: _manifest_has(root, row),
+                    repair=lambda row: record_machine_delete(root, compile_cfg, row, row['verdict']))
                 if retirement in ('fail', 'inconclusive'):
                     reindex_wiki(root, config)
                     promotion.finish_retirement(root, job, retirement)

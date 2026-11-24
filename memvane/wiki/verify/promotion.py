@@ -1,4 +1,5 @@
 """Exchange a verified candidate with the visible card, retaining the actual displaced inode."""
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -8,7 +9,9 @@ import stat
 
 from memvane.kernel.atomic_rename import canonical_json_bytes, fsync_dir, rename_exchange, rename_noreplace, write_new_file
 from memvane.kernel.persistent_identity import persistent_identity_equal
-from memvane.settings.api import compile_dir, find_project_config
+from memvane.settings.api import compile_dir, find_project_config, ledger
+from memvane.wiki.card.types import AUTO_START_RE
+from memvane.wiki.workspace.types import MANIFEST, VERIFY_DELETED, MACHINE_DELETE_ACTION
 from memvane.settings.types import CURRENT
 
 
@@ -31,16 +34,22 @@ def _snapshot(path, *, sync=False):
 
 
 def _folder(root, job, create=False):
+    # The time, marker, selected route and exact source revision distinguish generations.
+    binding = {key: job[key] for key in ('targetPath', 'pendingPath', 'sourceHash', 'expectedTargetHash',
+               'sourceRevisions', 'sourceFingerprints', 'selectedRoute', 'ts', 'visibleVerdict') if key in job}
+    identity = hashlib.sha256(canonical_json_bytes(binding)).hexdigest()
+    return _archive_folder(root, identity, create)
+
+
+def _archive_folder(root, identity, create=False):
+    if not isinstance(identity, str) or not re.fullmatch('[a-f0-9]{64}', identity):
+        raise ValueError('invalid retirement owner')
     canonical = root / CURRENT / 'compile'
     if canonical.resolve() != canonical:
         raise ValueError('unsafe promotion archive')
     base = compile_dir(root, create=create)
     if base is None or base != canonical:
         raise ValueError('unsafe promotion archive')
-    # The time, marker, selected route and exact source revision distinguish generations.
-    binding = {key: job[key] for key in ('targetPath', 'pendingPath', 'sourceHash', 'expectedTargetHash',
-               'sourceRevisions', 'sourceFingerprints', 'selectedRoute', 'ts', 'visibleVerdict') if key in job}
-    identity = hashlib.sha256(canonical_json_bytes(binding)).hexdigest()
     if create:
         fsync_dir(root)
         fsync_dir(base.parent)
@@ -343,6 +352,75 @@ def resume_stamp(root, job, live, fresh):
     return publish(root, job, review, live, review.read_bytes().decode(), (folder / 'base').read_bytes())
 
 
+def _target_ledger(root, name, target, *, action=None):
+    """Physical LF rows. Bind both the latest record and its occurrence at this target."""
+    path = ledger(root, name)
+    if path is None or path != root / CURRENT / 'compile' / name:
+        raise ValueError('unsafe retirement ledger')
+    count, last = 0, None
+    try:
+        stream = os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb')
+    except FileNotFoundError:
+        return count, last
+    with stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError('unsafe retirement ledger')
+        for line in stream:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if not isinstance(row, dict) or not line.endswith(b'\n'):
+                raise ValueError('invalid retirement ledger')
+            if row.get('targetPath') != target or (action is not None and row.get('action') != action):
+                continue
+            if name == VERIFY_DELETED and row.get('verdict') not in ('fail', 'inconclusive'):
+                continue
+            count, last = count + 1, row
+    return count, last
+
+
+def _digest(value):
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def _manifest_generation(history):
+    count, last = history
+    return {'count': count, 'latest': _digest(last)}
+
+
+def _same_generation(before, history):
+    # Compaction can remove preceding rows. A new creation after the same
+    # last row still advances the count, including byte-identical creations.
+    current = _manifest_generation(history)
+    return current['latest'] == before['latest'] and current['count'] <= before['count']
+
+
+def _time(value):
+    if not isinstance(value, str):
+        raise ValueError('invalid deletion time')
+    dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if dt.tzinfo is None:
+        raise ValueError('invalid deletion time')
+    return dt
+
+
+def _created_after_audit(root, target, latest, audit):
+    if not latest or latest.get('action') != 'created' or not audit.get('deletedAt'):
+        return False
+    deleted_at = _time(audit['deletedAt'])
+    if _time(latest['ts']) > deleted_at:
+        return True
+    # Released creation timestamps have one-second precision. Within that
+    # second, a later creation follows its completed deletion in manifest order.
+    _, marker = _target_ledger(root, MANIFEST, target, action=MACHINE_DELETE_ACTION)
+    return bool(marker and marker.get('verdict') == audit.get('verdict') and
+                marker.get('engine') == audit.get('engine') and _time(marker['ts']) >= deleted_at)
+
+
+def _audit_owner(root, target, audit, create=False):
+    return _folder(root, {'targetPath': target, 'visibleVerdict': 'retire-audit-' + _digest(audit)}, create)
+
+
 def retire(root, job, live, expected, verdict, manifest_row):
     """Detach the visible file without unlinking an editor's inode or a later generation."""
     folder = _folder(root, dict(job, visibleVerdict='delete-' + verdict), create=True)
@@ -353,7 +431,14 @@ def retire(root, job, live, expected, verdict, manifest_row):
         node = _snapshot(live)
         if node['sha256'] != hashlib.sha256(raw).hexdigest():
             return False
-        _record(intent_file, {'path': job['targetPath'], 'reviewed': node, 'manifest': manifest_row})
+        target = job['targetPath']
+        audit = _target_ledger(root, VERIFY_DELETED, target)
+        if not audit[1] or audit[1].get('verdict') != verdict or audit[1].get('engine') != manifest_row['engine']:
+            return False
+        _record(_audit_owner(root, target, audit, create=True) / 'owner', {'folder': folder.name})
+        _record(intent_file, {'path': target, 'reviewed': node, 'manifest': manifest_row,
+                              'previous': _manifest_generation(_target_ledger(root, MANIFEST, target)),
+                              'audit': _digest(audit)})
     intent = _record(intent_file)
     if intent['path'] != live.relative_to(root).as_posix():
         return False
@@ -377,34 +462,133 @@ def retire(root, job, live, expected, verdict, manifest_row):
     return not os.path.lexists(live)
 
 
-def retirement_status(root, job, *, manifest_has=None):
-    """An in-flight visible retirement cannot be settled from an absent ordinary card."""
+def _legacy_audit_matches(folder, intent, audit):
+    row = intent['manifest']
+    return (audit and row.get('targetPath') == audit.get('targetPath') == intent['path']
+            and row.get('verdict') == audit.get('verdict') and row.get('engine') == audit.get('engine')
+            and _time(row['ts']) <= _time(audit['deletedAt'])
+            and _time(audit['deletedAt']).timestamp() <= (folder / 'retire').stat().st_mtime)
+
+
+def _legacy_generation(root, folder, intent, history, audit):
+    # The first native format lacks a manifest predecessor digest. Its unchanged
+    # public inode must predate the retirement and identify the actual archived card.
+    path = ledger(root, MANIFEST)
+    if not _legacy_audit_matches(folder, intent, audit) or path is None or not history[1]:
+        return False
+    node = path.stat()
+    if max(node.st_ctime_ns, node.st_mtime_ns) > (folder / 'retire').stat().st_mtime_ns:
+        return False
+    marker = AUTO_START_RE.search((folder / 'displaced.md').read_text(encoding='utf-8'))
+    return bool(marker and history[1].get('sourceHash') == marker.group(1)
+                and history[1].get('action') in ('created', 'updated'))
+
+
+def _legacy_owner(root, target, audit):
+    base = compile_dir(root) / 'retired-wiki' / '.promotions'
+    if not base.exists():
+        return None
+    choices = []
+    for entry in base.iterdir():
+        if not re.fullmatch('[a-f0-9]{64}', entry.name) or not os.path.lexists(entry / 'retire'):
+            continue
+        folder = _archive_folder(root, entry.name)
+        intent = _record(folder / 'retire')
+        if (intent.get('path') == target and 'previous' not in intent
+                and _legacy_audit_matches(folder, intent, audit)):
+            choices.append(folder)
+    return choices[0] if len(choices) == 1 else None
+
+
+def _retirement_status(root, folder, target, verdict, *, manifest_has, repair, check=False):
+    intent = _record(folder / 'retire')
+    if intent['path'] != target or not os.path.lexists(folder / 'archive.json'):
+        return 'retry'
+    archived = _record(folder / 'archive.json')
+    slot = folder / 'displaced.md'
+    if (archived['path'] != target or archived['verdict'] != verdict
+            or archived['archivePath'] != slot.relative_to(root).as_posix()
+            or intent['reviewed'] != archived['displaced']):
+        return 'retry'
+    if os.path.lexists(folder / 'finished'):
+        return 'retired' if _record(folder / 'finished') == archived else 'retry'
+    row = intent.get('manifest')
+    if (not isinstance(row, dict) or set(row) != {'ts', 'targetPath', 'action', 'status', 'verdict', 'engine'}
+            or not isinstance(row['ts'], str) or not isinstance(row['engine'], str)
+            or verdict not in ('fail', 'inconclusive') or row['targetPath'] != target or row['verdict'] != verdict
+            or row.get('action') != MACHINE_DELETE_ACTION or row.get('status') != 'deleted'
+            or not persistent_identity_equal(archived['displaced'], _snapshot(slot))):
+        return 'retry'
+    if manifest_has and manifest_has(row):
+        return verdict
+    if os.path.lexists(root / target):
+        return 'retry'
+    history = _target_ledger(root, MANIFEST, target)
+    audit = _target_ledger(root, VERIFY_DELETED, target)
+    if 'previous' in intent:
+        if not _same_generation(intent['previous'], history) or intent['audit'] != _digest(audit):
+            return 'retry'
+    elif not _legacy_generation(root, folder, intent, history, audit[1]):
+        return 'retry'
+    if check or (repair and repair(row)):
+        return verdict
+    return 'retry'
+
+
+def retirement_status(root, job, *, manifest_has=None, repair=None):
     for verdict in ('fail', 'inconclusive'):
         try:
             folder = _folder(root, dict(job, visibleVerdict='delete-' + verdict))
-            intent = _record(folder / 'retire')
         except FileNotFoundError:
             continue
-        if intent['path'] != job['targetPath']:
-            return 'retry'
-        if not os.path.lexists(folder / 'archive.json'):
-            return 'retry'
-        archived = _record(folder / 'archive.json')
-        node = (folder / 'displaced.md').lstat()
-        if (archived['path'] != intent['path'] or archived['verdict'] != verdict
-                or archived['archivePath'] != (folder / 'displaced.md').relative_to(root).as_posix()
-                or intent['reviewed'] != archived['displaced']
-                or not stat.S_ISREG(node.st_mode) or (node.st_dev, node.st_ino) !=
-                (archived['displaced']['dev'], archived['displaced']['ino'])):
-            return 'retry'
-        if os.path.lexists(folder / 'finished'):
-            return 'retired' if _record(folder / 'finished') == archived else 'retry'
-        row = intent.get('manifest')
-        if (manifest_has and isinstance(row, dict) and row.get('targetPath') == intent['path']
-                and row.get('verdict') == verdict and manifest_has(row)):
-            return verdict  # Durable machine-delete effect; re-offer the interrupted sync.
-        return 'retry'
+        if os.path.lexists(folder / 'retire'):
+            return _retirement_status(root, folder, job['targetPath'], verdict,
+                                      manifest_has=manifest_has, repair=repair)
     return None
+
+
+def missing_retirement(root, target, *, check, manifest_has, repair, sync):
+    """The caller holds the card and mutation locks before interpreting a missing card."""
+    audit = _target_ledger(root, VERIFY_DELETED, target)
+    if not audit[1]:
+        return 'manual'
+    try:
+        owner = _record(_audit_owner(root, target, audit) / 'owner')
+    except FileNotFoundError:
+        _, last = _target_ledger(root, MANIFEST, target)
+        if _created_after_audit(root, target, last, audit[1]):
+            return 'manual'
+        folder = _legacy_owner(root, target, audit[1])
+        if folder is None:
+            return 'retry'  # An audit alone precedes unlink and cannot prove who removed the card.
+    else:
+        folder = _archive_folder(root, owner['folder'])
+    verdict = audit[1]['verdict']
+    intent = _record(folder / 'retire')
+    if 'audit' in intent and intent['audit'] != _digest(audit):
+        return 'retry'
+    history = _target_ledger(root, MANIFEST, target)
+    if 'previous' in intent and not _same_generation(intent['previous'], history):
+        status = _retirement_status(root, folder, target, verdict, manifest_has=manifest_has, repair=None)
+        if (history[1] and history[1].get('action') == 'created' and
+                (status in ('retired', verdict) or _created_after_audit(root, target, history[1], audit[1]))):
+            return 'manual'
+        return 'retry'
+    if ('previous' not in intent and history[1] and history[1].get('action') == 'created'
+            and manifest_has(intent['manifest'])):
+        # The recorded deletion already precedes this creation. The writer must
+        # preserve a manual removal even if the old verifier did not mark completion.
+        status = _retirement_status(root, folder, target, verdict, manifest_has=manifest_has, repair=None)
+        return 'manual' if status in (verdict, 'retired') else 'retry'
+    status = _retirement_status(root, folder, target, verdict, manifest_has=manifest_has, repair=repair, check=check)
+    if status == 'retired':
+        return 'retry'
+    if status != verdict:
+        return 'retry'
+    if not check:
+        sync()
+        _record(folder / 'finished', _record(folder / 'archive.json'))
+    return 'machine'
 
 
 def finish_retirement(root, job, verdict):
