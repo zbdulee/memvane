@@ -321,6 +321,54 @@ class RevisionSkipChecks(FixtureCase):
         self.assertEqual(self.extractor_calls, ['post_sync_source'])
         self.assertEqual(queue.read_text(), '')
 
+    def test_source_edit_waits_for_claim_without_repeating_extraction(self):
+        cfg = self.config['compile']
+        cfg['semanticDedup'] = {'enabled': False}
+        verify = self.root / '.memvane/compile/verify-queue.jsonl'
+        source_queue = verify.with_name('source-queue.jsonl')
+        live = self.wiki / 'concepts/source-decision.md'
+
+        def write(root, card):
+            stream = io.StringIO()
+            with redirect_stdout(stream):
+                code = wc._compile_locked(root, self.config, cfg, self.wiki, card, False)
+            return json.loads(stream.getvalue() or '{}') if code == 0 else None
+
+        with patch.object(worker, 'compile_candidate', side_effect=write), \
+                patch.object(wiki_selected_laya, 'request_sync'), patch.object(wiki_selected_laya, 'request_compile'), \
+                patch.object(worker, '_run_verify_pass'):
+            self.process('post_tool_source')
+            self.verify(live)
+            verify.write_text('')
+            self.source.write_text('Intermediate content.')
+            self.process('post_tool_source')
+            claim = wiki_selected_laya.claim_queue(verify)
+            claimed_bytes = claim.read_bytes()
+            unrelated = self.project.write_note('docs/another.md', 'A different source.')
+            job = self.job('post_tool_source')
+            job['source']['path'] = unrelated.relative_to(self.root).as_posix()
+            with patch.object(worker, 'run_extractor', return_value=({'candidates': []}, None, 0)) as other:
+                worker.process_job(self.root, self.config, cfg, job)
+            self.assertEqual(other.call_count, 1)
+            self.extractor_calls.clear()
+            for text in ('Latest content.', 'Latest content.', 'Another revision during verification.'):
+                self.source.write_text(text)
+                wiki_compile_enqueue.enqueue_payload({'hook_event_name': 'PostToolUse', 'cwd': str(self.root),
+                    'engine': 'claude', 'tool_input': {'file_path': str(self.source)}})
+                result = self.run_main()
+                self.assertEqual((result['remaining'], result['completed']), (1, 0))
+                self.assertEqual(len(source_queue.read_text().splitlines()), 1)
+            self.assertEqual(claim.read_bytes(), claimed_bytes)
+            self.assertEqual(self.extractor_calls, [])
+            wiki_selected_laya.requeue_lines(verify, claim.read_text().splitlines())
+            claim.unlink()
+            result = self.run_main()
+            self.assertEqual((result['remaining'], result['completed']), (0, 1))
+            self.assertEqual(self.extractor_calls, ['post_tool_source'])
+            active = [j for j in map(json.loads, verify.read_text().splitlines()) if '_pendingCleanup' not in j]
+            self.assertEqual([j['sourceRevisions'][0]['sha256'] for j in active],
+                             [self.project.revision(self.source)['sha256']])
+
     def test_partial_retry_survives_resave_and_recovered_claim(self):
         cfg = self.config['compile']
         cfg['semanticDedup'] = {'enabled': False}

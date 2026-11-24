@@ -17,14 +17,23 @@ def run(root, config, compile_cfg, produced_targets=None):
     return implementation(root, config, compile_cfg, produced_targets=produced_targets)
 
 
-def enqueue_replacement(root, config, wiki, queue, job, selected, stage):
+def prepare_queue(root, queue, bound, config=None):
+    from memvane.wiki.verify.upgrade_queue import prepare
+    return prepare(root, queue, bound, config)
+
+
+def enqueue_replacement(root, config, wiki, queue, job, selected, stage, *, produced_bytes=None):
     from memvane.wiki.verify.pending_handoff import enqueue
-    return enqueue(root, config, wiki, queue, job, selected, stage)
+    return enqueue(root, config, wiki, queue, job, selected, stage, produced_bytes=produced_bytes)
 
 
 def pending_revision_target(root, config, revision):
-    from memvane.wiki.verify.pending_replacement import pending_revision_target as implementation
-    return implementation(root, config, revision)
+    return pending_source_review(root, config, revision)[0]
+
+
+def pending_source_review(root, config, revision, *, reuse=True):
+    from memvane.wiki.verify.pending_replacement import pending_source_review as implementation
+    return implementation(root, config, revision, reuse=reuse)
 
 
 def verify_skipped_path(root, vcfg):

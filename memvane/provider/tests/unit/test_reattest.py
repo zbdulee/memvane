@@ -99,6 +99,20 @@ class ReattestationTest(unittest.TestCase):
             with self.assertRaises(OSError):
                 reattest.write(state, original, self.current, self.identity, self.identity)
 
+    def test_legacy_ledger_read_failure_reaches_the_caller(self):
+        import errno
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root).resolve()
+            original = reattest.LEGACY_PAIR
+            reattest.write(state, original, self.current, self.identity, self.identity)
+            (state / reattest.PAIRS_FILE).unlink()
+            with patch.object(reattest, '_read', side_effect=OSError(errno.EIO, 'fixture read')), \
+                 self.assertRaises(OSError) as failure:
+                reattest.valid(state, original, self.current, self.identity)
+            self.assertEqual(failure.exception.errno, errno.EIO)
+            self.assertTrue(reattest.valid(state, original, self.current, self.identity))
+
     def test_two_host_versions_alternate_authorization(self):
         import json
         from unittest.mock import patch

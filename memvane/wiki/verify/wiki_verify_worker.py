@@ -1464,28 +1464,11 @@ def _cleanup_pending(root: Path, queue: Path, claimed: Path, snapshots: dict, ro
 def run(
     root: Path, config: dict, compile_cfg: dict, produced_targets: list[str] | None = None
 ) -> dict:
-    """Drain (part of) the verify queue. Caller has already passed compile gating.
+    """Prepare the pending handoff, then drain one bounded verification batch.
 
-    `produced_targets` = card paths the CALLING run just enqueued. Two things depend
-    on it and both were wrong before:
-
-    **Budget.** A fixed `maxPerRun` makes the queue grow faster than it drains
-    whenever a run compiles more cards than it verifies, and a `generated` card is
-    invisible to recall under the default `compile.recallVerifiedOnly: true` — so
-    editing ten documents left accurate cards unusable for several runs. The budget
-    is therefore `max(maxPerRun, min(len(produced_targets), VERIFY_PRODUCED_HARD_CAP))`:
-      - a human's explicit `maxPerRun` is always honoured (it is a human decision),
-      - the part derived from **model output** is capped, because `produced` comes
-        from `len(candidates)` and the model decides that number. Without the cap a
-        single degenerate extractor response (40 cards) drove 200 paid verify calls
-        in one run — the model deciding how much the user is billed.
-
-    **Order.** Sizing the budget is not enough: the queue is FIFO, so `kept[:budget]`
-    spent the enlarged budget on the OLDEST backlog and left this run's own cards
-    `generated` — the exact outcome the enlargement was meant to prevent (measured:
-    4 backlog + 2 new, budget 2 → the 2 backlog cards verified, both new ones not).
-    This run's cards are processed first; leftover budget drains backlog, and one
-    slot is always reserved for backlog so it cannot starve during a bulk period.
+    The caller checks compile eligibility. This run keeps the configured review
+    budget and can expand it for just-produced targets up to VERIFY_PRODUCED_HARD_CAP.
+    It prioritizes those cards and reserves one slot for an existing backlog.
     """
     result = {"processed": 0, "remaining": 0}
     vcfg = verify_cfg_of(compile_cfg)
@@ -1498,6 +1481,9 @@ def run(
     if not vcfg.get("enabled", True):
         return result
     queue = _safe_queue_path(root, VERIFY_QUEUE_DEFAULT)
+    from memvane.wiki.verify.upgrade_queue import prepare
+    if not prepare(root, queue, selected_route, config):
+        return {**result, 'remaining': 1, 'reason': 'verify_queue_handoff_pending'}
     if queue is None or not queue.exists():
         return result
     log_path = qmd_config.ledger(root, ct.VERIFY_LOG) or cp.under(root, ct.VERIFY_LOG)

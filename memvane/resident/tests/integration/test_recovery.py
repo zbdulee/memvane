@@ -1,5 +1,7 @@
 """Resident retry state and admission under a controlled clock."""
+import errno
 import json
+import os
 from pathlib import Path
 
 from tests.support.case import FixtureCase
@@ -369,6 +371,62 @@ class RecoveryChecks(FixtureCase):
                             self.assertNotIn('seal', service.attested)
                     self.assertEqual((hashed.call_count, len(attempts), service.workers[key].state),
                                      (failure_at, 2, 'ready'))
+
+    def test_reattestation_ledger_read_error_retries_and_unapproved_pair_stays_terminal(self):
+        from memvane.kernel import bundle_paths
+        worker = bundle_paths.bundle_file(bundle_paths.WORKER_RELATIVE_PATH)
+        artifact = bundle_paths.bundle_file(bundle_paths.PROVIDER_RELATIVE_PATH)
+        previous = self.base / 'previous-provider'
+        previous.write_bytes(b'previous fixture adapter')
+        manifest = dict(self.manifest, modelSha256='e' * 64, workerPath=str(worker), providerPath=str(artifact),
+                        workerSha256=provider.hash_file(str(worker)), providerArtifactSha256=provider.hash_file(str(previous)))
+        for approved in (False, True):
+            with self.subTest(approved=approved):
+                root = self.base / ('approved' if approved else 'unapproved')
+                root.mkdir(mode=0o700)
+                row = dict(manifest, serviceSocketPath=str(root / 'e.sock'))
+                # Seal the old bundle, then authorize the current pair only for the approved fixture.
+                def old_bundle(relative):
+                    return previous if relative == bundle_paths.PROVIDER_RELATIVE_PATH else worker
+                with patch.object(bundle_paths, 'bundle_file', side_effect=old_bundle):
+                    provider.reattestation_update(root, row)
+                if approved:
+                    provider.reattestation_update(root, row)
+                self.assertEqual(provider.reattestation_check(root, row), approved)
+                decision = {'projectRoot': str(root)}
+                proof = {'providerManifest': row}
+                def start(item, admit):
+                    return owner.start_attested_worker(item, admit, execution_state=root, worker=worker, provider=artifact)
+                launch = Mock(side_effect=start)
+                service = svc.Service(root, bundle={'version': '1.1.1'}, attest=Mock(), admit=lambda: True,
+                                      prove=lambda _: (decision, proof, 'selected'), start_worker=launch)
+                key = svc._worker_key(row)
+                real_open = os.open
+                ledger_opens = []
+                def open_ledger(path, *args, **kwargs):
+                    if Path(path) == root / 'provider-reattest-pairs.json':
+                        ledger_opens.append(path)
+                        if approved and len(ledger_opens) == 2:
+                            raise OSError(errno.EIO, 'fixture ledger read')
+                    return real_open(path, *args, **kwargs)
+                with patch.object(os, 'open', side_effect=open_ledger), \
+                     patch.object(provider, 'start_owned_embed_service', return_value=object()) as spawn, \
+                     patch.object(svc.threading, 'Thread', InlineThread), \
+                     patch.object(svc.time, 'monotonic') as mono, patch.object(owner.time, 'time') as clock:
+                    for at in (100, 109, 110):
+                        clock.return_value = mono.return_value = at
+                        service._load(str(root), decision, proof, 'selected', row, key, 'seal')
+                        if not approved or at < 110:
+                            state = owner.read_owner_state(row)
+                            self.assertEqual((state['reason'], state['terminal'], state['attempts'], state['at']),
+                                             ('startup_failed', False, 1, 100) if approved
+                                             else ('attestation_invalid', True, 3, 100))
+                            self.assertEqual(launch.call_count, 1)
+                            spawn.assert_not_called()
+                    self.assertEqual(len(ledger_opens), 4 if approved else 2)
+                    self.assertEqual((launch.call_count, spawn.call_count), (2, 1) if approved else (1, 0))
+                    if approved:
+                        self.assertEqual(service.workers[key].state, 'ready')
 
     def test_compared_artifact_hash_mismatch_remains_terminal(self):
         worker, artifact = self.base / 'worker', self.base / 'provider'

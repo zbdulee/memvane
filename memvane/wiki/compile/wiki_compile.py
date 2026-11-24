@@ -12,7 +12,6 @@ import os
 import re
 import sqlite3
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.paths import safe_managed_dir, read_jsonl
@@ -418,29 +417,31 @@ def source_hash(candidate: dict) -> str:
     return hashlib.sha256(json.dumps(stable, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 
-def replacement_hash(target, base, revisions):
-    """Keep equal summaries from different source revisions in separate pending files."""
+def replacement_image(target, base, old, candidate, summary, redactions):
+    """Choose an unoccupied name or the exact image of a retry. Keep all conflicting bytes."""
     from memvane.store.api import regular
     from memvane.store.types import MAX_BODY
-    if not revisions:
-        return base
-    name = '.' + target.name + '.pending-' + base
-    try:
-        raw, _, _ = regular(target.parent, name, MAX_BODY)
-        text = raw.decode('utf-8')
-    except (OSError, ValueError):
-        return base
-    front = wiki_markers.FRONTMATTER_RE.match(text)
-    marker = wiki_markers.AUTO_START_RE.search(text)
-    if not (front and marker and marker.group(1) == base and auto_writable_text(text)[0]):
-        return base
-    previous = yaml_scalars.frontmatter_source_revisions(front.group(1))
-    def content_key(rows):
-        return [(row['path'], row['collection'], row['sha256']) for row in rows]
-    current = content_key(revisions)
-    if not previous or content_key(previous) == current:
-        return base
-    return hashlib.sha256(json.dumps([base, current], ensure_ascii=True).encode()).hexdigest()[:16]
+    marker = base
+    for slot in range(3):
+        if slot == 2:
+            marker = os.urandom(8).hex()
+        page = compose_generated_card(old, markdown_page(candidate, summary, 'generated', redactions, marker))
+        if page is None:
+            break
+        path = target.with_name('.' + target.name + '.pending-' + marker)
+        produced = page.encode('utf-8')
+        try:
+            existing, _, _ = regular(target.parent, path.name, MAX_BODY)
+        except FileNotFoundError:
+            return marker, path, page
+        except (OSError, ValueError):
+            existing = None
+        if existing == produced:
+            return marker, path, page
+        # Includes the full rendered revision (mtime too), manual sections and
+        # this slot's marker. A preserved older image cannot block an A/B/A edit.
+        marker = hashlib.sha256(produced).hexdigest()[:16]
+    return None
 
 
 def lint_candidate(candidate: dict, target: Path | None, max_lines: int) -> dict:
@@ -726,29 +727,20 @@ def compose_generated_card(old_text: str, generated_page: str) -> str | None:
 
 def write_pending_card(path: Path, text: str) -> bool:
     """Durably stage private candidate bytes without replacing the live card."""
-    if path.exists():
-        return path.is_file() and not path.is_symlink() and path.read_text(encoding='utf-8') == text
-    name = None
+    from memvane.kernel.atomic_rename import write_new_file
+    from memvane.store.api import regular
+    raw = text.encode('utf-8')
     try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
-                                         dir=path.parent, prefix='.qmd-pending-',
-                                         delete=False) as handle:
-            name = handle.name
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(name, path)
-        directory = os.open(path.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        write_new_file(path, raw)
         return True
-    except OSError:
+    except FileExistsError:
+        try:
+            existing, _, _ = regular(path.parent, path.name, len(raw))
+            return existing == raw
+        except (OSError, ValueError):
+            return False
+    except (OSError, ValueError):
         return False
-    finally:
-        if name is not None and os.path.exists(name):
-            os.unlink(name)
 
 
 @workspace_files.guard_path
@@ -1359,28 +1351,19 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                                   'findings': ['verified_replacement_requires_review']}
                 append_jsonl(candidate_path, record)
                 return 0
-            h = replacement_hash(target, h, record["sourceRevisions"])
+            image = replacement_image(target, h, old, candidate, summary, redactions)
+            if image is None:
+                # A collision on the random final slot gets a fresh name on retry.
+                print(json.dumps({"action": "write-failed", "reason": "pending_replacement_conflict"}))
+                return 1
+            h, pending_path, pending_page = image
             record["sourceHash"] = h
-            page = markdown_page(candidate, summary, status, redactions, h)
-            pending_page = compose_generated_card(old, page)
-            if pending_page is None:
-                record['action'] = 'merge-needed'
-                append_jsonl(candidate_path, record)
-                return 0
-            pending_path = target.with_name('.' + target.name + '.pending-' + h[:16])
             expected_target_hash = hashlib.sha256(target.read_bytes()).hexdigest()
-            if pending_path.is_symlink() or (pending_path.exists() and
-                    (not pending_path.is_file() or
-                     pending_path.read_text(encoding='utf-8') != pending_page)):
-                record['action'] = 'merge-needed'
-                record['lint'] = {'verdict': 'needs_review',
-                                  'findings': ['pending_replacement_conflict']}
-                append_jsonl(candidate_path, record)
-                return 0
             from memvane.wiki.verify.api import enqueue_replacement
             job = _verify_job(root, selected, candidate, record, pending_path, expected_target_hash)
             write_ok = enqueue_replacement(root, config, wiki_root, qmd_config.ledger(root, ct.VERIFY_QUEUE),
-                                           job, selected, lambda: write_pending_card(pending_path, pending_page))
+                                           job, selected, lambda: write_pending_card(pending_path, pending_page),
+                                           produced_bytes=pending_page.encode("utf-8"))
         else:
             write_ok = rewrite_generated_card(target, old, page)
     else:

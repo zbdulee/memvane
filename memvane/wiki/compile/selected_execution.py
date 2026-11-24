@@ -10,6 +10,7 @@ import subprocess
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.wiki.workspace.api import selected, recheck, queue_busy as _queue_busy, deferred_result
 from memvane.wiki.workspace.types import DEFERRED_REASONS as _DEFERRED_REASONS
+from memvane.wiki.verify import api as verification
 
 def wiki_matches(root: Path, wiki_root: Path, text: str, top_k: int,
                  cap_chars: int, *, bound=None):
@@ -64,6 +65,8 @@ def _run(project: Path):
     verify = _safe_queue_path(project, cp.rel(ct.VERIFY_QUEUE))
     if source is None or verify is None:
         return {'state': 'deferred', 'reason': 'unsafe_compile_queues'}
+    if not verification.prepare_queue(project, verify, bound):
+        return {'state': 'deferred', 'reason': 'verify_queue_handoff_pending'}
     from memvane.wiki.lifecycle import api as wiki_lifecycle_request
     from memvane.wiki.workspace.api import claim_lifecycle
     try:
@@ -183,4 +186,7 @@ def _idle_locked(project: Path, source: Path, verify: Path, bound):
     if refresh_settlement.unsettled(project, active_unresolved):
         return False
     from memvane.wiki.intake.api import write_discard_receipt
+    # An older verifier may drain the jobs while a 1.1.1 deletion audit is still retryable.
+    if not verification.prepare_queue(project, verify, bound):
+        return False
     return not (_queue_busy(source, receipt_writer=write_discard_receipt) | _queue_busy(verify))

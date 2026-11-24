@@ -64,16 +64,17 @@ def pending_matches_job(text, job):
                 and yaml_scalars.frontmatter_source_revisions(front.group(1)) == revisions)
 
 
-def pending_revision_target(root, config, revision):
-    """Find a queued (or claimed) review of this source content and live target."""
+def pending_source_review(root, config, revision, *, reuse=True):
+    """Return (proved reusable target, claim naming this source) under the same bounded queue read."""
     from itertools import islice
     from memvane.store.api import regular
     from memvane.store.types import MAX_BODY
 
     queue = cp.safe_queue_path(root, cp.rel(ct.VERIFY_QUEUE))
     wiki = root / config.get('wikiPath', settings_types.WIKI_REL)
+    claimed_source = False
     if queue is None or wiki.resolve() != wiki or not wiki.is_relative_to(root):
-        return None
+        return None, claimed_source
     try:
         with cp.card_write_lock(root), cp.queue_lock_path(queue).open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_SH)
@@ -81,8 +82,8 @@ def pending_revision_target(root, config, revision):
             rows = []
             claims = list(islice(queue.parent.glob(queue.name + '.claimed.*'), 65))
             if len(claims) > 64:
-                return None
-            for path in [queue, *claims]:
+                return None, claimed_source
+            for path in ([queue, *claims] if reuse else claims):
                 if not path.exists():
                     continue
                 data, _, _ = regular(queue.parent, path.name, remaining)
@@ -92,7 +93,13 @@ def pending_revision_target(root, config, revision):
                         job = json.loads(line)
                     except (ValueError, RecursionError):
                         continue
-                    if isinstance(job, dict) and isinstance(job.get('pendingPath'), str):
+                    if not isinstance(job, dict):
+                        continue
+                    if path != queue and not claimed_source and isinstance(job.get('targetPath'), str):
+                        claimed_source = any(item['path'] == revision['path'] and
+                                             item['collection'] == revision['collection']
+                                             for item in job_revisions(job))
+                    if reuse and isinstance(job.get('pendingPath'), str):
                         rows.append(job)
             cleanup = {job['pendingPath'] for job in rows if '_pendingCleanup' in job}
             card_budget = 6 * MAX_BODY
@@ -122,9 +129,9 @@ def pending_revision_target(root, config, revision):
                     old, _, _ = regular(wiki, live.relative_to(wiki).as_posix(), min(MAX_BODY, card_budget))
                     card_budget -= len(old)
                     if hashlib.sha256(old).hexdigest() == expected:
-                        return rel
+                        return rel, claimed_source
                 except (OSError, ValueError):
                     continue
     except (OSError, RuntimeError, ValueError):
         pass  # Unproved reuse costs a new extraction; it never suppresses work.
-    return None
+    return None, claimed_source

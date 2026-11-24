@@ -1,4 +1,5 @@
 """Owner-only proof that execution artifacts preserve embedding identity."""
+import errno
 import json
 import os
 import re
@@ -134,8 +135,13 @@ def valid(state, original, current, identity, *, require_legacy=False):
         found = any(r['attested'] == original and r['current'] == current
                     and r['attestedIdentity'] == identity for r in records)
         return found and (not require_legacy or _legacy_valid(state, original, current, identity, require_known=False))
-    except (OSError, ValueError, TypeError, UnicodeError):
+    except (FileNotFoundError, ValueError, TypeError):
         return False
+    except OSError as exc:
+        # O_NOFOLLOW rejects a symlink as unsafe proof. An unreadable ledger cannot be compared yet.
+        if exc.errno == errno.ELOOP:
+            return False
+        raise
 
 
 def write(state, original, current, old_identity, new_identity):
@@ -254,7 +260,7 @@ def authorize(state, manifest):
 
 
 def check(state, manifest):
-    """Return False for a rejected pair. Artifact I/O errors reach the caller."""
+    """Return False for a rejected pair. Artifact and ledger I/O errors reach the caller."""
     try:
         authorize(state, manifest)
         return True

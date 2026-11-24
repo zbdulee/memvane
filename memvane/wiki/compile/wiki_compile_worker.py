@@ -701,8 +701,9 @@ def generation_engine_order(engine):
 
 def _reuse_source_revision(root, config, job, source_revision, selected_route, bound_pending, cpath):
     from memvane.wiki.workspace import api as wiki_selected_laya
-    proof_card = selected_compiled_revision_card(
-        root, selected_route, source_revision, content_only=True)
+    reuse = job.get('partialCompile') is not True and job.get('forceRecompile') is not True
+    proof_card = (selected_compiled_revision_card(root, selected_route, source_revision, content_only=True)
+                  if reuse else None)
     if proof_card is not None:
         wiki_selected_laya.recheck(selected_route)
         if bound_pending is not None and not wiki_freshness.resolve_pending_refresh(
@@ -714,11 +715,14 @@ def _reuse_source_revision(root, config, job, source_revision, selected_route, b
             "card": proof_card,
         })
         return True, False, []
-    pending_target = wiki_verify.pending_revision_target(root, config, source_revision)
+    pending_target, claimed = wiki_verify.pending_source_review(root, config, source_revision, reuse=reuse)
     if pending_target is not None:
         wiki_selected_laya.recheck(selected_route)
         append_jsonl(cpath, bounded_failure('skipped', job, 'awaiting_pending_verification'))
         return True, False, []
+    if claimed:
+        # This source can produce a target the verifier holds. Keep the job until the claim returns.
+        return False, True, []
     return None
 
 
@@ -911,8 +915,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     if verify_suppression_hash(root, compile_cfg, rel) == wiki_verify.source_body_hash(content):
         append_jsonl(cpath, bounded_failure("skipped", job, "verify_inconclusive_suppressed"))
         return True, False, []
-    if (selected_route is not None and job.get('partialCompile') is not True
-            and job.get('forceRecompile') is not True):
+    if selected_route is not None:
         reuse = _reuse_source_revision(root, config, job, source_revision, selected_route,
                                       bound_pending, cpath)
         if reuse is not None:
@@ -1620,6 +1623,10 @@ def _main():
 
 def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                  selected_route) -> int:
+    if selected_route is not None:
+        verify_queue = _safe_queue_path(root, cp.rel(ct.VERIFY_QUEUE))
+        if not wiki_verify.prepare_queue(root, verify_queue, selected_route, config):
+            raise ResourceDeferred('verify_queue_handoff_pending')
     recover_pending_refreshes(root, config, queue)
 
     from memvane.wiki.intake import api as laya_wiki_backfill

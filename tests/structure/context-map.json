@@ -1797,7 +1797,17 @@
       "layer": "domain",
       "pinned": false
     },
+    "memvane/wiki/verify/upgrade_queue.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
     "memvane/wiki/verify/pending_handoff.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/pending_ownership.py": {
       "context": "wiki/verify",
       "layer": "application",
       "pinned": false
