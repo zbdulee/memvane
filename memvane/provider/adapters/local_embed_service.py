@@ -16,6 +16,7 @@ import threading
 import time
 
 from memvane.kernel.errors import IndexContractError
+from memvane.provider.types import attestation_reads
 from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
 
 
@@ -267,20 +268,21 @@ def start_owned_embed_service(manifest, *, admit, startup_timeout_s=15, executio
     socket_path = provider.manifest['serviceSocketPath']
     _private_parent(socket_path)
     from memvane.provider.adapters.reattest import authorize
-    try:
-        current = authorize(execution_state, manifest)
-    except (ValueError, KeyError, TypeError) as exc:
-        # Canonical path lookup can wrap a failed stat before any hash comparison.
-        if isinstance(exc.__cause__, OSError):
-            raise
-        raise IndexContractError('provider_artifact_hash_mismatch') from exc
-    original = provider.manifest
-    try:
-        provider.manifest = {**original, 'workerSha256': current['worker'],
-                             'providerArtifactSha256': current['provider']}
-        provider._verify_artifacts()
-    finally:
-        provider.manifest = original
+    with attestation_reads():
+        try:
+            current = authorize(execution_state, manifest)
+        except (ValueError, KeyError, TypeError) as exc:
+            # A failed stat or concurrent artifact change is not a compared mismatch.
+            if isinstance(exc.__cause__, OSError) or str(exc) == 'provider_artifact_changed':
+                raise
+            raise IndexContractError('provider_artifact_hash_mismatch') from exc
+        original = provider.manifest
+        try:
+            provider.manifest = {**original, 'workerSha256': current['worker'],
+                                 'providerArtifactSha256': current['provider']}
+            provider._verify_artifacts()
+        finally:
+            provider.manifest = original
     lock_path = socket_path + '.lock'
     try:
         lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)

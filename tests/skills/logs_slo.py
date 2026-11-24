@@ -149,6 +149,18 @@ class Lines(unittest.TestCase):
         self.assertEqual((overall['fullCoverage'], overall['arenaFullCoverage']), (0.1, 0.1))
         self.assertEqual((report['host claude']['complete'], report['host claude']['fullCoverage']), (1, 0.1))
 
+    def test_lexical_only_rows_do_not_count_as_arena_misses(self):
+        # Older bundles recorded the selected kernel's source even when the scan had no members.
+        lexical = [recall(i, semantic='lexical_only', vectorSource='store',
+                          vectorEligibleMembers=0, vectorCoveredMembers=0) for i in range(20)]
+        hits = [recall(20 + i, semantic='complete', vectorSource='arena', vectorCache='ok')
+                for i in range(190)]
+        line = by_name(lexical + hits)['semantic']
+        self.assertEqual((line['arena'], line['n'], line['complete'], line['status']),
+                         (1.0, 210, 0.9048, 'over'))
+        # With healthy completion, the empty scans alone cannot take the line over its target.
+        self.assertEqual(by_name(lexical[:5] + hits)['semantic']['status'], 'ok')
+
     def test_semantic_judges_the_arena_share_once_an_arena_answers(self):
         rows = [recall(i, semantic='complete', vectorSource='arena') for i in range(99)]
         rows.append(recall(99, semantic='complete', vectorSource='store'))

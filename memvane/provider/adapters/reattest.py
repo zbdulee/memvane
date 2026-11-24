@@ -46,9 +46,18 @@ def _expand_legacy(value, original):
     return {**value, **LEGACY_TEMPLATES}
 
 
+def _open_ledger(path, unsafe):
+    # Sockets and devices can fail open before fstat can identify them.
+    # O_NOFOLLOW rejects named links and a link swapped in after lstat.
+    mode = path.lstat().st_mode
+    if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
+        raise ValueError(unsafe)
+    return os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+
+
 def _read(state):
     state = private_state(state)
-    fd = os.open(state / FILE, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = _open_ledger(state / FILE, 'reattest_file_unsafe')
     try:
         info = os.fstat(fd)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1
@@ -74,7 +83,7 @@ def _record_valid(record, *, legacy=False):
 def _pairs(state):
     state = private_state(state)
     try:
-        fd = os.open(state / PAIRS_FILE, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = _open_ledger(state / PAIRS_FILE, 'reattest_pairs_unsafe')
     except FileNotFoundError:
         return None
     try:
@@ -95,7 +104,7 @@ def _pairs(state):
             after = os.fstat(stream.fileno())
         if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != (
                 after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
-            raise ValueError('reattest_pairs_changed')
+            raise OSError(errno.EAGAIN, 'reattest_pairs_changed')
         if (type(row) is not dict or set(row) != {'schema', 'records'}
                 or row['schema'] != PAIRS_SCHEMA or type(row['records']) is not list
                 or len(row['records']) > PAIRS_LIMIT or not all(_record_valid(r) for r in row['records'])):
@@ -131,11 +140,11 @@ def valid(state, original, current, identity, *, require_legacy=False):
             return False
         records = _pairs(state)
         if records is None:
-            return _legacy_valid(state, original, current, identity)
+            return original in (LEGACY_PAIR, PREVIOUS_PAIR) and _legacy_valid(state, original, current, identity)
         found = any(r['attested'] == original and r['current'] == current
                     and r['attestedIdentity'] == identity for r in records)
         return found and (not require_legacy or _legacy_valid(state, original, current, identity, require_known=False))
-    except (FileNotFoundError, ValueError, TypeError):
+    except (FileNotFoundError, ValueError, TypeError, RecursionError):
         return False
     except OSError as exc:
         # O_NOFOLLOW rejects a symlink as unsafe proof. An unreadable ledger cannot be compared yet.
@@ -231,9 +240,13 @@ def _current(manifest):
     return {'worker': hash_file(str(worker)), 'provider': hash_file(str(provider))}, identity
 
 
-def _attested_identity(state, original, manifest, current, identity):
+def _legacy_identity(identity):
+    return {**identity, 'chunkerSha256': LEGACY_CHUNKER, **LEGACY_SEMANTICS, **LEGACY_TEMPLATES}
+
+
+def _attested_identity(state, original, current, identity):
     if original in (LEGACY_PAIR, PREVIOUS_PAIR):
-        return {**identity, 'chunkerSha256': LEGACY_CHUNKER, **LEGACY_SEMANTICS, **LEGACY_TEMPLATES}
+        return _legacy_identity(identity)
     records = _pairs(state)
     if records is not None:
         for record in records:
@@ -251,10 +264,10 @@ def authorize(state, manifest):
     if original == actual:
         return actual
     current, identity = _current(manifest)
-    if actual != current:
-        raise ValueError('reattest_not_authorized')
-    old_identity = _attested_identity(state, original, manifest, current, identity)
-    if old_identity != identity or not valid(state, original, current, identity):
+    # A modern ledger row proves both identities equal to this execution's.
+    # Historical pairs additionally pin the semantics independently of the ledger.
+    expected = _legacy_identity(identity) if original in (LEGACY_PAIR, PREVIOUS_PAIR) else identity
+    if actual != current or expected != identity or not valid(state, original, current, identity):
         raise ValueError('reattest_not_authorized')
     return current
 
@@ -275,12 +288,12 @@ def check(state, manifest):
 def update(state, manifest):
     original = {'worker': manifest['workerSha256'], 'provider': manifest['providerArtifactSha256']}
     current, identity = _current(manifest)
-    old_identity = _attested_identity(state, original, manifest, current, identity)
+    old_identity = _attested_identity(state, original, current, identity)
     return write(state, original, current, old_identity, identity)
 
 
 def differences(state, manifest):
     original = {'worker': manifest['workerSha256'], 'provider': manifest['providerArtifactSha256']}
     current, identity = _current(manifest)
-    old = _attested_identity(state, original, manifest, current, identity)
+    old = _attested_identity(state, original, current, identity)
     return sorted(key for key in _FIELDS if old[key] != identity[key])

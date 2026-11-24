@@ -92,8 +92,11 @@ development execution guard is separate; see
   restarts too. Transient exhaustion serves lexical recall while waiting.
   A terminal provider start failure serves lexical prompt recall with
   `laya_vector_selected_provider_start_failed`. The resident retries a failed
-  artifact proof after one hour. A read error during artifact hashing uses the transient
-  startup retry budget. An invalid owner identity stays terminal.
+  artifact proof after one hour. During that window the service schedules its
+  next adoption check for the remaining time, capped at five minutes. An artifact
+  or reattestation-ledger read error uses the installation's transient startup
+  budget. Other installations sharing the model retain their own owner state
+  and the worker keeps its failure budget. An invalid owner identity stays terminal.
   A changed recall proof, corrupt owner state or socket identity transition
   refuses recall. The service verifies all artifacts before starting a
   worker. To bind an installation to a warm worker it reuses a successful

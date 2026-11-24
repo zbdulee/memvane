@@ -25,6 +25,8 @@ from __future__ import annotations
 from contextlib import suppress
 from memvane.kernel.bundle_paths import PROVIDER_RELATIVE_PATH, WORKER_RELATIVE_PATH, bundle_file
 from memvane.runtime.api import background_bundle, environment
+from memvane.provider.types import AttestationReadError
+from memvane.resident.types import INVALID_ATTESTATION as _INVALID_ATTESTATION, MOVED_PROOF as _MOVED_PROOF
 from memvane.resident.bundle_lifecycle import newer, wait_for_successor
 import fcntl
 import hashlib
@@ -563,15 +565,6 @@ def default_prove(project):
 
 # Consecutive moved-selection deferrals before they count as start failures.
 MOVED_DEFER_LIMIT = 3
-_MOVED_PROOF = frozenset((
-    'selected_route_changed', 'selected_proof_changed', 'worker_selection_changed',
-    'selection_transition_pending', 'host_decision_changed', 'journal_changed',
-    'worker_attestation_changed',
-))
-_INVALID_ATTESTATION = frozenset((
-    'provider_artifact_hash_mismatch', 'provider_model_not_gguf',
-    'provider_attestation_invalid', 'provider_closure_unapproved', 'provider_recipe_mismatch',
-))
 
 
 def _deferral(exc):
@@ -1139,8 +1132,8 @@ class Service:
 
     def _attest_failed(self, project, decision, manifest, exc, prior_attempts):
         """Record one full-proof attempt and schedule this installation only."""
-        from memvane.resident.embed_resident import _MAX_FAILURES, _write_state
-        code = _proof_code(exc)
+        from memvane.resident.embed_resident import _adoption_delay, _MAX_FAILURES, _write_state
+        code = _proof_code(exc.__cause__ if isinstance(exc, AttestationReadError) else exc)
         deferred = _deferral(exc) or code in _MOVED_PROOF
         self._report_proof_failure(project, code, 'waiting' if deferred else 'unproved', decision)
         if deferred:
@@ -1158,7 +1151,10 @@ class Service:
         except (OSError, ValueError):
             self._later(project, 60)
             return
-        self._later(project, 5)
+        if terminal or attempts >= _MAX_FAILURES:
+            self._later(project, _adoption_delay(manifest))
+        else:
+            self._later(project, 5 * 2 ** attempts if isinstance(exc, AttestationReadError) else 5)
 
     def _later(self, project, seconds):
         with self.lock:
@@ -1184,7 +1180,8 @@ class Service:
                            decision=_route_hint(project) if decision is None else decision, pid=os.getpid())
 
     def _adopt(self, project):
-        from memvane.resident.embed_resident import _owner_identity, _write_state, _failure_decision
+        from memvane.resident.embed_resident import (
+            _FAILURE_COOLDOWN_SECONDS, _adoption_delay, _owner_identity, _write_state, _failure_decision)
         from memvane.provider.api import private_parent as _private_parent, remove_stale_socket as _remove_stale_socket, bind_private
         try:
             decision, proof, mode = self.prove(project)
@@ -1194,11 +1191,12 @@ class Service:
                 _fail('provider_owner_identity_invalid')
         except Exception as exc:
             if not os.path.isdir(project):
-                self._forget(project)  # the project is gone: stop re-proving it
+                self._forget(project)
             else:
-                # A client still in "starting" can observe the binding failure.
-                self._report_proof_failure(project, _proof_code(exc), 'unproved')
-            self._later(project, 5)
+                # No proved manifest to write. Recheck a rejected installation on the capped schedule.
+                code = _proof_code(exc)
+                self._report_proof_failure(project, code, 'unproved')
+                self._later(project, _FAILURE_COOLDOWN_SECONDS if code in _INVALID_ATTESTATION else 5)
             return
         path = manifest['serviceSocketPath']
         key = _worker_key(manifest)
@@ -1229,7 +1227,7 @@ class Service:
                 previous = _failure_decision(manifest)
             except Exception:
                 os.close(owner_fd)
-                self._later(project, 5)
+                self._later(project, _adoption_delay(manifest))
                 return
             try:
                 self.attest(decision, proof, mode)
@@ -1294,7 +1292,7 @@ class Service:
             self._later(project, 2)
 
     def _load(self, project, decision, proof, mode, manifest, key, seal):
-        from memvane.resident.embed_resident import _failure_decision, _write_state
+        from memvane.resident.embed_resident import _adoption_delay, _failure_decision, _write_state
         with self.lock:
             worker = self.workers.get(key)
             if worker is None:
@@ -1312,7 +1310,7 @@ class Service:
                 # disk backoff, rather than adding a second five-second wait.
                 previous = _failure_decision(manifest)
             except Exception:
-                self._later(project, 5)
+                self._later(project, _adoption_delay(manifest))
                 return
             if (self.draining.is_set() or worker.loading
                     or worker.retry_at > time.monotonic() or worker.state == 'terminal'):
@@ -1346,7 +1344,7 @@ class Service:
 
     def _load_attested(self, project, decision, proof, mode, manifest, worker, seal, prior_attempts=0):
         from memvane.resident.embed_resident import (_FAILURE_COOLDOWN_SECONDS, _MAX_FAILURES,
-                                         _failure_window_active, _write_state, read_owner_state)
+                                         _failure_window_remaining, _write_state, read_owner_state)
         reason = None
         handle = None
         try:
@@ -1395,7 +1393,8 @@ class Service:
             elif code in ('provider_lock_invalid', 'provider_socket_invalid',
                           'provider_socket_changed'):
                 reason = 'identity_invalid'
-            elif code in _INVALID_ATTESTATION:
+            elif (isinstance(exc, AttestationReadError) or code in _INVALID_ATTESTATION
+                  or code == 'provider_artifact_changed'):
                 # The worker can also reject its proof during launch. Retry
                 # through the installation's durable attestation deadline.
                 try:
@@ -1454,7 +1453,7 @@ class Service:
             # Keep the existing diagnostics on read/write failure; adoption retries from disk.
             with suppress(Exception):
                 prior = read_owner_state(row)
-                if prior and prior['terminal'] and _failure_window_active(prior):
+                if prior and prior['terminal'] and _failure_window_remaining(prior):
                     continue
                 _write_state(row, reason, terminal=worker.state == 'terminal',
                              attempts=min(_MAX_FAILURES, worker.failures))

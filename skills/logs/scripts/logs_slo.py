@@ -218,8 +218,9 @@ def _semantic(prompt, window=()):
     asked = [row for row in stated if row['semantic'] != 'provider_absent']
     counts = Counter(row['semantic'] for row in stated)
     values = {name: counts.get(name, 0) for name in SEMANTIC_COUNTS}
-    # A recall whose arena was switched off on purpose is not an arena miss.
-    sourced = [row for row in asked if _text(row.get('vectorSource')) and row.get('vectorCache') != 'disabled']
+    # Older lexical-only rows may name the selected kernel's source even though it read no vectors.
+    sourced = [row for row in asked if row['semantic'] != 'lexical_only'
+               and _text(row.get('vectorSource')) and row.get('vectorCache') != 'disabled']
     arena = sum(row['vectorSource'] == 'arena' for row in sourced)
     cache = Counter(row['vectorCache'] for row in stated if row.get('vectorCache') in VECTOR_CACHE)
     # Rows from before the field existed do not say: unmeasured, not zero.

@@ -360,15 +360,18 @@ class RecoveryChecks(FixtureCase):
                 with patch.object(provider, 'hash_file', side_effect=reads) as hashed, \
                      patch.object(svc.threading, 'Thread', InlineThread), \
                      patch.object(svc.time, 'monotonic') as mono, patch.object(owner.time, 'time') as clock:
+                    decision.update(installId='fixture', journalPath=str(root / 'journal'), scopeId='scope',
+                                    storePath=str(root / 'store'), storeIncarnation='store-id', vectorProfile={})
+                    svc.register(root, root=root)
                     for at in (100, 109, 110):
                         clock.return_value = mono.return_value = at
-                        service._load(str(root), decision, proof, 'selected', manifest, key, 'seal')
+                        service.tick()
                         if at < 110:
                             row = owner.read_owner_state(manifest)
                             self.assertEqual((row['reason'], row['attempts'], row['terminal']),
                                              ('startup_failed', 1, False))
                             self.assertEqual(len(attempts), 1)
-                            self.assertNotIn('seal', service.attested)
+                            self.assertFalse(service.attested)
                     self.assertEqual((hashed.call_count, len(attempts), service.workers[key].state),
                                      (failure_at, 2, 'ready'))
 
@@ -406,16 +409,19 @@ class RecoveryChecks(FixtureCase):
                 def open_ledger(path, *args, **kwargs):
                     if Path(path) == root / 'provider-reattest-pairs.json':
                         ledger_opens.append(path)
-                        if approved and len(ledger_opens) == 2:
+                        if approved and len(ledger_opens) == 1:
                             raise OSError(errno.EIO, 'fixture ledger read')
                     return real_open(path, *args, **kwargs)
                 with patch.object(os, 'open', side_effect=open_ledger), \
                      patch.object(provider, 'start_owned_embed_service', return_value=object()) as spawn, \
                      patch.object(svc.threading, 'Thread', InlineThread), \
                      patch.object(svc.time, 'monotonic') as mono, patch.object(owner.time, 'time') as clock:
+                    decision.update(installId='fixture', journalPath=str(root / 'journal'), scopeId='scope',
+                                    storePath=str(root / 'store'), storeIncarnation='store-id', vectorProfile={})
+                    svc.register(root, root=root)
                     for at in (100, 109, 110):
                         clock.return_value = mono.return_value = at
-                        service._load(str(root), decision, proof, 'selected', row, key, 'seal')
+                        service.tick()
                         if not approved or at < 110:
                             state = owner.read_owner_state(row)
                             self.assertEqual((state['reason'], state['terminal'], state['attempts'], state['at']),
@@ -423,7 +429,7 @@ class RecoveryChecks(FixtureCase):
                                              else ('attestation_invalid', True, 3, 100))
                             self.assertEqual(launch.call_count, 1)
                             spawn.assert_not_called()
-                    self.assertEqual(len(ledger_opens), 4 if approved else 2)
+                    self.assertEqual(len(ledger_opens), 2 if approved else 1)
                     self.assertEqual((launch.call_count, spawn.call_count), (2, 1) if approved else (1, 0))
                     if approved:
                         self.assertEqual(service.workers[key].state, 'ready')

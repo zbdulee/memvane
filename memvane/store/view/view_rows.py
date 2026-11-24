@@ -1375,17 +1375,19 @@ class RowsMixin:
             vectors.mark(timings, 'vectorCardsMs', started);from memvane.store.view import vector_accel
             native = vector_accel.kernel()
             stats.update(vectorKernel='accelerate' if native is not None else 'python',
-                         vectorSource='store' if native is not None else 'python',
                          vectorRows=0, vectorVerified=0, vectorScanBlocks=0,
                          vectorLoadMs=0.0, vectorScanMs=0.0, vectorVerifyMs=0.0,
                          vectorReadMs=0.0, vectorUnpackMs=0.0, vectorDotMs=0.0)
             stats['vectorKernelUnavailable'] = native is None and vector_accel.requested()
             if dimension is None:
+                stats.pop('vectorSource', None)
                 top = []
             elif native is not None:
+                stats['vectorSource'] = 'store'
                 top = view_accel_search.search(self, db, groups, heads, recipe_id, profile_id,
                                               dimension, query, limit, deadline, stats, native)
             else:
+                stats['vectorSource'] = 'python'
                 top = vectors._python_top(self, db, groups, heads, recipe_id, profile_id,
                                           dimension, query, limit, max_float_work, deadline,
                                           stats, preferred_paths)

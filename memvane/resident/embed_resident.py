@@ -20,6 +20,7 @@ import time
 
 from memvane.kernel.errors import IndexContractError
 from memvane.provider.api import private_parent as _private_parent
+from memvane.provider.types import attestation_reads
 from memvane.kernel.resource_deferred import ResourceDeferred
 
 
@@ -122,15 +123,27 @@ def owner_lock_held(manifest):
         os.close(fd)
 
 
-def _failure_window_active(row):
-    """Whether a terminal or exhausted record still blocks a new attempt."""
+def _failure_window_remaining(row):
+    """Seconds until this terminal or exhausted record permits another attempt."""
     if row['reason'] in _TRANSIENT_FAILURES:
         cooldown = _FAILURE_COOLDOWN_SECONDS
     elif row['reason'] == 'attestation_invalid':
         cooldown = _ATTESTATION_RETRY_SECONDS
     else:
-        return True
-    return 0 <= time.time() - row['at'] < cooldown
+        return math.inf
+    elapsed = time.time() - row['at']
+    return cooldown - elapsed if 0 <= elapsed < cooldown else 0
+
+
+def _adoption_delay(manifest):
+    """Recheck this installation at expiry or after five minutes if its proof changes."""
+    try:
+        row = read_owner_state(manifest)
+    except (OSError, ValueError):
+        return 5
+    if row and (row['terminal'] or (row['reason'] in _TRANSIENT_FAILURES and row['attempts'] >= _MAX_FAILURES)):
+        return min(_FAILURE_COOLDOWN_SECONDS, _failure_window_remaining(row))
+    return 5
 
 
 def _failure_decision(manifest, *, own_lock=False):
@@ -142,16 +155,16 @@ def _failure_decision(manifest, *, own_lock=False):
         # Older services persisted transient exhaustion as terminal. Keep one
         # fixed cooldown, including across restarts, without renewing it on
         # each prompt. A wall-clock rollback must not make it indefinite.
-        if _failure_window_active(row):
+        if _failure_window_remaining(row):
             raise ResourceDeferred('laya_service_backoff')
         return
     if row['terminal']:
-        if not _failure_window_active(row):
+        if not _failure_window_remaining(row):
             return  # A fresh full proof is due, also after a clock rollback.
         raise IndexContractError('provider_start_failed')
     delay = (5 if row['reason'] in ('resource_deferred', 'starting') else
              min(300, 5 * 2 ** max(0, row['attempts'] - 1)))
-    if time.time() - row['at'] < delay:
+    if 0 <= time.time() - row['at'] < delay:
         raise ResourceDeferred('laya_service_resource_deferred' if
                                row['reason'] == 'resource_deferred' else
                                'laya_service_backoff')
@@ -391,7 +404,14 @@ def start_attested_worker(manifest, admit, *, execution_state, provider, worker)
     from memvane.kernel.errors import IndexContractError
     from memvane.provider import api as provider_api
     local = {**manifest, 'providerPath': str(provider), 'workerPath': str(worker)}
-    if not provider_api.reattestation_check(execution_state, local):
+    try:
+        with attestation_reads():
+            approved = provider_api.reattestation_check(execution_state, local)
+    except ValueError as exc:
+        if str(exc) == 'provider_artifact_changed':
+            raise  # The file moved while being hashed; a new observation may succeed.
+        raise IndexContractError('provider_attestation_invalid') from exc
+    if not approved:
         raise IndexContractError('provider_attestation_invalid')
     if execution_state is None:
         return provider_api.start_owned_embed_service(local, admit=admit)
