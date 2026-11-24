@@ -78,8 +78,8 @@ class InstallationRetry(FixtureCase):
                                    attest=self.service.attest, admit=self.service.admit)
 
     @contextmanager
-    def inline_clock(self):
-        for project in self.projects:
+    def inline_clock(self, projects=None):
+        for project in (self.projects if projects is None else projects):
             svc.register(project, root=self.root)
         def inline(**opts):
             return Mock(start=lambda: opts['target'](*opts['args']))
@@ -119,6 +119,134 @@ class InstallationRetry(FixtureCase):
             launch.side_effect = RuntimeError('new_failure')
             self.service._adopt(a)
             self.assertEqual((launch.call_count, self.service.workers[key].failures), (5, 1))
+
+    def shared_manifest(self):
+        manifest = self.proofs[self.projects[0]][1]['providerManifest']
+        return dict(manifest, serviceSocketPath=svc._worker_socket(self.root, svc._worker_key(manifest)))
+
+    def fail_launches(self, project, clock, moments):
+        with patch.object(provider, 'start_owned_embed_service', side_effect=RuntimeError('fixture spawn')) as launch:
+            for moment in moments:
+                clock.return_value = moment
+                self.service._adopt(project)
+            self.assertEqual(launch.call_count, len(moments))
+
+    def test_first_warm_proof_after_shared_admission_wait_gets_one_attempt(self):
+        a, b = self.projects
+        mb = self.proofs[b][1]['providerManifest']
+        with self.inline_clock([a]) as clock:
+            self.fail_launches(a, clock, (100, 110))
+            self.restart()
+            svc.register(b, root=self.root)
+            clock.return_value = 130
+            with patch.object(self.service, 'admit', return_value=False):
+                self.service._adopt(a)
+            row = owner.read_owner_state(mb)
+            self.assertEqual((row['reason'], row['attempts']), ('resource_deferred', 0))
+            clock.return_value = 136
+            handle = Mock()
+            handle.process.poll.return_value = None
+            with patch.object(provider, 'start_owned_embed_service', return_value=handle) as launch:
+                self.service._adopt(a)
+                launch.assert_called_once()
+            ready = owner.read_owner_state(self.shared_manifest())
+            self.assertEqual((ready['reason'], ready['attempts']), ('ready', 0))
+            clock.return_value = 137
+            with patch.object(self.service, 'attest', side_effect=OSError(errno.EIO, 'proof')) as attest:
+                self.service._adopt(b)
+                attest.assert_called_once()
+            row = owner.read_owner_state(mb)
+            self.assertEqual((row['reason'], row['attempts'], self.service.retry[b]), ('startup_failed', 1, 142))
+
+    def test_shared_projection_preserves_local_proof_history_across_restart(self):
+        a, b = self.projects
+        ma = self.proofs[a][1]['providerManifest']
+        with self.inline_clock() as clock:
+            with patch.object(provider, 'hash_file', side_effect=OSError(errno.EIO, 'proof')):
+                for moment in (100, 110):
+                    clock.return_value = moment
+                    self.service._adopt(a)
+            self.assertEqual(owner.read_owner_state(ma)['attempts'], 2)
+            self.fail_launches(b, clock, (115,))
+            self.assertEqual(owner.read_owner_state(ma)['attempts'], 2)
+            self.restart()
+            clock.return_value = 130
+            with patch.object(provider, 'hash_file', side_effect=OSError(errno.EIO, 'proof')):
+                self.service._adopt(a)
+            self.assertEqual((owner.read_owner_state(ma)['attempts'], self.service.retry[a]), (3, 430))
+
+    def test_projected_spawn_count_is_not_a_proof_attempt_after_restart(self):
+        a, b = self.projects
+        mb = self.proofs[b][1]['providerManifest']
+        with self.inline_clock() as clock:
+            self.fail_launches(a, clock, (100, 110))
+            self.assertEqual(owner.read_owner_state(mb)['attempts'], 2)
+            self.restart()
+            clock.return_value = 130
+            with patch.object(provider, 'hash_file', side_effect=OSError(errno.EIO, 'proof')):
+                self.service._adopt(b)
+            self.assertEqual(owner.read_owner_state(mb)['attempts'], 1)
+
+    def test_clock_correction_cannot_restore_a_discarded_shared_cooldown(self):
+        a, _ = self.projects
+        shared = self.shared_manifest()
+        with self.inline_clock([a]) as wall:
+            self.fail_launches(a, wall, (100, 110, 130))
+            self.assertEqual(owner.read_owner_state(shared)['at'], 130)
+            self.restart()
+            wall.return_value = 110
+            with patch.object(svc.time, 'monotonic', return_value=200), patch.object(self.service, 'admit', return_value=False):
+                self.service._adopt(a)
+            self.assertEqual(owner.read_owner_state(shared)['attempts'], 0)
+            self.restart()
+            wall.return_value = 140
+            with patch.object(svc.time, 'monotonic', return_value=230), patch.object(provider, 'start_owned_embed_service') as launch:
+                self.service._adopt(a)
+                launch.assert_called_once()
+
+    def test_new_install_schedules_one_proof_at_the_shared_deadline(self):
+        a, b = self.projects
+        with self.inline_clock([a]) as clock:
+            self.fail_launches(a, clock, (100, 110, 130))
+            self.service._forget(a)
+            svc.register(b, root=self.root)
+            self.restart()
+            self.service.prove.reset_mock()
+            with patch.object(provider, 'start_owned_embed_service') as launch:
+                for moment in range(131, 430):
+                    clock.return_value = moment
+                    self.service.tick()
+                self.assertEqual((self.service.prove.call_count, self.service.retry[b]), (1, 430))
+                launch.assert_not_called()
+                self.assertIsNone(owner.read_owner_state(self.proofs[b][1]['providerManifest']))
+                clock.return_value = 430
+                self.service.tick()
+                launch.assert_called_once()
+
+    def test_observed_exit_restores_five_second_delay_then_clears_shared_failures(self):
+        a, _ = self.projects
+        shared = self.shared_manifest()
+        handle = Mock()
+        handle.process.poll.return_value = None
+        with self.inline_clock([a]) as clock, patch.object(provider, 'start_owned_embed_service', return_value=handle) as launch:
+            clock.return_value = 90
+            self.service._adopt(a)
+            handle.process.poll.return_value = 17
+            clock.return_value = 100
+            self.service._adopt(a)
+            exited = owner.read_owner_state(shared)
+            self.assertEqual((exited['reason'], exited['attempts'], exited['at']), ('worker_exited', 1, 100))
+            handle.stop.assert_called_once()
+            self.restart()
+            clock.return_value = 104
+            self.service._adopt(a)
+            launch.assert_called_once()
+            clock.return_value = 105
+            handle.process.poll.return_value = None
+            self.service._adopt(a)
+            self.assertEqual(launch.call_count, 2)
+            ready = owner.read_owner_state(shared)
+            self.assertEqual((ready['reason'], ready['attempts']), ('ready', 0))
 
     def test_resource_wait_before_and_after_install_cooldown(self):
         a, b = self.projects
@@ -213,6 +341,51 @@ class InstallationRetry(FixtureCase):
                         self.assertEqual(row, prior)
                     else:
                         self.assertEqual((row['reason'], row['attempts']), ('resource_deferred', 0))
+
+    def test_legacy_writer_replacing_a_projection_owns_its_attempts(self):
+        project = self.projects[0]
+        manifest = self.proofs[project][1]['providerManifest']
+        path = Path(manifest['serviceSocketPath'] + '.resident.state')
+        with patch.object(owner.time, 'time', return_value=100):
+            owner._record_shared_wait(manifest, 'startup_failed', False, 2)
+            self.assertIsNone(owner._failure_decision(manifest, installation=True))
+            # A 1.x writer atomically publishes even identical bytes on its own inode.
+            replacement = path.with_suffix('.temporary')
+            replacement.write_bytes(path.read_bytes())
+            replacement.chmod(0o600)
+            replacement.replace(path)
+            self.assertEqual(owner._install_state(manifest)['attempts'], 2)
+
+    def test_failed_projection_keeps_the_previous_diagnostic_and_its_proof(self):
+        project = self.projects[0]
+        manifest = self.proofs[project][1]['providerManifest']
+        path = Path(manifest['serviceSocketPath'] + '.resident.state')
+        owner._record_shared_wait(manifest, 'startup_failed', False, 1)
+        files = set(path.parent.iterdir())
+        before = owner.read_owner_state(manifest)
+        with patch.object(owner.os, 'replace', side_effect=OSError(errno.EIO, 'publish')):
+            with self.assertRaises(OSError):
+                owner._record_shared_wait(manifest, 'startup_failed', False, 2)
+        self.assertEqual(set(path.parent.iterdir()), files)
+        self.assertEqual(owner.read_owner_state(manifest), before)
+        self.assertIsNone(owner._failure_decision(manifest, installation=True))
+        owner._write_state(manifest, 'ready')
+        self.assertEqual(set(path.parent.iterdir()), {path})
+
+    def test_legacy_admission_projection_does_not_charge_the_next_proof(self):
+        a, _ = self.projects
+        manifest = self.proofs[a][1]['providerManifest']
+        with self.inline_clock([a]) as clock:
+            clock.return_value = 100
+            owner._write_state(manifest, 'resource_deferred', attempts=2)
+            with patch.object(self.service, 'attest', side_effect=OSError(errno.EIO, 'proof')) as attest:
+                clock.return_value = 104
+                self.service._adopt(a)
+                attest.assert_not_called()
+                clock.return_value = 105
+                self.service._adopt(a)
+                attest.assert_called_once()
+            self.assertEqual((owner.read_owner_state(manifest)['attempts'], self.service.retry[a]), (1, 110))
 
     def test_old_saturated_admission_does_not_become_a_process_exit(self):
         b = self.proofs[self.projects[1]][1]['providerManifest']

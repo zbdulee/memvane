@@ -199,7 +199,7 @@ class RecoveryChecks(FixtureCase):
         self.assertEqual(service.workers[key].failures, 0)
         self.assertEqual(owner.read_owner_state(self.manifest)['attempts'], 2)
 
-    def test_resource_deferral_does_not_erase_prior_failures(self):
+    def test_resource_deferral_keeps_process_failures_out_of_install_budget(self):
         project = str(self.base / 'project')
         Path(project).mkdir()
         root = self.base / 'svc'
@@ -214,7 +214,7 @@ class RecoveryChecks(FixtureCase):
         service._load_attested(project, decision, proof, 'selected', self.manifest, worker, 'seal')
         row = owner.read_owner_state(self.manifest)
         self.assertEqual((row['reason'], row['attempts'], worker.failures),
-                         ('resource_deferred', 2, 2))
+                         ('resource_deferred', 0, 2))
 
     def test_warm_attach_respects_existing_failure_cooldown(self):
         self.stamp('startup_failed', terminal=False, attempts=3)

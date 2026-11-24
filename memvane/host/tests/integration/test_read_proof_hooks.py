@@ -2,6 +2,8 @@
 import errno
 import io
 import json
+import os
+from pathlib import Path
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
@@ -38,9 +40,9 @@ class ReadProofHooks(AttestedInstall):
         for action, expected in (('recall', empty_recall), ('gate', {})):
             with self.subTest(action=action):
                 with patch.object(provider, 'runtime_file_sha256', side_effect=hash_file) as read:
-                    status, payload, err = self.run_hook(action)
+                    for host in ('claude', 'codex'):
+                        self.assertEqual(self.run_hook(action, host), (0, expected, ''), host)
                     read.assert_any_call(model)
-                    self.assertEqual((status, payload), (0, expected), err)
                     self.assertEqual(self.install.events()[-1]['reason'], 'worker_attestation_unavailable')
                     with self.assertRaisesRegex(JournalEvidenceError, '^worker_attestation_unavailable$'):
                         journal.verify_selected_route_for_write(self.decision)
@@ -88,9 +90,35 @@ class ReadProofHooks(AttestedInstall):
         record = json.loads(path.read_bytes())
         record['providerManifest']['embeddingFingerprint'] = '0' * 64
         path.write_bytes(encoded(record))
-        for action in ('recall', 'gate'):
-            with self.subTest(action=action):
+        for host in ('claude', 'codex'):
+            for action in ('recall', 'gate'):
+                with self.subTest(host=host, action=action):
+                    status, payload, err = self.run_hook(action, host)
+                    self.assertEqual((status, payload), (3, None))
+                    self.assertIn('worker_attestation_changed', err)
+                    self.assertEqual(self.install.events()[-1]['outcome'], 'refused')
+
+    def test_attestation_file_read_error_refuses_read_hooks(self):
+        path = self.state / 'provider-attestation.json'
+        real_open = os.open
+
+        def open_file(name, *args, **kwargs):
+            if isinstance(name, (str, Path)) and Path(name) == path:
+                raise OSError(errno.EIO, 'fixture attestation read')
+            return real_open(name, *args, **kwargs)
+
+        with patch.object(os, 'open', side_effect=open_file):
+            for action in ('recall', 'gate'):
                 status, payload, err = self.run_hook(action)
                 self.assertEqual((status, payload), (3, None))
-                self.assertIn('worker_attestation_changed', err)
-                self.assertEqual(self.install.events()[-1]['outcome'], 'refused')
+                self.assertIn('production_attestation_unavailable', err)
+
+    def test_changed_model_bytes_degrade_read_hooks_and_refuse_write_proof(self):
+        from memvane.journal.types import JournalEvidenceError
+        model = Path(self.manifest['modelPath'])
+        model.write_bytes(model.read_bytes() + b'changed')
+        empty = {'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': ''}}
+        self.assertEqual(self.run_hook('recall'), (0, empty, ''))
+        self.assertEqual(self.run_hook('gate'), (0, {}, ''))
+        with self.assertRaisesRegex(JournalEvidenceError, '^provider_identity_changed$'):
+            journal.verify_selected_route_for_write(self.decision)
