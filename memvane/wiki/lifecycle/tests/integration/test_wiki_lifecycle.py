@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from memvane.wiki.lifecycle import wiki_lifecycle as lifecycle
 from memvane.wiki.workspace import api as wiki_selected_laya
+from memvane.wiki.workspace.handoff.api import native_live
 from memvane.wiki.card import api as yaml_scalars
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
@@ -95,8 +96,13 @@ class WikiLifecycle(FixtureCase):
             result = lifecycle.run(str(self.root))
         return result, sync.call_count, compile_wake.call_count
 
+    def queue_path(self):
+        # 1.1.1 producers append to the private native queue so released workers cannot claim it.
+        public = self.root / '.memvane/compile/source-queue.jsonl'
+        return native_live(public) or public
+
     def queue_rows(self):
-        path = self.root / '.memvane/compile/source-queue.jsonl'
+        path = self.queue_path()
         if not path.exists():
             return []
         return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
@@ -453,7 +459,7 @@ class WikiLifecycle(FixtureCase):
         self.assertEqual((second['retired'], second['enqueued'], syncs), (0, 0, 0))
         # Worker drained the queue but the card still records the old hash: the
         # same revision is not enqueued again.
-        (self.root / '.memvane/compile/source-queue.jsonl').unlink()
+        self.queue_path().unlink()
         third, _, _ = self.run_lifecycle()
         self.assertEqual((third['enqueued'], self.queue_rows()), (0, []))
         self.assertTrue(card.exists())
@@ -471,7 +477,7 @@ class WikiLifecycle(FixtureCase):
         fresh = self.card('a-fresh.md', [self.revision('a.md')])
         first, _, _ = self.run_lifecycle()
         self.assertEqual(first['enqueued'], 1)
-        (self.root / '.memvane/compile/source-queue.jsonl').unlink()
+        self.queue_path().unlink()
         second, _, _ = self.run_lifecycle()
         self.assertEqual((second['enqueued'], self.queue_rows()), (0, []))
         self.assertTrue(stale.exists() and fresh.exists())
