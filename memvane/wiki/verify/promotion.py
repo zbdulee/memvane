@@ -7,6 +7,7 @@ import re
 import stat
 
 from memvane.kernel.atomic_rename import canonical_json_bytes, fsync_dir, rename_exchange, rename_noreplace, write_new_file
+from memvane.kernel.persistent_identity import persistent_identity_equal
 from memvane.settings.api import compile_dir, find_project_config
 from memvane.settings.types import CURRENT
 
@@ -55,7 +56,7 @@ def _folder(root, job, create=False):
     return path
 
 
-def _record(path, value=None):
+def _record(path, value=None, *, max_bytes=16384):
     if value is not None and not os.path.lexists(path):
         payload = dict(value, version=1)
         digest = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
@@ -63,7 +64,7 @@ def _record(path, value=None):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, 'rb') as stream:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > 16384 or info.st_nlink != 1:
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > max_bytes or info.st_nlink != 1:
             raise ValueError('unsafe promotion record')
         data = json.load(stream)
     if not isinstance(data, dict) or data.get('version') != 1:
@@ -221,16 +222,19 @@ def publish(root, job, pending, live, verified, base):
     return _finish(root, folder, intent)
 
 
-def _source_bytes(path, expected_text):
+def _source_bytes(path, expected_text, *, with_node=False):
     if path.resolve() != path:
         raise ValueError('unsafe visible card')
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, 'rb') as stream:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
             raise ValueError('unsafe visible card')
         raw = stream.read()
     if raw.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n') != expected_text:
         raise ValueError('visible card changed')
+    if with_node:
+        return raw, {'dev': info.st_dev, 'ino': info.st_ino, 'sha256': hashlib.sha256(raw).hexdigest()}
     return raw
 
 
@@ -249,6 +253,41 @@ def _stamp_owner(path, owner, expected, rendered):
                   'visibleVerdict': hashlib.sha256('\n'.join(fields).encode()).hexdigest()}
 
 
+def _publish_decision(root, job, live, folder, *, rendered=None, expected_base=None):
+    """Bind the exact paid output to the job and the reviewed inode before staging it."""
+    from memvane.store.types import MAX_BODY
+    receipt = folder / 'stamp-decision'
+    review = folder / 'review.md'
+    node = _snapshot(live)
+    if expected_base is not None and expected_base != node:
+        return 'retry'
+    original = {k: v for k, v in job.items() if k not in ('_pendingCleanup', '_requeue_count')}
+    key = hashlib.sha256(canonical_json_bytes(original)).hexdigest()
+    # JSON escape sequences may expand each input byte sixfold; allow the new proof fields too.
+    limit = 6 * live.stat().st_size + MAX_BODY
+    if not os.path.lexists(receipt):
+        if rendered is None:
+            return None
+        # A pre-receipt image has no job/base proof. Keep it private for inspection.
+        if os.path.lexists(review):
+            _move(review, folder / 'unbound-review.md')
+        saved = _record(receipt, {'job': key, 'base': node, 'rendered': rendered}, max_bytes=limit)
+    else:
+        saved = _record(receipt, max_bytes=limit)
+    if (saved.get('job') != key or not persistent_identity_equal(saved.get('base'), node)
+            or not isinstance(saved.get('rendered'), str)):
+        return 'retry'
+    base = live.read_bytes()
+    if hashlib.sha256(base).hexdigest() != node['sha256']:
+        return 'retry'
+    image = saved['rendered'].encode()
+    if not os.path.lexists(review):
+        write_new_file(review, image, mode=stat.S_IMODE(live.stat().st_mode))
+    if _snapshot(review)['sha256'] != hashlib.sha256(image).hexdigest():
+        return 'retry'
+    return publish(root, job, review, live, saved['rendered'], base)
+
+
 def write_stamp(path, rendered, expected, owner, fallback):
     """A visible card is always exchanged; the hidden review image is not a visible card."""
     path = Path(path).absolute()
@@ -256,22 +295,18 @@ def write_stamp(path, rendered, expected, owner, fallback):
         return fallback(path, rendered)
     try:
         root, job = _stamp_owner(path, owner, expected, rendered)
-        base = _source_bytes(path, expected)
+        base, reviewed = _source_bytes(path, expected, with_node=True)
         folder = _folder(root, job, create=True)
         review = folder / 'review.md'
         previous = recover(root, job, review, path)
         if previous is not None:
             return previous == 'published'
-        if not os.path.lexists(review):
-            write_new_file(review, rendered.encode(), mode=stat.S_IMODE(path.stat().st_mode))
-        if os.path.lexists(folder / 'intent'):
-            intent = _intent(root, folder, job)
-            if _snapshot(review) != intent['stamp'] or hashlib.sha256(base).hexdigest() != intent['base']:
-                return False
-            rendered = review.read_bytes().decode('utf-8')
-        elif review.read_bytes() != rendered.encode():
+        if not os.path.lexists(folder / 'intent'):
+            return _publish_decision(root, job, path, folder, rendered=rendered, expected_base=reviewed) == 'published'
+        intent = _intent(root, folder, job)
+        if _snapshot(review) != intent['stamp'] or hashlib.sha256(base).hexdigest() != intent['base']:
             return False
-        return publish(root, job, review, path, rendered, base) == 'published'
+        return publish(root, job, review, path, review.read_bytes().decode(), base) == 'published'
     except (KeyError, OSError, RuntimeError, TypeError, ValueError):
         return False
 
@@ -282,7 +317,9 @@ def resume_stamp(root, job, live, fresh):
     except FileNotFoundError:
         return None
     if not os.path.lexists(folder / 'intent'):
-        return None
+        if not os.path.lexists(folder / 'stamp-decision'):
+            return None
+        return _publish_decision(root, job, live, folder) if fresh() else 'retry'
     review = folder / 'review.md'
     state = recover(root, job, review, live)
     if state is not None:
