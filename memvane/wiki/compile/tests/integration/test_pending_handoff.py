@@ -88,12 +88,16 @@ class PendingHandoff(FixtureCase):
         self.assertEqual(len(jobs), 1, jobs)
         return jobs[0]
 
-    def native_verify(self):
+    def native_verify(self, during_model=None):
         answer = {'verdict': 'pass', 'claims': [{'claim': 'Decision', 'supported': True,
                   'quote': 'Newest source', 'sourcePath': 'docs/source.md'}], 'reasons': []}
+        def review(*args):
+            if during_model is not None:
+                during_model()
+            return answer, None, 0
+
         with patch.object(workspace, 'selected', return_value=self.bound), patch.object(workspace, 'recheck'), \
-             patch.object(workspace, 'request_sync'), patch.object(engines, 'run_extractor',
-                                                                  return_value=(answer, None, 0)) as called:
+             patch.object(workspace, 'request_sync'), patch.object(engines, 'run_extractor', side_effect=review) as called:
             result = verify.run(self.root, self.config, self.config['compile'])
         return {'remaining': result['remaining'], 'calls': called.call_count}
 

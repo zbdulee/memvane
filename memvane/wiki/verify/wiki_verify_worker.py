@@ -747,7 +747,7 @@ def apply_verify_verdict_locked(
     ``sha256`` they are bound to; they are further narrowed to the card's own
     ``sourceRevisions`` so recall can bind them to what the card claims.
     """
-    if wiki_freshness.unresolved_pending_refreshes_strict(root, before_ledger_write=True) is None:
+    if wiki_freshness.unresolved_pending_refreshes_strict(root, before_ledger_write=True, append_for=job) is None:
         return False, True
     if incompatible_cards((target, root / job['targetPath']) if job.get('pendingPath') else (target,)):
         return False, True
@@ -940,7 +940,7 @@ def process_verify_job(
         except (OSError, RuntimeError, ValueError, sqlite3.Error):
             log_verdict(log_path, {**base_record(job), 'result': 'skipped',
                                    'reason': 'provenance_checkout_unavailable'})
-    if wiki_freshness.unresolved_pending_refreshes_strict(root, before_ledger_write=True) is None:
+    if wiki_freshness.unresolved_pending_refreshes_strict(root, before_ledger_write=True, append_for=job) is None:
         return False, True
     rel = job.get("targetPath")
     if not isinstance(rel, str) or not rel:
