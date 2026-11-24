@@ -1179,13 +1179,15 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         row for row in read_jsonl(manifest_path)
         if same_generated_identity(row, record)
     ]
-    if not target.exists() and not regenerate and (not previous or previous[-1].get("action") != MACHINE_DELETE_ACTION):
+    # Recover a proved prior retirement before any new generation. A forced
+    # creation can otherwise equal the predecessor row at the same timestamp.
+    if not target.exists() and (not previous or previous[-1].get("action") != MACHINE_DELETE_ACTION):
         from memvane.wiki.verify.api import missing_retirement
         retirement = missing_retirement(root, config, record['targetPath'], check=check)
         if retirement == 'retry':
             print(json.dumps({'action': 'deferred', 'reason': 'machine_deletion_unconfirmed'}))
             return 1
-        if previous and retirement == 'manual':
+        if not regenerate and previous and retirement == 'manual':
             if check:
                 return _checked("tombstoned")
             tombstone = public_history(record, action='deleted', status='deleted',

@@ -39,12 +39,12 @@ class DirectWriter(FixtureCase):
                 'trigger': 'post_tool_source', 'targetPath': self.target.relative_to(self.root).as_posix(),
                 'sourceRevisions': [revision], 'sources': [{k: revision[k] for k in ('kind', 'path', 'collection')}]}
 
-    def write(self, text, *, check=False):
+    def write(self, text, *, check=False, regenerate=False):
         candidate = self.candidate(text)
         with workspace.card_write_lock(self.root), workspace.mutation_lock(self.root), \
              patch.object(workspace, 'selected', return_value=None), redirect_stdout(io.StringIO()) as output:
             rc = writer._compile_locked(self.root, self.config, self.config['compile'],
-                                        self.project.wiki, candidate, False, check=check)
+                                        self.project.wiki, candidate, regenerate, check=check)
         return rc, json.loads(output.getvalue())['action']
 
     def rows(self, name):
@@ -243,6 +243,18 @@ class DirectWriter(FixtureCase):
                 self.assertEqual(self.rows(manifest.name), expected)
                 self.assert_manual_delete()
                 self.assertEqual(self.rows(manifest.name), expected)
+
+    def test_same_second_explicit_regeneration_after_retirement_recovery_leaves_new_history(self):
+        with patch.object(writer, 'now_iso', return_value='2026-11-24T01:00:00Z'):
+            self.interrupt_native()
+            first, = self.rows('generated-manifest.jsonl')
+            self.assertEqual(self.write('Newest source for decision.', regenerate=True), (0, 'created'))
+            self.target.unlink()
+            self.assertEqual(self.write('Newest corrected source after manual deletion.'), (0, 'tombstoned'))
+        original, deleted, recreated = self.rows('generated-manifest.jsonl')
+        self.assertEqual((original, deleted['action'], recreated), (first, 'verify-deleted', first))
+        self.assertEqual(len(self.rows('tombstones.jsonl')), 1)
+        self.assertFalse(self.target.exists())
 
     def negative_verify(self, verdict, *, suppression_failure=False):
         answer = {'verdict': verdict, 'claims': [{'claim': 'Decision', 'supported': False, 'quote': ''}],
