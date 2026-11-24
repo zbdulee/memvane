@@ -2,6 +2,8 @@
 
 검수 행과 교체본이 기록한 원문 SHA-256이 현재 원문과 다르면 유료 검수를 생략한다. 카드 쓰기 잠금 안에서 원문·교체본·행의 정체성을 다시 확인하고 `verify-deleted.jsonl`과 검수 로그에 `pending_source_changed`를 기록한다. 파일 정리는 큐와 다른 claim의 참조, 파일의 inode·길이·변경 시각을 대조한다. 같은 대상의 서로 다른 원문 revision은 각각 판정하므로 뒤늦게 재생한 행이 현재 revision의 검수를 덮어쓰지 않는다.
 
+혼합 버전에서 공용 backfill 집계와 카드 검수 결과는 별도로 확인한다. 구 worker의 E1 추출이 영구 실패하면 공용 cohort는 `complete_with_skips`를 표시한다. native가 private 기록에서 남은 형제 B를 재개해 게시·검수한 뒤에도 이 표시는 남는다. B의 검수 결과는 해당 카드의 marker·원문 revision·검수 본문 지문으로 확인한다.
+
 writer는 대상마다 검수할 교체본 한 건을 넘긴다. 파일 옆의 이름이 기존 후보와 충돌하면 해당 파일을 보존하고 다른 마커로 최신 후보를 등록한다. 생성 시 기록한 전체 바이트의 SHA-256과 일치하는 낡은 파일만 자동 정리한다. 사람이 편집한 파일이나 생성 시점의 증명이 없는 이전 번들 파일은 원래 위치에 두고 검수 로그에 `pending_ownership_unproved`를 기록한다. 같은 원문을 인용하는 검수 claim이 있으면 compile worker는 추출을 미루고 원문 작업을 유지한다.
 
 선택된 compile wake는 lifecycle과 worker를 실행하기 전에 기존 검수 큐를 확인한다. 직접 실행한 compile worker도 source 작업을 회수하기 전에, 독립 verify pass도 첫 claim 전에 같은 검사를 한다. 한 대상에 서로 다른 후보가 있으면 현재 원문 SHA, pending의 마커·원문 기록, 게시 카드의 SHA를 대조해 지금 검수할 후보를 정한다. 큐 교체와 구 verifier의 claim은 같은 잠금을 쓴다. 삭제 감사는 큐 교체 성공 후 확정하며, 재시도는 같은 정리 작업의 감사 행을 재사용한다.

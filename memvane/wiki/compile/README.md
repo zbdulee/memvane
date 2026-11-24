@@ -26,3 +26,5 @@
   - **`compile.maxSourceChars`는 12,000자 유지.** 상한을 올리면 extractor+verifier 두 번의 host CLI 호출이 모두 커져 편집당 토큰 비용(사용자 계정 청구)이 선형 증가한다. 대신 절단 사실을 payload `source.truncated`로 전달해 프롬프트가 "보이는 범위만 요약, 부재를 단정하지 말라"로 동작하게 한다(verify는 이전부터 truncated 소스를 `inconclusive`로 처리). 문서 후반부 커버리지는 bulk 재컴파일(P6)이나 소스 분할로 해결할 문제다.
 
 선택 설치의 frozen backfill은 source claim의 원행과 설치·cohort·원문 revision을 프로젝트의 `.memvane/compile/.handoff/v1/`에 보존한다. worker는 자기 claim 전체를 private 이름으로 옮긴 뒤 형제 카드를 쓴다. 첫 writer 전에 추출 답변을 저장하고 성공한 형제의 결과를 기록한다. 원문과 실행 권한이 일치하는 재시도에서는 저장한 답변으로 미완료 형제의 writer를 호출한다. 원행과 후보 사본은 설치를 다시 시작해도 유지된다.
+
+혼합 버전에서 구 worker가 공용 refresh 이벤트(E1)를 먼저 처리할 수 있다. 같은 설치·collection·원문 SHA의 추출이 성공하면 공용 backfill item은 `settled`, 추출이 영구 실패하면 `skipped`가 된다. native worker는 설치·cohort·item·전체 SHA·원행이 일치하는 private 형제 기록을 열고 남은 후보의 실제 writer 결과를 확인한다. native가 B를 성공적으로 게시한 뒤에도 구 worker가 기록한 `skipped`와 공용 `complete_with_skips` 집계는 유지된다.

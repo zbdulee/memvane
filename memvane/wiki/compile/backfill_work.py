@@ -55,16 +55,22 @@ def _write(path, state):
         tmp.unlink(missing_ok=True)
 
 
-def _directory(base, identity):
+def _directory(base, identity, *, create):
     for name in ('.handoff', 'v1', 'backfill', identity):
         child = base / name
+        if create:
+            try:
+                child.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
+            else:
+                fsync_dir(base)
         try:
-            child.mkdir(mode=0o700)
-        except FileExistsError:
-            pass
-        else:
-            fsync_dir(base)
-        info = child.lstat()
+            info = child.lstat()
+        except FileNotFoundError:
+            if create:
+                raise
+            return None
         if not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
             raise OSError('unsafe private backfill directory')
         base = child
@@ -74,20 +80,35 @@ def _directory(base, identity):
 class FrozenWork:
     """The compile run lock serializes this frozen item's source and candidate evidence."""
 
-    def __init__(self, queue, text, job, frozen_item):
-        self.source = (text + '\n').encode()
-        binding = {key: value for key, value in job.items() if key not in (
+    @classmethod
+    def open(cls, queue, text, job, frozen_item, *, resume_only):
+        source_job = {key: value for key, value in job.items() if key not in (
             'partialCompile', '_processedContentRevision', '_fallbackAttempts', '_requeue_count', '_backfillSkipped')}
-        self.revision = frozen_item[2]
-        self.binding = {'sourceJob': binding, 'cohort': list(frozen_item)}
-        identity = digest(canonical_json_bytes(self.binding))
-        self.folder = _directory(queue.parent, identity)
-        self.path = self.folder / 'work'
-        self.state = None
-        if os.path.lexists(self.path):
-            self.state = json.loads(_read(self.path))
+        binding = {'sourceJob': source_job, 'cohort': list(frozen_item)}
+        folder = _directory(queue.parent, digest(canonical_json_bytes(binding)), create=not resume_only)
+        if folder is None:
+            return None
+        try:
+            state = json.loads(_read(folder / 'work'))
+            if not isinstance(state, dict):
+                raise OSError('unrecognized frozen backfill work')
+        except FileNotFoundError:
+            if resume_only:
+                return None
+            state = None
+        work = cls(folder, text, binding, state)
+        return None if resume_only and work.state['stage'] == 'settled' else work
+
+    def __init__(self, folder, text, binding, state):
+        self.binding = binding
+        self.source = (text + '\n').encode()
+        self.revision = binding['cohort'][2]
+        self.folder = folder
+        self.path = folder / 'work'
+        self.state = state
+        if state is not None:
             raw = _read(self.folder / 'raw')
-            if (not isinstance(self.state, dict) or self.state.get('version') != 1
+            if (self.state.get('version') != 1
                     or self.state.get('binding') != self.binding
                     or self.state.get('rawDigest') != digest(raw)
                     or self.state.get('rawLength') != len(raw)
@@ -101,7 +122,7 @@ class FrozenWork:
                 write_new_file(raw, self.source)
             if _read(raw) != self.source:
                 raise OSError('frozen backfill occurrence changed')
-            self.state = {'version': 1, 'binding': self.binding, 'stage': 'claimed', 'engine': job.get('engine'),
+            self.state = {'version': 1, 'binding': binding, 'stage': 'claimed', 'engine': binding['sourceJob'].get('engine'),
                           'rawLength': len(self.source), 'rawDigest': digest(self.source),
                           'results': {}, 'next': 'native_extractor'}
             _write(self.path, self.state)

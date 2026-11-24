@@ -6,10 +6,12 @@ import os
 from pathlib import Path
 import pwd
 import sys
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from memvane.kernel.atomic_rename import fsync_dir
+from memvane.runtime import api as runtime
 from memvane.wiki.intake import api as intake
 from memvane.wiki.workspace import api as workspace
 
@@ -40,7 +42,7 @@ def prepare_return(queue, claim, phase):
         fsync_dir(queue.parent)
 
 
-def process_refresh(queue, bound, config):
+def process_refresh(queue, bound, config, invalid):
     from memvane.wiki.compile import wiki_compile as writer, wiki_compile_worker as worker
     root = Path(bound[0]['projectRoot'])
     settings = config['compile']
@@ -53,11 +55,16 @@ def process_refresh(queue, bound, config):
         assert status == 0, output.getvalue()
         return json.loads(output.getvalue())
 
+    def provider(argv, **kwargs):
+        output = 'invalid JSON' if invalid else json.dumps({'candidates': [candidate]})
+        return subprocess.run([sys.executable, '-c', 'import sys; sys.stdin.read(); print(sys.argv[1])', output],
+                              **kwargs)
+
     report = io.StringIO()
     with patch.object(workspace, 'schema3_checkout', return_value=None), patch.object(workspace, 'request_sync'), \
          patch.object(workspace, 'request_compile'), patch.object(worker, '_run_verify_pass'), \
          patch.object(worker, 'gather_similar_pages', return_value=[]), \
-         patch.object(worker, 'run_extractor', return_value=({'candidates': [candidate]}, None, 0)) as paid, \
+         patch.object(runtime, 'provider_run', side_effect=provider) as paid, \
          patch.object(worker, 'compile_candidate', side_effect=write), \
          patch.object(intake, 'settle_job', wraps=intake.settle_job) as settle, redirect_stdout(report):
         status = worker._main_locked(SimpleNamespace(json=True, flush_all=True), root, config, settings, queue, bound)
@@ -79,7 +86,7 @@ def main():
     bound = request['bound']
     with patch.object(workspace, 'selected', return_value=bound), patch.object(workspace, 'recheck'):
         if phase == 'refresh':
-            result = process_refresh(queue, bound, request['config'])
+            result = process_refresh(queue, bound, request['config'], request.get('invalid', False))
         else:
             claim = workspace.claim_queue(queue, receipt_writer=intake.write_discard_receipt)
             if phase == 'consume':

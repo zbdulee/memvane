@@ -19,6 +19,7 @@ def run(request):
     assert root.is_relative_to(Path.home())
     settings = config['compile']
     calls = []
+    attempts = []
     answer = {'candidates': [{'title': title, 'summary': 'A durable fact about ' + title + '.'}
                              for title in ('First finding', 'Second finding')]}
 
@@ -34,6 +35,15 @@ def run(request):
             raise AssertionError(output.getvalue())
         return json.loads(output.getvalue())
 
+    process = worker.process_job_settled
+    def observe(root, cfg, compile_cfg, job, **kwargs):
+        start, extracts = len(calls), paid.call_count
+        frozen = worker._FROZEN_WORK.get() is not None
+        outcome = process(root, cfg, compile_cfg, job, **kwargs)
+        attempts.append({'frozen': frozen, 'event': (job.get('pendingRefresh') or {}).get('eventId'),
+                         'extracts': paid.call_count - extracts, 'writers': calls[start:]})
+        return outcome
+
     finish = worker._commit_source_claim
     def boundary(live, claim, remaining, selected, *, stale_lines, snapshot):
         if live == queue and phase != 'recover':
@@ -44,14 +54,15 @@ def run(request):
             os._exit(17)
         return finish(live, claim, remaining, selected, stale_lines=stale_lines, snapshot=snapshot)
 
-    with patch.object(workspace, 'selected', return_value=bound), patch.object(workspace, 'recheck'), \
+    with patch.object(worker, 'process_job_settled', side_effect=observe), \
+         patch.object(workspace, 'selected', return_value=bound), patch.object(workspace, 'recheck'), \
          patch.object(workspace, 'schema3_checkout', return_value=None), patch.object(workspace, 'request_sync'), \
          patch.object(workspace, 'request_compile'), patch.object(worker, 'gather_similar_pages', return_value=[]), \
          patch.object(worker, 'run_extractor', return_value=(answer, None, 0)) as paid, \
          patch.object(worker, '_commit_source_claim', side_effect=boundary), \
          patch.object(worker, 'compile_candidate', side_effect=write), patch.object(worker, '_run_verify_pass'):
         worker._main_locked(SimpleNamespace(json=False, flush_all=True), root, config, settings, queue, bound)
-    return [paid.call_count, calls]
+    return attempts if request.get('trace') else [paid.call_count, calls]
 
 
 if __name__ == '__main__':

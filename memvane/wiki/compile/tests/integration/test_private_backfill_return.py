@@ -15,10 +15,11 @@ class PrivateBackfillReturn(FixtureCase):
     release_tree = controls.BackfillReturnControls.release_tree
     child = controls.BackfillReturnControls.child
 
-    def native(self, queue, bound, phase):
-        config = settings.find_project_config(bound[0]['projectRoot'])['config']
+    def native(self, queue, bound, phase, *, config=None, trace=False):
+        if config is None:
+            config = settings.find_project_config(bound[0]['projectRoot'])['config']
         config['compile']['semanticDedup'] = {'enabled': False}
-        request = dict(queue=str(queue), bound=bound, config=config, phase=phase)
+        request = dict(queue=str(queue), bound=bound, config=config, phase=phase, trace=trace)
         result = subprocess.run([sys.executable, '-B', str(controls.DRIVER.with_name('native_backfill_return.py'))],
                                 input=json.dumps(request), cwd=controls.REPO, text=True, capture_output=True,
                                 env={**os.environ, 'PYTHONPATH': str(controls.REPO)})

@@ -1647,8 +1647,16 @@ def _main():
 
 
 def _claim_frozen_work(queue, claimed, rows, frozen_items):
-    jobs = {text: backfill_work.FrozenWork(queue, text, job, frozen_items[text])
-            for text, job in rows if text in frozen_items}
+    jobs = {}
+    for text, job in rows:
+        if text not in frozen_items:
+            continue
+        item, resume_only = frozen_items[text]
+        if resume_only and claimed.parent == queue.parent:
+            continue
+        work = backfill_work.FrozenWork.open(queue, text, job, item, resume_only=resume_only)
+        if work is not None:
+            jobs[text] = work
     if jobs:
         # The snapshot covers all occurrences before any writer changes a card.
         claimed = rows.privatize(queue, claimed)

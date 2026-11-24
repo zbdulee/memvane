@@ -75,7 +75,7 @@ def _eligible(decision, snapshot, config):
     return out
 
 
-def _authority(decision, row, job, *, markerless=False):
+def _authority(decision, row, job, *, markerless=False, markerless_stages=('dispatched',)):
     """Validate frozen source authority against the selected store."""
     from memvane.wiki.workspace import api as wiki_selected_laya
     old = job.get('selectedRoute')
@@ -110,7 +110,7 @@ def _authority(decision, row, job, *, markerless=False):
         return None
     marker = job.get('initialBackfill')
     if marker != row['id']:
-        if not markerless or marker is not None or item['stage'] != 'dispatched':
+        if not markerless or marker is not None or item['stage'] not in markerless_stages:
             return None
     revision = job.get('contentRevision')
     if revision is not None and revision != item['sha256']:
@@ -418,7 +418,10 @@ def _frozen_claim_items(decision, cohort, rows):
     for text, job in rows:
         if not isinstance(job, dict):
             continue
-        found = _authority(decision, cohort, job, markerless=True)
+        found = _authority(decision, cohort, job, markerless=True, markerless_stages=('dispatched', 'settled', 'skipped'))
         if found is not None:
-            result[text] = (cohort['id'], found[0], found[1]['sha256'])
+            item = (cohort['id'], found[0], found[1]['sha256'])
+            # Released workers may finish the public item while a private sibling is outstanding.
+            resume_only = job.get('initialBackfill') is None and found[1]['stage'] in ('settled', 'skipped')
+            result[text] = item, resume_only
     return result
