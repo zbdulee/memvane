@@ -5,8 +5,7 @@ aliases:
   - "View 채우기 job"
   - "fill cursor"
 related:
-  - "laya-view-fill-budgets"
-  - "laya-view-fill-recovery"
+  - "laya-view-fill-resume"
 type: concept
 status: verified
 created: 2026-11-02
@@ -16,28 +15,31 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/development-view-candidate.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/development-view-candidate.md", collection: "qmd-auto-context", sha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", size: 17937, mtimeNs: 1793607024896226767}
+  - {kind: "file", path: "docs/development-view-candidate.md", collection: "qmd-auto-context", sha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", size: 19547, mtimeNs: 1795479671852677314}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T15:34:57.326048Z"
+verifiedAt: "2026-11-24T01:24:43.215740Z"
 verifiedMode: "self"
-verifiedBodyHash: "466f9a616517a52b0229a67ded1fd5e6a5d1901aa27cd5abd6a96d5ca0f7b6cc"
+verifiedBodyHash: "269d2d097946af874f01cbfd5d3442a63eed9c58d79dee98619ee416e23bbbc1"
 sourceSpans:
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 22, endLine: 22, spanSha256: "e4d79204856d4b293550e4ca2ebb6a116036f518728c7c8589a3bf276afbb640"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 75, endLine: 76, spanSha256: "e567e8395b7299cd7871e0586b603635e829fd7f9f188ea8d7c99af51cb80527"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 76, endLine: 77, spanSha256: "201ff719fb2eca5afb52fa423ace3a03ccc50147bf5a08c58301a5fb03c738b9"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 77, endLine: 77, spanSha256: "9b45ffe8c12e06a8ab1281103c1cef8d2ae3d2f981065a1a446485cd43f4c655"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 78, endLine: 78, spanSha256: "01b5871a0cfeb0f2c2680391dab2d3ee175506314000468b3d20d4b8a5f51bb9"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 79, endLine: 79, spanSha256: "ff0b6da9810d77c116545ec50c9f7d1ac21c606e8d2e9fad14fac4bbf25b1dbc"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 81, endLine: 81, spanSha256: "07350fd0b9465c7c72463a9dd4a8ebb4f105b73eaef9fdb38d41adcaf61be7cc"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 82, endLine: 83, spanSha256: "7534c4e920a58dc72b8e25739a3babe4a58be95c294286e08667f6d88f9edb7b"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 24, endLine: 24, spanSha256: "e4d79204856d4b293550e4ca2ebb6a116036f518728c7c8589a3bf276afbb640"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 25, endLine: 25, spanSha256: "0412a9c578b6f0960d6def3d3b1a331e91ccc949454eea1e04e747294eb7729d"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 79, endLine: 80, spanSha256: "e567e8395b7299cd7871e0586b603635e829fd7f9f188ea8d7c99af51cb80527"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 80, endLine: 83, spanSha256: "3ad6b852e8d40d7da346602d25792de910d67a2f00cdad12f1b8528fd049e3fc"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 82, endLine: 82, spanSha256: "01b5871a0cfeb0f2c2680391dab2d3ee175506314000468b3d20d4b8a5f51bb9"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 85, endLine: 85, spanSha256: "07350fd0b9465c7c72463a9dd4a8ebb4f105b73eaef9fdb38d41adcaf61be7cc"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 86, endLine: 87, spanSha256: "7534c4e920a58dc72b8e25739a3babe4a58be95c294286e08667f6d88f9edb7b"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 88, endLine: 89, spanSha256: "c5978a867b9c6817fff2aefb112969333020905670ae29e048876881e908d43a"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 89, endLine: 89, spanSha256: "0c33921b0cab993ca3c96023a1bbbbc24eb66da4dc385ae7c0bbc19c10dc9182"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 90, endLine: 90, spanSha256: "7083641344c180e36cbbab37d82398836aa7beb6be7cbe279ac06422dbb5720c"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 91, endLine: 91, spanSha256: "5541f100526f08184e9ffda444bb4f02d82efb279b6e95555a143c7a5d615a95"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="ee9098f08370d6e0" -->
+<!-- qmd:auto:start id="main" sourceHash="8f6099176410f621" -->
 ## Summary
-`fill_status(handle, manifest, recipe_id, profile_id)`는 결정적인 job ID와 durable `cursor`·`complete`를 읽기 전용으로 조회한다. job이 없으면 `cursor=0, complete=false`다. fill job은 store incarnation·발급 view capture·settings·전체 manifest·recipe/profile·정렬한 eligible path/blob/UTF-8 byte 길이에 묶인다. `fill_jobs`·`fill_targets`는 본문을 저장하지 않는다. identity·대상은 불변이며 cursor와 대상 수가 같으면 완료다. 대상 계획은 본문 검증 뒤 길이 metadata만 보관한다. `fill_view`는 정확한 정수 `expected_cursor`로 CAS하며 `job_id`, `cursor`, `complete`, `status`, `filled`, `cache_hits`, `deferred`를 반환한다.
+`fill_status(handle, manifest, recipe_id, profile_id)`는 읽기 전용이며 결정적인 job ID와 `cursor`·`complete`를 반환한다. job이 없으면 `cursor=0, complete=false`다. 작업 정체성은 store incarnation·발급 view capture·settings·전체 manifest·recipe/profile·정렬된 eligible path/blob/UTF-8 byte 길이에 묶인다. `fill_jobs`·`fill_targets`는 본문 없이 불변 정체성과 대상 metadata를 저장하며 cursor가 대상 수에 도달하면 완료다. `fill_view(handle, manifest, recipe_id, profile_id, *, chunker, embedder, write_fence, expected_cursor, max_files=8, max_bytes=2000000, deadline_seconds=30)`는 정수 `expected_cursor`로 CAS하고 `job_id`, `cursor`, `complete`, `status`, `filled`, `cache_hits`, `deferred`를 반환한다. 기본 8개 대상·2,000,000 UTF-8 bytes, 허용 범위 1–64개·1–64 MiB이며 cache hit와 같은 내용의 다른 경로도 센다. 첫 대상이 byte 예산을 초과하면 provider와 cursor 변경 없이 `deferred`다. 카드 본문 상한은 4 MiB다.
 <!-- qmd:auto:end -->

@@ -5,6 +5,7 @@ aliases:
   - "worktree reader 형식별 검색 차이"
 related:
   - "laya-linked-worktree-route"
+  - "laya-checkout-search-consistency-goals"
 type: comparison
 status: verified
 created: 2026-11-15
@@ -14,29 +15,28 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/git-worktree-search-sync-policy.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/git-worktree-search-sync-policy.md", collection: "qmd-auto-context", sha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", size: 9644, mtimeNs: 1794183670388147628}
+  - {kind: "file", path: "docs/git-worktree-search-sync-policy.md", collection: "qmd-auto-context", sha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", size: 8776, mtimeNs: 1794981800088861131}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-15T16:45:09.995400Z"
+verifiedAt: "2026-11-18T11:56:03.003305Z"
 verifiedMode: "self"
-verifiedBodyHash: "be913587028fe12d4b25bb7c7cfbe29cc13be755d6a88b835858afda97ebfa46"
+verifiedBodyHash: "b91068a08f549df36e0c0a9563e21791f9414428c5c3697b02b5d0208b1053a4"
 sourceSpans:
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 69, endLine: 69, spanSha256: "5ff3134e5557d78493221ba42eec3cacc646cc04422bfe0951022b3dadaa9392"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 71, endLine: 73, spanSha256: "b177c0d048211d6014a2e7c0610cb0b123d1537cce7154670a4d9594a8b14d7b"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 74, endLine: 76, spanSha256: "705da83bff88939ae8c38135346ed4ccbe126c489ea331d4402316db45c2e748"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 76, endLine: 76, spanSha256: "fc7b0f1a0a4a68f673d5a1a2d7bc1dc6b50676f83e572b5747f0e6fcc19b02da"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 77, endLine: 77, spanSha256: "55b62f79a69d2d5ce1253fc2b972f432eb4b77e444323092176aa01734f99967"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 78, endLine: 79, spanSha256: "5a59153fe545300a0baffb0b6f5ff66f3664ff254aa1b5e28563749ba8d7ffad"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 79, endLine: 80, spanSha256: "51f5eb919d78fe3b8722580e1fbe449bad55e98696365952cb163f8f318b1ca3"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 81, endLine: 81, spanSha256: "c1deee994f246f6120a366c66f2f95c59ba5f181bbd2229fc716db32bc9a86f7"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "beb080159a85d59406c422a036322747a32d2a9e6282d4f47ba62697a3444bb2", startLine: 81, endLine: 83, spanSha256: "73a342bf578e4dd7d7d180095e3484235f5776d6ee47f4fef67d78cf60a74acf"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 66, endLine: 68, spanSha256: "bf401be1747c68ccd8ad9752518ae4d5a46d05975a557ea3c69c5156480b0193"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 69, endLine: 69, spanSha256: "55b62f79a69d2d5ce1253fc2b972f432eb4b77e444323092176aa01734f99967"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 70, endLine: 71, spanSha256: "5a59153fe545300a0baffb0b6f5ff66f3664ff254aa1b5e28563749ba8d7ffad"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 71, endLine: 72, spanSha256: "51f5eb919d78fe3b8722580e1fbe449bad55e98696365952cb163f8f318b1ca3"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 73, endLine: 73, spanSha256: "c1deee994f246f6120a366c66f2f95c59ba5f181bbd2229fc716db32bc9a86f7"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 73, endLine: 75, spanSha256: "73a342bf578e4dd7d7d180095e3484235f5776d6ee47f4fef67d78cf60a74acf"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 75, endLine: 75, spanSha256: "8784bb72b2cc775474a82fdf1e2b057ea7d3b05b4ac779573a979e69c297ca50"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 103, endLine: 103, spanSha256: "6157456737436e51ecf737b9a600b340b2adb5aade126263b357e72e1a55a1ca"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="dc582e4beb269be4" -->
+<!-- qmd:auto:start id="main" sourceHash="35c2e5ba8d228237" -->
 ## Summary
-`worktree` route의 v6 reader는 main checkout의 마지막 게시 위키 색인을 읽기 전용으로 사용하며 worktree hook은 wake를 남기지 않는다. schema3 reader는 같은 view store에서 자기 worktree view만 읽고 다른 view로 폴백하지 않는다. 게시 head가 없으면 `view_preparing`, 읽는 동안 checkout이 두 번 바뀌면 `checkout_changed`로 컨텍스트 없이 끝난다. SessionStart·성공한 편집(`index`)·Claude의 성공한 Bash는 main checkout의 `laya-sync` wake를 기록한다. main sync owner는 main view 게시 후 `git worktree list` 순서로 pass당 최대 16개 연결 worktree view를 등록·게시한다. view binding 변경 시 해당 view를 마지막 head로 보류한다. recall은 wake를 남기지 않아 `git switch` 직후 다음 SessionStart나 편집 전까지 `view_preparing`일 수 있다.
+`worktree` route는 같은 view store 안에서 자기 worktree view의 게시 카드만 읽는다. 다른 worktree·branch view의 카드 trust를 빌리지 않는다. 게시 head가 없으면 `view_preparing`, 읽는 동안 checkout이 두 번 바뀌면 `checkout_changed`로 컨텍스트 없이 끝난다. worktree의 SessionStart·성공한 편집(`index`)·Claude의 성공한 Bash는 main checkout의 `laya-sync` wake를 기록한다. main sync owner는 main view 게시 뒤 `git worktree list` 순서로 pass당 최대 16개 연결 worktree view를 등록·게시한다. view binding이 바뀌면 해당 view의 마지막 head를 유지한다. recall은 wake를 남기지 않아 `git switch` 직후 다음 SessionStart나 편집 전까지 `view_preparing`일 수 있다.
 <!-- qmd:auto:end -->

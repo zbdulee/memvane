@@ -16,31 +16,31 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/development-view-candidate.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/development-view-candidate.md", collection: "qmd-auto-context", sha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", size: 17937, mtimeNs: 1793607024896226767}
+  - {kind: "file", path: "docs/development-view-candidate.md", collection: "qmd-auto-context", sha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", size: 19547, mtimeNs: 1795479671852677314}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T15:29:16.110105Z"
+verifiedAt: "2026-11-24T01:23:16.462839Z"
 verifiedMode: "self"
-verifiedBodyHash: "6dfd04019fc10bc5151862b6b9ac4a44f7f6fb1a1581009a0622f855b3d16315"
+verifiedBodyHash: "d9726f0ac933393c2cdb7364e992a15bc07015574fe45c0ad051adbb1f2a31ed"
 sourceSpans:
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 19, endLine: 19, spanSha256: "e8f75c9a1adc61ce6cc040c63aee12778f465f325da7870651f1b5a46a11ba1a"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 20, endLine: 20, spanSha256: "14c7d2f1584378aa5574b4c70c61f81922b99aa517bdb7f15fcd6ea9a1794ce2"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 21, endLine: 21, spanSha256: "2e54af0903d746505dbecdcc0bcc6cd485e9794534205f4eeab1eccb45f73696"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 26, endLine: 26, spanSha256: "f49739f7da5b7ac34bb6980adfd6e3e0f7397c4fd13e12fa2d402d36ea8a4159"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 32, endLine: 32, spanSha256: "07884472feddcd304e70247c6e9e74571795e2ec03ebc564ff315cc4b0d9cdc5"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 34, endLine: 34, spanSha256: "c93458c84f144e947af713abf1618cb81cffdbdbef9d2b281a776430e497aeef"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 35, endLine: 35, spanSha256: "7d5671faf75cb8c8a394ea276dce156b96272a5c0abab7958cb3c125b08ae55f"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 36, endLine: 36, spanSha256: "ef25e86b609283e0653c6d74b9dbc109e75260654cc19c5b100ea7d64e49e687"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 37, endLine: 37, spanSha256: "739ec60d2c3807d88c03fb96ebb5bb052dfb10404bf25b5968716833b6911a6c"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 37, endLine: 38, spanSha256: "45ff16f72e4cd78ee49ce34509ea2c7e3508946876b1d682a9a81a6f54658832"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 39, endLine: 39, spanSha256: "73c4cebf44dad86dd21193aab7ee7c26c63196f9c3aa1c6d6198759d1f51a448"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 21, endLine: 21, spanSha256: "e8f75c9a1adc61ce6cc040c63aee12778f465f325da7870651f1b5a46a11ba1a"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 22, endLine: 22, spanSha256: "14c7d2f1584378aa5574b4c70c61f81922b99aa517bdb7f15fcd6ea9a1794ce2"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 23, endLine: 23, spanSha256: "2e54af0903d746505dbecdcc0bcc6cd485e9794534205f4eeab1eccb45f73696"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 28, endLine: 28, spanSha256: "f49739f7da5b7ac34bb6980adfd6e3e0f7397c4fd13e12fa2d402d36ea8a4159"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 34, endLine: 34, spanSha256: "07884472feddcd304e70247c6e9e74571795e2ec03ebc564ff315cc4b0d9cdc5"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 36, endLine: 36, spanSha256: "c93458c84f144e947af713abf1618cb81cffdbdbef9d2b281a776430e497aeef"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 37, endLine: 37, spanSha256: "7d5671faf75cb8c8a394ea276dce156b96272a5c0abab7958cb3c125b08ae55f"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 38, endLine: 38, spanSha256: "ef25e86b609283e0653c6d74b9dbc109e75260654cc19c5b100ea7d64e49e687"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 39, endLine: 39, spanSha256: "739ec60d2c3807d88c03fb96ebb5bb052dfb10404bf25b5968716833b6911a6c"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 39, endLine: 40, spanSha256: "45ff16f72e4cd78ee49ce34509ea2c7e3508946876b1d682a9a81a6f54658832"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 41, endLine: 41, spanSha256: "73c4cebf44dad86dd21193aab7ee7c26c63196f9c3aa1c6d6198759d1f51a448"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="22e83a5c9b318ef4" -->
+<!-- qmd:auto:start id="main" sourceHash="7cabf16e1c337f0e" -->
 ## Summary
-`ViewStore.create(...)` / `ViewStore.open(...)`은 `BlobStore`와 같은 생성·소유권 인자를 받는다. `capture_view(worktree_id)`는 store 발급 `ViewHandle`, `head(handle)`은 `{view_id, gen_id, epoch, incarnation}`, `pin_view(handle)`은 게시 세대·seal에 묶인 `ViewPin`을 반환한다. handle·pin은 frozen dataclass이며 registry가 정확한 객체·필드를 검사한다. 복제·변조·다른 store 객체는 거절한다. handle은 worktree·branch·HEAD·checkout digest·settings policy·store incarnation에 묶인다. 게시 전 head는 `gen_id=None, epoch=0`이며 pin은 `view_preparing`으로 거절한다. `release(pin)` 이후 검색은 거절하고 `close()`는 모든 handle·pin을 무효화한다.
+`ViewStore.create(...)` / `ViewStore.open(...)`은 `BlobStore`와 같은 생성·소유권 인자를 받는다. `capture_view(worktree_id)`는 `ViewHandle`, `head(handle)`은 `{view_id, gen_id, epoch, incarnation}`, `pin_view(handle)`은 현재 게시 세대·seal에 묶인 `ViewPin`을 반환한다. 발급 store의 registry는 frozen dataclass의 객체와 필드를 확인하며 임의 view ID, 복제·변조 객체와 다른 store의 객체를 거절한다. handle은 worktree·branch·HEAD·checkout digest·settings policy·store incarnation에 묶인다. 게시 전 head는 `gen_id=None, epoch=0`이고 `pin_view`는 다른 view로 폴백 없이 `view_preparing`으로 거절한다. `release(pin)` 뒤 해당 pin의 검색을 거절하며 `close()`는 모든 handle·pin을 무효화한다.
 <!-- qmd:auto:end -->

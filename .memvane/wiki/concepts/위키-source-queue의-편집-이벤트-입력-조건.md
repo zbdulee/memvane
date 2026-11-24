@@ -6,7 +6,6 @@ aliases:
   - "위키 pending refresh 기록"
 related:
   - "wiki-source-queue-sync-enqueue"
-  - "wiki-compile-worker-source-validation"
 type: concept
 status: verified
 created: 2026-11-02
@@ -16,29 +15,30 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/architecture/flows/02-source-to-wiki.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/architecture/flows/02-source-to-wiki.md", collection: "qmd-auto-context", sha256: "8309e48d29998e48241fb6316c14b3f6ca516595a8c884eec76fc101f00a6a29", size: 5938, mtimeNs: 1794185295234237246}
+  - {kind: "file", path: "docs/architecture/flows/02-source-to-wiki.md", collection: "qmd-auto-context", sha256: "32828cb57fa444b3e9b05f4070749359a717f585dfeacdcbd14ecc63735b0823", size: 6505, mtimeNs: 1795479671849814767}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-15T15:03:24.331891Z"
+verifiedAt: "2026-11-24T00:56:46.795298Z"
 verifiedMode: "self"
-verifiedBodyHash: "85b842d1ef64c5ff609888cd55bd3c44df154e24b94482321c161bbec4588652"
+verifiedBodyHash: "5fd261fb803157d075dac425824aeb3fbb01519e8c7d1f90af8d958ad3089d93"
 sourceSpans:
-  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "8309e48d29998e48241fb6316c14b3f6ca516595a8c884eec76fc101f00a6a29", startLine: 8, endLine: 8, spanSha256: "45472170586d7139b7f35340ea121f18ae79727cb21a7f6a8e1dcdec323f34dd"}
-  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "8309e48d29998e48241fb6316c14b3f6ca516595a8c884eec76fc101f00a6a29", startLine: 10, endLine: 10, spanSha256: "a52367d1c3f8d6a2dafd7ae85e0b0c852bd41d83d9b1ed01fab32d0483b10a8f"}
-  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "8309e48d29998e48241fb6316c14b3f6ca516595a8c884eec76fc101f00a6a29", startLine: 15, endLine: 15, spanSha256: "b642512fef370bd0bdf9dda09639efb26c9a52a4fb1a17fe8aa3b47bb3ae3aa5"}
-  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "8309e48d29998e48241fb6316c14b3f6ca516595a8c884eec76fc101f00a6a29", startLine: 22, endLine: 22, spanSha256: "c2fe591d407b2101b41a7fd06ae0a7187c11dc1d3dff83b567e86d4488a80a36"}
-  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "8309e48d29998e48241fb6316c14b3f6ca516595a8c884eec76fc101f00a6a29", startLine: 24, endLine: 25, spanSha256: "dafa817c4be808bfbbb0262cbffc8f3b3bbf9e02490af6f9240a7d0d03732cec"}
-  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "8309e48d29998e48241fb6316c14b3f6ca516595a8c884eec76fc101f00a6a29", startLine: 41, endLine: 43, spanSha256: "56b93b81c65097157a858bfd90a15cf9f5a64e6e7e79c40c79aea2914a0457b8"}
-  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "8309e48d29998e48241fb6316c14b3f6ca516595a8c884eec76fc101f00a6a29", startLine: 45, endLine: 45, spanSha256: "5cfea6d1c942f84c0860cc44b286b62f14becfbf2db29ac2c1ddbeb923fac06b"}
-  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "8309e48d29998e48241fb6316c14b3f6ca516595a8c884eec76fc101f00a6a29", startLine: 68, endLine: 68, spanSha256: "37d0e2305a2c4b437fb4df14ec2a10361668e212550dc865465f1297a78ff09a"}
-  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "8309e48d29998e48241fb6316c14b3f6ca516595a8c884eec76fc101f00a6a29", startLine: 69, endLine: 69, spanSha256: "288b64255f3a3267cfac32eee2666ab21e46fa907db3770e5cda1a7d431d4fa6"}
+  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "32828cb57fa444b3e9b05f4070749359a717f585dfeacdcbd14ecc63735b0823", startLine: 3, endLine: 5, spanSha256: "22e11f69d7d80ac5454ede31f8ba5c7ca3fa23944a099d103a737fe59cf6c0c0"}
+  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "32828cb57fa444b3e9b05f4070749359a717f585dfeacdcbd14ecc63735b0823", startLine: 8, endLine: 8, spanSha256: "45472170586d7139b7f35340ea121f18ae79727cb21a7f6a8e1dcdec323f34dd"}
+  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "32828cb57fa444b3e9b05f4070749359a717f585dfeacdcbd14ecc63735b0823", startLine: 10, endLine: 10, spanSha256: "a52367d1c3f8d6a2dafd7ae85e0b0c852bd41d83d9b1ed01fab32d0483b10a8f"}
+  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "32828cb57fa444b3e9b05f4070749359a717f585dfeacdcbd14ecc63735b0823", startLine: 15, endLine: 15, spanSha256: "b642512fef370bd0bdf9dda09639efb26c9a52a4fb1a17fe8aa3b47bb3ae3aa5"}
+  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "32828cb57fa444b3e9b05f4070749359a717f585dfeacdcbd14ecc63735b0823", startLine: 19, endLine: 20, spanSha256: "e6726ea10cdec7ee48e0f72988766528e0087a9d6081644e27f172f920d3fc0e"}
+  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "32828cb57fa444b3e9b05f4070749359a717f585dfeacdcbd14ecc63735b0823", startLine: 21, endLine: 42, spanSha256: "9ff95fcd3152eab069080b0ae5833138c3bb6f5c6f8c1297fee065892d6458b4"}
+  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "32828cb57fa444b3e9b05f4070749359a717f585dfeacdcbd14ecc63735b0823", startLine: 22, endLine: 45, spanSha256: "73571c8e7afabfd8258defdf160d6437a1c49a93ac68ccc5f8ff75d331def1b2"}
+  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "32828cb57fa444b3e9b05f4070749359a717f585dfeacdcbd14ecc63735b0823", startLine: 63, endLine: 63, spanSha256: "e97b0f5ca5179e33c7258c277a02fefabe0f4c7c1e2c81f4d4ec4f2cf528c2cd"}
+  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "32828cb57fa444b3e9b05f4070749359a717f585dfeacdcbd14ecc63735b0823", startLine: 68, endLine: 68, spanSha256: "f649c82670d5b299ab3fee14f645b62f3e934e584fdc7b7b598452c5dfcadb5d"}
+  - {path: "docs/architecture/flows/02-source-to-wiki.md", sourceSha256: "32828cb57fa444b3e9b05f4070749359a717f585dfeacdcbd14ecc63735b0823", startLine: 69, endLine: 69, spanSha256: "da424fd2ece1e7a96df7425b455181301c4f33006869d85f2b814cc33df68dc9"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="252271945144f9c9" -->
+<!-- qmd:auto:start id="main" sourceHash="7dccfd020554f50d" -->
 ## Summary
-`enqueue_payload`는 `run-hook` 경유 편집 hook 이벤트를 받아 LLM 호출 없이 메타데이터만 append한다. `core/wiki_compile_enqueue.py:424-477`은 이벤트 종류, `postToolUse` 설정, compile gate, queue 경로를 검사한다. `wiki_freshness.record_pending_refresh`가 None을 반환하면 enqueue하지 않는다. 통과하면 pending refresh와 `.memvane/compile` source queue에 기록하고 `request_compile` wake를 요청한다. `core/wiki_compile_enqueue.py:480-491`은 sandbox이면 즉시 0을 반환하며 비어 있거나 잘못된 JSON 입력을 무시한다. 공식 Antigravity의 자동 편집 이벤트는 이 경로로 들어오지 않는다.
+`docs/architecture/flows/02-source-to-wiki.md`(01 참조), 커밋 f89b141. `memvane/wiki/intake/wiki_compile_enqueue.py`(`../../../memvane/wiki/intake/wiki_compile_enqueue.py`)의 `enqueue_payload`는 `run-hook`을 경유해 host가 해석하고 증명한 payload를 받는다. `memvane/wiki/intake/wiki_compile_enqueue.py:377-380`(`../../../memvane/wiki/intake/wiki_compile_enqueue.py#L377-L380`)에서 dict 이외의 입력은 `invalid_payload`로 반환한다. 이벤트 종류·`postToolUse`·compile gate·queue 경로 검사에서 거부되면 queued 0과 사유를 반환한다. `wiki_freshness.record_pending_refresh`가 None을 반환하면 enqueue하지 않는다. 통과하면 wiki freshness pending ledger에 pending refresh를 기록하고 `.memvane/compile`에 메타데이터만 append한 뒤 `request_compile` wake를 요청한다. enqueue에서 LLM을 호출하지 않으며 공식 Antigravity 자동 편집 이벤트는 이 경로에서 제외된다.
 <!-- qmd:auto:end -->

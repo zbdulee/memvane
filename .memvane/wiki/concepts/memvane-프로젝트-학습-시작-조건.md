@@ -16,27 +16,31 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/architecture/flows/04-learning.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/architecture/flows/04-learning.md", collection: "qmd-auto-context", sha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", size: 5846, mtimeNs: 1794185295235338572}
+  - {kind: "file", path: "docs/architecture/flows/04-learning.md", collection: "qmd-auto-context", sha256: "84b77276afcb9bc219328c803696e0e1e7965d1fe372157cd2740c393df93efc", size: 5931, mtimeNs: 1794981800085302781}
 triggers:
   - "session_start_source"
 redactions:
-verifiedBy: "codex"
-verifiedAt: "2026-11-15T16:08:00.867660Z"
+verifiedBy: "claude"
+verifiedAt: "2026-11-18T17:24:34.101299Z"
 verifiedMode: "self"
-verifiedBodyHash: "e1c3bcff99e8605bffbc8fc61947b0904720598e326255591d8fbe719e32b6d1"
+verifiedBodyHash: "a15bcfefccfc8d43d9cc4afcfdecc9e1cfff592aca362444c5d83b0ff90c7956"
 sourceSpans:
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", startLine: 8, endLine: 8, spanSha256: "a3292042661055da7b7f70e1f98410917182968fddfae8554e70f6cb80719a0c"}
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", startLine: 57, endLine: 59, spanSha256: "02491b3c791b7c11874207d2c3ddeced2528c085aa19b2e71b085552a1e036c2"}
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", startLine: 60, endLine: 60, spanSha256: "e46a3e8a0fabd8611775566fa8daa6de1751d24f1e83eff908d2cf294f9010c1"}
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", startLine: 61, endLine: 61, spanSha256: "6f69eb73f44b6a1c3c23749cd4bb52cb28c375fe68493f7104eb6ac5e64a1d2d"}
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", startLine: 62, endLine: 62, spanSha256: "dd413c3ae0837a0d5f1df8b6a8d489944d788a04ded4edd8b80217193b21fc79"}
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", startLine: 63, endLine: 63, spanSha256: "19aebad0208bb64cd80d7582fbadd05927d20571b345153fa218dc58bfcfc6c5"}
-  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "0c445ab2a29e7256931a3051e04513f5fdb1ec319895b802cb7689c38ba63449", startLine: 74, endLine: 74, spanSha256: "8a1bd83883267e24385fef63ca5b3749b40fd129d3d612d0334b04a36d5e1db2"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "84b77276afcb9bc219328c803696e0e1e7965d1fe372157cd2740c393df93efc", startLine: 3, endLine: 3, spanSha256: "0e9cccc6b639ae250f9973a6da82239083c536386a396844b7e3be894c3d8ad0"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "84b77276afcb9bc219328c803696e0e1e7965d1fe372157cd2740c393df93efc", startLine: 5, endLine: 5, spanSha256: "e3e8d5d45a19a746750b78e0b7f6a68c119b8954b4df6815e0ab44f9e56ed8b2"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "84b77276afcb9bc219328c803696e0e1e7965d1fe372157cd2740c393df93efc", startLine: 6, endLine: 6, spanSha256: "7f16e1f4c0024286b6b87d2562473548fae6fc17b38d7e93d68032486ff0f4dc"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "84b77276afcb9bc219328c803696e0e1e7965d1fe372157cd2740c393df93efc", startLine: 8, endLine: 8, spanSha256: "a3292042661055da7b7f70e1f98410917182968fddfae8554e70f6cb80719a0c"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "84b77276afcb9bc219328c803696e0e1e7965d1fe372157cd2740c393df93efc", startLine: 47, endLine: 47, spanSha256: "df7eaf22c319e4d925220296ca5f1d47331d15176a01c53af3439d355e5d11ff"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "84b77276afcb9bc219328c803696e0e1e7965d1fe372157cd2740c393df93efc", startLine: 59, endLine: 59, spanSha256: "11ceb66c54b57ebbf92071a209c9a2a3e7b50234bdeb8cdb82c12a7ffe4b89c3"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "84b77276afcb9bc219328c803696e0e1e7965d1fe372157cd2740c393df93efc", startLine: 60, endLine: 60, spanSha256: "abfe4ba067ab938b93190a3d08555e74f8afbb69db78b93624ae4d0107ce2819"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "84b77276afcb9bc219328c803696e0e1e7965d1fe372157cd2740c393df93efc", startLine: 61, endLine: 61, spanSha256: "578be23bf1c6c8ce331e7a68278edba72df5830c18046a9d5301157d2a6324b0"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "84b77276afcb9bc219328c803696e0e1e7965d1fe372157cd2740c393df93efc", startLine: 62, endLine: 62, spanSha256: "a84b822fede4daad382a611601d36b10387fd700526fb4a7d2c88508a82bfc89"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "84b77276afcb9bc219328c803696e0e1e7965d1fe372157cd2740c393df93efc", startLine: 63, endLine: 63, spanSha256: "cf598ace3fcf5f67a4327187ba2948a2b145ae2170300199696f00e30c3f9e41"}
+  - {path: "docs/architecture/flows/04-learning.md", sourceSha256: "84b77276afcb9bc219328c803696e0e1e7965d1fe372157cd2740c393df93efc", startLine: 73, endLine: 73, spanSha256: "8a1bd83883267e24385fef63ca5b3749b40fd129d3d612d0334b04a36d5e1db2"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="0b4c396ee41f2d66" -->
+<!-- qmd:auto:start id="main" sourceHash="13b02b032c556f5c" -->
 ## Summary
-커밋 f89b141의 `core/context_learning/project_worker.py`는 명시적으로 등록된 프로젝트용 bounded worker이며 login service가 아니다. `project-learning-setup.json`의 phase가 `activated`이고 `contextLearning.capture`·`autoCycle`, `indexing`, safe root 검사를 통과해야 한다. 실패하면 `disabled` 또는 `setup_in_progress`다. `project-worker.lock`을 비차단 획득한 뒤 resource report와 `local_train` scope를 확인하며 실패하면 `busy` 또는 `deferred_resource`다. synthetic local-only는 예산을, 나머지는 teacher 대기 사례·동의·weekly quota를 확인한다. 불확실하면 새 로컬 모델 호출 없이 `deferred_*`·`consent_required` 등을 반환한다. `RQA-RES-02`는 `release-agent-qa.md`의 QA 계약이며 실제 학습과 recall 반영은 검증되지 않았다.
+`docs/architecture/flows/04-learning.md`: 학습은 색인·검색과 분리된 두 경계 안에서 실행된다. 동의 경계는 설정 플래그, learning setup, teacher 동의다. 자원 경계는 project worker lock, resource report, quota다. 명시적으로 등록된 프로젝트에 한해 한 번에 제한된 양만 실행한다. 커밋 f89b141의 `memvane/learning/context_learning/project_worker.py`는 bounded worker이며 login service가 아니다. `project-learning-setup.json`의 phase가 `activated`가 아니면 준비되지 않은 것으로 본다. `contextLearning.capture`·`autoCycle`, `indexing`, safe root 중 하나라도 실패하면 `disabled` 또는 `setup_in_progress`를 반환한다. 이어서 `project-worker.lock`을 비차단으로 획득하고 resource report와 `local_train` scope를 확인한다. 실패하면 `busy` 또는 `deferred_resource`를 반환한다. synthetic local-only이면 예산을 확인한다. 그 외에는 general teacher 대기 사례와 weekly quota를 확인하며, 동의나 quota가 불확실하면 새 로컬 모델 호출로 넘어가지 않고 `deferred_*`·`consent_required` 등을 반환한다. 통과하면 `run_training_pending` 제한 학습을 실행한다. 학습 자원 QA 계약 `RQA-RES-02`는 `release-agent-qa.md`에 있다. 실제 학습 실행과 학습 결과의 recall 반영은 검증되지 않았으며, 열린 항목은 `TODO.md`의 「학습 runtime」 절에 있다.
 <!-- qmd:auto:end -->

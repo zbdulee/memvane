@@ -5,8 +5,10 @@ aliases:
   - "BlobStore"
   - "Git-blob candidate 저장소"
 related:
-  - "laya-blob-private-db"
-  - "laya-blob-worktree-binding"
+  - "laya-blob-content-filler"
+  - "laya-blob-recipe-complete-set"
+  - "laya-blob-provenance-attestation"
+  - "laya-blob-store-input-limits"
 type: entity
 status: verified
 created: 2026-11-15
@@ -16,30 +18,35 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/development-blob-candidate.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/development-blob-candidate.md", collection: "qmd-auto-context", sha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", size: 14393, mtimeNs: 1794185295237187644}
+  - {kind: "file", path: "docs/development-blob-candidate.md", collection: "qmd-auto-context", sha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", size: 13607, mtimeNs: 1794981800087094102}
 triggers:
   - "session_start_source"
 redactions:
-verifiedBy: "codex"
-verifiedAt: "2026-11-15T15:26:29.239588Z"
+verifiedBy: "claude"
+verifiedAt: "2026-11-18T17:26:46.989503Z"
 verifiedMode: "self"
-verifiedBodyHash: "0e12e5980785aa35523a36b303526bc64b23bae22f9222ee9cfba0b6907695fa"
+verifiedBodyHash: "6189b0a1f10c2dd4873bc1f3c818ffa5ee06d18cf7db5fc32b86fa2546265c5f"
 sourceSpans:
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 1, endLine: 4, spanSha256: "846a39af19349a849118ed33f0a57e4f76fe1afc4744050f4bda50cad63e63ab"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 3, endLine: 4, spanSha256: "f8d0c865c4639a7903a4ddfe0d151d3a9930471923916a5af2986c698be12efd"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 5, endLine: 5, spanSha256: "15234dfaf9906fd9055d8c81adb2838d499d0bf2934df7c171a172d00e44c545"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 6, endLine: 6, spanSha256: "574eac84f0cc900ff04f8ad43f5bdadad7a7e57e16edea3e7d7dfa0f9198cab3"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 7, endLine: 8, spanSha256: "a7aa9e8321581bb6be5fff2892ab2fc17e94241b36dbeebd4c90ecfca00e497f"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 8, endLine: 9, spanSha256: "971baf4bf691191a5759901e4464bd78938c1da9cf2364df1a0bac64a1bf27c9"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 10, endLine: 10, spanSha256: "ebffb1a72e9ae3a47d90807ff0c15c44e9c62da3f9a453e8995df5ab16522859"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 10, endLine: 11, spanSha256: "51f6c8a26a07fd7ca5fd0ce59f2eadac1ac5a8ebc14bc3e46a8f6ad7b04fe6f3"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 12, endLine: 13, spanSha256: "3b87393639afeb0912813e82a8df5c3d63bd02237b36970f8bfec715fda8b86c"}
-  - {path: "docs/development-blob-candidate.md", sourceSha256: "c9c1d1522e68eea2791adecf70284182a57cdc8d2a52d5361e4c1e8fd5ad84da", startLine: 13, endLine: 14, spanSha256: "40fb604ee9c25e8c85d3a32efe41e924090259fb806c1bb02161c7283cca2ae7"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 3, endLine: 4, spanSha256: "6835bd26f5ecba04c4121057431f912a45c8a888ea8a69e9e216b4170a00f58a"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 5, endLine: 5, spanSha256: "2c8181f2e2d66237330a55c7dcb949cdf5ae9076d39b3633ab89483043a47f70"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 6, endLine: 6, spanSha256: "3adbdd71e8dd3a027fed613beeeea4b5a3a59156b20563519e45eed35bc2c4fa"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 7, endLine: 9, spanSha256: "ee109b7ac4d30651ed0fd3baab62e0108af58f403f9bfc22d14be11182ae7f8f"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 10, endLine: 11, spanSha256: "c4885a8d82b1d945056a4f41db7f261c490cce9eeaa413cb338904ba1f90b3bd"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 16, endLine: 17, spanSha256: "80e124af9d5ffbda9e2dd2fc1f1d793f0ff3e0a02e6aa03f2700a2d706a4bd1e"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 18, endLine: 19, spanSha256: "209cb7ab3c15ed0960f283b0639e7d198d02634c037f8a06ff93c4b3090b8f68"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 21, endLine: 22, spanSha256: "669d5da2bd55f721e7df7c286efc793d0d69f930fde555fab4cf7013b647b3d5"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 22, endLine: 23, spanSha256: "cc9936253eff93aaca9937125f3af19c5bb0e576d4edc53a20b9c0e4f7242754"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 48, endLine: 49, spanSha256: "ae862a39ddcb26102f511d01cb029890cc5847c25263f8cb733bed24833ca042"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 51, endLine: 51, spanSha256: "68d8d37ee65efb69dcf35c6dca1e91fe521eaa283f21f8db8115b963c78d4dba"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 57, endLine: 58, spanSha256: "4dc8a2d3e86640328b0531add7680384477b9dc7c52139b5a3c586f0cbb91935"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 62, endLine: 62, spanSha256: "6cc2ec11d2f794291c7f7ec872fdd944d1779c8ba78fcbc2412848763f756601"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 63, endLine: 63, spanSha256: "1811f22b79987a58d29796b2c6604047f003c4e03114dd0ff8f552891520af97"}
+  - {path: "docs/development-blob-candidate.md", sourceSha256: "349c8c21abb08abc4ecf9f0c3b55d921c708d3eedeeb97e4f8f9a8c440ffd8cb", startLine: 73, endLine: 74, spanSha256: "135f2b9383fbfd609750d0d14a6f5bdc26797b9c7f6105b0106ca124fb61e5ac"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="1fd655172ede7aca" -->
+<!-- qmd:auto:start id="main" sourceHash="152e54d1cab824f2" -->
 ## Summary
-`laya_blob_store.BlobStore`는 private SQLite에 위키 카드, recipe/profile, 완전한 chunk/vector set, 원문 지문과 카드 attestation을 저장한다. 형식은 `memvane-git-blob-candidate-v3`, application id는 `0x4d564231`, schema는 `3`이다. candidate v1/v2와 운영 v6는 읽기 전용 preflight에서 거절한다. `laya_view_store.ViewStore`는 같은 형식의 view generation·FTS·lexical reader를 제공한다. `BlobStore`에는 hook·route·reader 선택·migration·activation·GC API가 없다. v6 설치의 운영 연결은 `laya_shadow_migration`, schema3 설치의 게시·검색은 `laya_product_sync_worker`·`laya_journal_reader`·`laya_reader_dispatch`·`wiki_compile_retrieval`이 담당한다. 권한은 설치 journal의 schema3 endpoint record와 writer scope가 정한다. 계약 문서는 docs/development-blob-candidate.md와 `development-view-candidate.md`다.
+`docs/development-blob-candidate.md`: `blob_store.BlobStore`는 명시적인 private SQLite 파일에 위키 카드, recipe/profile, 완전한 chunk/vector set, 원문 지문과 카드 attestation을 저장한다. 형식은 `memvane-git-blob-candidate-v4`, application id는 `0x4d564231`, schema는 `4`다. 다른 형식의 파일은 읽기 전용 preflight에서 거절한다. `BlobStore`는 내용·provenance API를 소유하고, `view_store.ViewStore`는 같은 형식의 view generation·FTS·lexical reader를 제공한다. 세대 API는 `development-view-candidate.md`에 있다. `BlobStore`에는 hook·route·reader 선택·GC API가 없다. sync 게시와 recall·dedup retrieval은 설치 journal의 endpoint record와 writer scope에 따라 store를 사용한다. 저장소는 common Git dir의 경로·dev/ino와 프로젝트 상대 위치에 묶인다. worktree는 checkout·Git admin 정체성, settings 정체성(`settings_identity_digest` 범위: collection마다 `{name, role, sourceRoot}`), wiki root 디렉터리 노드에 묶인다. settings 바이트와 `skipPaths`는 묶지 않으며, `skipPaths`는 현재 settings에서 읽어 prepare가 세대 stage에 봉인한다. 정체성이나 wiki root가 바뀌면 binding을 자동 인계하지 않는다. DB leaf directory는 `0700`, DB는 `0600` single-link 정규 파일이다. 생성은 no-clobber이며, 열린 handle은 DB 파일 정체성·incarnation·scope·settings policy가 바뀌면 실패한다. 주요 API는 `BlobStore.create(path, *, project_root, repository, worktree, scope_id)`, `BlobStore.open(path, *, repository, scope_id)`, `register_worktree`, `ingest_card`, `ingest_attested_card`, `document(blob_sha)`(path `blobs/<sha>.md`), `register_recipe`/`register_profile`, `put_chunk_set`, `put_embedding_set`, `vector_input_sha`, `embedding_inputs`, `put_fingerprint`, `put_attestation`, `verify()`, `counts()`/`close()`다. `BlobStoreError.reason`은 원문을 포함하지 않는 거절 코드다. 원문 body를 삽입하거나 읽는 공개 API는 없다.
 <!-- qmd:auto:end -->

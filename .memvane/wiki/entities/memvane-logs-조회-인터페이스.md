@@ -6,11 +6,10 @@ aliases:
   - "logs skill"
 related:
   - "memvane-recall-log-reason-semantics"
-  - "memvane-migration-log-semantics"
-  - "memvane-migration-switch-gate-log-semantics"
-  - "memvane-wiki-backfill-log-semantics"
+  - "memvane-logs-detailed-diagnostics"
+  - "memvane-logs-summary-backfill-build-progress"
   - "memvane-logs-safety-rules"
-  - "memvane-wiki-card-budget-log-semantics"
+  - "memvane-unified-logs-registry"
 type: entity
 status: verified
 created: 2026-11-02
@@ -20,40 +19,44 @@ confidence: high
 sources:
   - {kind: "file", path: "skills/logs/SKILL.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "skills/logs/SKILL.md", collection: "qmd-auto-context", sha256: "9be0d61d3432be4fda2bfd990aafc085ecbb3ec02cee3eb04b821f9f562ba523", size: 7673, mtimeNs: 1794183670394384691}
+  - {kind: "file", path: "skills/logs/SKILL.md", collection: "qmd-auto-context", sha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", size: 9476, mtimeNs: 1794981800337578513}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "claude"
-verifiedAt: "2026-11-15T15:04:31.596304Z"
+verifiedAt: "2026-11-19T01:28:24.979913Z"
 verifiedMode: "self"
-verifiedBodyHash: "7e24aa27fd0c6035f1793483cf4bfd1abd0ca69ba25cf2c2bf419657d7ad117c"
+verifiedBodyHash: "afe415ce56a550c6ea3d6d3e66441c8c27725248fc3490868d102d0ae87bb9c3"
 sourceSpans:
-  - {path: "skills/logs/SKILL.md", sourceSha256: "9be0d61d3432be4fda2bfd990aafc085ecbb3ec02cee3eb04b821f9f562ba523", startLine: 3, endLine: 3, spanSha256: "ddbfa14e7072729f7fe32c1d3b8ccb80c45821e1b8ddda5af511bca4598013f9"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "9be0d61d3432be4fda2bfd990aafc085ecbb3ec02cee3eb04b821f9f562ba523", startLine: 10, endLine: 10, spanSha256: "ebe17b7013fc1883bcfeed875db32d71161b0ef429906c1233ae71296be73bdf"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "9be0d61d3432be4fda2bfd990aafc085ecbb3ec02cee3eb04b821f9f562ba523", startLine: 14, endLine: 14, spanSha256: "d1de681f3bb98fe853a62f0f5be1e0d661dcb4a7820cecbd5e4697afeef5cba8"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "9be0d61d3432be4fda2bfd990aafc085ecbb3ec02cee3eb04b821f9f562ba523", startLine: 17, endLine: 17, spanSha256: "f330d0a6f89da35d6feb48e7c83e0ec12a958b5a9508769be961e5bc5bb5165e"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "9be0d61d3432be4fda2bfd990aafc085ecbb3ec02cee3eb04b821f9f562ba523", startLine: 23, endLine: 23, spanSha256: "58422f6dad870e6a0a2e9d5e1cedf3bf0c1bac5ab9aab4b0bb23d35f10c1a4f5"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "9be0d61d3432be4fda2bfd990aafc085ecbb3ec02cee3eb04b821f9f562ba523", startLine: 24, endLine: 24, spanSha256: "35eb45e13d0b55ae71b65112099b19c91f0be4de42e143aa24b348556b4aa677"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "9be0d61d3432be4fda2bfd990aafc085ecbb3ec02cee3eb04b821f9f562ba523", startLine: 25, endLine: 25, spanSha256: "e2725666a27d47fb59665ee079b58b95adfce1f0b3fd4b082b1ff1f1567adf28"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "9be0d61d3432be4fda2bfd990aafc085ecbb3ec02cee3eb04b821f9f562ba523", startLine: 26, endLine: 26, spanSha256: "84f4093fbebf6a8ab1b0f34a3991b8f55abaa2d4dedaba313b1b3db6645a476a"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "9be0d61d3432be4fda2bfd990aafc085ecbb3ec02cee3eb04b821f9f562ba523", startLine: 27, endLine: 27, spanSha256: "a83efb2f4977b8eeea6bd3d96f1d58268f8118019feb998b7a0f226959d7ef0c"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "9be0d61d3432be4fda2bfd990aafc085ecbb3ec02cee3eb04b821f9f562ba523", startLine: 28, endLine: 28, spanSha256: "cd4f43fc2974c9d33346866ba9884da08b0a96f2bd9c314daadf6b221de6c493"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "9be0d61d3432be4fda2bfd990aafc085ecbb3ec02cee3eb04b821f9f562ba523", startLine: 29, endLine: 29, spanSha256: "f322779ecca817f2bf0255fcb205d4d14feaefccefa2c3b62f4e270e9206b531"}
-  - {path: "skills/logs/SKILL.md", sourceSha256: "9be0d61d3432be4fda2bfd990aafc085ecbb3ec02cee3eb04b821f9f562ba523", startLine: 30, endLine: 30, spanSha256: "30b96cf39912c0c8c22200e5bdcb2c5dfd532b4d71479ee9785759999fd4c6b7"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 3, endLine: 3, spanSha256: "982c067bf4485e6001411a4cf2474817d1fdc5f51c6ac305cbb7dca7de2019de"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 10, endLine: 10, spanSha256: "e97f5760b4818feeaa4c25f0a52a3e98b5f7aca382d2f5092eae5c66e1d51960"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 14, endLine: 14, spanSha256: "d1de681f3bb98fe853a62f0f5be1e0d661dcb4a7820cecbd5e4697afeef5cba8"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 17, endLine: 17, spanSha256: "f330d0a6f89da35d6feb48e7c83e0ec12a958b5a9508769be961e5bc5bb5165e"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 23, endLine: 23, spanSha256: "58422f6dad870e6a0a2e9d5e1cedf3bf0c1bac5ab9aab4b0bb23d35f10c1a4f5"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 24, endLine: 24, spanSha256: "35eb45e13d0b55ae71b65112099b19c91f0be4de42e143aa24b348556b4aa677"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 25, endLine: 25, spanSha256: "e2725666a27d47fb59665ee079b58b95adfce1f0b3fd4b082b1ff1f1567adf28"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 26, endLine: 26, spanSha256: "cd4f43fc2974c9d33346866ba9884da08b0a96f2bd9c314daadf6b221de6c493"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 27, endLine: 27, spanSha256: "f322779ecca817f2bf0255fcb205d4d14feaefccefa2c3b62f4e270e9206b531"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 28, endLine: 28, spanSha256: "30b96cf39912c0c8c22200e5bdcb2c5dfd532b4d71479ee9785759999fd4c6b7"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 29, endLine: 29, spanSha256: "5651a7f288a9192fe7096bc116a495b58ef2c62a693f7083799000fffd43c02b"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 30, endLine: 30, spanSha256: "b15e583c8b4b78a3a42df3dd012a8ff660350d74a5ff69f0b91bb7376ed5cce3"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 31, endLine: 31, spanSha256: "f343067c3f31f5393a5493b78513822012ffe4817c5136c2c6fefea350a22ff4"}
+  - {path: "skills/logs/SKILL.md", sourceSha256: "61daeab2db8e275d5a13e6c72170664beb2596dc15f3a12956569228100eb8ab", startLine: 34, endLine: 34, spanSha256: "f6be7d48e353aed497a79e538ede376ee09b3dea63268e4b629f88e3480c36b3"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="c8bee609f4dbe7b5" -->
+<!-- qmd:auto:start id="main" sourceHash="9f639b84faba399d" -->
 ## Summary
-`skills/logs/scripts/logs.py`는 현재 프로젝트의 설치 이벤트 로그 `<install state root>/events.jsonl`을 읽는 읽기 전용 조회 인터페이스다. wrapper는 자신의 위치에서 core path를 구한다. plugin root 해석식은 `ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}"`이다.
-`python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD"`는 최근 24h 요약이다.
-`python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" recalls --limit 10`은 최근 recall과 empty/degraded 원인이다.
-`python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" errors --hours 6`은 거절과 실패다.
-`python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" upgrades`는 bundle upgrade / journal conversion이다.
-`python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" migration`은 private shadow migration 단계, 결과, reader rollback이다.
-`python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki`는 특정 이벤트 종류이며 `--json`을 추가하면 원시 줄을 반환한다.
-`events --event wiki.backfill`은 유한한 초기 처리 진행, `events --event wiki.card`는 selector budget으로 거절·분할된 카드, `events --event migration.bridge`는 switch용 host를 기록한 recall hook이다.
-로그는 hook action, recall, wiki card write, off-hook wake, index publish, resident service transition, bundle upgrade마다 JSON 한 줄이며 prompt는 `sha256`과 길이로 기록된다.
+`skills/logs/SKILL.md`의 `logs` skill은 `skills/logs/scripts/logs.py`로 현재 프로젝트의 설치 이벤트 로그(`<install state root>/events.jsonl`)를 읽거나, 등록된 모든 프로젝트의 로그를 함께 읽는다. wrapper는 자기 위치에서 core 경로를 구한다. 플러그인 루트 해석식은 `ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}"`이다.
+`python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD"`는 최근 24h 요약을 반환한다.
+`... --cwd "$PWD" recalls --limit 10`은 최근 recall과 empty/degraded 원인을 반환한다.
+`... --cwd "$PWD" errors --hours 6`은 거절(refusals)과 실패를 반환한다.
+`... --cwd "$PWD" events --event wiki`는 한 이벤트 종류를 조회하며 `--json`은 원시 줄을 반환한다.
+`... --cwd "$PWD" events --event wiki.backfill`은 유한한 초기 처리 진행을 조회한다.
+`... --cwd "$PWD" events --event wiki.card`는 selector 예산에 따른 보류와 분할을 조회한다.
+`... --cwd "$PWD" errors --details`는 "detailed errors"로 재조립한 raw diagnostic text를 보인다.
+`... --all errors`는 "unified logs"로 등록된 모든 프로젝트를 UTC 순서로 보인다.
+`... --register /path/to/project`는 사용자가 프로젝트 추가를 요청할 때만 실행한다.
+자연어 매핑: "unified / all projects' logs" → `--all`(`errors` 같은 view 추가), "detailed errors", "full traceback", "에러 상세" → `--details`. `--all`이 registry 없음을 보고하면 등록 가능한 프로젝트를 안내하고 요청 후에만 `--register`를 실행한다.
 <!-- qmd:auto:end -->

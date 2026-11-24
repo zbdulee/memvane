@@ -6,10 +6,9 @@ aliases:
   - "설치 이벤트 로그"
   - "events.jsonl"
 related:
-  - "memvane-logs-query-interface"
-  - "memvane-recall-log-diagnostics"
-  - "memvane-wiki-backfill-log-semantics"
-  - "memvane-wiki-card-budget-log-semantics"
+  - "memvane-local-index-data-boundary"
+  - "wiki-compile-provider-data-boundary"
+  - "memvane-project-privacy-controls"
 type: entity
 status: verified
 created: 2026-11-02
@@ -19,32 +18,29 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/privacy.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/privacy.md", collection: "qmd-auto-context", sha256: "6c5abd650d49bbf57ec9613db0bc142da536dc20daa0e685d6b047142f537cb3", size: 4230, mtimeNs: 1794183670388948220}
+  - {kind: "file", path: "docs/privacy.md", collection: "qmd-auto-context", sha256: "ba0319b844d095c9f38c60582607ef4d11628733157db06830cf3549dc045ef6", size: 3734, mtimeNs: 1794981800089446808}
 triggers:
   - "session_start_source"
 redactions:
-verifiedBy: "codex"
-verifiedAt: "2026-11-15T17:02:46.279816Z"
+verifiedBy: "claude"
+verifiedAt: "2026-11-18T13:05:30.431958Z"
 verifiedMode: "self"
-verifiedBodyHash: "fcf067f4613f2c1caae1777cb2d6934a99d6e1556e3a7a1cde26c18b263a5254"
+verifiedBodyHash: "7ad16a18fc77863524d51bcfe8d43a3d986899a0571c0b9f9d14caedd1a80a66"
 sourceSpans:
-  - {path: "docs/privacy.md", sourceSha256: "6c5abd650d49bbf57ec9613db0bc142da536dc20daa0e685d6b047142f537cb3", startLine: 43, endLine: 45, spanSha256: "d9a7996775d7d8d85f83d2ae76dc1184ab467b40324e752707d2273ba8689bad"}
-  - {path: "docs/privacy.md", sourceSha256: "6c5abd650d49bbf57ec9613db0bc142da536dc20daa0e685d6b047142f537cb3", startLine: 45, endLine: 45, spanSha256: "c1e461a33645a9972c421574c502deea8be8187149003ba1603fa235ff73c209"}
-  - {path: "docs/privacy.md", sourceSha256: "6c5abd650d49bbf57ec9613db0bc142da536dc20daa0e685d6b047142f537cb3", startLine: 46, endLine: 47, spanSha256: "0ec9b6333ae05fb54398ca46ce37a090164d61397b1a10ee4c74c16c9db2b8da"}
-  - {path: "docs/privacy.md", sourceSha256: "6c5abd650d49bbf57ec9613db0bc142da536dc20daa0e685d6b047142f537cb3", startLine: 47, endLine: 48, spanSha256: "18e35834b83d81b3960f6692b079d849a25c0e6a39324aa5c28f9bd6c45ae02d"}
-  - {path: "docs/privacy.md", sourceSha256: "6c5abd650d49bbf57ec9613db0bc142da536dc20daa0e685d6b047142f537cb3", startLine: 48, endLine: 49, spanSha256: "0f6747a057c66d5947f5bceeccacd912932d969f4c557c2992b2444a00733605"}
-  - {path: "docs/privacy.md", sourceSha256: "6c5abd650d49bbf57ec9613db0bc142da536dc20daa0e685d6b047142f537cb3", startLine: 51, endLine: 52, spanSha256: "f2c17c530d753c8d1fa7ed6d2b01f6ef6c3407da75e7f0631716d983ad0ea08f"}
-  - {path: "docs/privacy.md", sourceSha256: "6c5abd650d49bbf57ec9613db0bc142da536dc20daa0e685d6b047142f537cb3", startLine: 52, endLine: 53, spanSha256: "54909d04364a381df414fbf7603547399da620dccb969f0318e088b04c494d45"}
-  - {path: "docs/privacy.md", sourceSha256: "6c5abd650d49bbf57ec9613db0bc142da536dc20daa0e685d6b047142f537cb3", startLine: 53, endLine: 55, spanSha256: "f9e415079258eae00bbe3755326642a2c3913c985e89c5376c94f3a52b1e06e7"}
-  - {path: "docs/privacy.md", sourceSha256: "6c5abd650d49bbf57ec9613db0bc142da536dc20daa0e685d6b047142f537cb3", startLine: 55, endLine: 57, spanSha256: "eb56ccf0041a74d88c9c9b285bd224e343bb053e1b5b2f944433c627326c8374"}
-  - {path: "docs/privacy.md", sourceSha256: "6c5abd650d49bbf57ec9613db0bc142da536dc20daa0e685d6b047142f537cb3", startLine: 57, endLine: 58, spanSha256: "13fcbc11c37b9f965380d352cfe4a9ffd9964563f617799551ba7292e9872918"}
-  - {path: "docs/privacy.md", sourceSha256: "6c5abd650d49bbf57ec9613db0bc142da536dc20daa0e685d6b047142f537cb3", startLine: 60, endLine: 61, spanSha256: "927ca96181bdff773690d4e9c5a2e4d146e5f2e1f6122217481640b49d11bd4e"}
-  - {path: "docs/privacy.md", sourceSha256: "6c5abd650d49bbf57ec9613db0bc142da536dc20daa0e685d6b047142f537cb3", startLine: 61, endLine: 63, spanSha256: "7cf7fba507757261622f518d439a1d1056c61826cd3f66ba4e82ea423c0120d8"}
+  - {path: "docs/privacy.md", sourceSha256: "ba0319b844d095c9f38c60582607ef4d11628733157db06830cf3549dc045ef6", startLine: 37, endLine: 38, spanSha256: "db56d7824d840e4f0efb3042bf666a8058854070183d2b3c0edc56290ed44b0d"}
+  - {path: "docs/privacy.md", sourceSha256: "ba0319b844d095c9f38c60582607ef4d11628733157db06830cf3549dc045ef6", startLine: 38, endLine: 39, spanSha256: "784b266759ee85947eaf66153d54dfb3621c4397aa28ec492879382cc0448dac"}
+  - {path: "docs/privacy.md", sourceSha256: "ba0319b844d095c9f38c60582607ef4d11628733157db06830cf3549dc045ef6", startLine: 39, endLine: 41, spanSha256: "931b7e93b464e71e65f29513b2a87f643f8c3cbfb7d6b8b2242627bd0691e4a3"}
+  - {path: "docs/privacy.md", sourceSha256: "ba0319b844d095c9f38c60582607ef4d11628733157db06830cf3549dc045ef6", startLine: 41, endLine: 42, spanSha256: "18e35834b83d81b3960f6692b079d849a25c0e6a39324aa5c28f9bd6c45ae02d"}
+  - {path: "docs/privacy.md", sourceSha256: "ba0319b844d095c9f38c60582607ef4d11628733157db06830cf3549dc045ef6", startLine: 42, endLine: 43, spanSha256: "0f6747a057c66d5947f5bceeccacd912932d969f4c557c2992b2444a00733605"}
+  - {path: "docs/privacy.md", sourceSha256: "ba0319b844d095c9f38c60582607ef4d11628733157db06830cf3549dc045ef6", startLine: 45, endLine: 48, spanSha256: "38e352350343f0c6f1f7727826fb9efbbe8ba32b222f135f33dda602872622ef"}
+  - {path: "docs/privacy.md", sourceSha256: "ba0319b844d095c9f38c60582607ef4d11628733157db06830cf3549dc045ef6", startLine: 48, endLine: 49, spanSha256: "6597059b99112de2b27de50a4802f872aadfdf531978e6f23e06a6becd2392f5"}
+  - {path: "docs/privacy.md", sourceSha256: "ba0319b844d095c9f38c60582607ef4d11628733157db06830cf3549dc045ef6", startLine: 51, endLine: 52, spanSha256: "927ca96181bdff773690d4e9c5a2e4d146e5f2e1f6122217481640b49d11bd4e"}
+  - {path: "docs/privacy.md", sourceSha256: "ba0319b844d095c9f38c60582607ef4d11628733157db06830cf3549dc045ef6", startLine: 52, endLine: 54, spanSha256: "7cf7fba507757261622f518d439a1d1056c61826cd3f66ba4e82ea423c0120d8"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="431ff92c322469f5" -->
+<!-- qmd:auto:start id="main" sourceHash="141600924bd9b22d" -->
 ## Summary
-selected route의 install journal directory에 `events.jsonl`을 저장한다. directory는 owner-only `0700`, 파일은 `0600`이며 4 MiB 초과 시 `events.jsonl.1`·`events.jsonl.2`로 순환해 최대 세 파일을 유지한다. selected route가 없으면 기록하지 않는다. `logs` skill은 로컬에서 읽는다. hook·background outcome, reason codes, 시간, session id, recall 카드 경로·content hashes, compile·verification 카드 경로·제목, index publication·bundle upgrade를 기록한다. migration은 step·outcome·reason codes·disk-space byte counts·opaque migration ids만 기록한다. hook 실패는 exception class·code location만 기록한다. prompt·extractor stderr는 SHA-256과 문자 수만 기록하며 본문은 저장하지 않는다. token, password, secret, credential, API key, authorization, cookie 관련 필드는 제거한다.
+`docs/privacy.md`에 따르면 각 install은 디버깅용 로컬 event log 하나를 유지한다: install의 private state directory(선택된 route의 install journal 디렉터리, owner-only `0700`)의 `events.jsonl`(파일 `0600`). 프로젝트 아래나 per-user 디렉터리에는 아무것도 쓰지 않으며, route가 선택되지 않은 프로젝트는 아무것도 쓰지 않는다. 4 MiB를 넘으면 `events.jsonl.1`, `events.jsonl.2`로 순환해 최대 세 파일을 유지한다. `logs` skill이 읽으며 장비 밖으로 나가지 않는다. 각 줄은 실행된 hook action 또는 background step과 결과(outcome, fixed reason codes, elapsed time, host session id), injected card paths·content hashes를 담은 recall diagnostics, compile·verification이 쓴 wiki card paths·titles, index publication을 기록한다. hook failure는 exception class와 code location만 기록하고 message는 절대 기록하지 않는다. prompt text나 document bodies는 담지 않는다. prompt는 SHA-256 hash와 character count로, extractor stderr도 같은 방식으로 기록한다. 이름이 secret을 가리키는 필드(token, password, secret, credential, API key, authorization, cookie)는 모든 줄에서 제거한다.
 <!-- qmd:auto:end -->
