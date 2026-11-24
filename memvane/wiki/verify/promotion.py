@@ -84,6 +84,12 @@ def _intent(root, folder, job):
     data = _record(folder / 'intent')
     if not isinstance(data, dict) or set(data) != {'live', 'pending', 'base', 'stamp'}:
         raise ValueError('invalid promotion binding')
+    receipt = folder / 'stamp-decision'
+    if os.path.lexists(receipt):
+        decision = _stamp_decision(receipt, folder / 'base')
+        base = decision.get('base')
+        if decision.get('job') != _stamp_key(job) or not isinstance(base, dict) or base.get('sha256') != data['base']:
+            raise ValueError('stamp decision belongs to another job or base')
     stamp = data['stamp']
     pending_path = job.get('pendingPath') or (folder / 'review.md').relative_to(root).as_posix()
     if (data['live'] != job['targetPath'] or data['pending'] != pending_path
@@ -253,27 +259,34 @@ def _stamp_owner(path, owner, expected, rendered):
                   'visibleVerdict': hashlib.sha256('\n'.join(fields).encode()).hexdigest()}
 
 
+def _stamp_key(job):
+    original = {k: v for k, v in job.items() if k not in ('_pendingCleanup', '_requeue_count')}
+    return hashlib.sha256(canonical_json_bytes(original)).hexdigest()
+
+
+def _stamp_decision(receipt, base, value=None):
+    from memvane.store.types import MAX_BODY
+    # JSON escaping may expand each byte sixfold, plus the new verification fields.
+    return _record(receipt, value, max_bytes=6 * base.stat().st_size + MAX_BODY)
+
+
 def _publish_decision(root, job, live, folder, *, rendered=None, expected_base=None):
     """Bind the exact paid output to the job and the reviewed inode before staging it."""
-    from memvane.store.types import MAX_BODY
     receipt = folder / 'stamp-decision'
     review = folder / 'review.md'
     node = _snapshot(live)
     if expected_base is not None and expected_base != node:
         return 'retry'
-    original = {k: v for k, v in job.items() if k not in ('_pendingCleanup', '_requeue_count')}
-    key = hashlib.sha256(canonical_json_bytes(original)).hexdigest()
-    # JSON escape sequences may expand each input byte sixfold; allow the new proof fields too.
-    limit = 6 * live.stat().st_size + MAX_BODY
+    key = _stamp_key(job)
     if not os.path.lexists(receipt):
         if rendered is None:
             return None
         # A pre-receipt image has no job/base proof. Keep it private for inspection.
         if os.path.lexists(review):
             _move(review, folder / 'unbound-review.md')
-        saved = _record(receipt, {'job': key, 'base': node, 'rendered': rendered}, max_bytes=limit)
+        saved = _stamp_decision(receipt, live, {'job': key, 'base': node, 'rendered': rendered})
     else:
-        saved = _record(receipt, max_bytes=limit)
+        saved = _stamp_decision(receipt, live)
     if (saved.get('job') != key or not persistent_identity_equal(saved.get('base'), node)
             or not isinstance(saved.get('rendered'), str)):
         return 'retry'

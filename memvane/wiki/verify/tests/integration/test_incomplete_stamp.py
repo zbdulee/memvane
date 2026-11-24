@@ -81,6 +81,15 @@ class IncompleteStamp(support.VerifyCase):
         self.assertEqual(self.card.read_bytes(), self.original)
         self.assertEqual(list(self.compile_dir.rglob('stamp-decision')), [])
 
+    def test_only_original_job_can_resume_after_intent_is_saved(self):
+        with patch.object(promotion, 'rename_exchange', side_effect=OSError(errno.ENOTSUP, 'exchange unavailable')):
+            self.assertEqual(self.verify_one(self.review_job), (False, True))
+        self.assertEqual(len(list(self.compile_dir.rglob('intent'))), 1)
+        self.assertEqual(self.verify_one(dict(self.review_job, engine='codex')), (False, True))
+        self.assertEqual(self.card.read_bytes(), self.original)
+        self.assertEqual(self.verify_one(self.review_job), (True, False))
+        self.assertEqual(len(self.engine.calls), 1)
+
     def test_foreign_job_and_tampered_review_cannot_consume_the_decision(self):
         self.interrupt()
         foreign = dict(self.review_job, engine='codex')
