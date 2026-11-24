@@ -147,10 +147,31 @@ def _move(source, dest, *, exchange=False):
         os.close(left)
 
 
+def _same_inode(recorded, dev, ino):
+    return persistent_identity_equal({'dev': recorded['dev'], 'ino': recorded['ino']},
+                                     {'dev': dev, 'ino': ino})
+
+
+def _same_intent(saved, observed):
+    return (saved.keys() == observed.keys()
+            and all(saved[key] == observed[key] for key in ('live', 'pending', 'base'))
+            and persistent_identity_equal(saved['stamp'], observed['stamp']))
+
+
+def _store_intent(path, expected):
+    if not os.path.lexists(path):
+        return _record(path, expected)
+    saved = _record(path)
+    if not _same_intent(saved, expected):
+        raise ValueError('promotion intent changed')
+    fsync_dir(path.parent)
+    return saved
+
+
 def _finish(root, folder, intent):
     path = folder / 'displaced.md'
     displaced = _snapshot(path, sync=True)
-    if displaced['dev'] == intent['stamp']['dev'] and displaced['ino'] == intent['stamp']['ino']:
+    if _same_inode(intent['stamp'], displaced['dev'], displaced['ino']):
         raise ValueError('no displaced inode')
     # The exchange itself can precede either directory sync or this archive sidecar.
     fsync_dir(folder)
@@ -179,24 +200,25 @@ def recover(root, job, pending, live):
         result = _record(folder / 'archive.json')
         node = slot.lstat()
         if (result['path'] != intent['live'] or result['archivePath'] != slot.relative_to(root).as_posix()
-                or result['candidate'] != intent['stamp'] or result['expectedTargetHash'] != intent['base']
+                or not persistent_identity_equal(result['candidate'], intent['stamp'])
+                or result['expectedTargetHash'] != intent['base']
                 or result['basePath'] != (folder / 'base').relative_to(root).as_posix()
-                or not stat.S_ISREG(node.st_mode) or (node.st_dev, node.st_ino) !=
-                (result['displaced']['dev'], result['displaced']['ino']) or os.path.lexists(pending)):
+                or not stat.S_ISREG(node.st_mode) or not _same_inode(result['displaced'], node.st_dev, node.st_ino)
+                or os.path.lexists(pending)):
             return 'retry'
         return 'published'
     if not os.path.lexists(slot):
         return None if os.path.lexists(pending) else 'retry'
     material = _snapshot(slot)
-    if material == intent['stamp']:
+    if persistent_identity_equal(intent['stamp'], material):
         # Re-enter the verifier on its original name and recheck source, stamp and live base.
         _move(slot, pending)
         return None
-    if _record(folder / 'ready') != intent or os.path.lexists(pending):
+    if not _same_intent(_record(folder / 'ready'), intent) or os.path.lexists(pending):
         return 'retry'
     # A prepared work directory alone cannot prove publication if both named inodes changed.
     visible = live.lstat()
-    if (visible.st_dev, visible.st_ino) != (intent['stamp']['dev'], intent['stamp']['ino']):
+    if not _same_inode(intent['stamp'], visible.st_dev, visible.st_ino):
         return 'retry'
     return _finish(root, folder, intent)
 
@@ -217,12 +239,12 @@ def publish(root, job, pending, live, verified, base):
         return 'retry'
     intent = {'live': live.relative_to(root).as_posix(), 'pending': pending.relative_to(root).as_posix(),
               'base': expected, 'stamp': stamp}
-    _record(folder / 'intent', intent)
+    intent = _store_intent(folder / 'intent', intent)
     slot = folder / 'displaced.md'
     _move(pending, slot)
     if _snapshot(slot) != stamp:
         return 'retry'
-    _record(folder / 'ready', intent)
+    _store_intent(folder / 'ready', intent)
     if _snapshot(live)['sha256'] != expected:
         _move(slot, pending)
         return 'stale'
@@ -324,7 +346,7 @@ def write_stamp(path, rendered, expected, owner, fallback):
         if not os.path.lexists(folder / 'intent'):
             return _publish_decision(root, job, path, folder, rendered=rendered, expected_base=reviewed) == 'published'
         intent = _intent(root, folder, job)
-        if _snapshot(review) != intent['stamp'] or hashlib.sha256(base).hexdigest() != intent['base']:
+        if not persistent_identity_equal(intent['stamp'], _snapshot(review)) or hashlib.sha256(base).hexdigest() != intent['base']:
             return False
         return publish(root, job, review, path, review.read_bytes().decode(), base) == 'published'
     except (KeyError, OSError, RuntimeError, TypeError, ValueError):
@@ -345,7 +367,7 @@ def resume_stamp(root, job, live, fresh):
     if state is not None:
         return state
     intent = _intent(root, folder, job)
-    if not fresh() or _snapshot(review) != intent['stamp'] or _snapshot(live)['sha256'] != intent['base']:
+    if not fresh() or not persistent_identity_equal(intent['stamp'], _snapshot(review)) or _snapshot(live)['sha256'] != intent['base']:
         return 'retry'
     return publish(root, job, review, live, review.read_bytes().decode(), (folder / 'base').read_bytes())
 
@@ -479,11 +501,11 @@ def retire(root, job, live, expected, verdict, manifest_row):
     if intent['path'] != live.relative_to(root).as_posix():
         return False
     if not os.path.lexists(slot):
-        if _snapshot(live) != intent['reviewed']:
+        if not persistent_identity_equal(intent['reviewed'], _snapshot(live)):
             return False
         _move(live, slot)
     captured = _snapshot(slot, sync=True)
-    if captured != intent['reviewed']:
+    if not persistent_identity_equal(intent['reviewed'], captured):
         # Leave an independently recreated live card alone; keep both names if necessary.
         if not os.path.lexists(live):
             _move(slot, live)
@@ -494,7 +516,7 @@ def retire(root, job, live, expected, verdict, manifest_row):
     fsync_dir(folder)
     fsync_dir(live.parent)
     _record(folder / 'archive.json', {'path': intent['path'], 'archivePath': slot.relative_to(root).as_posix(),
-                                      'displaced': captured, 'verdict': verdict})
+                                      'displaced': intent['reviewed'], 'verdict': verdict})
     return not os.path.lexists(live)
 
 
@@ -504,7 +526,7 @@ def _retirement_archive(root, folder, target, verdict):
     slot = folder / 'displaced.md'
     if (intent['path'] != target or archived['path'] != target or archived['verdict'] != verdict
             or archived['archivePath'] != slot.relative_to(root).as_posix()
-            or intent['reviewed'] != archived['displaced']):
+            or not persistent_identity_equal(intent['reviewed'], archived['displaced'])):
         raise ValueError('invalid retirement archive')
     return intent, archived
 

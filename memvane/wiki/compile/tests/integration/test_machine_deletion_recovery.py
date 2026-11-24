@@ -1,5 +1,6 @@
 """A direct writer reaches the interrupted visible deletion before the verifier retries."""
 import errno
+import hashlib
 import io
 import json
 import os
@@ -11,6 +12,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 from memvane.kernel import paths
+from memvane.kernel.atomic_rename import canonical_json_bytes
 from memvane.wiki.compile import wiki_compile as writer
 from memvane.wiki.compile.tests.integration import test_pending_handoff as cases
 from memvane.wiki.engines import api as engines
@@ -90,6 +92,24 @@ class DirectWriter(FixtureCase):
         self.target.unlink()
         self.assertEqual(self.write(corrected), (0, 'tombstoned'))
         self.assertEqual(self.write(corrected), (0, 'suppressed'))
+
+    def test_interrupted_retirement_matches_archived_inode_across_apfs_device_change(self):
+        self.interrupt_native()
+        folder, = self.queue.parent.glob('retired-wiki/.promotions/*/retire')
+        folder = folder.parent
+        for name, field in (('retire', 'reviewed'), ('archive.json', 'displaced')):
+            path = folder / name
+            data = json.loads(path.read_bytes())
+            data.pop('checksum')
+            data[field]['dev'] += 999
+            checksum = hashlib.sha256(canonical_json_bytes(data)).hexdigest()
+            path.write_bytes(canonical_json_bytes(dict(data, checksum=checksum)))
+        self.assertEqual(self.write('Newest corrected source after reboot.', check=True), (0, 'written'))
+        self.assertEqual(self.write('Newest corrected source after reboot.'), (0, 'created'))
+        self.assertEqual([r['action'] for r in self.rows('generated-manifest.jsonl')],
+                         ['created', 'verify-deleted', 'created'])
+        self.assertEqual(len(self.rows('verify-deleted.jsonl')), 1)
+        self.assertEqual(self.rows('tombstones.jsonl'), [])
 
     def append_hidden_audits(self):
         target = self.target.relative_to(self.root).as_posix()

@@ -204,6 +204,73 @@ class Ordinary(PendingCase):
         self.assertIn('status: verified', self.card_now())
         self.assertEqual(len(engine.calls), 1)
 
+    def move_record_to_previous_boot(self, folder, name, *fields):
+        path = folder / name
+        max_bytes = 10 * 1024 ** 2
+        value = promotion._record(path, max_bytes=max_bytes)
+        for field in fields:
+            value[field]['dev'] += 999
+        path.unlink()
+        promotion._record(path, value, max_bytes=max_bytes)
+        return value
+
+    def check_stamp_restart_after_apfs_device_change(self, stage):
+        original = self.setup().encode()
+        job = self.job()
+        engine = self.fake()
+        if stage == 'decision':
+            with patch.object(promotion, 'publish', side_effect=OSError(errno.ENOSPC, 'before intent')):
+                self.assertEqual(self.verify_one(job), (False, True))
+        elif stage == 'intent':
+            with patch.object(promotion, 'rename_exchange', side_effect=OSError(errno.ENOTSUP, 'before exchange')):
+                self.assertEqual(self.verify_one(job), (False, True))
+        else:
+            with patch.object(promotion, 'rename_exchange', side_effect=KeyboardInterrupt), \
+                 self.assertRaises(KeyboardInterrupt):
+                self.verify_one(job)
+        folder, = self.compile_dir.glob('retired-wiki/.promotions/*')
+        if stage == 'decision':
+            self.move_record_to_previous_boot(folder, 'stamp-decision', 'base')
+        else:
+            self.move_record_to_previous_boot(folder, 'intent', 'stamp')
+            if stage == 'ready':
+                self.move_record_to_previous_boot(folder, 'ready', 'stamp')
+        self.assertEqual(self.card.read_bytes(), original)
+        for _ in range(2):
+            self.assertEqual(self.verify_one(job), (True, False))
+        self.assertIn('status: verified', self.card_now())
+        self.assertEqual((self.root / self.records()['archivePath']).read_bytes(), original)
+        self.assertEqual(len(engine.calls), 1)
+
+    def test_stamp_decision_survives_apfs_device_change(self):
+        self.check_stamp_restart_after_apfs_device_change('decision')
+
+    def test_stamp_intent_survives_apfs_device_change(self):
+        self.check_stamp_restart_after_apfs_device_change('intent')
+
+    def test_staged_stamp_inode_survives_apfs_device_change(self):
+        self.check_stamp_restart_after_apfs_device_change('ready')
+
+    def test_published_stamp_and_displaced_inode_survive_apfs_device_change(self):
+        original = self.setup().encode()
+        job = self.job()
+        engine = self.fake()
+        with self.card.open('ab') as editor:
+            with patch.object(promotion, '_finish', side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+                self.verify_one(job)
+            folder, = self.compile_dir.glob('retired-wiki/.promotions/*')
+            self.assertFalse((folder / 'archive.json').exists())
+            self.move_record_to_previous_boot(folder, 'intent', 'stamp')
+            self.move_record_to_previous_boot(folder, 'ready', 'stamp')
+            self.assertEqual(self.verify_one(job), (True, False))
+            editor.write(self.memo)
+        archived = self.root / self.records()['archivePath']
+        self.move_record_to_previous_boot(folder, 'archive.json', 'candidate', 'displaced')
+        self.assertEqual(self.verify_one(job), (True, False))
+        self.assertEqual(archived.read_bytes(), original + self.memo)
+        self.assertIn('status: verified', self.card_now())
+        self.assertEqual(len(engine.calls), 1)
+
     def test_negative_verdict_restores_an_intervening_editor_save(self):
         text = self.setup()
         job = self.job()
