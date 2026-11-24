@@ -243,7 +243,7 @@ def _manifest_has(root, row):
 def record_machine_delete(root: Path, compile_cfg: dict, record: dict, verdict: str) -> bool:
     """Durably identify a machine deletion so a later writer can distinguish a manual removal."""
     path = qmd_config.ledger(root, ct.MANIFEST)
-    if path is None:
+    if path is None or wiki_freshness.unresolved_pending_refreshes_strict(root, before_ledger_write=True) is None:
         return False
     row = _machine_row(record, verdict)
     append_jsonl(path, row)
@@ -743,6 +743,8 @@ def apply_verify_verdict_locked(
     ``sha256`` they are bound to; they are further narrowed to the card's own
     ``sourceRevisions`` so recall can bind them to what the card claims.
     """
+    if wiki_freshness.unresolved_pending_refreshes_strict(root, before_ledger_write=True) is None:
+        return False, True
     if incompatible_cards((target, root / job['targetPath']) if job.get('pendingPath') else (target,)):
         return False, True
     fresh_text, fresh_meta, fresh_status, fresh_hash = card_state(target)
@@ -934,6 +936,8 @@ def process_verify_job(
         except (OSError, RuntimeError, ValueError, sqlite3.Error):
             log_verdict(log_path, {**base_record(job), 'result': 'skipped',
                                    'reason': 'provenance_checkout_unavailable'})
+    if wiki_freshness.unresolved_pending_refreshes_strict(root, before_ledger_write=True) is None:
+        return False, True
     rel = job.get("targetPath")
     if not isinstance(rel, str) or not rel:
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "missing_target_path"})

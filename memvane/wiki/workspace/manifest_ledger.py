@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 
 from memvane.kernel.paths import read_jsonl
-from memvane.wiki.workspace.types import LOG_MAX_BYTES
+from memvane.settings.types import NAMES
+from memvane.wiki.card.api import unresolved_pending_refreshes_strict
+from memvane.wiki.workspace.types import LOG_MAX_BYTES, MANIFEST
 
 
 def write_jsonl_atomic(path: Path, rows: list[dict]) -> None:
@@ -66,6 +68,9 @@ def compact_manifest(path: Path, max_bytes: int = LOG_MAX_BYTES) -> None:
     except OSError:
         return
     if size <= max_bytes:
+        return
+    if (path.name == MANIFEST and path.parent.name == 'compile' and path.parent.parent.name in NAMES
+            and unresolved_pending_refreshes_strict(path.parents[2], before_ledger_write=True) is None):
         return
     stamp = _read_compact_stamp(path)
     if stamp is not None and stamp > 0 and size < stamp * COMPACT_STAMP_GROWTH_RATIO:

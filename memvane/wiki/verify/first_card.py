@@ -9,6 +9,7 @@ import uuid
 from memvane.kernel.atomic_rename import canonical_json_bytes, rename_noreplace
 from memvane.settings import api as settings
 from memvane.store.api import regular
+from memvane.wiki.card.api import unresolved_pending_refreshes_strict
 from memvane.wiki.workspace import types as ct
 from memvane.wiki.verify import native_review
 from memvane.wiki.verify.handoff_work import Work
@@ -26,6 +27,10 @@ def _resume(root, wiki, queue, work, selected):
     if (rel.is_absolute() or '..' in rel.parts or path.resolve() != path or
             not path.is_relative_to(wiki) or any(p.startswith('.') for p in path.relative_to(wiki).parts)):
         raise ValueError('unsafe initial card path')
+    if unresolved_pending_refreshes_strict(root, before_ledger_write=True,
+                                         missing_target=None if path.exists() else binding['manifest'],
+                                         append_for=binding['manifest']) is None:
+        return False
     image = work.read('image')
     proof = state.get('proof', {})
     parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -102,7 +107,7 @@ def _released_target_clear(queue, rel):
 
 def _record_manifest(root, row):
     path = settings.ledger(root, ct.MANIFEST)
-    if path is None:
+    if path is None or unresolved_pending_refreshes_strict(root, before_ledger_write=True, append_for=row) is None:
         raise OSError('initial card manifest unavailable')
     flags = os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
     with os.fdopen(os.open(path, flags, 0o600), 'r+b') as stream:
@@ -115,9 +120,13 @@ def _record_manifest(root, row):
             try:
                 present |= json.loads(line) == row
             except (ValueError, RecursionError):
-                continue
-        if last and not last.endswith(b'\n'):
-            stream.write(b'\n')
+                if line.strip():
+                    raise ValueError('invalid initial card manifest')
+        after = path.lstat()
+        if (not os.path.samestat(node, after) or
+                (node.st_size, node.st_ctime_ns) != (after.st_size, after.st_ctime_ns) or
+                (last and not last.endswith(b'\n'))):
+            raise OSError('initial card manifest changed')
         if not present:
             data = canonical_json_bytes(row) + b'\n'
             stream.write(data)

@@ -15,7 +15,7 @@ from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
 
 
-class WriterLifecycle(FixtureCase):
+class WriterFixture(FixtureCase):
     def setUp(self):
         super().setUp()
         self.project = make_project(self.home, git=False)
@@ -47,6 +47,8 @@ class WriterLifecycle(FixtureCase):
         path = self.project.root / '.memvane/compile' / name
         return [json.loads(line) for line in path.read_text().splitlines()]
 
+
+class WriterLifecycle(WriterFixture):
     def test_deleted_generated_identity_is_tombstoned_then_suppressed(self):
         first = self.compile()
         self.assertEqual(first['action'], 'created')

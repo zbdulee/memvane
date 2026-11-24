@@ -1437,6 +1437,7 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/card/legacy_ledgers.py": {"context": "wiki/card", "layer": "application", "pinned": false},
     "memvane/wiki/card/source_spans.py": {
       "context": "wiki/card",
       "layer": "adapter",

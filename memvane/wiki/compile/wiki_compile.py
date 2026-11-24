@@ -1109,11 +1109,6 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         print(json.dumps({"action": "rejected", "reason": "unsafe_compile_path"}, ensure_ascii=False))
         return 1
 
-    # candidates.jsonl is a write-only audit log (every compile attempt appends a
-    # row, no reader) -- cap it up front so it can't grow unbounded.
-    if not check:
-        trim_jsonl(candidate_path)
-
     record = {
         "ts": now_iso(),
         "trigger": candidate.get("trigger", "manual"),
@@ -1134,6 +1129,16 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         "redactions": redactions,
         "_qmd": effort_audit(candidate),
     }
+
+    missing = record if target is not None and not target.exists() else None
+    if yaml_scalars.unresolved_pending_refreshes_strict(root, before_ledger_write=True,
+                                                   missing_target=missing, append_for=missing) is None:
+        print(json.dumps({'action': 'deferred', 'reason': 'legacy_ledger_requires_reassessment'}))
+        return 1
+    if (not check and candidate_path.exists() and candidate_path.stat().st_size > ct.LOG_MAX_BYTES and
+            yaml_scalars.unresolved_pending_refreshes_strict(root, before_ledger_write=True,
+                                                           trimming_candidates=True) is not None):
+        trim_jsonl(candidate_path)
 
     if check and target_reason.startswith("ambiguous_"):
         return _checked("merge-needed", [target_reason])

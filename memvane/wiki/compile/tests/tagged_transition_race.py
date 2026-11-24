@@ -9,7 +9,7 @@ import select
 import subprocess
 import sys
 
-from memvane.wiki.card import wiki_freshness as refresh
+from memvane.wiki.card import api as refresh
 from memvane.wiki.compile import wiki_compile as writer
 from memvane.wiki.workspace import api as workspace
 from tests.support.project import make_project
@@ -39,7 +39,7 @@ def owner(root):
     public = folder / 'source-refresh-pending.jsonl'
     queue_lock = workspace.queue_lock_path(folder / 'verify-queue.jsonl')
     with workspace.card_write_lock(root), workspace.mutation_lock(root), queue_lock.open('a') as queue, \
-            refresh._pending_lock_path(public).open('a') as edits:
+            public.with_name(public.name + '.lock').open('a') as edits:
         fcntl.flock(queue, fcntl.LOCK_EX)
         fcntl.flock(edits, fcntl.LOCK_EX)
         print('held', flush=True)

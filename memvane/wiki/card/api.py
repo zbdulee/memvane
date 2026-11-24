@@ -170,7 +170,12 @@ def unresolved_pending_refreshes(root):
     from memvane.wiki.card.wiki_freshness import unresolved_pending_refreshes as implementation
     return implementation(root)
 
-def unresolved_pending_refreshes_strict(root):
+def unresolved_pending_refreshes_strict(root, *, before_ledger_write=False, missing_target=None,
+                                       append_for=None, trimming_candidates=False):
+    if before_ledger_write:
+        from memvane.wiki.card.legacy_ledgers import project_writable
+        if not project_writable(root, missing_target, append_for=append_for, trimming_candidates=trimming_candidates):
+            return None
     from memvane.wiki.card.wiki_freshness import unresolved_pending_refreshes_strict as implementation
     return implementation(root)
 

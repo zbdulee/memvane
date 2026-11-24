@@ -16,9 +16,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from memvane.settings.api import ledger
+from memvane.settings.api import compile_dir, ledger
 from memvane.wiki.card.types import SOURCE_REFRESH_PENDING
-from memvane.wiki.card import yaml_scalars
+from memvane.wiki.card import legacy_ledgers, yaml_scalars
 
 from memvane.wiki.card.types import FRESH, STALE, UNKNOWN
 PENDING_REFRESH = "pending_refresh"
@@ -33,7 +33,9 @@ def _now_iso() -> str:
 
 
 def _pending_path(root: Path) -> Path | None:
-    return ledger(Path(root).resolve(), SOURCE_REFRESH_PENDING)
+    root = Path(root).resolve()
+    public, folder = ledger(root, SOURCE_REFRESH_PENDING), compile_dir(root)
+    return public if folder is not None and public == folder / SOURCE_REFRESH_PENDING else None
 
 
 def _pending_lock_path(path: Path) -> Path:
@@ -109,8 +111,10 @@ def _read_events_unlocked(path: Path, strict: bool = False) -> list[dict] | None
     try:
         if not path.exists():
             return []
+        if strict and path.name == SOURCE_REFRESH_PENDING:
+            return legacy_ledgers.read_public_events(path)
         text = path.read_text(encoding="utf-8", errors="strict")
-    except (OSError, UnicodeError):
+    except (OSError, ValueError, RecursionError):
         return None if strict else []
     rows = []
     for line in text.splitlines():
@@ -133,7 +137,9 @@ def _read_events_unlocked(path: Path, strict: bool = False) -> list[dict] | None
     return rows
 
 
-def _append_event_unlocked(path: Path, event: dict) -> bool:
+def _append_event_unlocked(path: Path, event: dict, *, source=None) -> bool:
+    if not legacy_ledgers.writable(path.parent, append_for={'sources': [{'path': source}]} if source else None):
+        return False
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
@@ -165,7 +171,7 @@ def record_pending_refresh(root: Path, source_path: str, engine: str) -> dict | 
         path.parent.mkdir(parents=True, exist_ok=True)
         with _pending_lock_path(path).open("a", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            if not _append_event_unlocked(path, event):
+            if not _append_event_unlocked(path, event, source=source):
                 return None
     except OSError:
         return None
@@ -326,7 +332,7 @@ def resolve_pending_refresh(
                 "state": RESOLVED,
                 "pendingEventId": pending_id,
             }
-            if not _append_event_unlocked(path, event):
+            if not _append_event_unlocked(path, event, source=pending['sourcePath']):
                 return False
     except OSError:
         return False
@@ -344,6 +350,8 @@ def compact_pending_refreshes(root: Path, force: bool = False) -> bool:
             return True
         with _pending_lock_path(path).open("a", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            if not legacy_ledgers.writable(path.parent):
+                return False
             rows = _read_events_unlocked(path, strict=True)
             if rows is None:
                 return False
@@ -416,6 +424,8 @@ def quarantine_corrupt_pending(root: Path) -> dict | None:
         with _pending_lock_path(path).open("a", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             if not path.exists():
+                return None
+            if legacy_ledgers.quarantine_preserves_special(path):
                 return None
             # The judgement is deliberately narrow, because a false positive
             # *is* the loss this function exists to bound.  Two conditions must
