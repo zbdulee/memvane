@@ -12,6 +12,7 @@ import sys
 from memvane.wiki.card import api as refresh
 from memvane.wiki.compile import wiki_compile as writer
 from memvane.wiki.workspace import api as workspace
+from tests.support.case import scaled
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded
 
@@ -79,7 +80,7 @@ def spawn(stack, mode, root, *, payload=None):
     def reap():
         if child.poll() is None:
             child.kill()
-        child.wait(timeout=5)
+        child.wait(timeout=scaled(5))
     stack.callback(reap)
     if payload is not None:
         child.stdin.write(json.dumps(payload))

@@ -26,7 +26,9 @@ class ManifestCheckpoint(FixtureCase):
 
         def observe(*args):
             starts.append(args[2])
-            with sqlite3.connect(str(db_path), timeout=0) as db:
+            with sqlite3.connect(str(db_path)) as db:
+                # A held writer lock must reject BEGIN immediately.
+                db.execute('PRAGMA busy_timeout = 0')
                 db.execute('BEGIN IMMEDIATE')
                 return read_batch(*args)
 

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from memvane.wiki.verify import api, batch_handoff, pending_handoff, wiki_verify_worker
 from memvane.wiki.workspace import api as workspace
-from tests.support.case import FixtureCase
+from tests.support.case import FixtureCase, scaled
 from tests.support.project import make_project
 
 
@@ -147,7 +147,7 @@ class VerifyBatchPrepare(FixtureCase):
             child = subprocess.run([sys.executable, '-B', '-c',
                                     'import sys; from pathlib import Path; from memvane.wiki.verify.api '
                                     'import prepare_queue; q=Path(sys.argv[1]); print(prepare_queue(q.parents[2],q,None))',
-                                    str(self.queue)], capture_output=True, timeout=5, check=True)
+                                    str(self.queue)], capture_output=True, timeout=scaled(5), check=True)
             self.assertEqual(child.stdout.strip(), b'False')
         with workspace.queue_lock_path(self.queue).open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
