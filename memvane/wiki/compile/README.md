@@ -1,5 +1,7 @@
 # Wiki compile과 extractor
 
+컴파일러는 남은 생성·삭제 이력으로 수기 삭제를 확인할 수 있는 카드를 자동으로 다시 만들지 않는다. 새 카드는 계속 생성한다. 구버전 원장 압축이나 디스크 공간 부족으로 특정 카드의 이력이 모두 사라지면, 사람이 지운 카드도 같은 경로에 다시 생성될 수 있다.
+
 선택된 설치의 worker는 검수 대기 또는 claim 중인 교체본의 원문 경로·collection·내용 SHA-256·길이를 현재 원문과 비교한다. 검수 행, 교체본 frontmatter와 마커, 교체 대상의 기존 바이트가 모두 일치하면 추출을 생략한다. 이때 미해결 refresh 이벤트에는 해당 내용을 시도한 사유 `awaiting_pending_verification`을 남긴다. 원문 내용이 달라도 요약·출처가 같아 기존 교체본 이름과 충돌하면, 새 교체본의 마커와 파일명에 원문 revision을 반영한다. 후보 일부만 저장된 시도는 같은 원문 SHA의 pending이나 verified 카드가 있어도 남은 후보를 다시 추출한다. 원문을 다시 읽어 SHA가 바뀌면 그 revision의 카드로 재사용 여부를 판정한다. 검수기가 같은 컬렉션·경로의 원문을 인용한 작업을 claim한 동안 새 revision은 source 큐에서 기다린다. claim이 끝나면 그 시점의 원문으로 추출한다.
 
 선택된 설치의 source 큐는 dedup·extractor 예산 적용 전에 최대 4,096행·8MiB의 identity를 검사한다. 유효한 installId/scopeId가 다른 설치를 가리키는 작업은 `selected_route_identity_changed` 원장을 쓴 뒤 제외한다. 0.x의 storeIncarnation 없는 identity도 판정한다. 같은 설치의 scope/incarnation 변화·identity 부재·검사 범위 밖의 행은 보존한다. 처리 전 route 재검증이나 원장 쓰기가 실패하면 원래 행 전체를 정상 큐로 돌려놓는다. 처리 후 삭제 직전 재검증이 실패하면 미완료 행과 stale 원문 행만 돌려놓고, 완료한 현재 작업은 복원하지 않는다. 큐 반환이 성공하면 claim을 해제하고 원래 오류를 다시 전달한다. 반환 I/O가 실패하면 해당 단계의 공용 claim 또는 private 원본이 복구를 맡는다. 원장은 기존 append 성공 계약이며 fsync 보장은 없다. 이 상한은 identity 검사 범위이고, claim의 기존 전체 파일 읽기에는 적용되지 않는다. worker stdout의 `completed`·`staleDropped`는 이번 pass의 종결·제거 수다(진척 판정에는 쓰지 않는다. 판정은 아래 문단의 남은 양이다).

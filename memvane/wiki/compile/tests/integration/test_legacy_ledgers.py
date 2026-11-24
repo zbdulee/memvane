@@ -22,8 +22,12 @@ class LegacyLedgerEvidence(FixtureCase):
                      'trigger': 'post_tool_source'}
         result = subprocess.run([sys.executable, '-B', '-m', 'memvane.wiki.compile.wiki_compile', '--cwd', str(root)],
                                 input=json.dumps(candidate), capture_output=True, text=True, timeout=30, env=env)
-        self.assertIn(result.returncode, (0, 1), result.stderr)
-        return json.loads(result.stdout)['action'], (root / target).exists()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = root / '.memvane/compile/generated-manifest.jsonl'
+        with manifest.open(encoding='utf-8') as ledger:
+            entries = [json.loads(line) for line in ledger]
+        actions = [row['action'] for row in entries if row['targetPath'] == target]
+        return json.loads(result.stdout)['action'], (root / target).is_file(), actions
 
     def test_four_releases_and_three_separators_with_original_and_escaped_histories(self):
         repo = Path(__file__).resolve().parents[5]
@@ -49,12 +53,12 @@ class LegacyLedgerEvidence(FixtureCase):
                         self.assertTrue(data['identicalTrees'])
                         self.assertEqual(data['externalFiles'], 0)
                         self.assertFalse(any(chr(code) in name for name in data['paths']))
-                        # These opposing histories must receive the same decision given the same available evidence.
                         clean = self._native_writer(root, target, env)
                         root.rename(scratch / 'after-clean')
                         (scratch / 'deleted-history').rename(root)
                         deleted = self._native_writer(root, target, env)
-                        self.assertEqual(deleted, clean)
+                        self.assertEqual(clean, ('created', True, ['created']))
+                        self.assertEqual(deleted, ('created', True, ['created']))
                         print(f'{tag} U+{code:04X} {encoding} never-created={clean} '
                               f'manual-deletion={deleted} project-files={len(data["paths"])} '
                               'installation-files=0', file=sys.stderr)
