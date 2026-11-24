@@ -19,7 +19,7 @@ from memvane.learning.tests.integration import test_old_bundle_121 as old_tests
 from memvane.learning.tests.old_bundle_121 import EDIT_FILE, EDIT_TEXT, PROMPT, TAGS, edit_payload, old_bundle
 from tests.support.install_builder import ROOT
 
-PREVIOUS = ('v1.0.22', 'v1.0.23', 'v1.0.24')
+PREVIOUS = ('v1.0.23', 'v1.0.24', 'v1.1.0')
 # (status, reason, attempts, failures, retry in the future): what 1.1.0 leaves open.
 OPEN_JOBS = (('blocked', 'trainer_failed', 3, 3, True),            # waits for its rearm time
              ('blocked', 'learning_cursor_changed', 1, 1, False),  # closed for good

@@ -420,6 +420,20 @@ class Schema3Recall(RecallInstallCase):
         self.assertEqual([(kind, target, kwargs.get('pull_due')) for kind, target, kwargs in self.wakes],
                          [('laya-sync', str(self.project), True)])
 
+    def test_terminal_provider_serves_prompt_lexical_rows_and_records_the_reason(self):
+        from memvane.journal.api import select_route, verify_selected_route
+        from memvane.resident.embed_resident import _write_state
+        self.install.provider.admit_queries()
+        self.install.provider.answer_queries('provider_unavailable')
+        decision = select_route(str(self.project), action='recall')
+        manifest = verify_selected_route(decision)['providerManifest']
+        _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)
+        context, _err, event = self.recall(PROMPT)
+        self.assertIn('zqheronx', context)
+        self.assertEqual((event['outcome'], event['vector_fallback'], event['notes']),
+                         ('served', 'selected_provider_start_failed', ['laya_vector_selected_provider_start_failed']))
+        self.assertEqual(self.wakes, [])
+
     def test_the_learning_selector_receives_the_published_rows(self):
         seen = []
 

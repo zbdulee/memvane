@@ -15,7 +15,7 @@ import stat
 import time
 
 SCHEMA = 'memvane-teacher-model-tiers-v1'
-RELEASE = '1.1.0'
+RELEASE = '1.1.1'
 TIER = 1
 TIER1 = {
     'claude': {'request': 'haiku',                # value passed to --model

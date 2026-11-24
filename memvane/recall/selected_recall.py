@@ -58,6 +58,8 @@ def _vector_off_fallback(decision, main_proof, vector_off, trace):
         code = _wake_provider(decision, main_proof)
     finally:
         trace.fields(providerWakeMs=round((time.monotonic() - started) * 1000, 3))
+    if code == 'selected_provider_start_failed':
+        return code
     return ('selected_provider_resource_deferred'
             if vector_off[0] == 'resource_deferred' else code)
 

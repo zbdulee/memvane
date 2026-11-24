@@ -142,13 +142,14 @@ class OwnerContention(FixtureCase):
         project = '/synthetic/project'
         reasons = ('provider_owner_route_unavailable', 'invalid_evidence',
                    'provider_owner_route_unavailable', 'invalid_evidence')
-        with patch.object(resident_service, '_event') as event:
+        with patch.object(resident_service, '_route_hint', return_value={}), \
+             patch('memvane.diagnostics.api.emit') as event:
             for reason in reasons:
-                service._report_waiting(project, {}, reason, outcome='unproved')
-            self.assertEqual([call.args[3] for call in event.call_args_list],
+                service._report_unproved(project, reason)
+            self.assertEqual([call.kwargs['reason'] for call in event.call_args_list],
                              ['provider_owner_route_unavailable', 'invalid_evidence'])
             service.unproved.pop(project)
-            service._report_waiting(project, {}, reasons[0], outcome='unproved')
+            service._report_unproved(project, reasons[0])
         self.assertEqual(event.call_count, 3)
 
     def test_default_admission_checks_runtime_without_provider_lane(self):

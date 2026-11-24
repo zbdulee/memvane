@@ -45,6 +45,7 @@
 | 1.0.23 | teacher 후속 2(평가 중단·일시 자원 실패가 후보를 막지 않음), 준비 lock 경합의 짧은 재시도, 기본 teacher 사례 1,800행 순환 보존, 검색 필요 신호 탐침의 개수 전용 읽기, 학습 일일 관측 줄 |
 | 1.0.24 | 연결 worktree 편집의 학습 사례 수집(main 세션과 worktree 세션), trainer 실패 자리와 거절한 검사 기록, busy 재시도 하한·유지보수 미완 사유 |
 | 1.1.0 | 재부팅 내성(장치 번호 비교 제거), sync의 main 게시와 연결 view 대기 분리, SLO 요약, 긴 프롬프트 4조각과 세션 기주입 카드 제외, vector arena(대형 프로젝트 semantic 읽기), hook 고정비 축소, selector 정체성 재사용, 학습 상태 기계와 승격 규칙·재시도 상한, 학습 모델 되돌리기, 번들 없음 종료와 state 정리, 모듈 단위 검사 러너와 macOS CI, 출시 smoke 도구 |
+| 1.1.1 | 설치별 provider 증명 실패 분류와 재시도, 1시간 뒤 재증명, provider 기동 실패 시 lexical recall |
 
 ## 한눈에
 

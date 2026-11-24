@@ -30,6 +30,7 @@ _REASONS = frozenset(('starting', 'ready', 'resource_deferred',
                       'attestation_invalid', 'unexpected'))
 _MAX_FAILURES = 3
 _FAILURE_COOLDOWN_SECONDS = 300
+_ATTESTATION_RETRY_SECONDS = 3600
 from memvane.resident.types import TRANSIENT_FAILURES as _TRANSIENT_FAILURES
 
 
@@ -135,6 +136,10 @@ def _failure_decision(manifest, *, own_lock=False):
             raise ResourceDeferred('laya_service_backoff')
         return
     if row['terminal']:
+        if row['reason'] == 'attestation_invalid':
+            elapsed = time.time() - row['at']
+            if not 0 <= elapsed < _ATTESTATION_RETRY_SECONDS:
+                return  # A fresh full proof is due, also after a clock rollback.
         raise IndexContractError('provider_start_failed')
     delay = (5 if row['reason'] in ('resource_deferred', 'starting') else
              min(300, 5 * 2 ** max(0, row['attempts'] - 1)))

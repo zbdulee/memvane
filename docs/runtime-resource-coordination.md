@@ -90,9 +90,14 @@ development execution guard is separate; see
   transient start failures enter a 300-second cooldown, then a fresh retry
   budget; the durable owner state enforces that cooldown across service
   restarts too. Transient exhaustion serves lexical recall while waiting.
-  Attestation and identity failures remain terminal. The full artifact rehash
-  (`verify_worker_attestation`) runs once per installation identity, only when
-  the service binds it. It forwards at
+  A terminal provider start failure serves lexical prompt recall with
+  `laya_vector_selected_provider_start_failed`. The resident retries a failed
+  artifact proof after one hour. An invalid owner identity stays terminal.
+  A changed recall proof, corrupt owner state or socket identity transition
+  refuses recall. The service verifies all artifacts before starting a
+  worker. To bind an installation to a warm worker it reuses a successful
+  proof of that installation identity, or verifies the artifacts on bind.
+  It forwards at
   most three queries and three documents to the worker at once, so a burst
   from many projects waits at the service instead of overflowing the
   worker's seven-request queue. A failed query or probe outlives the client's
@@ -107,12 +112,10 @@ development execution guard is separate; see
   A preparing streak that lasts 5 minutes (`PREPARING_STALL_SECS`) retries at
   the 300-second cap instead, is never dropped, and is logged once as
   `wake.sync failed target_preparing_stalled` (streak in the private
-  `runtime-wake-preparing.json`). The service logs `resident.adopt waiting
-  <code>` when an installation's full proof is deferred (again only when the
-  code changes), and `resident.adopt unproved <code>` once per code when an
-  installation's proof fails outright (the code, or only the exception class
-  when it is not a plain code), so a binding that never happens is named in
-  the installation's own log.
+  `runtime-wake-preparing.json`). Each failed full attestation logs its reason in the
+  installation's `resident.adopt` event (`waiting` for deferrals, `unproved`
+  for other failures). The initial route proof logs each `unproved` code once
+  until the installation binds.
 - A `laya-sync` pending result with committed schema3 ingest or vector progress uses the exact detail `deferred:pending:schema3_progress_ingest` or `deferred:pending:schema3_progress_vector`. The wake retries in 30 seconds without incrementing its attempt count; pending without durable progress keeps the ordinary retry policy.
 - A deferred full proof retries in 5 seconds. A moved worker selection that keeps deferring past `MOVED_DEFER_LIMIT` counts as a transient start failure and follows the owner state's durable backoff.
 - `chunkDocumentByTokens` returns chunks in source position order. A
