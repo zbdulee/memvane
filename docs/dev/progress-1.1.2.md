@@ -3,7 +3,7 @@
 ## 기준 상태
 
 - 브랜치: `claude/1.1.2` (기준 `main`: `dd314fce8`, 출시 태그: `v1.1.1`)
-- 마지막 갱신: 2026-11-25 (Step 1-E 구현 및 focused·카나리 복사본 실증 완료)
+- 마지막 갱신: 2026-11-25 (Step 1-E 전체 검사 통과 — Orca Claude 증분 리뷰 착수)
 - 기본 규칙: [공통 개발 규칙](contexts/working-rules.md), [릴리스 체크리스트](contexts/release.md)
 
 ## 전체 진행 순서와 확정 결정
@@ -27,7 +27,7 @@
    - **1-D `1.1.2` 마무리 검증 (완료, 커밋 `585a2f53`)**:
      - [ROADMAP](../ROADMAP.md) 완료 항목 정리(`d355a0a2`), macOS 첫 실행 지연 테스트 2건(`test_setup_entry_inventory_119.py`, `checkout_cache_e2e.py`) shim 예열 수정(`3ef9f51c`).
      - Orca Claude 독립 리뷰(`claude-opus-5-5`, `APPROVE`, 차단 0건, 비차단 8건) 반영(`585a2f53`) 및 `npm test` 5파트 전체 통과(`110/0/2`, `113/0/2`, `113/0/2`, `116/0/2`, `220/0/4`).
-   - **1-E 1.1.1 회귀: 첫 카드 게시 정체 (구현·focused·카나리 복사본 실증 완료)**:
+   - **1-E 1.1.1 회귀: 첫 카드 게시 정체 (구현·전체 검사 완료, 커밋 `91d4e3a4`·`c26a161b`)**:
      - **원인**: `Work._reserve`가 `copy_quota.allocate`와 `mkdir(identity)`·`_publish(.w-*)` 중 `budget.charge()` 예외 등으로 중단되면 `work` 없는 고아 `hold` 디렉터리와 `allocated-*` quota가 남고, `Work.entries` 기본 상한(`max_entries=64`) 밖의 고아·정상 `hold`가 `queue_batch_prepare.unresolved`를 영구 `True`로 잠근다.
      - **상태 조합**:
        - `Work._reserve` 예외(`work` 없음): `.w-*`·`raw`/`image`·빈 디렉터리·`copy_quota` 즉시 롤백(호출 0추가).
@@ -36,8 +36,8 @@
        - 알 수 없는 파일 포함·60초 미만·벽시계 역전 고아: 보존(미회수).
        - `hold` 복구·판정 스캔: `HOLD_SCAN_LIMIT`(1,024)까지 읽어 카나리 기존 정상 `hold` 181건도 해소.
      - **구현**: [copy_quota.py](../../memvane/wiki/verify/copy_quota.py), [handoff_work.py](../../memvane/wiki/verify/handoff_work.py), [first_card.py](../../memvane/wiki/verify/first_card.py), [upgrade_queue.py](../../memvane/wiki/verify/upgrade_queue.py), [queue_batch_prepare.py](../../memvane/wiki/verify/queue_batch_prepare.py), [deferred_review.py](../../memvane/wiki/verify/deferred_review.py), [native_review.py](../../memvane/wiki/verify/native_review.py), [batch_handoff.py](../../memvane/wiki/verify/batch_handoff.py), [pending_handoff.py](../../memvane/wiki/verify/pending_handoff.py), [ordinary_slot.py](../../memvane/wiki/verify/ordinary_slot.py), [README.md](../../memvane/wiki/verify/README.md), [test_handoff_work.py](../../memvane/wiki/verify/tests/unit/test_handoff_work.py), [test_first_card.py](../../memvane/wiki/verify/tests/integration/test_first_card.py).
-     - **검증**: `v1_guard.py --strict`(exit 0), `/usr/bin/python3` import(`PY39_OK`), `memvane/wiki/verify/tests/run.test.mjs`(18/18 통과), 카나리 임시 복사본(`min_age_seconds=0.0`, 원본 `.memvane/` 무변경)에서 `orphans: 219→0`, `allocs: 160→152`, `unresolved: True→False` 확인.
-     - **다음**: 1-E 커밋 기준 `npm test` 5파트 전체 실행 → Orca Claude 증분 리뷰 → 릴리스 버전 bump(사용자 확인 후).
+     - **검증**: `v1_guard.py --strict`·`--tests --rules G1,G8`(exit 0), `/usr/bin/python3` import(`PY39_OK`), `memvane/wiki/verify/tests/run.test.mjs`(18/18)·`tests/structure/static.test.mjs`(21/21), 전체 검사 `test:part1~4`(`91d4e3a4`, 제품 코드 동일: `110/0/2`, `113/0/2`, `113/0/2`, `116/0/2`) + `test:part5`(`c26a161b`: `220/0/4`) 5파트 `fail 0` 통과, 카나리 임시 복사본(`min_age_seconds=0.0`, 원본 `.memvane/` 무변경) `orphans: 219→0`, `allocs: 160→152`, `unresolved: True→False` 확인.
+     - **다음**: Orca Claude `1-E` 증분 리뷰(`585a2f53..HEAD`) → 릴리스 버전 bump(사용자 확인 후).
 3. **2순위 — 위키 파이프라인 구조 개편 (설계 전, 1.2 후보, 사용자 방향·순위 확정 2026-11-25)**
    - 진행 방식: 1-E 최소 수정·1.1.2 출시와 병행한다. 첫 단계는 코드 변경 없는 설계다. 위키 파이프라인 상태 파일(handoff hold·`.first-*`·`.*.pending-*`·`.memvane/compile/*.jsonl`·compile intent)의 writer·reader 전수(출시된 1.x 포함)와 상태 조합표를 먼저 쓰고, 설계 리뷰 뒤 구현에 들어간다. 스캔 상한(`handoff_scan_limit`)이 무관한 대상의 게시를 막는 문제도 여기서 다룬다.
    - 배경: 1-E처럼 위키 쪽 결함은 상태가 여러 파일(handoff hold 디렉터리, `.w-*`, `.first-*`, `.*.pending-*`, `.memvane/compile/*.jsonl` 원장)에 나뉘어 단계 사이 실패마다 잔재와 경로별 정리 코드가 생기는 데서 반복된다. sync는 SQLite 하나와 트랜잭션, 세대 단위 게시를 써서 같은 부류의 결함이 구조적으로 생기지 않는다.
@@ -57,8 +57,8 @@
 - [x] [ROADMAP](../ROADMAP.md)에서 1.1.2에 해결된 항목(`식별자 질의의 어휘 검색`, `resident 진단`, `활성화 중 편집 거절`, `resident 번들 인계`, `출시 smoke 도구`, `새 실행 파일의 첫 실행 지연`) 정리
 - [x] 전체 검사(`test:part1~5`, `BypassSandbox: true`, 단독 실행) + `v1_guard.py --strict` + `/usr/bin/python3` import 확인
 - [x] 독립 리뷰(Orca Claude 세션) 수행 및 비차단 8건 반영(`585a2f53`)
-- [x] 1-E 첫 카드 게시 정체(1.1.1 회귀) 수정·focused 검증·카나리 복사본 실증
-- [ ] 1-E 커밋 기준 `npm test` 5파트 + Orca Claude 증분 리뷰 후 `1.1.2` 버전 bump 여부 사용자 확인
+- [x] 1-E 첫 카드 게시 정체(1.1.1 회귀) 수정·전체 검사 `test:part1~5` 통과·카나리 복사본 실증
+- [ ] Orca Claude `1-E` 증분 리뷰 진행 중 — 완료 후 `1.1.2` 버전 bump 여부 사용자 확인
 
 ## 유지해야 할 제약
 
