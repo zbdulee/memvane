@@ -171,14 +171,19 @@ def _acquire_pending_lock(fd: int, timeout: float | None) -> None:
 
 
 def record_pending_refresh(root: Path, source_path: str, engine: str, *,
-                           compact: bool = True, lock_timeout: float | None = None) -> dict | None:
+                           compact: bool = True, lock_timeout: float | None = None,
+                           error_out: list | None = None) -> dict | None:
     """Durably invalidate one source before its separate queue append."""
     from memvane.wiki.card.trust import incompatible_source
     if incompatible_source(source_path, report=True):
+        if error_out is not None:
+            error_out.append("failed")
         return None
     source = _safe_source_path(source_path)
     public = _pending_path(root)
     if source is None or public is None:
+        if error_out is not None:
+            error_out.append("failed")
         return None
     event = {
         "eventId": uuid.uuid4().hex,
@@ -194,8 +199,16 @@ def record_pending_refresh(root: Path, source_path: str, engine: str, *,
             # This event is private. Public-ledger reassessment still gates the
             # worker's card write; it must not discard the edit before queueing.
             if not _append_event_unlocked(path, event):
+                if error_out is not None:
+                    error_out.append("failed")
                 return None
+    except BlockingIOError:
+        if error_out is not None:
+            error_out.append("busy")
+        return None
     except (OSError, ValueError):
+        if error_out is not None:
+            error_out.append("failed")
         return None
     if compact:
         _compact(path, public, False)

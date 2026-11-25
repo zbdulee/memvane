@@ -11,6 +11,7 @@ import hashlib
 import os
 import shutil
 import stat
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, queue_lock_path as _queue_lock_path
@@ -401,20 +402,30 @@ def enqueue_payload(payload, *, pending_only=False, selected_route=_UNSET):
         records.append(record)
     if pending_only:
         recorded, failed = 0, 0
+        errors = []
+        lock_deadline = time.monotonic() + HOOK_PENDING_LOCK_SECONDS
         for record in records:
             source = record.get("source") if isinstance(record.get("source"), dict) else {}
             pending = wiki_freshness.record_pending_refresh(
                 Path(project_root), source.get("path", ""), record.get("engine", DEFAULT_ENGINE),
-                compact=False, lock_timeout=HOOK_PENDING_LOCK_SECONDS)
+                compact=False, lock_timeout=max(0.0, lock_deadline - time.monotonic()),
+                error_out=errors)
             if pending is None:
                 failed += 1
             else:
                 recorded += 1
-        return {
+        failed_reason = ("busy" if errors and all(err == "busy" for err in errors)
+                         else ("failed" if failed else None))
+        result = {
             "queued": recorded,
             "failed": failed,
-            "reason": "pending_recorded" if recorded else ("pending_failed" if failed else "no_sources"),
+            "reason": ("pending_recorded" if recorded
+                       else ("pending_busy" if failed_reason == "busy"
+                             else ("pending_failed" if failed else "no_sources"))),
         }
+        if failed_reason is not None:
+            result["failedReason"] = failed_reason
+        return result
     queued = []
     for record in records:
         source = record.get("source") if isinstance(record.get("source"), dict) else {}

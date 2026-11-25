@@ -774,7 +774,9 @@ def _record_edit_compile(decision: dict, proof: dict, payload: dict, host: str,
         _trace_fields(queued=outcome['queued'])
     failed = outcome.get('failed', 0)
     if failed:
-        _trace_fields(pendingRefresh=outcome.get('reason', 'pending_failed'))
+        failed_reason = outcome.get('failedReason') or (
+            'busy' if outcome.get('reason') == 'pending_busy' else 'failed')
+        _trace_fields(pendingRefresh=failed_reason)
     if outcome['queued'] > 0 or failed > 0:
         try:
             compile_result = runtime_work.request('laya-compile', decision['projectRoot'])
@@ -1209,9 +1211,9 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
                     outside, cwd=current, host=host, origin=decision['projectRoot'])
                 _trace_fields(external_edits=external)
                 if inside:  # The inside part queued the wake: the row says so, as a plain inside edit does.
-                    _request_selected_sync(action, decision, proof);_trace_final('sync_requested')
                     if host == 'hermes':
                         _record_edit_compile(decision, proof, payload, host, best_effort=True)
+                    _request_selected_sync(action, decision, proof);_trace_final('sync_requested')
                 return {}
         elif action != "file-change-event" and payload.get("hook_event_name") != "SessionStart":
             _fail("invalid_session_event")
@@ -1224,6 +1226,8 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         move_notice = None
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
+        if action == "index" and host == 'hermes':
+            _record_edit_compile(decision, proof, payload, host, best_effort=True)
         grant_kind = discovery_grant_kind(decision.get('collectionRoots'), action)
         # Provisional record of this event only, made before the wake so
         # the scan of any run that may use it follows the event.
@@ -1250,11 +1254,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             grant_state = 'busy'
         _trace_final('sync_requested')
         _trace_fields(grant='busy_skipped' if grant_state == 'busy' else (grant_kind if grant is not None else None))
-        if action == "index":
-            if host == 'hermes':
-                _record_edit_compile(decision, proof, payload, host, best_effort=True)
-            return {}
-        if action == "file-change-event":
+        if action in ("index", "file-change-event"):
             return {}
         if action in ('update', 'update-queued'):
             try:

@@ -27,3 +27,20 @@ class PendingRecovery(FixtureCase):
         self.assertEqual(row['source']['path'], 'docs/source.md')
         self.assertEqual(row['pendingRefresh']['eventId'], pending['eventId'])
         self.assertEqual(row['ts'], pending['ts'])
+
+    def test_source_change_after_failed_resolve_and_settlement_recovers_new_revision_job(self):
+        from memvane.wiki.compile import refresh_settlement
+        project = make_project(self.home, git=False)
+        source = project.write_note('docs/source.md', 'v1\n')
+        config = expanded(project)
+        source.write_text('v2\n')
+        captured_v2 = card.snapshot_file(source)
+        pending = card.record_pending_refresh(project.root, 'docs/source.md', 'claude')
+        source.write_text('v3\n')
+        refresh_settlement.settle(project.root, pending, captured_v2['sha256'], 'failed_resolve')
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        self.assertEqual(worker.recover_pending_refreshes(project.root, config, queue), 1)
+        native = workspace.safe_queue_path(project.root, native=True)
+        rows = [json.loads(line) for line in native.read_text().splitlines()]
+        self.assertEqual(rows[-1]['source']['path'], 'docs/source.md')
+        self.assertEqual(rows[-1]['pendingRefresh']['eventId'], pending['eventId'])

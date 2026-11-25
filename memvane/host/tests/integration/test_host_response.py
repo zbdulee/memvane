@@ -262,18 +262,34 @@ class SelectedActions(HostInstallCase):
         self.assertIn('laya-compile', self.wakes.kinds())
         self.wakes.calls.clear()
         with mock.patch('memvane.wiki.intake.api.enqueue_payload',
-                        return_value={'queued': 0, 'failed': 1, 'reason': 'pending_failed'}):
+                        return_value={'queued': 1, 'failed': 1, 'failedReason': 'busy', 'reason': 'pending_busy'}):
+            self.wakes.calls.clear()
             self.assertEqual(self.serve('compile', event, 'codex'), {})
         self.assertIn('laya-compile', self.wakes.kinds())
+        with mock.patch('memvane.wiki.intake.api.enqueue_payload',
+                        return_value={'queued': 1, 'failed': 0, 'reason': 'pending_recorded'}), \
+             mock.patch('memvane.runtime.api.request', return_value={'status': 'rejected'}):
+            with self.assertRaisesRegex(HostResponseError, '^selected_compile_enqueue_failed$'):
+                self.serve('compile', event, 'codex')
         with mock.patch('memvane.wiki.intake.api.enqueue_payload', return_value={'queued': -1}):
             with self.assertRaisesRegex(HostResponseError, '^selected_compile_enqueue_failed$'):
                 self.serve('compile', event, 'codex')
-        with mock.patch('memvane.wiki.intake.api.enqueue_payload',
-                        return_value={'queued': 1, 'failed': 0, 'reason': 'pending_recorded'}) as enqueue:
+        order = []
+        def record_enqueue(*args, **kwargs):
+            order.append('enqueue')
+            return {'queued': 1, 'failed': 0, 'reason': 'pending_recorded'}
+        def record_wake(kind, *args, **kwargs):
+            order.append(kind)
+            return {'status': 'queued'}
+        with mock.patch('memvane.wiki.intake.api.enqueue_payload', side_effect=record_enqueue) as enqueue, \
+             mock.patch('memvane.runtime.api.request', side_effect=record_wake):
             self.wakes.calls.clear()
             self.assertEqual(self.serve('index', event, 'hermes'), {})
             self.assertEqual(enqueue.call_count, 1)
-            self.assertIn('laya-compile', self.wakes.kinds())
+            self.assertIn('enqueue', order)
+            self.assertIn('laya-sync', order)
+            self.assertIn('laya-compile', order)
+            self.assertLess(order.index('enqueue'), order.index('laya-sync'))
             enqueue.reset_mock()
             self.wakes.calls.clear()
             self.assertEqual(self.serve('index', event, 'codex'), {})

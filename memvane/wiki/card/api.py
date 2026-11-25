@@ -154,9 +154,9 @@ def snapshot_file(path):
     from memvane.wiki.card.wiki_freshness import snapshot_file as implementation
     return implementation(path)
 
-def record_pending_refresh(root, source_path, engine, *, compact=True, lock_timeout=None):
+def record_pending_refresh(root, source_path, engine, *, compact=True, lock_timeout=None, error_out=None):
     from memvane.wiki.card.wiki_freshness import record_pending_refresh as implementation
-    return implementation(root, source_path, engine, compact=compact, lock_timeout=lock_timeout)
+    return implementation(root, source_path, engine, compact=compact, lock_timeout=lock_timeout, error_out=error_out)
 
 def resolve_pending_refresh(root, pending, captured_revision, compiled_revisions, compiled_event_id=None):
     from memvane.wiki.card.wiki_freshness import resolve_pending_refresh as implementation

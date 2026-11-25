@@ -583,16 +583,21 @@ def _filter_pending_paths(decision, pending, raw, roots, snapshot):
     return to_enqueue, skipped
 
 
+def _wake_compile_best_effort(project_root: str) -> None:
+    """Best-effort wake for skipped pending paths; drain state must not fail."""
+    try:
+        from memvane.runtime import api as runtime_work
+        runtime_work.request('laya-compile', project_root)
+    except Exception:
+        pass
+
+
 def _complete_skipped_drain(decision, head, snapshot, used, state_path, grants_path,
                             initial, backfill, recheck, report):
     recheck()
     _write(state_path, _state_doc(decision, head, snapshot, {}, used))
     _drop(grants_path, decision, used, provisional=False)
-    try:
-        from memvane.runtime import api as runtime_work
-        runtime_work.request('laya-compile', decision['projectRoot'])
-    except Exception:
-        pass
+    _wake_compile_best_effort(decision['projectRoot'])
     if initial is not None:
         progress = backfill.summary(initial)
         if progress['pending'] and not progress['dispatched']:
@@ -773,6 +778,8 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
         # new one even if the removal below fails and the wake is retried.
         _write(state_path, _state_doc(decision, head, snapshot, pending, used))
         _drop(grants_path, decision, used, provisional=False)
+        if skipped_pending:
+            _wake_compile_best_effort(decision['projectRoot'])
         # Source changes keep their original one-enqueue grant cap. A separate
         # bounded wake may start the frozen initial cohort, never that tail.
         if initial is not None:

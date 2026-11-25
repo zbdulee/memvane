@@ -511,8 +511,14 @@ class DiscoverySyncBoundary(FixtureCase):
             'extractor': {'builtins': ['claude']}}))
         install.settle()
         decision = install.select()
+        initial_snap = card.snapshot_file(source)
         pending = card.record_pending_refresh(project.root, 'docs/note.md', 'claude')
         self.assertIsNotNone(pending)
+        settled_path = project.root / '.memvane/compile/source-refresh-settled.json'
+        settled_path.parent.mkdir(parents=True, exist_ok=True)
+        settled_path.write_text(json.dumps({'version': 1, 'sources': {
+            'docs/note.md': {'eventId': pending['eventId'], 'sha256': initial_snap['sha256'], 'reason': 'settled'}
+        }}) + '\n')
         # Even if settled for prior content, unresolved pending keeps discovery from queueing duplicate post_sync_source.
         source.write_text('edited during pending\n')
         deleted.unlink()
@@ -561,3 +567,26 @@ class DiscoverySyncBoundary(FixtureCase):
         compiled_v2 = {'kind': 'file', 'path': 'docs/note.md', 'collection': project.raw_name, **captured}
         self.assertFalse(card.resolve_pending_refresh(project.root, pending, compiled_v2, [compiled_v2]))
         self.assertEqual([r['eventId'] for r in card.unresolved_pending_refreshes(project.root)], [pending['eventId']])
+
+    def test_mixed_skipped_pending_and_no_sources_enqueue_still_wakes_compile(self):
+        from memvane.wiki.card import api as card
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'v1\n')
+        other = project.write_note('docs/app.py', 'print(1)\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md', 'docs/app.py')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_tool_source', 'post_sync_source'],
+            'extractor': {'builtins': ['claude']}}))
+        install.settle()
+        decision = install.select()
+        pending = card.record_pending_refresh(project.root, 'docs/note.md', 'claude')
+        self.assertIsNotNone(pending)
+        source.write_text('v2\n')
+        other.write_text('print(2)\n')
+        grant = discovery.record_grant(decision, 'sync', engine='claude')
+        discovery.activate_grant(decision, 'sync', grant)
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            install.run_sync()
+        self.assertIn(('laya-compile', decision['projectRoot']), [call.args for call in wake.call_args_list])
