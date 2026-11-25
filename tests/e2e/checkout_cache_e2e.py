@@ -63,6 +63,8 @@ class CheckoutCacheEndToEnd(FixtureCase):
         shim.write_text('#!/bin/sh\nprintf "x\\n" >> %s\nexec %s "$@"\n' % (self.count_file, real),
                         encoding='ascii')
         shim.chmod(0o700)
+        subprocess.run([str(shim), '--version'], check=True, capture_output=True, timeout=30)
+        self.count_file.write_text('', encoding='ascii')
         return folder
 
     def git_children(self, folder, project, prompt, install):

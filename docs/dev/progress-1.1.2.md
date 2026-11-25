@@ -3,7 +3,7 @@
 ## 기준 상태
 
 - 브랜치: `claude/1.1.2` (기준 `main`: `dd314fce8`, 출시 태그: `v1.1.1`)
-- 마지막 갱신: 2026-11-25 (Step 1-D-1 ROADMAP 정리)
+- 마지막 갱신: 2026-11-25 (Step 1-D-2 테스트 예열 수정)
 - 기본 규칙: [공통 개발 규칙](contexts/working-rules.md), [릴리스 체크리스트](contexts/release.md)
 
 ## 전체 진행 순서와 확정 결정
@@ -24,7 +24,7 @@
      - [release_smoke.py](../../scripts/release_smoke.py): `RS-ID` 제품 파일 vs 문서 전용(`_is_doc_only`) 차이 분리 판정, `judge_sync()`에서 `indexed` 뒤 `unchanged` pass 허용 및 `P4-*` 개별 판정(구형 `P4` 하위 호환 유지), `judge()`/`judge_edit()`에 Codex 첫 턴 `SessionStart`·셸 편집 안내 비고 추가, `send()` 호스트별 프롬프트 자동 해석(`P3-<host>`) 및 1,000자 이상 붙여넣기 3초 정지(`LONG_PASTE_STABLE_READS = 4`) 판정 적용.
      - [release.md](../release.md), [test_smoke_fixture.py](../../tests/support/test_smoke_fixture.py), [test_release_smoke.py](../../tests/support/test_release_smoke.py): 문서 및 회귀 테스트 6건 반영.
      - 검증: Python 3.9 import(`PY39_OK`), `v1_guard.py --strict`(exit 0), `release-smoke.test.mjs`·`doc-links.test.mjs`·`memvane-naming-guard.test.mjs`(7/7), `npm run test:focused -- tests/support/release-smoke.test.mjs`(`test_smoke_fixture` 4/4, `test_release_smoke` 38/38) 통과.
-   - **1-D `1.1.2` 마무리 검증 (진행 중)**: [ROADMAP](../ROADMAP.md) 완료 항목 정리 완료, 전체 검사 `npm test`(5파트 `test:part1~5`), 구조 가드, 독립 리뷰(Orca Claude 세션), 릴리스 버전 bump(사용자 확인 후).
+   - **1-D `1.1.2` 마무리 검증 (진행 중)**: [ROADMAP](../ROADMAP.md) 완료 항목 정리 완료(`d355a0a2`), `test:part1~3` 통과 후 `part4`·`part5`에서 관측된 macOS 첫 실행 지연 테스트 2건(`test_setup_entry_inventory_119.py`, `checkout_cache_e2e.py`) shim 예열 수정, `part4`·`part5`·구조 가드·독립 리뷰(Orca Claude 세션)·릴리스 버전 bump(사용자 확인 후) 예정.
 3. **2순위 — 구조 병목 해소 (예정)**: `shared.py`(2,319줄)·`checkout_view.py` 분해 ([ROADMAP](../ROADMAP.md#L118)).
 4. **3순위 — 로컬 웹 대시보드 구현 (예정)**: `M0 → M1a → M1b → M1c → M1d` (`1.1.3` 목표, [UI 설계서](../design-local-web-ui.md) r4 기준).
 

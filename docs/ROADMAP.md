@@ -130,7 +130,6 @@ L2 후속 ── L3
 - **manifest 검사 경계.** 읽기 전용 검사는 8 MiB 경계에서 이미 있는 행을 다시 더해 보수적으로 미룬다. 256 KiB 이하이면서 4,096행을 넘는 manifest는 호출마다 첫 배치를 다시 읽는다.
 - **원장 전환.** 출시된 writer와 state를 함께 쓰는 프로젝트의 원장 교체는 구 writer를 멈추고 격리하는 오프라인 절차로 한다. 온라인 경로는 원본 보존, 대상별 삭제 보호, 무관한 대상의 새 생성까지만 한다.
 - **Hermes.** 설치 manifest가 `plugin.json`과 `plugin.yaml`로 갈리고, `pre_llm_call`이 cwd를 넘기지 않아 recall이 일어나지 않는다.
-- **새 실행 파일의 첫 실행 지연.** 보안 검사가 도는 Mac에서 시험이 새로 쓴 실행 파일의 첫 실행이 1초를 넘는다. `tests/e2e/checkout_cache_e2e.py`(`memvane/learning/tests/settings-113.test.mjs` 직후)와 `test_setup_entry_inventory_119`가 이 때문에 실패한다. 측정 전에 shim을 한 번 실행해 둔다.
 
 ## 1.0.x 패치
 
