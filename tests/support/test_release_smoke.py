@@ -38,15 +38,17 @@ if command == 'readbuf':
     (STATE / 'buffer').write_bytes(Path(os.path.expanduser(rest[0])).read_bytes())
 elif command == 'paste' and mode != 'deaf':
     typed.write_bytes((STATE / 'buffer').read_bytes())
-    (STATE / 'settling').write_text('2')  # the screen keeps redrawing for two more reads
+    (STATE / 'settling').write_text('5' if mode == 'mid_pause' else '2')  # the screen keeps redrawing
 elif command == 'hardcopy':
     left = int((STATE / 'settling').read_text()) if (STATE / 'settling').exists() else 0
     (STATE / 'settling').write_text(str(max(0, left - 1)))
     size = typed.stat().st_size if typed.exists() else 0
     shown = typed.read_bytes().decode()[:400] if typed.exists() and mode != 'collapsed' else ''
+    # Simulate a 1-second pause mid-paste when mode == 'mid_pause': two identical reads, then one more change.
+    phase = 1 if mode == 'mid_pause' and left in (4, 3) else left
     # Bytes a UTF-8 locale cannot read as text, as a real hardcopy may hold.
     Path(os.path.expanduser(rest[0])).write_bytes(
-        b'\xff\xfe' + ('window %d %d\n%s\n' % (size, left, shown)).encode())
+        b'\xff\xfe' + ('window %d %d\n%s\n' % (size, phase, shown)).encode())
 elif command == 'stuff' and typed.exists():
     if (STATE / 'settling').exists() and int((STATE / 'settling').read_text()) > 0:
         (STATE / 'early_enter').write_text('1')  # Enter while the paste is still redrawing
@@ -125,13 +127,26 @@ class Rows:
             'prompt': {'sha256': prompt['sha256'], 'chars': prompt['chars']},
             'cards': [{'path': c['path'], 'sha': c['sha256']} for c in cards], **fields})
 
-    def sync(self, plan, *, outcome='indexed', served=True):
+    def sync(self, plan, *, outcome='indexed', served=True, extra_passes=()):
         change = plan['delta']
         # As ``apply_delta``: the newest row before the change is its time.
         change.setdefault('afterTs', self.rows[-1]['ts'])
         self.add('wake.sync', outcome=outcome, ms=900)
         self.add('index.publish', outcome='published')
+        for extra in extra_passes:
+            self.add('wake.sync', outcome=extra, ms=50)
         self.plan = plan
+        if 'P4-added' in plan['prompts']:
+            if served:
+                self.recall(SESSIONS['claude'], 'claude', 'P4-added', [change['added']])
+                self.recall(SESSIONS['claude'], 'claude', 'P4-changed', [change['changed']['after']])
+            else:
+                self.recall(SESSIONS['claude'], 'claude', 'P4-added', [], outcome='empty',
+                            reason=smoke.SELECTED_ZERO)
+                self.recall(SESSIONS['claude'], 'claude', 'P4-changed', [], outcome='empty',
+                            reason=smoke.SELECTED_ZERO)
+            return self.recall(SESSIONS['claude'], 'claude', 'P4-deleted', [], outcome='empty',
+                               reason=smoke.SELECTED_ZERO)
         cards = [change['added'], change['changed']['after']] if served else []
         extra = {} if served else {'outcome': 'empty', 'reason': smoke.SELECTED_ZERO}
         return self.recall(SESSIONS['claude'], 'claude', 'P4', cards, **extra)
@@ -222,7 +237,8 @@ class Verdict(FixtureCase):
         self.rows.add('index.publish', outcome='published')
         mark = self.rows.add('gate', host='claude', session=SESSIONS['claude'], outcome='ok')['ts']
         self.rows.plan = after
-        self.rows.recall(SESSIONS['claude'], 'claude', 'P4', [], outcome='empty', reason=smoke.SELECTED_ZERO)
+        for name in ('P4-added', 'P4-changed', 'P4-deleted'):
+            self.rows.recall(SESSIONS['claude'], 'claude', name, [], outcome='empty', reason=smoke.SELECTED_ZERO)
         self.assertIsNone(after['delta'].get('afterTs'))
         sync = lambda: next(row for row in self.status(after)[1]['items'] if row['id'] == 'RS-SYNC')
         self.assertEqual((sync()['status'], sync()['note']),
@@ -256,9 +272,13 @@ class Verdict(FixtureCase):
         stale = Rows(self.plan)
         row = stale.sync(after)
         row['cards'].append({'path': after['delta']['deleted']['path'], 'sha': 'x'})
+        row['outcome'] = 'served'
         self.assertEqual(self.status(after, stale.rows)[0]['RS-SYNC'], smoke.FAIL)
         old = Rows(self.plan)
-        old.sync(after)['cards'][1]['sha'] = after['delta']['changed']['before']['sha256']
+        old.sync(after)
+        next(r for r in reversed(old.rows)
+             if r.get('event') == 'recall' and r.get('prompt', {}).get('sha256') == after['prompts']['P4-changed']['sha256']
+             )['cards'][0]['sha'] = after['delta']['changed']['before']['sha256']
         self.assertEqual(self.status(after, old.rows)[0]['RS-SYNC'], smoke.FAIL)
 
     def test_an_edit_without_a_posttool_row_fails_and_learning_is_judged_only_when_on(self):
@@ -313,6 +333,28 @@ class Verdict(FixtureCase):
         self.assertIsNone(smoke.seconds_between({'ts': 'x'}, {'ts': '2026-11-22T00:00:00Z'}))
         self.assertEqual(smoke.seconds_between({'ts': '2026-11-22T09:00:00+09:00'},
                                                {'ts': '2026-11-22T00:00:01.250000Z'}), 1.25)
+
+    def test_sync_accepts_unchanged_after_indexed_and_codex_notes_explain_shell_or_turn(self):
+        after = smoke_fixture.delta(self.tree, self.plan)
+        rows = Rows(self.plan)
+        rows.sync(after, extra_passes=('unchanged',))
+        statuses, _ = self.status(after, rows.rows)
+        self.assertEqual(statuses['RS-SYNC'], smoke.PASS)
+        failed_after = Rows(self.plan)
+        failed_after.sync(after, extra_passes=('failed',))
+        self.assertEqual(self.status(after, failed_after.rows)[0]['RS-SYNC'], smoke.FAIL)
+        only_unchanged = Rows(self.plan)
+        only_unchanged.sync(after, outcome='unchanged')
+        self.assertEqual(self.status(after, only_unchanged.rows)[0]['RS-SYNC'], smoke.FAIL)
+        # Codex missing posttool and missing SessionStart explain shell edit / first-turn behavior.
+        no_posttool = [r for r in self.rows.rows if not (r['event'] == 'posttool' and r['session'] == SESSIONS['codex'])]
+        _, res = self.status(rows=no_posttool)
+        edit_note = next(item['note'] for item in res['items'] if item['id'] == 'RS-EDIT-codex')
+        self.assertIn('shell', edit_note)
+        no_codex = [r for r in self.rows.rows if r.get('session') != SESSIONS['codex']]
+        _, res = self.status(rows=no_codex)
+        codex_note = next(item['note'] for item in res['items'] if item['id'] == 'RS-RECALL-codex')
+        self.assertIn('first turn', codex_note)
 
 
 class RoundTrip(FixtureCase):
@@ -694,3 +736,37 @@ class RoundTrip(FixtureCase):
         url, sha = smoke._model_constants()
         self.assertRegex(url, r'^https://huggingface\.co/[\w.-]+/[\w.-]+/resolve/[0-9a-f]{40}/[\w.-]+\.gguf$')
         self.assertRegex(sha, r'^[0-9a-f]{64}$')
+
+    def test_doc_only_identity_differences_pass_while_product_files_fail(self):
+        remote, account = self.remote()
+        installed = account / 'plugin'
+        (installed / 'docs').mkdir(parents=True)
+        files = {'package.json': '{"version": "1.1.1"}', 'docs/ROADMAP.md': 'before\n', 'README.md': 'v1\n'}
+        for name, text in files.items():
+            (installed / name).write_text(text)
+        tree = {name: hashlib.sha256(text.encode()).hexdigest() for name, text in files.items()}
+        (installed / 'docs/ROADMAP.md').write_text('after\n')
+        (installed / 'README.md').write_text('v2\n')
+        doc_only = smoke.installed_identity(remote, 'c' * 40, str(installed), tree=tree)
+        self.assertEqual(doc_only['productDifferent'], [])
+        self.assertEqual(doc_only['docDifferent'], ['README.md', 'docs/ROADMAP.md'])
+        judged = smoke.judge_identity(doc_only)
+        self.assertEqual(judged['status'], smoke.PASS)
+        self.assertIn('doc-only', judged['note'])
+        # A skill doc is still a product file and fails RS-ID.
+        (installed / 'skills/setup').mkdir(parents=True)
+        (installed / 'skills/setup/SKILL.md').write_text('changed\n')
+        product = smoke.installed_identity(remote, 'c' * 40, str(installed), tree=tree)
+        self.assertEqual(smoke.judge_identity(product)['status'], smoke.FAIL)
+
+    def test_send_selects_host_specific_edit_prompt_and_waits_past_mid_paste_pause(self):
+        remote, _account, state, record, plan = self.prepared()
+        codex_edit = smoke.send(remote, record, 'codex', 'P3', pause=lambda _s: None)
+        self.assertTrue(smoke.sent(codex_edit))
+        self.assertEqual(codex_edit['prompt'], 'P3-codex')
+        self.assertEqual(hashlib.sha256((state / 'submitted').read_bytes()).hexdigest(),
+                         plan['prompts']['P3-codex']['sha256'])
+        (state / 'mode').write_text('mid_pause')
+        long_res = smoke.send(remote, record, 'claude', 'P2', pause=lambda _s: None)
+        self.assertTrue(smoke.sent(long_res))
+        self.assertFalse((state / 'early_enter').exists())

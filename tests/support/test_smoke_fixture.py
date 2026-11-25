@@ -59,11 +59,18 @@ class SmokeFixture(FixtureCase):
 
     def test_the_edit_paragraph_is_long_enough_to_start_an_edit_recall(self):
         plan = smoke_fixture.build(self.home / 'tree', cards=6, run_id='feed09')
-        paragraph = plan['prompts']['P3']['text'].split('문단: ', 1)[1]
-        # ``memvane/host/edit_recall.py`` skips an edit shorter than 200 characters.
-        self.assertGreaterEqual(len(paragraph), 220)
-        self.assertEqual(paragraph.count('SMKFEED09P3'), 2)
-        self.assertNotIn('\n', plan['prompts']['P3']['text'])
+        for key, mark, tool in (('P3', 'SMKFEED09P3', 'Edit'),
+                                ('P3-claude', 'SMKFEED09P3', 'Edit'),
+                                ('P3-codex', 'SMKFEED09P3X', 'apply_patch')):
+            text = plan['prompts'][key]['text']
+            paragraph = text.split('문단: ', 1)[1]
+            # ``memvane/host/edit_recall.py`` skips an edit shorter than 200 characters.
+            self.assertGreaterEqual(len(paragraph), 220, key)
+            self.assertEqual(paragraph.count(mark), 2, key)
+            self.assertIn(tool, text, key)
+            self.assertIn('셸 명령은 쓰지 말고', text, key)
+            self.assertNotIn('\n', text, key)
+        self.assertNotEqual(plan['prompts']['P3-claude']['text'], plan['prompts']['P3-codex']['text'])
 
     def test_the_delta_adds_changes_and_deletes_one_card_each(self):
         out, plan, project = self.built(cards=6)
@@ -75,9 +82,13 @@ class SmokeFixture(FixtureCase):
         self.assertFalse((out / change['deleted']['source']).exists())
         self.assertEqual(change['changed']['before']['path'], change['changed']['after']['path'])
         self.assertNotEqual(change['changed']['before']['sha256'], change['changed']['after']['sha256'])
-        for token in (change['added']['token'], change['changed']['after']['token'],
-                      change['deleted']['token']):
-            self.assertIn(token, after['prompts']['P4']['text'])
+        tokens = (change['added']['token'], change['changed']['after']['token'], change['deleted']['token'])
+        for key, target in (('P4-added', tokens[0]), ('P4-changed', tokens[1]), ('P4-deleted', tokens[2])):
+            text = after['prompts'][key]['text']
+            self.assertIn(target, text, key)
+            for other in tokens:
+                if other != target:
+                    self.assertNotIn(other, text, (key, other))
         self.assertIsNone(plan['delta'])
         # Applied again to the plan that was never saved: the same paths, and the
         # plan names the bytes that are on disk.

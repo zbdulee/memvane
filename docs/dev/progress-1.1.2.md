@@ -3,7 +3,7 @@
 ## 기준 상태
 
 - 브랜치: `claude/1.1.2` (기준 `main`: `dd314fce8`, 출시 태그: `v1.1.1`)
-- 마지막 갱신: 2026-11-25 (Step 1-B-2 완료)
+- 마지막 갱신: 2026-11-25 (Step 1-C 완료)
 - 기본 규칙: [공통 개발 규칙](contexts/working-rules.md), [릴리스 체크리스트](contexts/release.md)
 
 ## 전체 진행 순서와 확정 결정
@@ -19,21 +19,20 @@
      - `memvane/host/host_response.py`: `file-change-event`/`update-queued`가 discovery lock 경합(`DiscoveryBusy`)을 만나면 `laya-sync` wake는 유지하고 compile grant만 `busy_skipped`로 건너뛰어 exit 0으로 마친다(비-busy 실패·`GrantUncertain`·`compile` `owner_busy` 경로는 fail-closed 유지).
      - `memvane/runtime/host_bundle.py`: `_host_listing` timeout을 `120`초(`HOST_LISTING_TIMEOUT_SECONDS`)로 올리고, `background_installed()`가 조회 실패 시 `3600`초(`INVENTORY_CACHE_SECONDS`) 대신 `60`초(`INVENTORY_RETRY_SECONDS`) 후 재시도하도록 분리한다.
      - 검증: Python 3.9 import(`PY39_OK`), `v1_guard.py --strict`(exit 0), `doc-links.test.mjs`·`memvane-naming-guard.test.mjs`(5/5), `memvane/runtime/tests/run.test.mjs`(25/25), `memvane/wiki/intake/tests/run.test.mjs`(13/13), `memvane/host/tests/run.test.mjs`(24/24), `memvane/resident/tests/run.test.mjs`(13/13) 통과.
-   - **1-C 출시 smoke 도구 결함 정리 (다음 단계)**: [ROADMAP](../ROADMAP.md#L128) 항목 6건.
-   - **1-D `1.1.2` 마무리 검증 (예정)**: [ROADMAP](../ROADMAP.md) 완료 항목 정리, 전체 검사 `npm test`(5파트 `test:part1~5`), 구조 가드, 독립 리뷰(Claude Opus), 릴리스 버전 bump(사용자 확인 후).
+   - **1-C 출시 smoke 도구 결함 정리 (완료)**:
+     - [smoke_fixture.py](../../tests/support/smoke_fixture.py): `P3-claude`/`P3-codex` 호스트별 고유 문단·도구 명시(`Edit`/`apply_patch`, 셸 명령 금지) 추가, `delta()`의 `P4` 단일 3토큰 질의를 `P4-added`·`P4-changed`·`P4-deleted` 개별 프로브 3개로 분리.
+     - [release_smoke.py](../../scripts/release_smoke.py): `RS-ID` 제품 파일 vs 문서 전용(`_is_doc_only`) 차이 분리 판정, `judge_sync()`에서 `indexed` 뒤 `unchanged` pass 허용 및 `P4-*` 개별 판정(구형 `P4` 하위 호환 유지), `judge()`/`judge_edit()`에 Codex 첫 턴 `SessionStart`·셸 편집 안내 비고 추가, `send()` 호스트별 프롬프트 자동 해석(`P3-<host>`) 및 1,000자 이상 붙여넣기 3초 정지(`LONG_PASTE_STABLE_READS = 4`) 판정 적용.
+     - [release.md](../release.md), [test_smoke_fixture.py](../../tests/support/test_smoke_fixture.py), [test_release_smoke.py](../../tests/support/test_release_smoke.py): 문서 및 회귀 테스트 6건 반영.
+     - 검증: Python 3.9 import(`PY39_OK`), `v1_guard.py --strict`(exit 0), `release-smoke.test.mjs`·`doc-links.test.mjs`·`memvane-naming-guard.test.mjs`(7/7), `npm run test:focused -- tests/support/release-smoke.test.mjs`(`test_smoke_fixture` 4/4, `test_release_smoke` 38/38) 통과.
+   - **1-D `1.1.2` 마무리 검증 (다음 단계)**: [ROADMAP](../ROADMAP.md) 완료 항목 정리, 전체 검사 `npm test`(5파트 `test:part1~5`), 구조 가드, 독립 리뷰(Claude Opus), 릴리스 버전 bump(사용자 확인 후).
 3. **2순위 — 구조 병목 해소 (예정)**: `shared.py`(2,319줄)·`checkout_view.py` 분해 ([ROADMAP](../ROADMAP.md#L118)).
 4. **3순위 — 로컬 웹 대시보드 구현 (예정)**: `M0 → M1a → M1b → M1c → M1d` (`1.1.3` 목표, [UI 설계서](../design-local-web-ui.md) r4 기준).
 
-## 즉시 재개 체크리스트 (Step 1-C)
+## 즉시 재개 체크리스트 (Step 1-D)
 
-- 먼저 읽을 파일: [release_smoke.py](../../scripts/release_smoke.py), [smoke_fixture.py](../../tests/support/smoke_fixture.py), [test_release_smoke.py](../../tests/support/test_release_smoke.py)
-- 해결 대상 6건([ROADMAP](../ROADMAP.md#L128)):
-  1. `RS-ID`: 태그 대조 vs 마켓플레이스 main HEAD 문서 커밋 차이 처리
-  2. `RS-EDIT`: 호스트별 고유 편집 문단 분리
-  3. Codex `SessionStart` 행 생성 시점(첫 턴 제출) 반영
-  4. `RS-SYNC`: 변경 뒤 `indexed` 게시 이후 무변경 pass(`unchanged`)가 뒤따라도 pass 인정
-  5. `P4`: 토큰 3개 단일 질의 어휘 AND 0건 문제 해소
-  6. 12,000자 붙여넣기 완료 대기 판정 개선(Codex 모델 전환 시 셸 편집 메모 포함)
+- [ROADMAP](../ROADMAP.md)에서 1.1.2에 해결된 항목(`식별자 질의의 어휘 검색`, `resident 진단`, `활성화 중 편집 거절`, `resident 번들 인계`, `출시 smoke 도구`) 정리
+- 전체 검사(`npm test`, `BypassSandbox: true`, 단독 실행) + `v1_guard.py --strict` + `/usr/bin/python3` import 확인
+- 독립 리뷰(Claude Opus, `claude-exec` bridge) 수행 후 릴리스 버전 bump 여부 사용자 확인
 
 ## 유지해야 할 제약
 

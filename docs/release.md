@@ -92,15 +92,15 @@ whatever the window shows.
 |---|---|---|
 | prepare | The tool checks that the account's shell carries no sandbox or test variable, builds the synthetic project (raw documents, each with one verified card, so onboarding indexes them without a wiki compile) and ships it. | a forbidden variable voids the run |
 | update | The operator updates the plugins by the README steps and enables the plugin for the new project the way the README describes for a project. The user approves the Codex hook trust in that account; no agent does it. | RS-UPDATE |
-| identity | The installed plugin files are compared with the release commit. | RS-ID |
+| identity | The installed plugin files are compared with the release commit (product files and version must match; doc-only diffs are noted). | RS-ID |
 | model address | The pinned model address is fetched on the account; size and sha256 are read back. | RS-MODELURL |
-| sessions | One interactive session per host in the project directory. | RS-HOSTENV: each session's SessionStart row exists; otherwise that host's later items are `BLOCKED` |
+| sessions | One interactive session per host in the project directory (Codex writes `SessionStart` on the first turn). | RS-HOSTENV: each session's SessionStart row exists; otherwise that host's later items are `BLOCKED` |
 | onboarding | A request to onboard the project and apply the plan. | RS-ONBOARD |
 | new sessions | The operator ends the two sessions and starts them again: a session started before the onboarding has no SessionStart row in the project's log, and every later item of that host would be `BLOCKED`. | RS-HOSTENV |
 | recall | After a searchable generation is published, submit a short prompt and a 12,000 character prompt, each targeting a different card. | RS-RECALL per host |
 | repeat | The short prompt again in the same session. | RS-DEDUP |
-| edit | A request to append a fixed paragraph to one file with the host's edit tool. | RS-EDIT per host |
-| sync | The tool writes, removes and commits exactly the three changed documents and their cards (nothing else in the project is touched, and the commit names only those paths), records the time of the account's newest event row, and asks one host session to refresh the index: a change made outside a hook wakes no sync by itself. In the log of the install that recorded the request it waits for an indexed sync pass and a publish later than the request's row, and exits non-zero without them. A run cut in the middle is run again with the same record directory. A prompt then names all three documents. Only a sync pass and a publish later than the recorded time count; without the time nothing is changed. | RS-SYNC |
+| edit | A request to append a host-unique paragraph to one file with the host's edit tool (`Edit` or `apply_patch`, never a shell command). | RS-EDIT per host |
+| sync | The tool writes, removes and commits exactly the three changed documents and their cards (nothing else in the project is touched, and the commit names only those paths), records the time of the account's newest event row, and asks one host session to refresh the index: a change made outside a hook wakes no sync by itself. In the log of the install that recorded the request it waits for an indexed sync pass and a publish later than the request's row (a following `unchanged` pass stays passing), and exits non-zero without them. A run cut in the middle is run again with the same record directory. Three separate prompts (`P4-added`, `P4-changed`, `P4-deleted`) then target one changed document each. Only a sync pass and a publish later than the recorded time count; without the time nothing is changed. | RS-SYNC |
 | verdict | The tool copies the listed fields of the project's event rows and writes the gate files. | — |
 
 RS-RECALL requires at least one candidate. A complete or partial semantic
