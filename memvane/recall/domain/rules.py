@@ -36,17 +36,35 @@ def _fts_atom(term: str) -> str:
 
 
 def _hybrid_fts_queries(prompt: str, lexical_patterns: tuple[str, ...]) -> list[str]:
-    from memvane.recall.keywords import build_lexical_terms
+    from memvane.recall.keywords import _is_ep_term, _is_identifier_like, build_lexical_terms
     if (not isinstance(lexical_patterns, tuple)
             or any(pattern != "ep" for pattern in lexical_patterns)
             or len(lexical_patterns) > 1):
         _fail("unsupported_lexical_patterns")
     built = build_lexical_terms(prompt, list(lexical_patterns))
     queries = []
+    seen = set()
     for query in built["lexQueries"]:
         terms = query.split()
         atoms = [_fts_atom(term) for term in terms]
-        queries.append(" AND ".join(atom for atom in atoms if atom))
+        fts = " AND ".join(atom for atom in atoms if atom)
+        if fts or not queries:
+            queries.append(fts)
+            if fts:
+                seen.add(fts)
+    ep_on = "ep" in lexical_patterns
+    ep_set = {term.lower() for term in built["epTerms"]}
+    for term in built["identifiers"]:
+        if not _is_identifier_like(term):
+            continue
+        if not ep_on and _is_ep_term(term):
+            continue
+        if ep_on and term.lower() in ep_set:
+            continue
+        atom = _fts_atom(term)
+        if atom and atom not in seen:
+            seen.add(atom)
+            queries.append(atom)
     return queries
 
 

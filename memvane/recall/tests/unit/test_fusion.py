@@ -39,6 +39,34 @@ class Fusion(unittest.TestCase):
         self.assertEqual([item['path'] for item in found],
                          ['x-double.md', 'z-seen-first.md', 'a-seen-later.md'])
 
+    def test_hybrid_fts_queries_emit_standalone_structural_identifiers(self):
+        q1 = rules._hybrid_fts_queries(
+            '도구는 쓰지 말고 답만 해 줘. 확인 토큰 SMKFEED0900이 적힌 문서는 무엇에 관한 문서야?', ())
+        self.assertIn('"smkfeed0900"*', q1)
+
+        q2 = rules._hybrid_fts_queries('우리 프로젝트에서 옛날에 적어둔 SMKFEED0900 위치 알려줘', ())
+        self.assertEqual(len(q2), 2)
+        self.assertEqual(q2[1], '"smkfeed0900"*')
+
+        q3 = rules._hybrid_fts_queries('SMK001AD, SMK001CH, SMK00104 확인', ())
+        for tok in ('"smk001ad"*', '"smk001ch"*', '"smk00104"*'):
+            self.assertIn(tok, q3)
+
+        # Non-structural path stems, plain backtick words and disabled EP terms do not fan out.
+        self.assertEqual(len(rules._hybrid_fts_queries('docs/settings.md 구조', ())), 1)
+        self.assertEqual(len(rules._hybrid_fts_queries('`npm test` 실패', ())), 1)
+        self.assertEqual(len(rules._hybrid_fts_queries('`EP12` 복선 정리해줘', ())), 1)
+        # Single structural identifier does not duplicate lexQueries[0].
+        self.assertEqual(rules._hybrid_fts_queries('SMKFEED0900', ()), ['"smkfeed0900"*'])
+
+    def test_empty_general_and_standalone_identifier_outranks_semantic_winner(self):
+        found = rules._fuse_verified_lists([
+            [],
+            [row('exact-token.md', 'SMKFEED0900 card')],
+            [row('semantic-noise.md', 'unrelated semantic card')],
+        ])
+        self.assertEqual([item['path'] for item in found], ['exact-token.md', 'semantic-noise.md'])
+
     def test_fusion_refuses_mixed_generations_and_conflicting_bodies(self):
         cases = {
             'mixed_result_generation': [[row('a.md', 'a')], [row('b.md', 'b', generation='generation-8')]],
