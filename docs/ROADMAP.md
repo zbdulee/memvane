@@ -117,23 +117,18 @@ L2 후속 ── L3
 - **wiki.** 편집 뒤 원문이 root 안 symlink로 바뀌면 refresh pending이 해결·종결되지 않는다.
 - **구조.** `shared.py`·`checkout_view.py`가 줄 수 한도에 닿아 있다. 분해가 1.1.x의 첫 리팩터링이다.
 - **recall resident/API 방식.** 1.2 후보다.
-- **recall 순위.** 프롬프트 앞의 일반 지시문("도구는 쓰지 말고 답만 해 줘.")이 semantic 순위를 끌어, 드문 토큰이 정확히 일치하는 카드가 상위 3장에서 빠진다. 같은 질문에서 지시문을 빼면 그 카드가 1위다. 긴 질의에서 lexical 일치의 비중과 fusion 가중을 조사한다.
-- **resident 번들 인계.** 번들 확인이 `codex plugin list --json`을 10초 안에 기다리는데 콜드 실행은 60초를 넘는다. 실패한 결과가 1시간 캐시되어 호스트 갱신 뒤 옛 resident가 최대 1시간 남는다.
+- **recall 순위.** 프롬프트 앞의 일반 지시문("도구는 쓰지 말고 답만 해 줘.")이 semantic 순위를 끌어, 드문 토큰이 정확히 일치하는 카드가 상위 3장에서 빠진다. 같은 질문에서 지시문을 빼면 그 카드가 1위다. 선택 reader 경로의 일반어 선택(`memvane/recall/keywords.py`)은 코퍼스 필터 없이 위치로만 자른다. 긴 질의에서 일반어 선택, lexical 일치의 비중과 fusion 가중을 조사한다.
 - **세션 밖 변경의 즉시 반영.** 세션 밖 변경(에디터 편집, 터미널의 `git pull`·checkout)은 다음 SessionStart, 프로젝트 안 편집(`index`), Claude의 성공한 Bash(`file-change-event`) 때 full-scan sync로 반영된다. 프롬프트(UserPromptSubmit)는 sync를 깨우지 않아서, 열린 세션에서 에이전트가 편집·Bash를 하기 전까지 색인이 옛 상태로 남는다. 후보는 셋이다. (A) resident가 선택된 프로젝트를 OS 파일 이벤트(macOS FSEvents)로 감시해 sync를 깨운다. (B) recall hook이 sync 요청을 함께 남기고 짧은 간격의 중복은 합친다. (C) resident의 주기 점검. A를 기본, B를 보조로 검토한다.
 - **resident 상시 기동(OS 로그인 항목).** 지금 resident는 hook이 처음 필요할 때 띄우고, 재부팅 뒤 첫 프롬프트가 기동과 모델 로드를 기다리며, 죽거나 영구 실패에 빠지면 다음 hook 전까지 되살리는 주체가 없다. OS 로그인 항목으로 상시 기동하는 안을 위 감시 항목과 함께 검토한다. macOS는 launchd 사용자 agent(`~/Library/LaunchAgents`, KeepAlive), Windows는 작업 스케줄러 로그온 작업 또는 시작 프로그램, Linux는 systemd `--user` unit이다(Windows·Linux는 지원 플랫폼이 되면 적용). 검토할 것: 등록·해제를 setup의 명시 승인으로만 하고 플러그인 제거 때 함께 지우는 방법, 플러그인 버전이 바뀔 때 실행 경로를 갱신하는 방법(지금의 번들 인계와의 관계), 쓰지 않는 날의 메모리(resident 약 350MB, 학습 resident는 수 GB), hook 기동 방식과의 공존. 새 로그인 항목과 설정 키는 사용자 결정 사항이다.
-- **활성화 중 편집 거절.** 온보딩 활성화 도중의 Claude Bash `file-change-event`가 `selected_wiki_grant_failed`로 exit 3이 되어 화면에 hook 오류로 보인다.
 - **학습 되돌리기 사유.** `candidate_rollback.resume`의 `rollback_pending` 사유가 `unlabeled`로 남는다. compile 진척 streak은 상태 파일을 쓰지 못하는 동안 쌓이지 않는다.
 - **문서.** `release.md`의 계약 밖 파생물 목록에 `runtime-wake-progress.json`, `source-refresh-settled.json.lock`, 세션 reset 마커가 없다.
 - **시험 격리.** `test_setup_entry_inventory_119`가 Claude Code 안에서 돌면 `CLAUDECODE`·`CLAUDE_CODE_*` 환경 변수 때문에 실패한다. 시험이 host 환경 변수를 지우지 않고, host 판별이 환경 변수에 기대는지 확인한다.
-- **출시 smoke 도구.** RS-ID가 태그와 대조하지만 마켓플레이스 설치는 main HEAD라 출시 뒤 문서 커밋만큼 다르다. RS-EDIT 편집 문단이 호스트 공통이라 두 번째 호스트는 이미 있는 문단으로 보고 편집하지 않는다. Codex의 SessionStart 행은 첫 턴 제출 때 생긴다. RS-SYNC 판정이 변경 뒤 마지막 `wake.sync`만 보아, `indexed` 게시 뒤 무변경 pass(`unchanged`)가 오면 FAIL로 판정한다. P4는 토큰 세 개를 한 질의에 담아 어휘 AND로 0건이 된다. 붙여넣기 완료를 화면 정지 1초로 판정해, Codex에서 12,000자 붙여넣기가 처리되기 전에 Enter가 들어가 끝 20자만 제출된 적이 있다. Codex가 사용량 한도로 다른 모델로 바뀌면 편집을 셸로 해 RS-EDIT가 hook 없이 끝난다.
-- **식별자 질의의 어휘 검색.** 프롬프트의 일반어가 식별자와 AND로 묶여, 카드에 없는 일반어 하나로 어휘 결과가 0건이 된다. `도구는 쓰지 말고 답만 해 줘. 확인 토큰 SMK…이 적힌 문서는 …?`는 `"smk…"* AND "도 구" AND "쓰 지"`가 되어 토큰을 가진 카드를 찾지 못하고, vector는 식별자를 맞히지 못한다(1.1.0부터 같음). `memvane/recall/keywords.py`의 일반어 선택은 위치로만 자르고, docstring이 말하는 코퍼스 필터는 선택 reader 경로에 없다. 식별자 단독 질의를 따로 보내는 방안과 한 줄 지시문 제외(`_keyword_question_span`)를 검토한다.
 - **리뷰 범위.** `vectorcache/writer.py`의 compaction·append, teacher와 `automatic_staging`의 유료 호출 경로를 독립 리뷰한다.
 - **일반 편집 후보의 부분 실패.** 한 원문에서 나온 두 후보 중 하나의 첫 쓰기가 실패하면, 재시도가 원문을 다시 추출하고 남은 후보가 사라진다. 원래 응답과 후보별 완료 기록, 혼합 버전의 재시도 경계를 설계한다.
 - **음성 판정 억제 원장.** `verify-skipped.jsonl` 쓰기가 실패하면 재시도에서 같은 음성 판정의 검수와 삭제 감사가 한 번 더 일어난다. 첫 감사 전에 판정을 대상 세대에 묶고 원문별 억제를 따로 복구한다.
 - **중단된 기계 삭제와 압축.** 카드를 퇴출한 뒤 manifest 기록 전에 끊기고 그 사이 manifest가 압축되면, verifier 재개가 `reindex_wiki`와 완료 기록 없이 작업을 끝내 색인 제거가 다음 sync까지 늦어진다.
 - **manifest 검사 경계.** 읽기 전용 검사는 8 MiB 경계에서 이미 있는 행을 다시 더해 보수적으로 미룬다. 256 KiB 이하이면서 4,096행을 넘는 manifest는 호출마다 첫 배치를 다시 읽는다.
 - **원장 전환.** 출시된 writer와 state를 함께 쓰는 프로젝트의 원장 교체는 구 writer를 멈추고 격리하는 오프라인 절차로 한다. 온라인 경로는 원본 보존, 대상별 삭제 보호, 무관한 대상의 새 생성까지만 한다.
-- **resident 진단.** 로컬 증명 이력이 있는 설치는 냉기동 실패 뒤에도 진단에 `starting`이 남아 불필요한 adopt를 요청한다. 같은 resident의 다른 worker가 정상이면 반복 adopt가 공유 cooldown 예약을 지워 증명이 요청 수만큼 반복된다. `provider-attestation.json`을 여는 중 일시 EIO가 나면 recall·gate가 exit 3이다.
 - **Hermes.** 설치 manifest가 `plugin.json`과 `plugin.yaml`로 갈리고, `pre_llm_call`이 cwd를 넘기지 않아 recall이 일어나지 않는다.
 - **새 실행 파일의 첫 실행 지연.** 보안 검사가 도는 Mac에서 시험이 새로 쓴 실행 파일의 첫 실행이 1초를 넘는다. `tests/e2e/checkout_cache_e2e.py`(`memvane/learning/tests/settings-113.test.mjs` 직후)와 `test_setup_entry_inventory_119`가 이 때문에 실패한다. 측정 전에 shim을 한 번 실행해 둔다.
 
