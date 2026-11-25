@@ -377,15 +377,17 @@ class DiscoverySyncBoundary(FixtureCase):
         cursor = discovery._paths(decision)[0]
         pending = discovery._read(cursor)['pending']
         seen = []
-        def concurrent_sync(root):
-            seen.append(discovery.observe_grants(decision))
-            install.run_sync()
-            return None
+        def concurrent_sync(root, name):
+            if name == 'source-queue.jsonl':
+                seen.append(discovery.observe_grants(decision))
+                install.run_sync()
+                return None
+            return project.root / '.memvane/compile' / name
         payload = {'hook_event_name': 'SessionStart', 'cwd': str(project.root), 'session_id': 'fixture'}
-        with patch.object(card, 'unresolved_pending_refreshes_strict', side_effect=concurrent_sync), \
+        with patch('memvane.settings.api.ledger', side_effect=concurrent_sync), \
              patch.object(runtime, 'request', return_value={'status': 'queued'}), \
              patch.object(runtime, 'hook_wake'):
-            with self.assertRaisesRegex(HostResponseError, 'wiki_pending_refresh_unknown'):
+            with self.assertRaisesRegex(HostResponseError, 'selected_compile_queue_unsafe'):
                 host.serve_selected('update-queued', 'claude', decision, payload)
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0]['grants']['session_start'], [])
@@ -495,3 +497,67 @@ class DiscoverySyncBoundary(FixtureCase):
         rows = [row for row in event_log.build_progress_events(install.state) if row.get('event') == 'file-change-event']
         self.assertEqual((rows[-1]['outcome'], rows[-1]['reason'], rows[-1].get('grant')),
                          ('ok', 'sync_requested', 'busy_skipped'))
+
+    def test_discovery_skips_unresolved_pending_paths_even_when_settled_but_keeps_deletions_and_strict_none(self):
+        from memvane.wiki.card import api as card
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'initial source\n')
+        deleted = project.write_note('docs/deleted.md', 'will be deleted\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md', 'docs/deleted.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_tool_source', 'post_sync_source'],
+            'extractor': {'builtins': ['claude']}}))
+        install.settle()
+        decision = install.select()
+        pending = card.record_pending_refresh(project.root, 'docs/note.md', 'claude')
+        self.assertIsNotNone(pending)
+        # Even if settled for prior content, unresolved pending keeps discovery from queueing duplicate post_sync_source.
+        source.write_text('edited during pending\n')
+        deleted.unlink()
+        grant = discovery.record_grant(decision, 'sync', engine='claude')
+        discovery.activate_grant(decision, 'sync', grant)
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            install.run_sync()
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        rows = [json.loads(line) for line in pending_text(queue).splitlines()]
+        self.assertEqual([(r['trigger'], r['source']['path'], r.get('sourceDelete')) for r in rows],
+                         [('post_sync_source', 'docs/deleted.md', True)])
+        wake_kinds = [call.args[0] for call in wake.call_args_list if call.args]
+        self.assertIn('laya-compile', wake_kinds)
+        # When unresolved_pending_refreshes_strict returns None, discovery does not skip.
+        source.write_text('second revision while strict fails\n')
+        grant2 = discovery.record_grant(decision, 'sync', engine='claude')
+        discovery.activate_grant(decision, 'sync', grant2)
+        with patch.object(card, 'unresolved_pending_refreshes_strict', return_value=None):
+            install.run_sync()
+        rows = [json.loads(line) for line in pending_text(queue).splitlines()]
+        self.assertIn(('post_sync_source', 'docs/note.md'), [(r['trigger'], r['source']['path']) for r in rows])
+
+    def test_source_edit_during_old_compile_with_discovery_skip_stays_unresolved_until_recompiled(self):
+        from memvane.wiki.card import api as card
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'v1\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_tool_source', 'post_sync_source'],
+            'extractor': {'builtins': ['claude']}}))
+        install.settle()
+        decision = install.select()
+        source.write_text('v2\n')
+        captured = card.snapshot_file(source)
+        pending = card.record_pending_refresh(project.root, 'docs/note.md', 'claude')
+        self.assertIsNotNone(pending)
+        # Source advances to v3 (e.g. git pull) while old v2 compile finishes and sync skips duplicate post_sync_source.
+        source.write_text('v3\n')
+        grant = discovery.record_grant(decision, 'sync', engine='claude')
+        discovery.activate_grant(decision, 'sync', grant)
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            install.run_sync()
+        self.assertIn(('laya-compile', decision['projectRoot']), [call.args for call in wake.call_args_list])
+        compiled_v2 = {'kind': 'file', 'path': 'docs/note.md', 'collection': project.raw_name, **captured}
+        self.assertFalse(card.resolve_pending_refresh(project.root, pending, compiled_v2, [compiled_v2]))
+        self.assertEqual([r['eventId'] for r in card.unresolved_pending_refreshes(project.root)], [pending['eventId']])

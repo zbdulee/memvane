@@ -26,6 +26,8 @@ from memvane.settings.types import COMPILE_SOURCE_ROLES, DENIED_SOURCE_SEGMENTS,
 
 
 DEFAULT_ENGINE = UNKNOWN_ENGINE
+HOOK_PENDING_LOCK_SECONDS = 0.15
+_UNSET = object()
 
 # 편집 훅 경로의 trigger 라벨. 수동 sync 경로는 `post_sync_source`를 쓴다(core/sync.py).
 # 라벨 리터럴의 SSOT는 wiki_source_intent다(이 모듈의 이름은 기존 import 호환용 별칭).
@@ -298,7 +300,7 @@ def compile_gate(config, accepted_triggers):
     return compile_cfg
 
 
-def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_TOOL_TRIGGER):
+def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_TOOL_TRIGGER, *, selected_route=_UNSET):
     from memvane.wiki.card.api import card_sources_allowed
     if not card_sources_allowed({'path': str(path_value)}, report=True):
         return None
@@ -340,7 +342,8 @@ def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_T
     if _is_hidden_source_path(inner_rel):
         return None
     from memvane.wiki.workspace import api as wiki_selected_laya
-    selected_route = wiki_selected_laya.selected(Path(project_root))
+    if selected_route is _UNSET:
+        selected_route = wiki_selected_laya.selected(Path(project_root))
     skip_paths = qmd_config.generation_skip_paths(config, selected_route)
     if skip_paths is not None:
         from memvane.settings.api import excluded_source
@@ -362,7 +365,7 @@ def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_T
     return record
 
 
-def enqueue_payload(payload):
+def enqueue_payload(payload, *, pending_only=False, selected_route=_UNSET):
     """Hook payload entry for hosts that already parsed and proved the event."""
     if not isinstance(payload, dict):
         return {"queued": 0, "reason": "invalid_payload"}
@@ -387,7 +390,8 @@ def enqueue_payload(payload):
     records = []
     seen = set()
     for edited_path in dict.fromkeys(paths):
-        record = _source_record(edited_path, cwd, project_root, config, _engine(payload))
+        record = _source_record(edited_path, cwd, project_root, config, _engine(payload),
+                                selected_route=selected_route)
         if record is None:
             continue
         key = intent.intent_identity(record)
@@ -395,6 +399,22 @@ def enqueue_payload(payload):
             continue
         seen.add(key)
         records.append(record)
+    if pending_only:
+        recorded, failed = 0, 0
+        for record in records:
+            source = record.get("source") if isinstance(record.get("source"), dict) else {}
+            pending = wiki_freshness.record_pending_refresh(
+                Path(project_root), source.get("path", ""), record.get("engine", DEFAULT_ENGINE),
+                compact=False, lock_timeout=HOOK_PENDING_LOCK_SECONDS)
+            if pending is None:
+                failed += 1
+            else:
+                recorded += 1
+        return {
+            "queued": recorded,
+            "failed": failed,
+            "reason": "pending_recorded" if recorded else ("pending_failed" if failed else "no_sources"),
+        }
     queued = []
     for record in records:
         source = record.get("source") if isinstance(record.get("source"), dict) else {}

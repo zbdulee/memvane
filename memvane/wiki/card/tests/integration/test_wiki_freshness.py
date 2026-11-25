@@ -299,6 +299,28 @@ class WikiFreshnessTests(FixtureCase):
         self.assertEqual(other.read_bytes(), b'incomplete')
         self.assertTrue(ledger.is_symlink())
 
+    def test_hook_pending_mode_skips_compact_respects_lock_timeout_and_compacts_off_hook(self):
+        import fcntl
+        root = self.tmp / 'project'
+        (root / '.memvane/compile').mkdir(parents=True)
+        for index in range(3):
+            event = api.record_pending_refresh(root, 'source.md', 'claude', compact=False, lock_timeout=0.15)
+            self.assertIsNotNone(event)
+        with patch.object(wiki_freshness, 'PENDING_COMPACT_BYTES', 1):
+            event = api.record_pending_refresh(root, 'source.md', 'claude', compact=False, lock_timeout=0.15)
+            self.assertIsNotNone(event)
+            private_lane = root / '.memvane/compile/.handoff/v1/refresh/events.jsonl'
+            self.assertEqual(len(private_lane.read_text().splitlines()), 4)
+            self.assertEqual([r['eventId'] for r in api.unresolved_pending_refreshes(root, compact=True)], [event['eventId']])
+            self.assertEqual(len(private_lane.read_text().splitlines()), 1)
+        lock_path = root / '.memvane/compile/source-refresh-pending.jsonl.lock'
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertIsNone(api.record_pending_refresh(root, 'source.md', 'claude', compact=False, lock_timeout=0.05))
+        finally:
+            os.close(fd)
+
 
 if __name__ == '__main__':
     unittest.main()

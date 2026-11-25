@@ -159,3 +159,13 @@ class PosttoolEnqueue(FixtureCase):
         pending = self.rows(self.pending)[-1]
         self.assertEqual(job['pendingRefresh'], {key: pending[key] for key in ('eventId', 'ts', 'engine')})
         self.assertEqual(job['engine'], 'claude')
+
+    def test_pending_only_records_refresh_without_touching_queue_or_selecting_sync_owner(self):
+        payload = {'hook_event_name': 'PostToolUse', 'cwd': str(self.root),
+                   'engine': 'claude', 'tool_input': {'file_path': str(self.source)}}
+        with patch.object(workspace, 'selected', side_effect=AssertionError('selected must not run')):
+            outcome = enqueue.enqueue_payload(payload, pending_only=True, selected_route=None)
+        self.assertEqual(outcome, {'queued': 1, 'failed': 0, 'reason': 'pending_recorded'})
+        self.assertFalse(self.queue.exists())
+        self.assertFalse(self.public_queue.exists())
+        self.assertEqual([(r['sourcePath'], r['engine']) for r in self.rows(self.pending)], [('docs/source.md', 'claude')])

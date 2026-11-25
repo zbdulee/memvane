@@ -75,9 +75,11 @@ def drain_after_sync(decision, observed, *, recheck, view_generation=None, raw_s
 
 
 
-def enqueue_payload(payload):
+def enqueue_payload(payload, *, pending_only=False, selected_route=None):
     from memvane.wiki.intake.wiki_compile_enqueue import enqueue_payload as implementation
-    return implementation(payload)
+    if selected_route is None:
+        return implementation(payload, pending_only=pending_only)
+    return implementation(payload, pending_only=pending_only, selected_route=selected_route)
 
 
 

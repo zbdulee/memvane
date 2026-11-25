@@ -260,9 +260,13 @@ class ExternalInstallRouting(FixtureCase):
             self.assertEqual([row['path'] for row in external._read_box(inbox, self.b.select())['edits']],
                              ['docs/note.md'])
             self.assertEqual(host.serve_selected('compile', 'codex', decision, mixed), {})
+            from memvane.wiki.card import api as card
             local_queue = self.a.project.root / '.memvane/compile/source-queue.jsonl'
-            jobs = [json.loads(line) for line in pending_text(local_queue).splitlines()]
-            self.assertEqual([job['source']['path'] for job in jobs], ['docs/local.md'])
+            self.assertFalse(pending_text(local_queue).strip())
+            self.assertEqual([(row['sourcePath'], row['engine']) for row in card.unresolved_pending_refreshes(self.a.project.root)],
+                             [('docs/local.md', 'codex')])
+            self.assertEqual(card.unresolved_pending_refreshes(self.b.project.root), [])
+            self.assertIn(('laya-compile', str(self.a.project.root)), [call.args for call in wake.call_args_list])
             owner_queue = self.b.project.root / '.memvane/compile/source-queue.jsonl'
             self.assertFalse(pending_text(owner_queue).strip())
             for tool_input in ({'file_path': str(source), 'edits': [{'old_string': 'a', 'new_string': 'b'}]},

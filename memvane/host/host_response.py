@@ -626,14 +626,18 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
         from memvane.settings import api as project_settings
         from memvane.wiki.card import api as wiki_freshness
         root = Path(decision['projectRoot'])
-        pending = wiki_freshness.unresolved_pending_refreshes_strict(root)
-        if pending is None:
-            _fail('wiki_pending_refresh_unknown')
         queues = (project_settings.ledger(root, compile_types.SOURCE_QUEUE),
                   project_settings.ledger(root, compile_types.VERIFY_QUEUE))
         if any(path is None for path in queues):
             _fail('selected_compile_queue_unsafe')
-        if pending or any(path.exists() and path.stat().st_size > 0 for path in queues):
+        pending = wiki_freshness.unresolved_pending_refreshes_strict(root)
+        if pending is None:
+            _trace_fields(pendingRefresh='unknown')
+            try:
+                runtime_work.request('laya-compile', decision['projectRoot'], **defer)
+            except Exception:
+                pass
+        elif pending or any(path.exists() and path.stat().st_size > 0 for path in queues):
             compile_result = runtime_work.request('laya-compile', decision['projectRoot'],
                                                   **defer)
             if not _wake_recorded(compile_result):
@@ -747,6 +751,39 @@ def _accept_wiki_grant(decision: dict, kind: str, grant: str, *, allow_busy: boo
     # Already used or retired by a run that took the lock after activation:
     # its scan followed this event, so the event is served.
     return True
+
+
+def _record_edit_compile(decision: dict, proof: dict, payload: dict, host: str,
+                         *, best_effort: bool = False) -> None:
+    """Record hook-side pending refresh without taking sync_owner or queue locks."""
+    from memvane.wiki.intake import api as wiki_compile_enqueue
+    from memvane.runtime import api as runtime_work
+    try:
+        outcome = wiki_compile_enqueue.enqueue_payload(
+            {**payload, 'engine': host}, pending_only=True, selected_route=(decision, proof))
+    except Exception:
+        if best_effort:
+            return
+        raise
+    if (not isinstance(outcome, dict) or type(outcome.get('queued')) is not int
+            or outcome['queued'] < 0):
+        if best_effort:
+            return
+        _fail('selected_compile_enqueue_failed')
+    if not best_effort:
+        _trace_fields(queued=outcome['queued'])
+    failed = outcome.get('failed', 0)
+    if failed:
+        _trace_fields(pendingRefresh=outcome.get('reason', 'pending_failed'))
+    if outcome['queued'] > 0 or failed > 0:
+        try:
+            compile_result = runtime_work.request('laya-compile', decision['projectRoot'])
+        except Exception:
+            if best_effort or outcome['queued'] == 0:
+                return
+            _fail('selected_compile_enqueue_failed')
+        if not best_effort and outcome['queued'] > 0 and not _wake_recorded(compile_result):
+            _fail('selected_compile_enqueue_failed')
 
 
 def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict:
@@ -1141,34 +1178,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             _verified_edit(decision, payload, 'posttool')
         if verify_selected_route(decision) != proof:
             _fail('selected_proof_changed')
-        from memvane.wiki.intake import api as wiki_compile_enqueue
-        from memvane.kernel.resource_deferred import ResourceDeferred
-        try:
-            if 'journalPath' in decision:
-                from memvane.runtime.api import sync_owner
-                from memvane.wiki.workspace.api import owner_scope as _owner_scope
-                with sync_owner(Path(decision['storePath'])) as owner:
-                    if owner is None:
-                        raise ResourceDeferred('owner_busy')
-                    with _owner_scope((decision, proof), owner):
-                        outcome = wiki_compile_enqueue.enqueue_payload({**payload, 'engine': host})
-            else:
-                outcome = wiki_compile_enqueue.enqueue_payload({**payload, 'engine': host})
-        except ResourceDeferred as exc:
-            if str(exc) != 'owner_busy':
-                raise
-            # The existing discovery grant is a durable scan hint, not proof
-            # of a source or route. Its worker re-proves both before enqueue.
-            # Keep fail-closed (allow_busy=False) here so compile owner_busy never silently drops a grant.
-            from memvane.wiki.intake import api as laya_wiki_discovery
-            grant=laya_wiki_discovery.record_grant(decision,'sync',engine=host)
-            _accept_wiki_grant(decision,'sync',grant)
-            _trace_fields(queued=0, deferred='owner_busy')
-            return {}
-        if (not isinstance(outcome, dict) or type(outcome.get('queued')) is not int
-                or outcome['queued'] < 0):
-            _fail('selected_compile_enqueue_failed')
-        _trace_fields(queued=outcome['queued'])
+        _record_edit_compile(decision, proof, payload, host)
         refreshed = verify_selected_route(decision)
         if ({key: value for key, value in refreshed.items() if key != 'selectionEpoch'} !=
                 {key: value for key, value in proof.items() if key != 'selectionEpoch'}
@@ -1200,6 +1210,8 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
                 _trace_fields(external_edits=external)
                 if inside:  # The inside part queued the wake: the row says so, as a plain inside edit does.
                     _request_selected_sync(action, decision, proof);_trace_final('sync_requested')
+                    if host == 'hermes':
+                        _record_edit_compile(decision, proof, payload, host, best_effort=True)
                 return {}
         elif action != "file-change-event" and payload.get("hook_event_name") != "SessionStart":
             _fail("invalid_session_event")
@@ -1238,7 +1250,11 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             grant_state = 'busy'
         _trace_final('sync_requested')
         _trace_fields(grant='busy_skipped' if grant_state == 'busy' else (grant_kind if grant is not None else None))
-        if action in ("index", "file-change-event"):
+        if action == "index":
+            if host == 'hermes':
+                _record_edit_compile(decision, proof, payload, host, best_effort=True)
+            return {}
+        if action == "file-change-event":
             return {}
         if action in ('update', 'update-queued'):
             try:

@@ -555,6 +555,53 @@ def _outcome(state, reason=None, **extra):
     return {'state': state, 'reason': reason, **extra}
 
 
+def _unresolved_pending_paths(project_root: Path):
+    """Unlocked strict read of unresolved pending refresh paths; None refuses skip."""
+    from memvane.wiki.card import api as wiki_card
+    rows = wiki_card.unresolved_pending_refreshes_strict(project_root)
+    if rows is None:
+        return None
+    return {row['sourcePath'] for row in rows
+            if isinstance(row, dict) and isinstance(row.get('sourcePath'), str) and row['sourcePath']}
+
+
+def _filter_pending_paths(decision, pending, raw, roots, snapshot):
+    unresolved_paths = _unresolved_pending_paths(Path(decision['projectRoot']))
+    to_enqueue = dict(pending)
+    skipped = set()
+    if unresolved_paths:
+        project = Path(decision['projectRoot'])
+        for key in pending:
+            if key not in snapshot:
+                continue
+            collection, _, rel = key.partition('/')
+            if collection in raw and Path(roots[collection]).is_relative_to(project):
+                rel_path = (Path(roots[collection]).relative_to(project) / rel).as_posix()
+                if rel_path in unresolved_paths:
+                    skipped.add(key)
+                    to_enqueue.pop(key, None)
+    return to_enqueue, skipped
+
+
+def _complete_skipped_drain(decision, head, snapshot, used, state_path, grants_path,
+                            initial, backfill, recheck, report):
+    recheck()
+    _write(state_path, _state_doc(decision, head, snapshot, {}, used))
+    _drop(grants_path, decision, used, provisional=False)
+    try:
+        from memvane.runtime import api as runtime_work
+        runtime_work.request('laya-compile', decision['projectRoot'])
+    except Exception:
+        pass
+    if initial is not None:
+        progress = backfill.summary(initial)
+        if progress['pending'] and not progress['dispatched']:
+            recheck()
+            from memvane.runtime import api as runtime_work
+            runtime_work.request('laya-sync', decision['projectRoot'])
+    return report(_outcome('drained', generation=head, pending=0, queued=0), dispatch=False)
+
+
 def drain_after_sync(decision, observed, *, recheck, view_generation=None,
                      raw_snapshot=None):
     """Discover, journal and enqueue changed raw revisions; bounded, one pass.
@@ -702,12 +749,16 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
                                pending=len(pending)))
     if cfg is None:
         cfg = _project_config(decision)
+    to_enqueue, skipped_pending = _filter_pending_paths(decision, pending, raw, roots, snapshot)
+    if skipped_pending and not to_enqueue:
+        return _complete_skipped_drain(decision, head, snapshot, used, state_path, grants_path,
+                                       initial, backfill, recheck, report)
     from memvane.wiki.intake import wiki_compile_enqueue
     for kind in live:
         engine = engines[kind]
         recheck()
         result = wiki_compile_enqueue.enqueue_changed_sources(
-            decision['projectRoot'], cfg, _changed_files(pending, roots, snapshot),
+            decision['projectRoot'], cfg, _changed_files(to_enqueue, roots, snapshot),
             session_start=kind == 'session_start', **({'engine': engine} if engine else {}))
         if not isinstance(result, dict) or not isinstance(result.get('deferredFiles'), list):
             raise DiscoveryBlocked('enqueue_result_invalid')
