@@ -79,9 +79,12 @@ store.Work.create(q, 'hold', {'route': {'scopeId': 'example'}}, b'{"event":1}\\n
         hold_dir = self.queue.parent / '.handoff' / 'v1' / 'hold'
         v1 = self.queue.parent / '.handoff' / 'v1'
         with handoff_api.budget.scope() as ledger:
-            ledger.debit('private', ledger.available('private') - 10)
-            with self.assertRaisesRegex(BlockingIOError, 'handoff_private_pass_limit'):
-                self.create('hold')
+            ledger.debit('private', ledger.available('private') - 1024)
+            with patch.object(os, 'mkdir', wraps=os.mkdir) as mkdir_spy:
+                with self.assertRaisesRegex(BlockingIOError, 'handoff_private_pass_limit'):
+                    store.Work.create(self.queue, 'hold', {'route': {'scopeId': 'example'}},
+                                      b'x' * 2048, image=b'y' * 2048)
+                self.assertGreaterEqual(mkdir_spy.call_count, 1)
         self.assertEqual(list(hold_dir.iterdir()), [])
         self.assertEqual(list(v1.glob('allocated-*')), [])
         with store.private_root(self.queue) as root:
@@ -146,6 +149,28 @@ store.Work.create(q, 'hold', {'route': {'scopeId': 'example'}, 'stage': stage}, 
         self.assertEqual(store.Work.reclaim_orphans(self.queue, 'hold'), 1)
         self.assertTrue(kept.exists())
         (kept / 'manual.txt').unlink()
+        raw_path = kept / 'raw'
+        if raw_path.exists() or raw_path.is_symlink():
+            raw_path.unlink()
+        raw_path.write_bytes(b'x')
+        os.chmod(raw_path, 0o644)
+        os.utime(raw_path, (old, old))
+        os.utime(kept, (old, old))
+        self.assertEqual(store.Work.reclaim_orphans(self.queue, 'hold'), 0)
+        raw_path.unlink()
+        hardlink_target = good.folder.parent.parent / 'hardlink_target'
+        hardlink_target.write_bytes(b'x')
+        os.chmod(hardlink_target, 0o600)
+        os.link(hardlink_target, raw_path)
+        self.assertEqual(os.stat(raw_path).st_nlink, 2)
+        os.utime(kept, (old, old))
+        self.assertEqual(store.Work.reclaim_orphans(self.queue, 'hold'), 0)
+        hardlink_target.unlink()
+        raw_path.unlink()
+        raw_path.symlink_to(good.folder / 'work')
+        os.utime(kept, (old, old))
+        self.assertEqual(store.Work.reclaim_orphans(self.queue, 'hold'), 0)
+        raw_path.unlink()
         os.utime(kept, (old, old))
         self.assertEqual(store.Work.reclaim_orphans(self.queue, 'hold'), 1)
         self.assertEqual(list(hold_dir.iterdir()), [good.folder])

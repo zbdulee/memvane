@@ -165,7 +165,12 @@ from pathlib import Path
 from memvane.wiki.verify import handoff_work as store
 q, stage = sys.argv[1:]
 if stage == 'publish':
-    store.rename_noreplace = lambda *args, **kwargs: os._exit(74)
+    real_rename = store.rename_noreplace
+    def stop(parent, src, dst, **kwargs):
+        if dst == 'raw':
+            os._exit(74)
+        return real_rename(parent, src, dst, **kwargs)
+    store.rename_noreplace = stop
 else:
     store._save = lambda *args, **kwargs: os._exit(74)
 store.Work.create(q, 'hold', {'route': {'scopeId': 'example'}, 'stage': stage}, b'{"event":1}\\n', image=b'candidate\\n')
@@ -180,6 +185,7 @@ store.Work.create(q, 'hold', {'route': {'scopeId': 'example'}, 'stage': stage}, 
         self.assertFalse(self.path.exists())
         self.assertTrue(queue_batch_prepare.unresolved(self.queue))
         hold_dir = self.folder / '.handoff' / 'v1' / 'hold'
+        self.assertEqual(len([p for p in hold_dir.iterdir() if not (p / 'work').exists()]), 2)
         old = time.time() - 120
         for p in hold_dir.iterdir():
             if not (p / 'work').exists():

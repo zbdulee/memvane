@@ -385,9 +385,11 @@ class Work:
                     continue
                 copy_quota.allocate(root, identity, amount)
                 rollback = False
+                created = False
                 try:
                     try:
                         with _directory(parent, identity, True, exclusive=True) as fd:
+                            created = True
                             try:
                                 state = dict(version=1, id=identity, kind=kind, queue=Path(queue).name, phase='reserved',
                                              binding=deepcopy(binding), blobs=blobs)
@@ -397,10 +399,15 @@ class Work:
                                 _save(fd, state)
                                 return cls(queue, state)
                             except BaseException:
-                                if not _exists(fd, 'work'):
-                                    rollback = _clear_unfinished(fd)
+                                try:
+                                    if not _exists(fd, 'work'):
+                                        rollback = _clear_unfinished(fd)
+                                except OSError:
+                                    pass
                                 raise
                     except FileExistsError:
+                        if created:
+                            raise
                         if amount:
                             try:
                                 copy_quota.release(root, identity, charge_budget=False)
@@ -410,10 +417,10 @@ class Work:
                 except BaseException:
                     if rollback:
                         try:
-                            os.rmdir(identity, dir_fd=parent)
-                            os.fsync(parent)
                             if amount:
                                 copy_quota.release(root, identity, charge_budget=False)
+                            os.rmdir(identity, dir_fd=parent)
+                            os.fsync(parent)
                         except OSError:
                             pass
                     raise
@@ -440,10 +447,10 @@ class Work:
                                 if not _exists(fd, 'work'):
                                     cleared = _clear_unfinished(fd, min_age_seconds=min_age_seconds)
                             if cleared:
-                                os.rmdir(name, dir_fd=parent)
-                                os.fsync(parent)
                                 from memvane.wiki.verify import copy_quota
                                 copy_quota.release(root, name, charge_budget=False)
+                                os.rmdir(name, dir_fd=parent)
+                                os.fsync(parent)
                                 reclaimed += 1
                         except OSError:
                             continue
