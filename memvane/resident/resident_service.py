@@ -859,7 +859,10 @@ class Service:
             project = row.get('project')
             if isinstance(project, str):
                 with self.lock:
-                    self.retry.pop(project, None)
+                    due = self.retry.get(project, 0)
+                    if due <= time.monotonic():
+                        self.retry.pop(project, None)
+                        self.wake.set()
             return {**self.status(), 'accepted': True}
         if command == 'drain':
             if row.get('reason') == 'learning_state_move':

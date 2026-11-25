@@ -466,3 +466,51 @@ class InstallationRetry(FixtureCase):
                         attest.assert_called_once()
                     self.assertEqual(self.service.prove.call_count, 2)
                     self.assertEqual(owner.read_owner_state(manifest)['at'], 3700)
+
+    def test_cold_launch_failure_after_prior_proof_error_replaces_starting_diagnostic(self):
+        a, _ = self.projects
+        ma = self.proofs[a][1]['providerManifest']
+        key = svc._worker_key(ma)
+        with patch.object(svc.threading, 'Thread', side_effect=lambda **kw: Mock(start=lambda: kw['target'](*kw['args']))), \
+             patch.object(owner.time, 'time') as wall, patch.object(svc.time, 'monotonic') as mono:
+            wall.return_value = mono.return_value = 100
+            with patch.object(provider, 'hash_file', side_effect=OSError(errno.EIO, 'proof')):
+                self.service._adopt(a)
+            self.assertEqual(owner.read_owner_state(ma)['attempts'], 1)
+            wall.return_value = mono.return_value = 115
+            with patch.object(provider, 'start_owned_embed_service', side_effect=RuntimeError('spawn_fail')):
+                self.service._adopt(a)
+            row = owner.read_owner_state(ma)
+            self.assertEqual((row['reason'], row['attempts']), ('startup_failed', 1))
+            self.assertEqual(owner._install_state(ma)['attempts'], 1)
+            self.service.workers[key].failures = 2
+            wall.return_value = mono.return_value = 135
+            with patch.object(provider, 'start_owned_embed_service', side_effect=RuntimeError('spawn_fail')):
+                self.service._adopt(a)
+            self.assertEqual((owner.read_owner_state(ma)['reason'], owner.read_owner_state(ma)['attempts']),
+                             ('startup_failed', 3))
+            with self.assertRaisesRegex(owner.ResourceDeferred, '^laya_service_backoff$'):
+                owner._failure_decision(ma)
+
+    def test_repeated_adopt_preserves_active_cooldown_while_other_worker_is_ready(self):
+        a, b = self.projects
+        ma, mb = [self.proofs[p][1]['providerManifest'] for p in (a, b)]
+        healthy_key = svc._worker_key(ma)
+        healthy = self.service.workers[healthy_key] = svc.Worker(healthy_key, str(self.root / 'healthy.sock'))
+        healthy.alive = lambda: True
+        mb_key = (*svc._worker_key(mb), 'alt')
+        with patch.object(svc.time, 'monotonic', return_value=200), \
+             patch.object(self.service, 'registered', return_value=[b]):
+            self.service.workers[mb_key] = svc.Worker(mb_key, str(self.root / 'b.sock'))
+            self.service.workers[mb_key].retry_at = 500
+            with patch.object(svc, '_worker_key', return_value=mb_key):
+                self.service.tick()
+                self.assertEqual(self.service.prove.call_count, 1)
+                self.assertEqual(self.service.retry[b], 500)
+                for _ in range(5):
+                    reply = self.service._command({'command': 'adopt', 'project': b})
+                    self.assertEqual(reply['status'], 'ready')
+                    self.assertTrue(reply['accepted'])
+                    self.service.tick()
+                self.assertEqual(self.service.prove.call_count, 1)
+                self.assertEqual(self.service.retry[b], 500)

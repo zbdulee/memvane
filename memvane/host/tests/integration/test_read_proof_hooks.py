@@ -98,7 +98,8 @@ class ReadProofHooks(AttestedInstall):
                     self.assertIn('worker_attestation_changed', err)
                     self.assertEqual(self.install.events()[-1]['outcome'], 'refused')
 
-    def test_attestation_file_read_error_refuses_read_hooks(self):
+    def test_attestation_file_read_error_degrades_read_hooks_and_refuses_write_proof(self):
+        from memvane.journal.types import JournalEvidenceError
         path = self.state / 'provider-attestation.json'
         real_open = os.open
 
@@ -107,11 +108,23 @@ class ReadProofHooks(AttestedInstall):
                 raise OSError(errno.EIO, 'fixture attestation read')
             return real_open(name, *args, **kwargs)
 
+        empty_recall = {'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': ''}}
         with patch.object(os, 'open', side_effect=open_file):
-            for action in ('recall', 'gate'):
-                status, payload, err = self.run_hook(action)
+            for host in ('claude', 'codex'):
+                self.assertEqual(self.run_hook('recall', host), (0, empty_recall, ''), host)
+                self.assertEqual(self.install.events()[-1]['reason'], 'production_attestation_unavailable')
+                self.assertEqual(self.run_hook('gate', host), (0, {}, ''), host)
+                status, payload, err = self.run_hook('gate', host, malformed=True)
                 self.assertEqual((status, payload), (3, None))
-                self.assertIn('production_attestation_unavailable', err)
+                self.assertIn('edit_path_missing', err)
+            with self.assertRaisesRegex(JournalEvidenceError, '^production_attestation_unavailable$'):
+                journal.verify_selected_route_for_write(self.decision)
+        with patch('memvane.resident.api.admit_query'), \
+             patch.object(provider, 'query_vectors', return_value=([[1.0, 0.0]], 1)):
+            status, payload, err = self.run_hook('recall')
+            self.assertEqual(status, 0, err)
+            self.assertIn('Synthetic', payload['hookSpecificOutput']['additionalContext'])
+            self.assertEqual(self.run_hook('gate'), (0, {}, ''))
 
     def test_changed_model_bytes_degrade_read_hooks_and_refuse_write_proof(self):
         from memvane.journal.types import JournalEvidenceError

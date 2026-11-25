@@ -873,9 +873,9 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
                 return _serve_selected_once(action, host, decision, payload)
             return _serve_selected_recall(action, host, decision, payload)
         except JournalEvidenceError as exc:
-            if str(exc) == 'worker_attestation_unavailable' and action in ('recall', 'gate'):
+            if str(exc) in ('worker_attestation_unavailable', 'production_attestation_unavailable') and action in ('recall', 'gate'):
                 # The read proof is incomplete. Never serve cards or start recovery from it.
-                _trace_final('worker_attestation_unavailable')
+                _trace_final(str(exc))
                 if action == 'recall':
                     return host_payload(host, '')
                 if decision.get('state') != 'worktree':
