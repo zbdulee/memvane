@@ -115,7 +115,8 @@ L2 후속 ── L3
 - **학습 되돌리기 사유.** `candidate_rollback.resume`의 `rollback_pending` 사유가 `unlabeled`로 남는다. compile 진척 streak은 상태 파일을 쓰지 못하는 동안 쌓이지 않는다.
 - **문서.** `release.md`의 계약 밖 파생물 목록에 `runtime-wake-progress.json`, `source-refresh-settled.json.lock`, 세션 reset 마커가 없다.
 - **시험 격리.** `test_setup_entry_inventory_119`가 Claude Code 안에서 돌면 `CLAUDECODE`·`CLAUDE_CODE_*` 환경 변수 때문에 실패한다. 시험이 host 환경 변수를 지우지 않고, host 판별이 환경 변수에 기대는지 확인한다.
-- **출시 smoke 도구.** RS-ID가 태그와 대조하지만 마켓플레이스 설치는 main HEAD라 출시 뒤 문서 커밋만큼 다르다. RS-EDIT 편집 문단이 호스트 공통이라 두 번째 호스트는 이미 있는 문단으로 보고 편집하지 않는다. Codex의 SessionStart 행은 첫 턴 제출 때 생긴다.
+- **출시 smoke 도구.** RS-ID가 태그와 대조하지만 마켓플레이스 설치는 main HEAD라 출시 뒤 문서 커밋만큼 다르다. RS-EDIT 편집 문단이 호스트 공통이라 두 번째 호스트는 이미 있는 문단으로 보고 편집하지 않는다. Codex의 SessionStart 행은 첫 턴 제출 때 생긴다. RS-SYNC 판정이 변경 뒤 마지막 `wake.sync`만 보아, `indexed` 게시 뒤 무변경 pass(`unchanged`)가 오면 FAIL로 판정한다. P4는 토큰 세 개를 한 질의에 담아 어휘 AND로 0건이 된다. 붙여넣기 완료를 화면 정지 1초로 판정해, Codex에서 12,000자 붙여넣기가 처리되기 전에 Enter가 들어가 끝 20자만 제출된 적이 있다. Codex가 사용량 한도로 다른 모델로 바뀌면 편집을 셸로 해 RS-EDIT가 hook 없이 끝난다.
+- **식별자 질의의 어휘 검색.** 프롬프트의 일반어가 식별자와 AND로 묶여, 카드에 없는 일반어 하나로 어휘 결과가 0건이 된다. `도구는 쓰지 말고 답만 해 줘. 확인 토큰 SMK…이 적힌 문서는 …?`는 `"smk…"* AND "도 구" AND "쓰 지"`가 되어 토큰을 가진 카드를 찾지 못하고, vector는 식별자를 맞히지 못한다(1.1.0부터 같음). `memvane/recall/keywords.py`의 일반어 선택은 위치로만 자르고, docstring이 말하는 코퍼스 필터는 선택 reader 경로에 없다. 식별자 단독 질의를 따로 보내는 방안과 한 줄 지시문 제외(`_keyword_question_span`)를 검토한다.
 - **리뷰 범위.** `vectorcache/writer.py`의 compaction·append, teacher와 `automatic_staging`의 유료 호출 경로를 독립 리뷰한다.
 - **일반 편집 후보의 부분 실패.** 한 원문에서 나온 두 후보 중 하나의 첫 쓰기가 실패하면, 재시도가 원문을 다시 추출하고 남은 후보가 사라진다. 원래 응답과 후보별 완료 기록, 혼합 버전의 재시도 경계를 설계한다.
 - **음성 판정 억제 원장.** `verify-skipped.jsonl` 쓰기가 실패하면 재시도에서 같은 음성 판정의 검수와 삭제 감사가 한 번 더 일어난다. 첫 감사 전에 판정을 대상 세대에 묶고 원문별 억제를 따로 복구한다.
