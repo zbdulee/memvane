@@ -67,6 +67,14 @@ def prepare(root, queue, bound, config=None):
     if queue is None:
         return True
     try:
+        if (queue.parent / '.handoff' / 'v1' / 'hold').exists():
+            from memvane.wiki.verify.handoff_work import Work
+            try:
+                with workspace.card_write_lock(root, blocking=False), workspace.mutation_lock(root, blocking=False), workspace.queue_lock_path(queue).open('a') as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    Work.reclaim_orphans(queue, 'hold')
+            except OSError:
+                pass
         if not queue_batch_prepare.prepare(root, queue, bound):
             return False
         from memvane.wiki.verify import deferred_review

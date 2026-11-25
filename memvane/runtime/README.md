@@ -27,7 +27,7 @@ wake 이벤트의 `outcome`은 dispatcher(`memvane/app/runtime_dispatch.py`)가 
 미완료는 `failed`다. main view를 게시한 `laya-sync` pass는 연결 view가
 기다려도 `indexed`·`unchanged`로 ACK되고 대기는 `linked` 필드에 남는다.
 
-백그라운드 프로세스는 호스트 설치 기록과 경로·manifest를 확인한 최신 1.x 번들에서 실행한다. 자기 번들이 사라지거나 바뀌면 timer와 worker는 기존 wake를 보존하고 후속 프로세스에 넘긴다. 설치 기록을 확인할 수 없으면 기존 큐를 남긴 채 재시도한다. 프로젝트의 journal·provider 증명은 후속 worker가 다시 수행한다.
+백그라운드 프로세스는 호스트 설치 기록과 경로·manifest를 확인한 최신 1.x 번들에서 실행한다. 자기 번들이 사라지거나 바뀌면 timer와 worker는 기존 wake를 보존하고 후속 프로세스에 넘긴다. 설치 기록을 확인할 수 없으면 기존 큐를 남긴 채 재시도하며, 백그라운드 번들 목록 확인 실패는 1시간이 아니라 짧은 재시도 간격(60초→300초→3600초 백오프, 설치 기록 변경 시 초기화) 뒤 다시 확인한다. 프로젝트의 journal·provider 증명은 후속 worker가 다시 수행한다.
 
 `wake_cancel.py`는 한 (kind, target)의 wake 행과 overflow 여부, 큐 DB에 남아 있을 수 있는 `wake_cancellations` 감사 행을 읽기 전용으로 보여 준다(install의 `build-wake-status`). wake 행을 지우는 경로는 없다.
 

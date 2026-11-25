@@ -607,5 +607,26 @@ class Schema3Recall(RecallInstallCase):
             self.assertEqual(db.execute("SELECT count(*) FROM sqlite_master WHERE name='hot_probe'")
                              .fetchone()[0], 0)
 
+    def test_standalone_identifier_survives_lead_instruction_and_absent_words(self):
+        self.install.provider.admit_queries()
+        prompt = '도구는 쓰지 말고 답만 해 줘. 확인 토큰 zqheronx가 적힌 문서는 무엇에 관한 문서야?'
+        context, _err, event = self.recall(prompt)
+        self.assertIn('zqheronx', context)
+        self.assertEqual(event['outcome'], 'served')
+
+    def test_long_prompt_and_multi_identifier_queries_preserve_exact_cards(self):
+        self.install.provider.admit_queries()
+        filler = ('이 문단은 길이를 채우기 위한 가상의 회의록 한 줄이다. ' * 400)[:12000]
+        p2 = filler + ' 확인 토큰 zqheronx가 적힌 문서는 무엇에 관한 문서야?'
+        ctx2, _err2, ev2 = self.recall(p2)
+        self.assertIn('zqheronx', ctx2)
+        self.assertEqual(ev2['outcome'], 'served')
+
+        p4 = '도구는 쓰지 말고 답만 해 줘. 확인 토큰 zqheronx, zqglacierx가 적힌 문서는 무엇에 관한 문서야?'
+        ctx4, _err4, ev4 = self.recall(p4)
+        self.assertIn('zqheronx', ctx4)
+        self.assertIn('zqglacierx', ctx4)
+        self.assertEqual(ev4['outcome'], 'served')
+
 if __name__ == '__main__':
     unittest.main()

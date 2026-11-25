@@ -49,6 +49,14 @@ EVENT_FIELDS = ('event', 'ts', 'ms', 'host', 'session', 'install', 'pluginVersio
 AGED_STAGES = ('pinMs', 'lexicalMs', 'stillCurrentMs')
 AGED_STAGE_LIMIT_MS = 50
 SELECTED_ZERO = 'laya_selector_selected_zero'
+LONG_PASTE_CHARS = 1000
+SHORT_PASTE_STABLE_READS = 2
+LONG_PASTE_STABLE_READS = 4
+_DOC_FILES = frozenset(('README.md', 'CHANGELOG.md', 'AGENTS.md', 'CLAUDE.md'))
+
+
+def _is_doc_only(path):
+    return path.startswith('docs/') or path in _DOC_FILES
 
 
 # -- judging: pure functions over copied rows -----------------------------------
@@ -165,7 +173,10 @@ def judge_dedup(plan, events, session):
 def judge_edit(plan, events, host, session):
     ident = 'RS-EDIT-' + host
     if not _rows(events, 'posttool', session):
-        return item(ident, FAIL, 'no posttool row (the edit hook did not reach the install)')
+        note = ('no posttool row (the edit hook did not reach the install; codex may have edited via shell)'
+                if host == 'codex' else
+                'no posttool row (the edit hook did not reach the install)')
+        return item(ident, FAIL, note)
     edits = _rows(events, 'recall.edit', session)
     if not edits:
         return item(ident, FAIL, 'no recall.edit row')
@@ -181,6 +192,15 @@ def judge_edit(plan, events, host, session):
     return item(ident, PASS, 'learning.capture ' + str(captures[-1].get('outcome')))
 
 
+def _sync_pass_ok(before, events, plan):
+    passes = [entry for entry in before if entry.get('event') == 'wake.sync'
+              and _since_change(entry, events, plan)]
+    if (not passes or not any(entry.get('outcome') == 'indexed' for entry in passes)
+            or passes[-1].get('outcome') not in ('indexed', 'unchanged')):
+        return passes, False
+    return passes, True
+
+
 def judge_sync(plan, events, sessions):
     change = plan.get('delta')
     if not change:
@@ -188,16 +208,56 @@ def judge_sync(plan, events, sessions):
     if not change.get('afterTs'):
         # Without it a sync pass of the onboarding would count as the pass after the change.
         return item('RS-SYNC', NOT_RUN, 'the time of the change was not recorded')
+    prompts = plan['prompts']
+    split_keys = ('P4-added', 'P4-changed', 'P4-deleted')
+    if all(key in prompts for key in split_keys):
+        rows = {}
+        for key in split_keys:
+            asked = [row for session in sessions.values() if session
+                     for row in _prompt_rows(events, session, prompts[key])]
+            if not asked:
+                return item('RS-SYNC', FAIL, '%s: no recall row' % key)
+            rows[key] = asked[0]
+        anchor = min(rows.values(), key=lambda entry: entry.get('ts', ''))
+        before = [entry for entry in events if seconds_between(entry, anchor) is not None
+                  and seconds_between(entry, anchor) >= 0]
+        passes, pass_ok = _sync_pass_ok(before, events, plan)
+        if not pass_ok:
+            return item('RS-SYNC', FAIL, 'wake.sync %s' % (passes[-1].get('outcome') if passes else 'absent'))
+        if not [entry for entry in before if entry.get('event') == 'index.publish'
+                and _since_change(entry, events, plan)]:
+            return item('RS-SYNC', FAIL, 'no index.publish after the change')
+        added, after, deleted = change['added'], change['changed']['after'], change['deleted']
+        added_row, changed_row, deleted_row = rows['P4-added'], rows['P4-changed'], rows['P4-deleted']
+        if deleted_row.get('outcome') == 'served' and _has_path(deleted_row, deleted):
+            return item('RS-SYNC', FAIL, 'P4-deleted served the deleted card')
+        if added_row.get('outcome') != 'served' and changed_row.get('outcome') != 'served':
+            if change.get('afterTsBeforeCommit'):
+                return item('RS-SYNC', NOT_RUN, 'the time of the change is from before its commit '
+                            'and P4-added/P4-changed served no card (%s/%s, %s/%s)'
+                            % (added_row.get('outcome'), added_row.get('reason'),
+                               changed_row.get('outcome'), changed_row.get('reason')))
+            return item('RS-SYNC', PASS, 'cards NOT RUN (P4-added %s/%s, P4-changed %s/%s)'
+                        % (added_row.get('outcome'), added_row.get('reason'),
+                           changed_row.get('outcome'), changed_row.get('reason')))
+        if added_row.get('outcome') == 'served' and not _has_card(added_row, added):
+            return item('RS-SYNC', FAIL, 'P4-added served without the added card hash')
+        if added_row.get('outcome') != 'served' and not _selected_zero(added_row):
+            return item('RS-SYNC', FAIL, 'P4-added %s/%s' % (added_row.get('outcome'), added_row.get('reason')))
+        if changed_row.get('outcome') == 'served' and not _has_card(changed_row, after):
+            return item('RS-SYNC', FAIL, 'P4-changed served without the changed card hash')
+        if changed_row.get('outcome') != 'served' and not _selected_zero(changed_row):
+            return item('RS-SYNC', FAIL, 'P4-changed %s/%s' % (changed_row.get('outcome'), changed_row.get('reason')))
+        return item('RS-SYNC', PASS)
     asked = [row for session in sessions.values() if session
-             for row in _prompt_rows(events, session, plan['prompts']['P4'])]
+             for row in _prompt_rows(events, session, prompts['P4'])]
     if not asked:
         return item('RS-SYNC', FAIL, 'P4: no recall row')
     row = asked[0]
     before = [entry for entry in events if seconds_between(entry, row) is not None
               and seconds_between(entry, row) >= 0]
-    passes = [entry for entry in before if entry.get('event') == 'wake.sync'
-              and _since_change(entry, events, plan)]
-    if not passes or passes[-1].get('outcome') != 'indexed':
+    passes, pass_ok = _sync_pass_ok(before, events, plan)
+    if not pass_ok:
         return item('RS-SYNC', FAIL, 'wake.sync %s' % (passes[-1].get('outcome') if passes else 'absent'))
     if not [entry for entry in before if entry.get('event') == 'index.publish'
             and _since_change(entry, events, plan)]:
@@ -238,9 +298,17 @@ def judge_model_url(record):
 def judge_identity(record):
     if not record:
         return item('RS-ID', NOT_RUN, 'not compared')
-    if record.get('different') or len(record.get('versions') or []) != 1:
+    different = record.get('different') or []
+    product = (record.get('productDifferent') if 'productDifferent' in record
+               else [path for path in different if not _is_doc_only(path)])
+    docs = (record.get('docDifferent') if 'docDifferent' in record
+            else [path for path in different if _is_doc_only(path)])
+    if product or len(record.get('versions') or []) != 1:
         return item('RS-ID', FAIL, '%d files differ, versions %s'
-                    % (len(record.get('different') or []), record.get('versions')))
+                    % (len(different), record.get('versions')))
+    if docs:
+        return item('RS-ID', PASS, '%d doc-only files differ' % len(docs),
+                    files=record.get('files'))
     return item('RS-ID', PASS, files=record.get('files'))
 
 
@@ -301,8 +369,11 @@ def judge(plan, events, sessions, *, model_url=None, identity=None, aged=None):
     for host in HOSTS:
         session = sessions.get(host)
         if not reached[host]:
-            items += [item('RS-RECALL-' + host, BLOCKED, blocked),
-                      item('RS-EDIT-' + host, BLOCKED, blocked)]
+            note = ('host_env: no SessionStart row of the session (start it after the onboarding; '
+                    'Codex writes SessionStart on the first turn)'
+                    if host == 'codex' else blocked)
+            items += [item('RS-RECALL-' + host, BLOCKED, note),
+                      item('RS-EDIT-' + host, BLOCKED, note)]
             continue
         items += [judge_recall(plan, events, host, session), judge_edit(plan, events, host, session)]
     items.append(judge_dedup(plan, events, sessions['claude']) if reached['claude']
@@ -575,8 +646,9 @@ def apply_delta(remote, out, *, host=None, last_ts=None, pause=time.sleep, publi
     if not after_ts:
         change['afterTsBeforeCommit'] = True
     _save(_plan_path(out), after)
-    for name in ('P4', 'PS'):
-        (out / ('prompt-%s.txt' % name)).write_text(after['prompts'][name]['text'], encoding='utf-8')
+    for name in ('P4', 'P4-added', 'P4-changed', 'P4-deleted', 'PS'):
+        if name in after['prompts']:
+            (out / ('prompt-%s.txt' % name)).write_text(after['prompts'][name]['text'], encoding='utf-8')
     if host is not None:
         asked = send(remote, out, host, 'PS', pause=pause, **sending)
         seen = False
@@ -628,6 +700,11 @@ def send(remote, out, host, name, *, screen=None, pause=time.sleep, paste_reads=
     Only the prompt is typed: a permission or trust screen is the operator's.
     """
     plan = _load_plan(out)
+    resolved = '%s-%s' % (name, host)
+    if resolved in plan['prompts']:
+        name = resolved
+    if name not in plan['prompts']:
+        raise SystemExit('unknown prompt %r; available: %s' % (name, ', '.join(sorted(plan['prompts']))))
     prompt = plan['prompts'][name]
     session = shlex.quote(screen or session_name(host))
     base = plan['remoteFixture'].rstrip('/').rsplit('/', 1)[0]
@@ -652,14 +729,20 @@ def send(remote, out, host, name, *, screen=None, pause=time.sleep, paste_reads=
         return int(text.strip()) if code == 0 and text.strip().isdigit() else None
     start = rows() or 0
     remote.run('%sreadbuf %s && %spaste .' % (control, rpath(staged), control))
-    last = None
+    needed = (LONG_PASTE_STABLE_READS if prompt.get('chars', 0) >= LONG_PASTE_CHARS
+              else SHORT_PASTE_STABLE_READS)
+    last, stable = None, 0
     for _ in range(paste_reads):
         pause(1)
         now = hardcopy()
-        if now and now != before and now == last:
+        if not now or now == before:
+            last, stable = now, 0
+            continue
+        stable = stable + 1 if now == last else 1
+        last = now
+        if stable >= needed:
             result['pasted'] = True
             break
-        last = now
     mark = prompt.get('mark')
     if result['pasted'] and mark:
         # A window that changes by itself is not a paste: the prompt's own token is on it.
@@ -754,10 +837,13 @@ def installed_identity(remote, commit, installed, *, tree=None):
                  if any(name == entry or name.startswith(entry + '/') for entry in HOST_METADATA)]:
         del found[name]
     different = sorted(name for name in set(tree) | set(found) if tree.get(name) != found.get(name))
+    product_different = [name for name in different if not _is_doc_only(name)]
+    doc_different = [name for name in different if _is_doc_only(name)]
     versions = sorted({json.loads(text)['version'] for text in [remote.run(
         'cat %s/package.json' % rpath(installed))[1]] if text.strip()})
     return {'commit': commit, 'installed': installed, 'files': len(found),
-            'different': different, 'versions': versions}
+            'different': different, 'productDifferent': product_different,
+            'docDifferent': doc_different, 'versions': versions}
 
 
 def account_prep(remote):

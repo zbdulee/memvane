@@ -69,7 +69,7 @@ def adopt(queue, source=None, *, binding=None, orphan_dead=None):
         _available(parent, queue, source.name, orphan_dead, native=private)
         info = os.stat(source.name, dir_fd=parent, follow_symlinks=False)
         _safe(info)
-    prior = store.Work.entries(queue, 'hold', control_only=True)
+    prior = store.Work.entries(queue, 'hold', control_only=True, max_entries=store.HOLD_SCAN_LIMIT)
     if prior.issues:
         raise BlockingIOError('uncertain_batch_reservations')
     for work in prior:
@@ -90,7 +90,7 @@ def adopt(queue, source=None, *, binding=None, orphan_dead=None):
 
 def active(queue, *, orphan_dead=None):
     """Resume durable reservations under the existing queue lock; expose all unknown entries."""
-    work = store.Work.entries(queue, 'hold', control_only=True)
+    work = store.Work.entries(queue, 'hold', control_only=True, max_entries=store.HOLD_SCAN_LIMIT)
     batches, issues = store.WorkEntries(), list(work.issues)
     for item in work:
         state = item.state

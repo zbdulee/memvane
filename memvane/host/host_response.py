@@ -680,7 +680,21 @@ def _start_owner() -> None:
         pass
 
 
-def _accept_wiki_grant(decision: dict, kind: str, grant: str) -> None:
+def _record_wiki_grant(decision: dict, grant_kind: str | None, host: str) -> tuple[str | None, str | None]:
+    """Record a provisional wiki grant without turning lock contention into exit 3."""
+    if grant_kind is None:
+        return None, None
+    from memvane.wiki.intake import api as laya_wiki_discovery
+    from memvane.wiki.intake.types import DiscoveryBusy
+    try:
+        return laya_wiki_discovery.record_grant(decision, grant_kind, engine=host), None
+    except DiscoveryBusy:
+        return None, 'busy'
+    except Exception:
+        return None, 'failed'
+
+
+def _accept_wiki_grant(decision: dict, kind: str, grant: str, *, allow_busy: bool = False) -> bool:
     """Activate a passed hook's grant, then record a wake that follows it.
 
     A run already in flight saw the grant provisional and did not use it, and
@@ -692,12 +706,22 @@ def _accept_wiki_grant(decision: dict, kind: str, grant: str) -> None:
     for an unrelated later wake.
     """
     from memvane.wiki.intake import api as laya_wiki_discovery
+    from memvane.wiki.intake.types import DiscoveryBusy
     from memvane.runtime import api as runtime_work
     try:
         accepted = laya_wiki_discovery.activate_grant(decision, kind, grant)
     except laya_wiki_discovery.GrantUncertain as exc:
         _start_owner()
         raise HostResponseError('selected_wiki_grant_revoke_failed') from exc
+    except DiscoveryBusy:
+        if allow_busy:
+            try:
+                laya_wiki_discovery.revoke_grant(decision, grant)
+            except Exception:
+                pass  # provisional: never usable, inert until cap trims it
+            _start_owner()
+            return False
+        accepted = False
     except Exception:
         accepted = False  # a failed write was withdrawn before it propagated
     if not accepted:
@@ -713,7 +737,7 @@ def _accept_wiki_grant(decision: dict, kind: str, grant: str) -> None:
         result = None
         _start_owner()
     if _wake_recorded(result):
-        return
+        return True
     try:
         live = laya_wiki_discovery.revoke_grant(decision, grant)
     except Exception as exc:
@@ -722,6 +746,7 @@ def _accept_wiki_grant(decision: dict, kind: str, grant: str) -> None:
         _fail('selected_wiki_wake_failed')
     # Already used or retired by a run that took the lock after activation:
     # its scan followed this event, so the event is served.
+    return True
 
 
 def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict:
@@ -873,9 +898,9 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
                 return _serve_selected_once(action, host, decision, payload)
             return _serve_selected_recall(action, host, decision, payload)
         except JournalEvidenceError as exc:
-            if str(exc) == 'worker_attestation_unavailable' and action in ('recall', 'gate'):
+            if str(exc) in ('worker_attestation_unavailable', 'production_attestation_unavailable') and action in ('recall', 'gate'):
                 # The read proof is incomplete. Never serve cards or start recovery from it.
-                _trace_final('worker_attestation_unavailable')
+                _trace_final(str(exc))
                 if action == 'recall':
                     return host_payload(host, '')
                 if decision.get('state') != 'worktree':
@@ -1134,6 +1159,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
                 raise
             # The existing discovery grant is a durable scan hint, not proof
             # of a source or route. Its worker re-proves both before enqueue.
+            # Keep fail-closed (allow_busy=False) here so compile owner_busy never silently drops a grant.
             from memvane.wiki.intake import api as laya_wiki_discovery
             grant=laya_wiki_discovery.record_grant(decision,'sync',engine=host)
             _accept_wiki_grant(decision,'sync',grant)
@@ -1186,20 +1212,10 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         move_notice = None
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
-        grant_failed = False
-        grant = None
         grant_kind = discovery_grant_kind(decision.get('collectionRoots'), action)
-        if grant_kind is not None:
-            # Provisional record of this event only, made before the wake so
-            # the scan of any run that may use it follows the event. Compile
-            # consent stays the existing trigger gate, applied off-hook when
-            # raw changes are discovered; index, stale recall and wiki-card
-            # sync grant nothing.
-            from memvane.wiki.intake import api as laya_wiki_discovery
-            try:
-                grant = laya_wiki_discovery.record_grant(decision, grant_kind, engine=host)
-            except Exception:
-                grant_failed = True
+        # Provisional record of this event only, made before the wake so
+        # the scan of any run that may use it follows the event.
+        grant, grant_state = _record_wiki_grant(decision, grant_kind, host)
         try:
             # With a grant, the owner starts only after activation, so the
             # usual run is the one that can already use it.
@@ -1208,19 +1224,20 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             if grant is not None:
                 # Still provisional: no run can use it, so withdrawal only
                 # frees its slot. The recorded wakes still need their owner.
+                from memvane.wiki.intake import api as laya_wiki_discovery
                 try:
                     laya_wiki_discovery.revoke_grant(decision, grant)
                 except Exception:
                     pass
                 _start_owner()
             raise
-        if grant_failed:
+        if grant_state == 'failed':
             # The sync wake is recorded; only this event's compile grant is not.
             _fail("selected_wiki_grant_failed")
-        if grant is not None:
-            _accept_wiki_grant(decision, grant_kind, grant)
+        if grant is not None and not _accept_wiki_grant(decision, grant_kind, grant, allow_busy=True):
+            grant_state = 'busy'
         _trace_final('sync_requested')
-        _trace_fields(grant=grant_kind if grant is not None else None)
+        _trace_fields(grant='busy_skipped' if grant_state == 'busy' else (grant_kind if grant is not None else None))
         if action in ("index", "file-change-event"):
             return {}
         if action in ('update', 'update-queued'):

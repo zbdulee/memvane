@@ -19,8 +19,12 @@ import time
 from memvane.kernel.memvane_version import version_key
 
 _RETIRE_CHECKS = {}
-_BACKGROUND_INVENTORY = {'until': 0.0, 'root': None}
+_BACKGROUND_INVENTORY = {'until': 0.0, 'root': None, 'failures': 0}
 UNINSTALLED_GRACE_SECONDS = 300
+HOST_LISTING_TIMEOUT_SECONDS = 120
+INVENTORY_CACHE_SECONDS = 3600
+INVENTORY_RETRY_SECONDS = 60
+INVENTORY_RETRY_BACKOFF = (INVENTORY_RETRY_SECONDS, 300, INVENTORY_CACHE_SECONDS)
 
 _SEGMENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z')
 
@@ -173,7 +177,8 @@ def _host_listing(name, home):
            if key in os.environ}
     env.update(PATH=safe_path, HOME=str(home), QMD_SANDBOX='1', PYTHONDONTWRITEBYTECODE='1')
     child = subprocess.run([str(executable), 'plugin', 'list', '--json'], cwd='/', env=env,
-                           stdin=subprocess.DEVNULL, capture_output=True, timeout=10, check=False)
+                           stdin=subprocess.DEVNULL, capture_output=True,
+                           timeout=HOST_LISTING_TIMEOUT_SECONDS, check=False)
     if child.returncode != 0 or len(child.stdout) > 1024 * 1024:
         raise ValueError('bundle_inventory_unavailable')
     return json.loads(child.stdout.decode('utf8'))
@@ -334,7 +339,7 @@ def _inventory(home=None):
             found.append(item)
     except FileNotFoundError:
         pass  # Claude is not installed.
-    except (OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError, subprocess.TimeoutExpired):
         return None, False
     try:
         hermes = hermes_home.resolve(strict=True)
@@ -368,6 +373,7 @@ def _codex_config_off(codex):
 def latest_installed(*, home=None):
     found, readable = _inventory(home)
     _BACKGROUND_INVENTORY['readable'] = readable
+    _BACKGROUND_INVENTORY['failed'] = found is None
     return max(found, key=lambda item: (item[0], str(item[1])))[1] if found else None
 
 
@@ -457,19 +463,29 @@ def fast_installed(*, home=None, host=None):
 
 
 def background_installed():
-    """Refresh host evidence on file changes or after a one-hour backoff."""
+    """Refresh host evidence on file changes or after a cache/retry backoff."""
     now = time.monotonic()
     stamp = _inventory_stamp()
-    if now >= _BACKGROUND_INVENTORY['until'] or stamp != _BACKGROUND_INVENTORY.get('stamp'):
+    stamp_changed = stamp != _BACKGROUND_INVENTORY.get('stamp')
+    if now >= _BACKGROUND_INVENTORY['until'] or stamp_changed:
+        if stamp_changed:
+            _BACKGROUND_INVENTORY['failures'] = 0
         _BACKGROUND_INVENTORY['readable'] = False
+        _BACKGROUND_INVENTORY['failed'] = False
         try:
             root = latest_installed()
         except (OSError, ValueError, TypeError, KeyError, AttributeError, UnicodeError, subprocess.TimeoutExpired):
             root = None
+            _BACKGROUND_INVENTORY['failed'] = True
+        failed = bool(_BACKGROUND_INVENTORY.get('failed'))
         # Every host record was read and none enables MemVane: the absence is timed from its first sight.
         since = (None if root is not None or _BACKGROUND_INVENTORY['readable'] is not True else
                  _BACKGROUND_INVENTORY.get('absentSince') or time.monotonic())
-        _BACKGROUND_INVENTORY.update(root=root, stamp=stamp, absentSince=since, until=time.monotonic() + 3600)
+        failures = (_BACKGROUND_INVENTORY.get('failures', 0) + 1) if failed else 0
+        ttl = (INVENTORY_RETRY_BACKOFF[min(failures - 1, len(INVENTORY_RETRY_BACKOFF) - 1)]
+               if failed else INVENTORY_CACHE_SECONDS)
+        _BACKGROUND_INVENTORY.update(root=root, stamp=stamp, absentSince=since,
+                                     failures=failures, until=time.monotonic() + ttl)
     return _BACKGROUND_INVENTORY['root']
 
 

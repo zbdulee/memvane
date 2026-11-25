@@ -53,7 +53,7 @@ def _registration(queue, origin, before, offset, raw, job, proof, bound):
         if work is None:
             binding = dict(purpose='native-review', action='borrow', route=workspace.route_identity(bound),
                            targetPath=job['targetPath'], job=job, slot=slot)
-            work = next((w for w in store.Work.entries(queue, 'hold', control_only=True) if w.state['binding'] == binding), None)
+            work = next((w for w in store.Work.entries(queue, 'hold', control_only=True, max_entries=store.HOLD_SCAN_LIMIT) if w.state['binding'] == binding), None)
             if work is None:
                 work = store.Work.create(queue, 'hold', binding, raw)
             with store.private_root(queue) as fd:
@@ -76,7 +76,7 @@ def _inputs(queue):
             yield queue, before, offset, raw
     except (OSError, ValueError):
         pass
-    for work in store.Work.entries(queue, 'hold', control_only=True):
+    for work in store.Work.entries(queue, 'hold', control_only=True, max_entries=store.HOLD_SCAN_LIMIT):
         state = work.state
         if state['blobs']['raw'].get('storage') != 'inode' or state['phase'] != 'held':
             continue
@@ -186,7 +186,7 @@ def preserve_pending(root, wiki, queue, rows):
                 identity = store._file(fd, name, 32).decode('ascii')
                 work = store.Work.lookup(queue, 'hold', identity)
             except FileNotFoundError:
-                works = store.Work.entries(queue, 'hold', control_only=True)
+                works = store.Work.entries(queue, 'hold', control_only=True, max_entries=store.HOLD_SCAN_LIMIT)
                 work = next((w for w in works if w.state['binding'] == binding), None)
                 if work is None:
                     work = store.Work.create(queue, 'hold', binding, raw, image=image)

@@ -8,7 +8,7 @@ import os
 import uuid
 
 from memvane.kernel.atomic_rename import canonical_json_bytes
-from memvane.wiki.verify.handoff_work import Work, WorkEntries
+from memvane.wiki.verify.handoff_work import HOLD_SCAN_LIMIT, Work, WorkEntries
 from memvane.wiki.workspace import api as workspace
 
 
@@ -93,7 +93,7 @@ def _protect_predecessors(root, queue, successor):
 
 
 def cancel(queue, parent):
-    entries = Work.entries(queue, 'hold', control_only=True)
+    entries = Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT)
     for work in entries:
         state = work.state
         if _ours(work) and state['binding'].get('parent') == parent.state['id'] and state['phase'] == 'reserved':
@@ -108,7 +108,7 @@ def _same_job(work, job):
 
 def waiting(queue):
     result = WorkEntries()
-    all_work = Work.entries(queue, 'hold', control_only=True)
+    all_work = Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT)
     issues = list(all_work.issues)
     for work in all_work:
         state = work.state
@@ -132,7 +132,7 @@ def waiting(queue):
 
 
 def references(queue, *, exclude_parent=None, exclude_work=None):
-    all_work = Work.entries(queue, 'hold', control_only=True)
+    all_work = Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT)
     paths = set()
     uncertain = bool(all_work.issues)
     for work in all_work:
@@ -187,7 +187,7 @@ def process(queue, selected, work, callback):
         if (not proof.get('published') or _alive(proof.get('owner')) or not _same_job(work, state['binding']['job']) or
                 route != (workspace.route_identity(selected) if selected is not None else None)):
             return False, True
-        others = Work.entries(queue, 'hold', control_only=True)
+        others = Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT)
         if any(w.state['binding'].get('targetPath') == state['binding']['targetPath']
                and _alive(w.state.get('proof', {}).get('owner')) for w in others):
             return False, True
@@ -225,6 +225,6 @@ def scheduled(queue, works):
 
 
 def busy(queue):
-    entries = Work.entries(queue, 'hold', control_only=True)
+    entries = Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT)
     return bool(entries.issues or any((_ours(w) or w.state['binding'].get('purpose') == 'deferred-replacement')
                                       and w.state['phase'] != 'finished' for w in entries))

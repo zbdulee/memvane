@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import time
 import uuid
 
 from memvane.kernel.atomic_rename import canonical_json_bytes, rename_noreplace
@@ -18,10 +19,13 @@ SLAB = 65536
 CONTROL_LIMIT = 1024 ** 2
 BLOB_LIMIT = {'raw': 8 * 1024 ** 2, 'image': 4 * 1024 ** 2}
 KINDS = ('publication', 'legacy', 'hold')
+HOLD_SCAN_LIMIT = 1024
+ORPHAN_MIN_AGE_SECONDS = 60.0
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 READ = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 HEX_ID = re.compile(r'[a-f0-9]{32}\Z')
 SHA = re.compile(r'[a-f0-9]{64}\Z')
+_TEMP_FILE = re.compile(r'\.w-[a-f0-9]{32}\Z')
 
 # Bindings, blob identities and work IDs never change. Evidence is added only by
 # the kind and phase that own it; finishing preserves already committed proof.
@@ -111,7 +115,7 @@ def private_root(queue, *, create=False):
         yield version
 
 
-def _file(parent, name, limit, *, keep=True, expected=None, budget=None, lane=None):
+def _file(parent, name, limit, *, keep=True, expected=None, budget=None, lane=None, charge_budget=True):
     with _opened(name, READ, parent=parent) as fd:
         info = os.fstat(fd)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
@@ -119,8 +123,9 @@ def _file(parent, name, limit, *, keep=True, expected=None, budget=None, lane=No
             raise OSError('unsafe_handoff_file')
         if expected is not None and info.st_size != expected['length']:
             raise OSError('handoff_length_changed')
-        from memvane.wiki.workspace.handoff.api import charge
-        charge(lane or ('evidence' if name == 'image' else 'private'), info.st_size)
+        if charge_budget:
+            from memvane.wiki.workspace.handoff.api import charge
+            charge(lane or ('evidence' if name == 'image' else 'private'), info.st_size)
         if budget is not None:
             if budget[0] < info.st_size:
                 raise _ScanLimit
@@ -145,23 +150,57 @@ def _file(parent, name, limit, *, keep=True, expected=None, budget=None, lane=No
         return b''.join(blocks)
 
 
-def _publish(parent, name, data, *, replace=False):
+def _publish(parent, name, data, *, replace=False, charge_budget=True):
     temp = '.w-' + uuid.uuid4().hex
-    with _opened(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, parent=parent) as fd:
-        view = memoryview(data)
-        while view:
-            written = os.write(fd, view)
-            if written <= 0:
-                raise OSError('handoff_short_write')
-            view = view[written:]
-        os.fsync(fd)
-    _file(parent, temp, len(data), keep=False, expected={'length': len(data), 'sha256': _sha(data)},
-          lane='evidence' if name == 'image' else 'private')
-    if replace:
-        os.replace(temp, name, src_dir_fd=parent, dst_dir_fd=parent)
-    else:
-        rename_noreplace(parent, temp, name)
+    try:
+        with _opened(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, parent=parent) as fd:
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError('handoff_short_write')
+                view = view[written:]
+            os.fsync(fd)
+        _file(parent, temp, len(data), keep=False, expected={'length': len(data), 'sha256': _sha(data)},
+              lane='evidence' if name == 'image' else 'private', charge_budget=charge_budget)
+        if replace:
+            os.replace(temp, name, src_dir_fd=parent, dst_dir_fd=parent)
+        else:
+            rename_noreplace(parent, temp, name)
+    except BaseException:
+        try:
+            os.unlink(temp, dir_fd=parent)
+        except OSError:
+            pass
+        raise
     os.fsync(parent)
+
+
+def _clear_unfinished(fd, *, min_age_seconds=None):
+    """Unlink unfinished reservation files only when no committed 'work' or unknown entry exists."""
+    dir_info = os.fstat(fd)
+    if _exists(fd, 'work'):
+        return False
+    latest = dir_info.st_mtime
+    names = []
+    with os.scandir(fd) as entries:
+        for entry in entries:
+            if entry.name not in ('raw', 'image') and not _TEMP_FILE.fullmatch(entry.name):
+                return False
+            info = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+                return False
+            latest = max(latest, info.st_mtime)
+            names.append(entry.name)
+    if min_age_seconds is not None and time.time() - latest < min_age_seconds:
+        return False
+    if _exists(fd, 'work'):
+        return False
+    for name in names:
+        os.unlink(name, dir_fd=fd)
+    os.fsync(fd)
+    return True
 
 
 def _unique(pairs):
@@ -336,28 +375,88 @@ class Work:
                 closed = stack.enter_context(_collection(root, kind, True))
             except FileNotFoundError:
                 closed = None
+            from memvane.wiki.verify import copy_quota
+            amount = copy_quota.charge(kind, binding, blobs)
             for _ in range(16):
                 identity = uuid.uuid4().hex
                 if closed is not None and (_exists(closed, identity) or _exists(closed, '.release-' + identity)):
                     continue
                 if _exists(parent, identity):
                     continue
-                from memvane.wiki.verify import copy_quota
-                copy_quota.allocate(root, identity, copy_quota.charge(kind, binding, blobs))
+                copy_quota.allocate(root, identity, amount)
+                rollback = False
+                created = False
                 try:
-                    fd = stack.enter_context(_directory(parent, identity, True, exclusive=True))
-                    break
-                except FileExistsError:
-                    continue
-            else:
-                raise FileExistsError('handoff_id_collision')
-            state = dict(version=1, id=identity, kind=kind, queue=Path(queue).name, phase='reserved',
-                         binding=deepcopy(binding), blobs=blobs)
-            _validate(state, kind, identity)
-            for name, data in payloads.items():
-                _publish(fd, name, data)
-            _save(fd, state)
-        return cls(queue, state)
+                    try:
+                        with _directory(parent, identity, True, exclusive=True) as fd:
+                            created = True
+                            try:
+                                state = dict(version=1, id=identity, kind=kind, queue=Path(queue).name, phase='reserved',
+                                             binding=deepcopy(binding), blobs=blobs)
+                                _validate(state, kind, identity)
+                                for name, data in payloads.items():
+                                    _publish(fd, name, data)
+                                _save(fd, state)
+                                return cls(queue, state)
+                            except BaseException:
+                                try:
+                                    if not _exists(fd, 'work'):
+                                        rollback = _clear_unfinished(fd)
+                                except OSError:
+                                    pass
+                                raise
+                    except FileExistsError:
+                        if created:
+                            raise
+                        if amount:
+                            try:
+                                copy_quota.release(root, identity, charge_budget=False)
+                            except OSError:
+                                pass
+                        continue
+                except BaseException:
+                    if rollback:
+                        try:
+                            if amount:
+                                copy_quota.release(root, identity, charge_budget=False)
+                            os.rmdir(identity, dir_fd=parent)
+                            os.fsync(parent)
+                        except OSError:
+                            pass
+                    raise
+            raise FileExistsError('handoff_id_collision')
+
+    @classmethod
+    def reclaim_orphans(cls, queue, kind, *, min_age_seconds=ORPHAN_MIN_AGE_SECONDS, max_entries=HOLD_SCAN_LIMIT):
+        """Reclaim unfinished hold/work directories that lack a committed 'work' control file."""
+        if kind not in KINDS:
+            raise ValueError('invalid_handoff_kind')
+        try:
+            with private_root(queue) as root, _directory(root, kind) as parent:
+                reclaimed = 0
+                with os.scandir(parent) as children:
+                    for count, child in enumerate(children):
+                        if count >= max_entries:
+                            break
+                        name = child.name
+                        if not HEX_ID.fullmatch(name):
+                            continue
+                        try:
+                            cleared = False
+                            with _directory(parent, name) as fd:
+                                if not _exists(fd, 'work'):
+                                    cleared = _clear_unfinished(fd, min_age_seconds=min_age_seconds)
+                            if cleared:
+                                from memvane.wiki.verify import copy_quota
+                                copy_quota.release(root, name, charge_budget=False)
+                                os.rmdir(name, dir_fd=parent)
+                                os.fsync(parent)
+                                reclaimed += 1
+                        except OSError:
+                            continue
+                return reclaimed
+        except FileNotFoundError:
+            return 0
 
     @classmethod
     def entries(cls, queue, kind, *, max_bytes=8 * 1024 ** 2, max_entries=64, control_only=False):

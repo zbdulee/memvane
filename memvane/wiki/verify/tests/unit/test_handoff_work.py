@@ -54,9 +54,16 @@ class HandoffWorkTest(FixtureCase):
         self.assertEqual(first.state['binding']['route']['scopeId'], 'example')
 
     def test_incomplete_generation_keeps_raw_and_independent_create_succeeds(self):
-        with patch.object(store, '_save', side_effect=OSError('crash after blobs')):
-            with self.assertRaisesRegex(OSError, 'after blobs'):
-                self.create('hold')
+        script = """
+import os, sys
+from pathlib import Path
+from memvane.wiki.verify import handoff_work as store
+q = Path(sys.argv[1])
+store._save = lambda *args, **kwargs: os._exit(72)
+store.Work.create(q, 'hold', {'route': {'scopeId': 'example'}}, b'{"event":1}\\n', image=b'candidate\\n')
+"""
+        child = subprocess.run([sys.executable, '-B', '-c', script, str(self.queue)], capture_output=True)
+        self.assertEqual(child.returncode, 72, child.stderr)
         good = self.create('hold')
         scan = store.Work.entries(self.queue, 'hold')
         self.assertEqual([w.folder for w in scan], [good.folder])
@@ -65,6 +72,110 @@ class HandoffWorkTest(FixtureCase):
         self.assertEqual((orphan / 'raw').read_bytes(), b'{"event":1}\n')
         self.assertEqual((orphan / 'image').read_bytes(), b'candidate\n')
         self.assertFalse((orphan / 'work').exists())
+
+    def test_reserve_failure_rolls_back_temp_dir_and_copy_quota(self):
+        from memvane.wiki.verify import copy_quota
+        from memvane.wiki.workspace.handoff import api as handoff_api
+        hold_dir = self.queue.parent / '.handoff' / 'v1' / 'hold'
+        v1 = self.queue.parent / '.handoff' / 'v1'
+        with handoff_api.budget.scope() as ledger:
+            ledger.debit('private', ledger.available('private') - 1024)
+            with patch.object(os, 'mkdir', wraps=os.mkdir) as mkdir_spy:
+                with self.assertRaisesRegex(BlockingIOError, 'handoff_private_pass_limit'):
+                    store.Work.create(self.queue, 'hold', {'route': {'scopeId': 'example'}},
+                                      b'x' * 2048, image=b'y' * 2048)
+                self.assertGreaterEqual(mkdir_spy.call_count, 1)
+        self.assertEqual(list(hold_dir.iterdir()), [])
+        self.assertEqual(list(v1.glob('allocated-*')), [])
+        with store.private_root(self.queue) as root:
+            self.assertEqual(copy_quota._used(root), 0)
+        with patch.object(store, '_save', side_effect=OSError('save failed')):
+            with self.assertRaisesRegex(OSError, 'save failed'):
+                self.create('hold')
+        self.assertEqual(list(hold_dir.iterdir()), [])
+        self.assertEqual(list(v1.glob('allocated-*')), [])
+        with store.private_root(self.queue) as root:
+            self.assertEqual(copy_quota._used(root), 0)
+        fsync = os.fsync
+        def fail_after_work_rename(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode) and store._exists(fd, 'work'):
+                raise OSError('fsync after work')
+            fsync(fd)
+        with patch.object(os, 'fsync', side_effect=fail_after_work_rename):
+            with self.assertRaisesRegex(OSError, 'fsync after work'):
+                self.create('hold')
+        self.assertEqual(len(store.Work.entries(self.queue, 'hold')), 1)
+
+    def test_reclaim_orphans_checks_age_unknown_files_and_releases_quota(self):
+        import time
+        from memvane.wiki.verify import copy_quota
+        script = """
+import os, sys
+from pathlib import Path
+from memvane.wiki.verify import handoff_work as store
+q, stage = sys.argv[1:]
+if stage == 'publish':
+    real_rename = store.rename_noreplace
+    def stop(parent, src, dst, **kwargs):
+        if dst == 'raw':
+            os._exit(73)
+        return real_rename(parent, src, dst, **kwargs)
+    store.rename_noreplace = stop
+else:
+    store._save = lambda *args, **kwargs: os._exit(73)
+store.Work.create(q, 'hold', {'route': {'scopeId': 'example'}, 'stage': stage}, b'{"event":1}\\n', image=b'candidate\\n')
+"""
+        for stage in ('publish', 'save'):
+            child = subprocess.run([sys.executable, '-B', '-c', script, str(self.queue), stage], capture_output=True)
+            self.assertEqual(child.returncode, 73, child.stderr)
+        good = self.create('hold')
+        hold_dir = good.folder.parent
+        orphans = [p for p in hold_dir.iterdir() if p != good.folder]
+        self.assertEqual(len(orphans), 2)
+        self.assertEqual(store.Work.reclaim_orphans(self.queue, 'hold'), 0)
+        future = time.time() + 300
+        for p in orphans:
+            for item in p.iterdir():
+                os.utime(item, (future, future))
+            os.utime(p, (future, future))
+        self.assertEqual(store.Work.reclaim_orphans(self.queue, 'hold'), 0)
+        kept = orphans[0]
+        (kept / 'manual.txt').write_text('keep')
+        old = time.time() - 120
+        for p in orphans:
+            for item in p.iterdir():
+                os.utime(item, (old, old))
+            os.utime(p, (old, old))
+        self.assertEqual(store.Work.reclaim_orphans(self.queue, 'hold'), 1)
+        self.assertTrue(kept.exists())
+        (kept / 'manual.txt').unlink()
+        raw_path = kept / 'raw'
+        if raw_path.exists() or raw_path.is_symlink():
+            raw_path.unlink()
+        raw_path.write_bytes(b'x')
+        os.chmod(raw_path, 0o644)
+        os.utime(raw_path, (old, old))
+        os.utime(kept, (old, old))
+        self.assertEqual(store.Work.reclaim_orphans(self.queue, 'hold'), 0)
+        raw_path.unlink()
+        hardlink_target = good.folder.parent.parent / 'hardlink_target'
+        hardlink_target.write_bytes(b'x')
+        os.chmod(hardlink_target, 0o600)
+        os.link(hardlink_target, raw_path)
+        self.assertEqual(os.stat(raw_path).st_nlink, 2)
+        os.utime(kept, (old, old))
+        self.assertEqual(store.Work.reclaim_orphans(self.queue, 'hold'), 0)
+        hardlink_target.unlink()
+        raw_path.unlink()
+        raw_path.symlink_to(good.folder / 'work')
+        os.utime(kept, (old, old))
+        self.assertEqual(store.Work.reclaim_orphans(self.queue, 'hold'), 0)
+        raw_path.unlink()
+        os.utime(kept, (old, old))
+        self.assertEqual(store.Work.reclaim_orphans(self.queue, 'hold'), 1)
+        self.assertEqual(list(hold_dir.iterdir()), [good.folder])
+        with store.private_root(self.queue) as root:
+            self.assertEqual(copy_quota._used(root), len(b'{"event":1}\n') + len(b'candidate\n'))
 
     def test_invalid_control_blob_and_unknown_version_remain_byte_exact(self):
         bad = self.create()

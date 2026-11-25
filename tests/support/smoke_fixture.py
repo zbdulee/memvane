@@ -88,25 +88,36 @@ def _long_prompt(token):
 
 
 def _prompts(roles, run_id):
-    """P0..P3. Every text carries a token of this run, so its hash and its mark on
+    """P0..P3 (and per-host P3-*). Every text carries a token of this run, so its hash and its mark on
     the screen belong to this run and to no earlier one on the same account."""
     edit = roles['edit']
-    marks = {'P0': 'SMK%sP0' % run_id, 'P1': roles['short']['token'], 'P3': 'SMK%sP3' % run_id}
+    marks = {'P0': 'SMK%sP0' % run_id, 'P1': roles['short']['token'],
+             'P3': 'SMK%sP3' % run_id, 'P3-claude': 'SMK%sP3' % run_id,
+             'P3-codex': 'SMK%sP3X' % run_id}
     # Longer than the shortest edit that starts an edit recall (200 characters).
-    paragraph = ('추가 점검 메모 %s: 이 문단은 smoke 편집 확인을 위한 가상의 문장이다. ' % marks['P3']
-                 + '점검 항목은 저장 위치, 점검 주기, 담당 순번, 기록 양식, 보관 기한의 다섯 가지이고 '
-                 '각 항목은 가상의 운영 기록에서 한 줄씩 차지한다. 이 메모는 어떤 실제 문서의 내용도 아니며 '
-                 '편집 뒤의 색인 갱신과 편집 recall을 확인하는 데만 쓰인다. 문단의 끝에는 같은 표식을 한 번 더 적는다: %s.'
-                 % marks['P3'])
-    if len(paragraph) < MIN_EDIT_PARAGRAPH:
-        raise ValueError('the edit paragraph is shorter than an edit recall needs')
+    def edit_paragraph(mark, label):
+        paragraph = ('추가 점검 메모 %s: 이 문단은 %s smoke 편집 확인을 위한 가상의 문장이다. ' % (mark, label)
+                     + '점검 항목은 저장 위치, 점검 주기, 담당 순번, 기록 양식, 보관 기한의 다섯 가지이고 '
+                     '각 항목은 가상의 운영 기록에서 한 줄씩 차지한다. 이 메모는 어떤 실제 문서의 내용도 아니며 '
+                     '편집 뒤의 색인 갱신과 편집 recall을 확인하는 데만 쓰인다. 문단의 끝에는 같은 표식을 한 번 더 적는다: %s.'
+                     % mark)
+        if len(paragraph) < MIN_EDIT_PARAGRAPH:
+            raise ValueError('the edit paragraph is shorter than an edit recall needs')
+        return paragraph
+    claude_paragraph = edit_paragraph(marks['P3-claude'], 'Claude')
+    codex_paragraph = edit_paragraph(marks['P3-codex'], 'Codex')
+    claude_edit = ('Edit 도구로 %s 파일 맨 끝에 다음 문단을 그대로 추가해 줘. 셸 명령은 쓰지 말고 다른 파일은 건드리지 마. 문단: %s'
+                   % (edit['source'], claude_paragraph))
+    codex_edit = ('apply_patch 도구로 %s 파일 맨 끝에 다음 문단을 그대로 추가해 줘. 셸 명령은 쓰지 말고 다른 파일은 건드리지 마. 문단: %s'
+                  % (edit['source'], codex_paragraph))
     texts = {
         'P0': '%s 실행: 이 프로젝트 MemVane 온보딩해 줘. 계획을 검토한 뒤 그대로 적용하고 활성화까지 해 줘.'
               % marks['P0'],
         'P1': _question(roles['short']['token']),
         'P2': _long_prompt(roles['long']['token']),
-        'P3': 'Edit 도구로 %s 파일 맨 끝에 다음 문단을 그대로 추가해 줘. 다른 파일은 건드리지 마. 문단: %s'
-              % (edit['source'], paragraph),
+        'P3': claude_edit,
+        'P3-claude': claude_edit,
+        'P3-codex': codex_edit,
     }
     # One line each: a multiplexer paste may turn a line feed into a carriage
     # return, and the event row must record the hash of exactly this text.
@@ -140,7 +151,7 @@ def build(out, *, cards=len(TOPICS), learning=False, run_id=None):
 
 
 def delta(out, plan):
-    """Apply the RS-SYNC change under ``out`` and add P4 to ``plan`` (returned)."""
+    """Apply the RS-SYNC change under ``out`` and add P4-* and PS to ``plan`` (returned)."""
     from tests.support.project import Project
     if plan.get('delta') is not None:
         raise ValueError('the delta is already applied')
@@ -158,17 +169,26 @@ def delta(out, plan):
         # Already gone when a change cut before its plan was saved is applied again.
         if (out / name).exists():
             (out / name).unlink()
-    text = _question(added['token'], after['token'], deleted['token'])
+    added_text = _question(added['token'])
+    changed_text = _question(after['token'])
+    deleted_text = _question(deleted['token'])
     mark = 'SMK%sPS' % run_id
     refresh = '%s 실행: 이 프로젝트의 MemVane 인덱스를 새로고침해 줘.' % mark
-    if any('\n' in value or '\r' in value for value in (text, refresh)):
+    if any('\n' in value or '\r' in value for value in (added_text, changed_text, deleted_text, refresh)):
         raise ValueError('a smoke prompt is one line')
     plan = dict(plan)
     plan['delta'] = {'added': added, 'changed': {'before': changed, 'after': after},
                      'deleted': deleted}
     plan['prompts'] = dict(
         plan['prompts'],
-        P4={'text': text, 'sha256': prompt_sha(text), 'chars': len(text), 'mark': added['token']},
+        **{
+            'P4-added': {'text': added_text, 'sha256': prompt_sha(added_text),
+                         'chars': len(added_text), 'mark': added['token']},
+            'P4-changed': {'text': changed_text, 'sha256': prompt_sha(changed_text),
+                           'chars': len(changed_text), 'mark': after['token']},
+            'P4-deleted': {'text': deleted_text, 'sha256': prompt_sha(deleted_text),
+                           'chars': len(deleted_text), 'mark': deleted['token']},
+        },
         # Asked right after the change: nothing else wakes a sync for a change no hook saw.
         PS={'text': refresh, 'sha256': prompt_sha(refresh), 'chars': len(refresh), 'mark': mark})
     return plan

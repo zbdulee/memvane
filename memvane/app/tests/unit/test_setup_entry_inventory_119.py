@@ -21,6 +21,7 @@ from memvane.learning.context_learning import host_inventory, host_self, selecto
 
 DEFERRED = {'status': 'deferred', 'reason': 'host_inventory_unavailable', 'changesApplied': 0}
 HANG = '''#!/bin/sh
+if [ "$1" = "--warm" ]; then exit 0; fi
 echo "$*" >> '{counter}'
 exec /bin/sleep 60
 '''
@@ -66,6 +67,7 @@ class SetupInventoryDeferral(FixtureCase):
         codex = bin_dir / 'codex'
         codex.write_text(HANG.format(counter=counter))
         codex.chmod(0o700)
+        subprocess.run([str(codex), '--warm'], check=True, timeout=30)
         raised = []
 
         def propose(project, root, **kwargs):

@@ -135,11 +135,16 @@ def _install_state(manifest):
     if not os.path.samestat(current, info) or current.st_mtime_ns != info.st_mtime_ns:
         raise ResourceDeferred('laya_service_backoff')  # The pair changed during this read.
     if proof:
-        expected = 0 if row['reason'] == 'startup_failed' else row['attempts']
-        if proof != dict(row, attempts=expected):
+        if row['reason'] == 'startup_failed':
+            if (not 0 <= proof['attempts'] < _MAX_FAILURES
+                    or proof != dict(row, attempts=proof['attempts'])):
+                raise IndexContractError('provider_owner_state_invalid')
+            # Only the shared worker has a retry deadline for a projected launch failure;
+            # keep this installation's prior proof-attempt count without charging launches.
+            return proof if proof['attempts'] else None
+        if proof != dict(row, attempts=row['attempts']):
             raise IndexContractError('provider_owner_state_invalid')
-        # Only the shared worker has a retry deadline for a projected launch failure.
-        return proof if expected else None
+        return proof
     if row['reason'] == 'resource_deferred':
         # Old admission diagnostics could include another installation's process failures.
         return dict(row, attempts=0)
@@ -195,10 +200,10 @@ def _record_shared_wait(manifest, reason, terminal, failures):
         prior = None
     attempts = prior['attempts'] if prior else 0
     if reason == 'startup_failed':
-        # A partial proof failure stays local. A process-only projection must never seed proof.
-        if attempts:
-            return
-        _write_state(manifest, reason, attempts=failures, proof_attempts=0)
+        # Project the shared launch failure onto this installation while keeping
+        # its prior local proof-attempt count in the linked proof record.
+        _write_state(manifest, reason, attempts=max(attempts, failures),
+                     proof_attempts=min(attempts, _MAX_FAILURES - 1))
     elif reason == 'resource_deferred' and attempts:
         _write_state(manifest, reason, attempts=attempts, proof_attempts=attempts)
     else:

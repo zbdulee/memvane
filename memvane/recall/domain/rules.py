@@ -35,18 +35,48 @@ def _fts_atom(term: str) -> str:
     return '"' + escaped + '"' + ('' if cjk or len(parts) > 1 else '*')
 
 
+_STANDALONE_ALNUM_MIN_LEN = 4
+
+
+def _is_standalone_identifier(term: str) -> bool:
+    """Keep structural symbols or camel/PascalCase at any length; gate pure alnum on length."""
+    if any(ch in term for ch in ('_', '-', '.', '/')):
+        return True
+    if any(ch.islower() for ch in term) and any(ch.isupper() for ch in term):
+        return True
+    return any(ch.isalpha() for ch in term) and any(ch.isdigit() for ch in term) and len(term) >= _STANDALONE_ALNUM_MIN_LEN
+
+
 def _hybrid_fts_queries(prompt: str, lexical_patterns: tuple[str, ...]) -> list[str]:
-    from memvane.recall.keywords import build_lexical_terms
+    from memvane.recall.keywords import _is_ep_term, build_lexical_terms
     if (not isinstance(lexical_patterns, tuple)
             or any(pattern != "ep" for pattern in lexical_patterns)
             or len(lexical_patterns) > 1):
         _fail("unsupported_lexical_patterns")
     built = build_lexical_terms(prompt, list(lexical_patterns))
     queries = []
+    seen = set()
     for query in built["lexQueries"]:
         terms = query.split()
         atoms = [_fts_atom(term) for term in terms]
-        queries.append(" AND ".join(atom for atom in atoms if atom))
+        fts = " AND ".join(atom for atom in atoms if atom)
+        if fts or not queries:
+            queries.append(fts)
+            if fts:
+                seen.add(fts)
+    ep_on = "ep" in lexical_patterns
+    ep_set = {term.lower() for term in built["epTerms"]}
+    for term in built["identifiers"]:
+        if not _is_standalone_identifier(term):
+            continue
+        if not ep_on and _is_ep_term(term):
+            continue
+        if ep_on and term.lower() in ep_set:
+            continue
+        atom = _fts_atom(term)
+        if atom and atom not in seen:
+            seen.add(atom)
+            queries.append(atom)
     return queries
 
 

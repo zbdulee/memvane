@@ -21,13 +21,14 @@ def charge(kind, binding, blobs):
     return sum(blob['length'] for blob in blobs.values())
 
 
-def _write(root, used, pending):
+def _write(root, used, pending, *, charge_budget=True):
     content = dict(version=1, used=used, pending=pending)
     data = dict(content, checksum=hashlib.sha256(canonical_json_bytes(content)).hexdigest())
-    store._publish(root, INDEX, canonical_json_bytes(data), replace=store._exists(root, INDEX))
+    store._publish(root, INDEX, canonical_json_bytes(data),
+                   replace=store._exists(root, INDEX), charge_budget=charge_budget)
 
 
-def _reconcile(root, used, change):
+def _reconcile(root, used, change, *, charge_budget=True):
     if change is None:
         return
     identity, delta = change
@@ -36,26 +37,26 @@ def _reconcile(root, used, change):
     name = 'allocated-' + identity
     value = str(abs(delta)).encode('ascii')
     if store._exists(root, name):
-        if store._file(root, name, 12) != value:
+        if store._file(root, name, 12, charge_budget=charge_budget) != value:
             raise OSError('changed_copy_reservation')
         if delta < 0:
             os.unlink(name, dir_fd=root)
             os.fsync(root)
     elif delta > 0:
-        store._publish(root, name, value)
-    _write(root, used, None)
+        store._publish(root, name, value, charge_budget=charge_budget)
+    _write(root, used, None, charge_budget=charge_budget)
 
 
-def _used(root):
+def _used(root, *, charge_budget=True):
     if not store._exists(root, INDEX):
         return 0
-    state = json.loads(store._file(root, INDEX, 512))
+    state = json.loads(store._file(root, INDEX, 512, charge_budget=charge_budget))
     checksum = state.pop('checksum')
     if (hashlib.sha256(canonical_json_bytes(state)).hexdigest() != checksum or
             set(state) != {'version', 'used', 'pending'} or state['version'] != 1 or
             type(state['used']) is not int or not 0 <= state['used'] <= LIMIT):
         raise OSError('invalid_copy_quota')
-    _reconcile(root, state['used'], state['pending'])
+    _reconcile(root, state['used'], state['pending'], charge_budget=charge_budget)
     return state['used']
 
 
@@ -72,14 +73,14 @@ def allocate(root, identity, amount):
     _reconcile(root, used + amount, change)
 
 
-def release(root, identity):
-    used = _used(root)
+def release(root, identity, *, charge_budget=True):
+    used = _used(root, charge_budget=charge_budget)
     name = 'allocated-' + identity
     if not store._exists(root, name):
         return
-    amount = int(store._file(root, name, 12))
+    amount = int(store._file(root, name, 12, charge_budget=charge_budget))
     if not 0 < amount <= used:
         raise OSError('invalid_copy_allocation')
     change = [identity, -amount]
-    _write(root, used - amount, change)
-    _reconcile(root, used - amount, change)
+    _write(root, used - amount, change, charge_budget=charge_budget)
+    _reconcile(root, used - amount, change, charge_budget=charge_budget)

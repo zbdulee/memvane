@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from memvane.kernel.atomic_rename import canonical_json_bytes
-from memvane.wiki.verify.handoff_work import Work
+from memvane.wiki.verify.handoff_work import HOLD_SCAN_LIMIT, Work
 from memvane.wiki.workspace import api as workspace
 
 
@@ -15,7 +15,7 @@ def reserve(queue, job, image, bound):
     route = workspace.route_identity(bound)
     raw = canonical_json_bytes(job) + b'\n'
     binding = dict(purpose=PURPOSE, route=route, job=job)
-    for work in Work.entries(queue, 'hold', control_only=True):
+    for work in Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT):
         previous = work.state
         if (previous['binding'] == binding and previous['phase'] in ('reserved', 'held')
                 and work.read('raw') == raw and work.read('image') == image):
@@ -26,7 +26,7 @@ def reserve(queue, job, image, bound):
 
 
 def active(queue):
-    return [w for w in Work.entries(queue, 'hold', control_only=True) if w.state['binding'].get('purpose') == PURPOSE
+    return [w for w in Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT) if w.state['binding'].get('purpose') == PURPOSE
             and w.state['phase'] in ('reserved', 'held')]
 
 
