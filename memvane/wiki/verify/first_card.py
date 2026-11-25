@@ -12,7 +12,7 @@ from memvane.wiki.workspace.handoff.api import evidence as regular
 from memvane.wiki.card.api import unresolved_pending_refreshes_strict
 from memvane.wiki.workspace import types as ct
 from memvane.wiki.verify import native_review
-from memvane.wiki.verify.handoff_work import Work
+from memvane.wiki.verify.handoff_work import HOLD_SCAN_LIMIT, Work
 from memvane.wiki.workspace import api as workspace
 
 
@@ -159,7 +159,7 @@ def create(root, wiki, queue, job, image, selected, *, review, manifest):
     try:
         queue.parent.mkdir(parents=True, exist_ok=True)
         with native_review._locked(queue, blocking=False):
-            for work in Work.entries(queue, 'hold', control_only=True):
+            for work in Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT):
                 state = work.state
                 old = state['binding']
                 if (old.get('action') == 'create' and old.get('targetPath') == job['targetPath']
@@ -175,7 +175,12 @@ def create(root, wiki, queue, job, image, selected, *, review, manifest):
 
 
 def recover(root, wiki, queue, selected):
-    for work in Work.entries(queue, 'hold', control_only=True):
+    try:
+        with workspace.card_write_lock(root, blocking=False), workspace.mutation_lock(root, blocking=False), native_review._locked(queue, blocking=False):
+            Work.reclaim_orphans(queue, 'hold')
+    except OSError:
+        pass
+    for work in Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT):
         state = work.state
         binding = state['binding']
         if (binding.get('purpose') == 'native-review' and binding.get('action') == 'create'

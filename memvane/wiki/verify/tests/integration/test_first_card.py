@@ -155,3 +155,41 @@ class InitialCard(FixtureCase):
         self.assertIn(unregistered.name, json.loads(archived.read_bytes())['proof']['unknown'])
         self.assertEqual(unregistered.read_bytes(), self.image)
         self.assertFalse(native_review.busy(self.queue))
+
+    def test_orphan_hold_and_over_64_valid_holds_recover_and_publish_first_cards(self):
+        import subprocess, sys, time
+        from memvane.wiki.verify import queue_batch_prepare
+        script = """
+import os, sys
+from pathlib import Path
+from memvane.wiki.verify import handoff_work as store
+q, stage = sys.argv[1:]
+if stage == 'publish':
+    store.rename_noreplace = lambda *args, **kwargs: os._exit(74)
+else:
+    store._save = lambda *args, **kwargs: os._exit(74)
+store.Work.create(q, 'hold', {'route': {'scopeId': 'example'}, 'stage': stage}, b'{"event":1}\\n', image=b'candidate\\n')
+"""
+        for stage in ('publish', 'save'):
+            child = subprocess.run([sys.executable, '-B', '-c', script, str(self.queue), stage], capture_output=True)
+            self.assertEqual(child.returncode, 74, child.stderr)
+        for index in range(65):
+            Work.create(self.queue, 'hold', {'purpose': 'unrelated', 'ordinal': index}, b'{}\n').commit('held')
+        with patch.object(first_card, '_released_target_clear', return_value=False):
+            self.assertFalse(self.create())
+        self.assertFalse(self.path.exists())
+        self.assertTrue(queue_batch_prepare.unresolved(self.queue))
+        hold_dir = self.folder / '.handoff' / 'v1' / 'hold'
+        old = time.time() - 120
+        for p in hold_dir.iterdir():
+            if not (p / 'work').exists():
+                for item in p.iterdir():
+                    os.utime(item, (old, old))
+                os.utime(p, (old, old))
+        self.recover()
+        self.assertFalse(queue_batch_prepare.unresolved(self.queue))
+        self.assertEqual([p for p in hold_dir.iterdir() if not (p / 'work').exists()], [])
+        self.assertEqual(list(self.wiki.glob('.first-*')), [])
+        self.assertEqual(self.path.read_bytes(), self.image)
+        manifest = settings.ledger(self.root, ct.MANIFEST)
+        self.assertEqual([json.loads(line) for line in manifest.read_bytes().splitlines()], [self.manifest])
