@@ -17,29 +17,31 @@ confidence: high
 sources:
   - {kind: "file", path: "memvane/learning/README.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "memvane/learning/README.md", collection: "qmd-auto-context", sha256: "7a691ffd092509beb45b2d13f1ba1077ac6159aa63f826f87459f6a0908c449f", size: 6629, mtimeNs: 1794981800141839002}
+  - {kind: "file", path: "memvane/learning/README.md", collection: "qmd-auto-context", sha256: "5e4bde217c63a9166b613feab1dd4ece6f18114dc18ca089be55af337c8374c3", size: 34526, mtimeNs: 1795479671866336004}
 triggers:
   - "post_sync_source"
 redactions:
 verifiedBy: "claude"
-verifiedAt: "2026-11-18T16:13:02.337730Z"
+verifiedAt: "2026-11-24T03:22:43.370431Z"
 verifiedMode: "self"
-verifiedBodyHash: "6a8f218bd4c83d6cf724bcd21727f04370104f8e7d0328ef5f73ecb3b648d251"
+verifiedBodyHash: "ae9ec26699f84a5a2536199bf3c26304a3957e49021466c6069fc12e1a1c91cd"
 sourceSpans:
-  - {path: "memvane/learning/README.md", sourceSha256: "7a691ffd092509beb45b2d13f1ba1077ac6159aa63f826f87459f6a0908c449f", startLine: 74, endLine: 75, spanSha256: "81e5f5ed76a1d854bb58de1eb638189b4469691f342a7eae196fc8223627e28f"}
-  - {path: "memvane/learning/README.md", sourceSha256: "7a691ffd092509beb45b2d13f1ba1077ac6159aa63f826f87459f6a0908c449f", startLine: 75, endLine: 76, spanSha256: "332b121466eba9430498fd6b9793e71ca695c221d3ec2d177e06bb3da7329c14"}
-  - {path: "memvane/learning/README.md", sourceSha256: "7a691ffd092509beb45b2d13f1ba1077ac6159aa63f826f87459f6a0908c449f", startLine: 76, endLine: 76, spanSha256: "46c4588212bfdfedf39cbd3efba76ee296e1841071b960c4c40f348774bfa2df"}
-  - {path: "memvane/learning/README.md", sourceSha256: "7a691ffd092509beb45b2d13f1ba1077ac6159aa63f826f87459f6a0908c449f", startLine: 77, endLine: 77, spanSha256: "1867247948adc38d04f2461858bfce2ef43e8a2e846d0350d36e2d0631974713"}
-  - {path: "memvane/learning/README.md", sourceSha256: "7a691ffd092509beb45b2d13f1ba1077ac6159aa63f826f87459f6a0908c449f", startLine: 79, endLine: 79, spanSha256: "dcbdd5d5cdad0cff7e212c6922d93aa5d1e54d3ebe46469feec7b0443d6ed61f"}
-  - {path: "memvane/learning/README.md", sourceSha256: "7a691ffd092509beb45b2d13f1ba1077ac6159aa63f826f87459f6a0908c449f", startLine: 80, endLine: 80, spanSha256: "3cce34849b7a6d259321ac6711847824d7886ef5cc31227180022cca61639da9"}
-  - {path: "memvane/learning/README.md", sourceSha256: "7a691ffd092509beb45b2d13f1ba1077ac6159aa63f826f87459f6a0908c449f", startLine: 80, endLine: 81, spanSha256: "97b46e66fcd8bc90b864b23808a4afb759daddfb4476b90b0752e1741079635e"}
-  - {path: "memvane/learning/README.md", sourceSha256: "7a691ffd092509beb45b2d13f1ba1077ac6159aa63f826f87459f6a0908c449f", startLine: 81, endLine: 83, spanSha256: "4b5cc5be89b930438384d860b4d70bc36f52552edd4360e0c0b4fb1e782823ac"}
-  - {path: "memvane/learning/README.md", sourceSha256: "7a691ffd092509beb45b2d13f1ba1077ac6159aa63f826f87459f6a0908c449f", startLine: 83, endLine: 84, spanSha256: "565bfaf4489ba4ff9669889269d374147ec5612d07ccf28c1b3622bbf5e60211"}
+  - {path: "memvane/learning/README.md", sourceSha256: "5e4bde217c63a9166b613feab1dd4ece6f18114dc18ca089be55af337c8374c3", startLine: 165, endLine: 165, spanSha256: "dcbdd5d5cdad0cff7e212c6922d93aa5d1e54d3ebe46469feec7b0443d6ed61f"}
+  - {path: "memvane/learning/README.md", sourceSha256: "5e4bde217c63a9166b613feab1dd4ece6f18114dc18ca089be55af337c8374c3", startLine: 166, endLine: 166, spanSha256: "2672e23d0431a0a1bea7654a6b01e2c249d2b8b8b217ea7ba64a7f3baec88502"}
+  - {path: "memvane/learning/README.md", sourceSha256: "5e4bde217c63a9166b613feab1dd4ece6f18114dc18ca089be55af337c8374c3", startLine: 166, endLine: 168, spanSha256: "e376083351affade67fa334fdb0c862c41c22357e6cf74563b4b3e0ec2661d2b"}
+  - {path: "memvane/learning/README.md", sourceSha256: "5e4bde217c63a9166b613feab1dd4ece6f18114dc18ca089be55af337c8374c3", startLine: 168, endLine: 169, spanSha256: "fe5c7f52b74fdb5e9b3f36bc6811380d7ef4abab4fbc21c7b55da0a5138e3b54"}
+  - {path: "memvane/learning/README.md", sourceSha256: "5e4bde217c63a9166b613feab1dd4ece6f18114dc18ca089be55af337c8374c3", startLine: 170, endLine: 171, spanSha256: "d4923aee142a689db4cdbfe6f051cade4ed55b2a749e05b318dc90e43f47b510"}
+  - {path: "memvane/learning/README.md", sourceSha256: "5e4bde217c63a9166b613feab1dd4ece6f18114dc18ca089be55af337c8374c3", startLine: 171, endLine: 172, spanSha256: "c489c99a021e720243c66a211b390fca2f8225fdf73d55ee03120854796899bd"}
+  - {path: "memvane/learning/README.md", sourceSha256: "5e4bde217c63a9166b613feab1dd4ece6f18114dc18ca089be55af337c8374c3", startLine: 172, endLine: 172, spanSha256: "e25a6f39efbc18021cd6f15fcbb07859e64409fe0d45fc5a3d6d643975c4ff90"}
+  - {path: "memvane/learning/README.md", sourceSha256: "5e4bde217c63a9166b613feab1dd4ece6f18114dc18ca089be55af337c8374c3", startLine: 173, endLine: 174, spanSha256: "bc8f464fc81c7ed67fbb3f7a4cff8b7881e76a42aa15b41f85cb5626998969bb"}
+  - {path: "memvane/learning/README.md", sourceSha256: "5e4bde217c63a9166b613feab1dd4ece6f18114dc18ca089be55af337c8374c3", startLine: 178, endLine: 180, spanSha256: "72a03a7bba84c969ce7b482af2e5ad13aa1f751b7db5bd0f057728ebf1de7271"}
+  - {path: "memvane/learning/README.md", sourceSha256: "5e4bde217c63a9166b613feab1dd4ece6f18114dc18ca089be55af337c8374c3", startLine: 186, endLine: 188, spanSha256: "6693a69ad0531968f3be33cb0b3c0db46ceebe8f1b3cf0071329ccb4fe1b44b0"}
+  - {path: "memvane/learning/README.md", sourceSha256: "5e4bde217c63a9166b613feab1dd4ece6f18114dc18ca089be55af337c8374c3", startLine: 190, endLine: 191, spanSha256: "bf6f9e035d278bbf4c22554c711770ea29257ad1899a2fbb527ba9580c7b373b"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="de717bb10be1b306" -->
+<!-- qmd:auto:start id="main" sourceHash="00495af783866e3b" -->
 ## Summary
-`memvane/learning/README.md`: 저장된 recall capture의 후보 출처는 별도의 `learning.capture.sources` 진단 이벤트에 기록한다. `request_id`로 기존 표본과 연결하며, 후보 id의 SHA-256과 `store`·`python`·`lexical` 값만 담는다. 표본 스키마·학습 입력은 그대로다. capture가 꺼져 있으면 출처 이벤트도 쓰지 않는다. 학습 사례는 편집 recall에서만 수집한다(sample schema v5, `context_origin: tool_edit`). 질의는 편집이 추가한 텍스트이며, 편집 경로는 해시로만 남는다. v5 사례는 teacher 릴리스 전까지 `queued`로 남고 cohort 배정에서 빠진다. 기본 namespace의 첫 worker pass는 schema 4 이하 prompt 사례(shared `cases`와 같은 request id의 private `samples`)를 한 번 지운다. 지운 개수는 `prompt-cases-retired.json`과 `learning.migration` 이벤트에 남긴다(`context_learning/prompt_retirement.py`).
+`memvane/learning/README.md`: 학습 사례는 편집 recall에서만 수집한다(sample schema v5, `context_origin: tool_edit`). 질의는 편집이 추가한 텍스트이고, 편집 경로는 해시로만 남는다. main checkout 세션이 연결 worktree 파일을 편집한 사례도 main 프로젝트의 사례이며, 후보는 main view의 pool이다. capture 자식은 worktree root를 route로 다시 증명한다(`edit_checkout_unproved`). git이 무시한 경로는 `edit_git_ignored`, git이 답하지 못한 경우는 `edit_git_check_failed`로 저장하지 않는다. worktree settings가 capture를 끄면 `disabled_in_checkout`이다. `learning.capture`의 `editTarget`은 `main`·`linked`를 가른다. 카드가 main 게시 head와 다르면 `edit_view_diverged`로 끝낸다. 기본 namespace의 첫 worker pass는 schema 4 이하 prompt 사례를 지운다. 개수는 `prompt-cases-retired.json`과 `learning.migration`에 남는다(`context_learning/prompt_retirement.py`). 상위 work tree 안 프로젝트의 옛 v5 사례는 `edit-git-check-fixed.<project key>.json` 기준으로 지운다. 결과는 `edit-git-migration.<project key>.json`에 남는다.
 <!-- qmd:auto:end -->

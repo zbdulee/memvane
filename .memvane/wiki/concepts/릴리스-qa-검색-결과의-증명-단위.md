@@ -6,6 +6,8 @@ aliases:
   - "Search-result proof"
 related:
   - "release-agent-qa-run-template"
+  - "release-qa-scenario-timeouts"
+  - "release-qa-cleanup-and-recovery-evidence"
 type: concept
 status: verified
 created: 2026-11-02
@@ -15,27 +17,30 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/templates/release-agent-qa-run.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/templates/release-agent-qa-run.md", collection: "qmd-auto-context", sha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", size: 8877, mtimeNs: 1794981800092540692}
+  - {kind: "file", path: "docs/templates/release-agent-qa-run.md", collection: "qmd-auto-context", sha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", size: 8342, mtimeNs: 1795479671855802278}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-19T00:39:16.414679Z"
+verifiedAt: "2026-11-24T04:55:00.620346Z"
 verifiedMode: "self"
-verifiedBodyHash: "779daa1bc897f5ed6e036b4761c089a7a4993d6b20c81a8b8df4ed2cd956e5fa"
+verifiedBodyHash: "5aefee216dbe814e7233ba90a279e342571653b9c39b92a1135331fea0bc751e"
 sourceSpans:
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 148, endLine: 150, spanSha256: "ad365e7b9626a72d7036d582862b1ff9f20f4d73c3f63a6bf3bcb717941e3232"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 152, endLine: 156, spanSha256: "572815e012b73f5e1270baa1a4387dfee1b49431c03411680aa957e1c5bd77e8"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 157, endLine: 159, spanSha256: "a774b72dd882af83a9486ae9b51de5b114bfa585eb6258ddbb2c2a3080c3beb7"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 160, endLine: 161, spanSha256: "f28c52b2ed6cc676bf90092542f47af92b66fd9590553c1f2ce8e4922fe199a7"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 163, endLine: 163, spanSha256: "6d9e45f9e6215db400df4de0debb44e506a66472d6d2640607ff88eb86a9ecc2"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 165, endLine: 165, spanSha256: "771a40615c675b3d9b67a1af8f922cb2eb364b962793c6d7bbbc5d8df3c11caa"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 169, endLine: 171, spanSha256: "6cd772995de7bea7101eae300d57e0cded01ecaad7d4f9f4bd5c048a1d7e886d"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 136, endLine: 138, spanSha256: "ad365e7b9626a72d7036d582862b1ff9f20f4d73c3f63a6bf3bcb717941e3232"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 140, endLine: 141, spanSha256: "daa1fdce4ce655edc1b13266b60a3e01ae1e8afbb06ca5d576c0ccc21c1f4a49"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 142, endLine: 144, spanSha256: "2507de90a017977c40058e924b4b36f05fdec64140763b8b63f28ced2e302467"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 145, endLine: 145, spanSha256: "43257eb2d5110aa350e74c19530eed65b50a6d57e85906b2e6854633989f93fa"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 146, endLine: 147, spanSha256: "26f07e8cf89ea8008a370d533155c30799da24fc0688f90b58acb3cd5c928ea9"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 148, endLine: 149, spanSha256: "f28c52b2ed6cc676bf90092542f47af92b66fd9590553c1f2ce8e4922fe199a7"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 151, endLine: 151, spanSha256: "6d9e45f9e6215db400df4de0debb44e506a66472d6d2640607ff88eb86a9ecc2"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 153, endLine: 153, spanSha256: "771a40615c675b3d9b67a1af8f922cb2eb364b962793c6d7bbbc5d8df3c11caa"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 157, endLine: 159, spanSha256: "6cd772995de7bea7101eae300d57e0cded01ecaad7d4f9f4bd5c048a1d7e886d"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="0c7ea0cce33b9a47" -->
+<!-- qmd:auto:start id="main" sourceHash="888515478321fd00" -->
 ## Summary
-`docs/templates/release-agent-qa-run.md`의 Search-result proof는 probe마다 Time, Scenario, Host session, cwd, Branch / `git status` summary, Question key, Expected Present, Expected Absent, Recall event `reason` / `notes`, `cards[].path`, `install`, Token in injected context?, Answer, Tool call in turn?, Verdict를 기록한다. 설치본 `events.jsonl`에서 실행의 `session` id로 매칭한 정확한 `recall` event line과 injected context의 transcript excerpt를 각 행에 첨부해 private store에 보관한다. 실행 상세는 `<Scenario ID>` — `<host>` — `<status>`로 구분하고 Fixture path와 fixture ID (`show` output hash), Preconditions checked 증거, Steps performed의 timestamp·natural-language request or helper action·observed result, Expected vs actual, Hook failures / timeouts observed의 host output excerpt 또는 "none", Installed hook path·unique run/session marker·log before/after bytes·correlated turn ID, Deviations from spec and why, Cleanup / recovery performed and result를 기록한다.
+`docs/templates/release-agent-qa-run.md`의 Search-result proof는 probe당 한 행에 Time, Scenario, Host session, cwd, Branch / `git status` summary, Question key, Expected Present, Expected Absent, Recall event `reason` / `notes`, `cards[].path`, `install`, Token in injected context?, Answer, Tool call in turn?, Verdict를 기록한다. 설치본의 `events.jsonl`에서 실행의 `session` id로 매칭한 정확한 `recall` event line과 injected context의 transcript excerpt를 행마다 첨부해 private store에 보관한다.
+Per-scenario detail은 실행한 시나리오마다 `<Scenario ID>` — `<host>` — `<status>`로 구분한다. Fixture path와 fixture ID(`show` output hash), Preconditions checked와 각 증거, Steps performed의 timestamp·natural-language request or helper action·observed result, Expected vs actual, Hook failures / timeouts observed의 host output excerpt 또는 "none", Installed hook path·unique run/session marker·log before/after bytes·correlated turn ID, Deviations from spec and why, Cleanup / recovery performed and result를 기록한다.
 <!-- qmd:auto:end -->

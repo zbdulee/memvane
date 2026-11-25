@@ -53,6 +53,7 @@
 |---|---|---|---|
 | 1.1.x | L3 검색 필요 판단기 | M | 없음 |
 | 1.1.x | 1.1.0 이월 항목 | S~M | 확인 |
+| 1.1.2~1.1.3 | 로컬 웹 대시보드(UI) ([설계](design-local-web-ui.md)) | L | 없음 |
 | 1.0.x | 1 연결 worktree view 대기의 실패 기록 | S | 없음 |
 | 1.0.x | 2 resident 선행 요청 | M | 없음 |
 | 1.0.x | 3 ingest delta화와 원문 지문 누적 정지 | M | 확인 |
@@ -98,6 +99,15 @@ L2 후속 ── L3
 - **합격(live).** 판단기가 건너뛴 프롬프트의 비율과 건너뛴 뒤 같은 세션에서 수동 query가 늘지 않는지를 로그로 본다.
 
 ## 1.1.x 열린 항목 (1.1.0 이월)
+
+### 로컬 웹 대시보드(UI) (1.1.2~1.1.3)
+
+- **목표.** 멀티 프로젝트·연결 git worktree를 한 창에서 통합 조회하는 로컬 웹 대시보드(Preact + TypeScript + Vite 사전 빌드 `ui/dist/` + Python `memvane/ui/` 온디맨드 싱글톤 서버)와 `memvane:ui` 스킬을 제공한다.
+- **설계 · 리뷰.** [설계 문서(r3)](design-local-web-ui.md), [독립 리뷰](reviews/2026-11-24-local-web-ui-design-review.md), [UI 가안 프로토타입](mockups/local-web-ui-prototype.html).
+- **범위.** Phase 1(1.1.2~1.1.3 목표, 읽기 전용 4개 화면 전체 — 좌측 오르카 스타일 프로젝트·worktree 트리, Overview, Recall 인스펙터·무오염 4단계 Query Playground, Wiki Browser·원문 대조, Runtime·Learning 모니터·opt-in `onboarded_sessions` SessionStart 자동 오픈)을 M0(기반 정리: `diagnostics` 로그·SLO 승격, `recall.dry_run_recall`, `learning.inspect_project` 슬롯 확보, `runtime_main(['snapshot-readonly'])`) → M1a(보안 서버·Overview·`skills/ui`) → M1b(Wiki Browser) → M1c(Recall·Playground) → M1d(Runtime·Learning·SessionStart opt-in)로 분할 구현한다. Phase 2(제어 액션, M2)는 기존 `entry/setup.py` `previewSha256` 승인 계약을 래핑해 후속 진행한다.
+- **의존.** 1.1.1 완료(이월 정리 및 `shared.py`·`checkout_view.py` 분해). **크기.** L.
+- **불변.** 없음(1.x 영속 계약·`.memvane/settings.json` 5키·`hook_closures` 무변경, `$HOME/.local/state/memvane/v1/ui/`만 계약 밖 파생물로 등재; `manual-skills.test.mjs`·5개 매니페스트·`context-map.json`·`ui/` 정적 가드 갱신).
+- **합격(live).** `v1_guard.py --strict`, `static.test.mjs`(외부 URL 금지·`ui/dist/` drift·번들 100KB gzip 이하), `/usr/bin/python3`(3.9) import, 보안·무오염 테스트를 통과한다. `skills/ui`로 열어 카나리·service-engineering 및 연결 worktree를 4개 화면에서 조회할 때 `events.jsonl`·`edit-recall-sessions/`·학습 DB 무변경, `activeClients == 0` 유휴 30분 뒤 서버 자동 종료.
 
 - **학습 적용·되돌리기.** 되돌리기가 결정을 쓴 뒤 끊기고 이어 끝내기도 실패하는 이중 고장에서 worker pass가 실패로 끝나거나 뒤 후보가 되돌린 모델 위에 적용된다. 포인터를 쓴 직후 끊긴 되돌리기는 이벤트를 남기지 않는다. `already_restored`는 가장 최근 이력을 고르지 않는다.
 - **기본 모델이 활성 파일일 때의 손상.** 그 파일이 손상되면 worker pass가 scope 권한 검사에서 끝나고 집계와 이벤트가 없다.
@@ -315,7 +325,7 @@ L2 후속 ── L3
 |---|---|---|---|
 | 세션 위치와 무관한 recall(미온보딩 루트, 프로젝트 간 편집) | L | 확인 | 1.1-7 뒤. 설계 문서 선행 |
 | 연결 worktree의 카드 수명 주기 | L | 확인 | 위 항목 뒤 |
-| 대시보드 편집·알림 | M | 확인 | 1.1-7 뒤 |
+| 대시보드 제어 액션·편집·알림 ([설계](design-local-web-ui.md) M2) | M | 확인 | 1.1.2~1.1.3 Phase 1 대시보드·1.1-7 뒤 |
 | 도메인 `domain/` 층 실체화 | L | 없음 | 패치 릴리스 간격이 1주 이상으로 안정된 뒤. 도메인 단위로 나눈다 |
 | 원문 소실 보류(`held_missing`)와 삭제 receipt | L | 확인 | 삭제 근거를 store에서 찾아야 하는 사례가 생길 때 |
 | 학습 중지·재개의 end-to-end 증거, 학습 자식 부하 측정 | M | 없음 | 1.1-3과 함께 |

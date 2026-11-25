@@ -5,7 +5,8 @@ aliases:
   - "릴리스 QA 사전 점검"
   - "Preflight result"
 related:
-  - "release-qa-preflight-host-session"
+  - "release-agent-qa-run-template"
+  - "release-qa-run-environment-record"
   - "release-qa-artifact-identity"
 type: concept
 status: verified
@@ -14,30 +15,38 @@ updated: 2026-11-02
 createdBy: memvane
 confidence: high
 sources:
-  - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context"}
+  - {kind: "file", path: "docs/templates/release-agent-qa-run.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context", sha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", size: 58013, mtimeNs: 1794981800090078568}
+  - {kind: "file", path: "docs/templates/release-agent-qa-run.md", collection: "qmd-auto-context", sha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", size: 8342, mtimeNs: 1795479671855802278}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-18T08:07:03.943475Z"
+verifiedAt: "2026-11-24T04:48:42.032874Z"
 verifiedMode: "self"
-verifiedBodyHash: "59c28d1c757236c2cecca83016f29cafc8b62113aa5fa54986e5f62bfdf53570"
+verifiedBodyHash: "b5cb041822a5e39d4e3d2dfc6e0cb378f60f2a91f08f2d230b494088187d881f"
 sourceSpans:
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 144, endLine: 144, spanSha256: "cbe013f0a9e8c550b3d7a8b3b9003ac1de9b9b24b6e6b503d52d7e5c60307cb8"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 145, endLine: 146, spanSha256: "cbc02a1d59d083154f128800b6f205922c957e72ead9b4aa2cc2e07dae80bd82"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 146, endLine: 147, spanSha256: "db36cbf5d8cd17f51fdc524193785686594e21014f3254fd4a06ac555ffb3c1f"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 149, endLine: 152, spanSha256: "51e385f78176df30d9b644cf1660157787aae4b4c1a254efd96d0bad4baa8caf"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 156, endLine: 162, spanSha256: "6ad7a53bd1018a9c9867dd97a131e04ff74ae40a22b91c482b512754e8992fce"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 157, endLine: 157, spanSha256: "75f75bc555edf5adbc477e9dc00e670a0fe1a2b0ff9acc32363aae0637ea8a8e"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 158, endLine: 158, spanSha256: "37d53e9290c9760b4b46616af49993037db63b5d080d798db2d44646e83f0021"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 161, endLine: 161, spanSha256: "4e5be8c7f2f8936db174f191269b9e843c60355eca53f60edf60c20af6a7a41e"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 81, endLine: 81, spanSha256: "405240de59374c7781368ef64db74b53777f2e5c7ef32ce88d4dfa02fc79220a"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 83, endLine: 84, spanSha256: "60646a59c32a6644ea9b4967a7badca90abc9715fbad04497760ce321d69da7f"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 84, endLine: 85, spanSha256: "2a776ae35d05513748daf5ada558b229cf23050736e93fe40a66031cd59d54c7"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 87, endLine: 87, spanSha256: "029cc549077d34547656fff1bc613d326c832706feec9221d764731e90a5b83a"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 89, endLine: 89, spanSha256: "088fa9155819b01310e3daf7598998974e8829ea760c1ec01f356dbe7d954603"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 90, endLine: 90, spanSha256: "2ba1524d9ae7508beb4168a4f8aa78b352687e2ab16e0331c28b294a2bdb63ce"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 91, endLine: 91, spanSha256: "403ca9252c6bd8db6abfc52bb6043e7e6b484974db279d267d65e2515853e8c0"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 92, endLine: 92, spanSha256: "4f32df4125d05c1d2f74497f76e36dce7b9e08bc26ad433e85281a25b2948e19"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 93, endLine: 93, spanSha256: "81fb1b993b98265dd2565eae3516bd1ba080bbf23f0fc7cc5cb229e8a49265ac"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 94, endLine: 94, spanSha256: "dd4dcd26895b5d247ed689664e7e89052c7c01ff690421d58e4b35e4c4193dc8"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 95, endLine: 95, spanSha256: "0d140fec677d2c272b06965bf60cd467b480e3f06b1237e745bf4174e5080c5b"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 96, endLine: 96, spanSha256: "877807ebbf32dec454f8d3df32b2d655deebdfbd81396dcedb2df855e65722ab"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 98, endLine: 98, spanSha256: "c474a85f0d3daf9ad68dbfbd6c04e08ae77aa3c970db8adbd1812be35bd0ba63"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 100, endLine: 100, spanSha256: "6cc9628f4163d37a728d96044acfe34a238ef14b494edabf8085011bf8fa8633"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="571c2ebdffe3295c" -->
+<!-- qmd:auto:start id="main" sourceHash="547edd13507de53f" -->
 ## Summary
-`docs/release-agent-qa.md`는 host·matrix cell별 첫 기능 요청 전에 PF-ID, PF-FOLDER, PF-TRUST, PF-FRESH, PF-HOST, PF-RUNTIME, PF-NET를 점검한다. RQA-INST-01은 steps 1–2에서 설치·식별하고 step 4 편집 전에 마친다. update·reload 뒤 반복한다. 모두 `ready`여야 `READY`이며 미실시는 `NOT RUN`, 미준비는 `not ready`다. PF-FOLDER는 정확한 fixture만 승인하며 `$HOME`, `/tmp`, 상위 경로로 신뢰를 넓히지 않는다. PF-TRUST는 `INSTALL_PATH`의 `hooks/hooks.json` 또는 `hooks/hooks-codex.json` 전체 명령을 후보와 대조해 공식 UI에서 승인한다. 개별 승인 UI가 없으면 공식 install/enable 증거와 loaded command path를 기록한다. wildcard, "trust all", 설정 편집, bypass flag는 금지한다. PF-RUNTIME은 OS build·architecture와 hook 환경의 `python3`, Node, Git (2.36+), hashing tools 및 버전을 확인한다.
+`docs/templates/release-agent-qa-run.md`의 Preflight(spec section 3)는 functional QA 전에 Claude Code와 Codex별로 Evidence와 Class + retest rule applied를 기록한다. 항목은 `ready`, `not ready`, `NOT RUN` 중 하나이며 미실시는 `NOT RUN`이다. 모든 항목이 `ready`일 때만 `READY`다. 미준비 분류는 environment unready / approval pending / host unsupported / product defect다.
+PF-ID는 exact candidate commit, version, installed byte identity를, PF-FOLDER는 정확한 project folder 승인을, PF-TRUST는 installed hook map, reviewed exact commands, 필요한 per-hook UI approval을 확인한다. PF-FRESH는 install/trust/reload 이후 fresh session, SessionStart trace, new prompt log path를 확인한다. PF-HOST는 surface (CLI/app), sandbox mode/env, required event support를 기록하고 scenario에서 전달을 확인한다. PF-RUNTIME은 OS build/arch, hook `python3`, Node, Git, hash tools를 확인한다. PF-NET는 online / offline policy / sandbox-denied / DNS failure / remote outage를 기록한다.
+Exact trust scope는 host별 한 행으로 Surface, Approved folder (exact, or no prompt), 설치 hook map의 Reviewed hook commands 전체, Host approval route (official UI if required) / time, Hook map SHA-256의 후보 일치 여부를 남긴다. wildcard와 "trust all"은 허용하지 않는다.
 <!-- qmd:auto:end -->

@@ -5,6 +5,7 @@ aliases:
   - "RQA 시나리오 제한 시간"
 related:
   - "release-agent-qa-run-template"
+  - "release-qa-search-result-proof"
 type: entity
 status: verified
 created: 2026-11-02
@@ -14,36 +15,36 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/templates/release-agent-qa-run.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/templates/release-agent-qa-run.md", collection: "qmd-auto-context", sha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", size: 8877, mtimeNs: 1794981800092540692}
+  - {kind: "file", path: "docs/templates/release-agent-qa-run.md", collection: "qmd-auto-context", sha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", size: 8342, mtimeNs: 1795479671855802278}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-19T00:32:10.910216Z"
+verifiedAt: "2026-11-24T04:49:23.612683Z"
 verifiedMode: "self"
-verifiedBodyHash: "e664d4525836ff1fe4e3dfe6804ac55dc383fa3f12627a7e123f333a2beb85b9"
+verifiedBodyHash: "44153259e6529e5ebb153bbf8c437d1ed932c67d5c90f34d0452fdd865b186d8"
 sourceSpans:
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 3, endLine: 4, spanSha256: "47b6c4716c67db42c281d6d5cd228c39b612f495d29c4de77a5e49b08d8f232c"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 105, endLine: 107, spanSha256: "e2678a219cfd987f5098ce1087168a38a1cf07fee2fcadba009a43ca0e2c9e03"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 109, endLine: 110, spanSha256: "9528b99b8c7ee86a466c49ea4961fd88dbf0a2c1693a2f64a8aa3d1778c71fb3"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 111, endLine: 112, spanSha256: "a1be4fbd0934ad552eea2f1ae7bd17dd6ffc652e5aa9de90c9b44bfdffba3e7f"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 113, endLine: 114, spanSha256: "3f8673f82b7d6a9b1c234ae72af229b6b7bc921593440133b0d8d46dff6a76ed"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 115, endLine: 115, spanSha256: "e7038ef63cb262037dd3883a821a5d5aea7082c549071d2a7e32cf84d16094ed"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 116, endLine: 116, spanSha256: "ba89052566e0de886fb02ff60f546cc2558d581077c75eea20528fed3c405ac9"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 117, endLine: 118, spanSha256: "b827078d7c9c13afd124afae68d9cd6f15430584991e759e898696d171b2ae99"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 119, endLine: 120, spanSha256: "48ad16b17c1c5d5e90c3b5a4874662780390225bf54ffdc550de89f3178f1359"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 121, endLine: 122, spanSha256: "52957b07cbb186382e37c8f7119464c8caaf63ee131c79598993a16751210769"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 123, endLine: 124, spanSha256: "f424d3291d6d9920ff54cadda0f42f6888d32b385abd165d6c8cf48bdcaeb9f8"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 125, endLine: 126, spanSha256: "c2877ec807ad839b07747dfc81b7c7957c20cec5a15cada0c682b0857d5578ce"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 127, endLine: 128, spanSha256: "94cb04b28d8952a5b268b78b42712a58c806716bf0a1aa6a60021536d8607a3c"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 129, endLine: 130, spanSha256: "015f5f28f64143c9caa3803deb6ed31ffd736574d93e40bef59b1966dfcd4a43"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 131, endLine: 132, spanSha256: "bc7a9c8375e54d06427c52f3ecb0e7f52cbef69595bf5ef8f628efb38e54f849"}
-  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "ab4959e0bc45b01985b9205e253a4aa22b50b42486ff8335c2706a8a14409dcc", startLine: 133, endLine: 134, spanSha256: "55bd1961430f4c585007b0c81bb4d26c1cec4a96c9370397a48f2dbad429ee16"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 3, endLine: 4, spanSha256: "47b6c4716c67db42c281d6d5cd228c39b612f495d29c4de77a5e49b08d8f232c"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 105, endLine: 107, spanSha256: "e2678a219cfd987f5098ce1087168a38a1cf07fee2fcadba009a43ca0e2c9e03"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 109, endLine: 110, spanSha256: "9528b99b8c7ee86a466c49ea4961fd88dbf0a2c1693a2f64a8aa3d1778c71fb3"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 111, endLine: 112, spanSha256: "a1be4fbd0934ad552eea2f1ae7bd17dd6ffc652e5aa9de90c9b44bfdffba3e7f"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 113, endLine: 114, spanSha256: "3f8673f82b7d6a9b1c234ae72af229b6b7bc921593440133b0d8d46dff6a76ed"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 115, endLine: 115, spanSha256: "e7038ef63cb262037dd3883a821a5d5aea7082c549071d2a7e32cf84d16094ed"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 116, endLine: 116, spanSha256: "ba89052566e0de886fb02ff60f546cc2558d581077c75eea20528fed3c405ac9"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 117, endLine: 118, spanSha256: "b827078d7c9c13afd124afae68d9cd6f15430584991e759e898696d171b2ae99"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 119, endLine: 120, spanSha256: "48ad16b17c1c5d5e90c3b5a4874662780390225bf54ffdc550de89f3178f1359"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 121, endLine: 122, spanSha256: "52957b07cbb186382e37c8f7119464c8caaf63ee131c79598993a16751210769"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 123, endLine: 124, spanSha256: "f424d3291d6d9920ff54cadda0f42f6888d32b385abd165d6c8cf48bdcaeb9f8"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 125, endLine: 126, spanSha256: "c2877ec807ad839b07747dfc81b7c7957c20cec5a15cada0c682b0857d5578ce"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 127, endLine: 128, spanSha256: "94cb04b28d8952a5b268b78b42712a58c806716bf0a1aa6a60021536d8607a3c"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 129, endLine: 130, spanSha256: "015f5f28f64143c9caa3803deb6ed31ffd736574d93e40bef59b1966dfcd4a43"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 131, endLine: 132, spanSha256: "55bd1961430f4c585007b0c81bb4d26c1cec4a96c9370397a48f2dbad429ee16"}
+  - {path: "docs/templates/release-agent-qa-run.md", sourceSha256: "e46707088e91ac030f9804958431de83da68060fec8f06a9d3b703726021905f", startLine: 133, endLine: 133, spanSha256: "103d0858608d00d4937ac266b8b677b15186645db275274326d1a2a6b2ac9ff6"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="b67c4ec8d669d625" -->
+<!-- qmd:auto:start id="main" sourceHash="8a6a3836a0dc37e8" -->
 ## Summary
-`docs/templates/release-agent-qa-run.md`의 Scenario results는 Scenario, Host, Status, Start, End, Timeout used, Evidence files, Notes / blocker ref를 기록하며 기본 상태는 NOT RUN이다. Claude·Codex 각각 RQA-ID-00은 15 min, RQA-INST-01은 45 min, RQA-INST-03은 20 min이다. RQA-HOOK-01은 Claude 45 min, RQA-HOOK-02는 Codex 45 min이다. RQA-SYNC-01, RQA-GIT-01, RQA-GIT-02, RQA-GIT-03, RQA-RACE-01, RQA-WIKI-03, RQA-RES-01은 양쪽 각각 45 min이며 RQA-WIKI-01, RQA-WIKI-02는 각각 60 min이다. RQA-RES-02는 Claude 60 min이며 “BLOCKED until learning approval + safe resources are recorded”가 적용된다. RQA-PLAT-01은 (cell) 기준 45 min이다. LI-INST, LI-SCOPE, LI-RECALL은 Claude·Codex별 행을, LI-MIG, LI-RECOVER, LI-COEXIST, LI-VECTOR는 (install)별 행을 두며 timeout 칸은 공란이다.
+`docs/templates/release-agent-qa-run.md`의 Scenario results는 Scenario, Host, Status, Start, End, Timeout used, Evidence files, Notes / blocker ref를 기록하며 기본 상태는 NOT RUN이다. Claude와 Codex 각각 RQA-ID-00은 15 min, RQA-INST-01은 45 min, RQA-INST-03은 20 min이다. RQA-HOOK-01은 Claude 45 min, RQA-HOOK-02는 Codex 45 min이다. RQA-SYNC-01, RQA-GIT-01, RQA-GIT-02, RQA-GIT-03, RQA-RACE-01, RQA-RES-01은 양쪽 각각 45 min이고 RQA-WIKI-01, RQA-WIKI-02는 양쪽 각각 60 min이다. RQA-RES-02는 Claude 60 min이며 "BLOCKED until learning approval + safe resources are recorded"가 적용된다. RQA-PLAT-01은 (cell) 기준 45 min이다.
 <!-- qmd:auto:end -->

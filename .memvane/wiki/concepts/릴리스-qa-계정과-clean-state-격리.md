@@ -13,27 +13,56 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context", sha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", size: 58013, mtimeNs: 1794981800090078568}
+  - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context", sha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", size: 59869, mtimeNs: 1795479671854230233}
 triggers:
   - "session_start_source"
 redactions:
-verifiedBy: "codex"
-verifiedAt: "2026-11-18T20:02:35.837818Z"
+related:
+  - "release-qa-preflight-contract"
+  - "release-qa-status-values-release-rule"
+  - "release-qa-l0-l1-levels-operator-rules"
+verifiedBy: "claude"
+verifiedAt: "2026-11-24T03:09:55.414714Z"
 verifiedMode: "self"
-verifiedBodyHash: "57bd6e880360b7692bee81214b597d485b8633077a6e7268c326949d243dd682"
+verifiedBodyHash: "a805bfec23f296b61aa3d1223429330108801357af4c7145b379c530e12b1334"
 sourceSpans:
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 105, endLine: 107, spanSha256: "3de03578df643c8d4ed25bb3ba4544226d19db15ca80f7ee0823d3d5927ad6ec"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 107, endLine: 109, spanSha256: "cd6cefb06fd555a52ef1d97ee16bdc2d7b4183c75176a6f259d95b9f30e94006"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 110, endLine: 111, spanSha256: "5139b4b3aa3f4e1ac1a7800bbad6147f84acb37c11274f9f5e87504a7b8c17a8"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 113, endLine: 113, spanSha256: "c07e7d27c4dfca4fd96ff9d8f610bc2ff3438d0cb8129cb145b4c175f7347e47"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 114, endLine: 116, spanSha256: "532d7c22726b6745f95a4c8d40f50307a082d6aeb0e3ba2f7a66a403eb6ee306"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 116, endLine: 116, spanSha256: "7a06113cdb91bcf71cbe6464d2128b6734f755afbe34e2a67090165ad243c5ec"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 116, endLine: 117, spanSha256: "238a842e9ccdd67a3b6bd8fc95467e8503fafc0a246a85876b8b6625fbd1b306"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 108, endLine: 109, spanSha256: "710cd49851d976c384a6cb2c8e272c41ca418c0a3c78b1393a6180d16075b136"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 109, endLine: 110, spanSha256: "08ebdbdd1f133672367c28fe424d6dcc573053884cf2d1371658f8e266e74fb1"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 110, endLine: 112, spanSha256: "cd6cefb06fd555a52ef1d97ee16bdc2d7b4183c75176a6f259d95b9f30e94006"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 114, endLine: 115, spanSha256: "090754d570b183484b12649bde85667aebff2311a70ff53278f2e13416694cbb"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 116, endLine: 119, spanSha256: "2aae479b0dd7e07323ad0b98a3258fe9e624b50323e789109b9165dfc885e160"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 119, endLine: 120, spanSha256: "238a842e9ccdd67a3b6bd8fc95467e8503fafc0a246a85876b8b6625fbd1b306"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 122, endLine: 122, spanSha256: "a3c95e4386c462a59c2187469eeac0f45214ef4e072604e9dd932de6571943d6"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 123, endLine: 124, spanSha256: "b3ef6a6b9ed4df163ed7a5a4da7006fef834bea43a4b96ce2428f123bc7907ac"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 125, endLine: 125, spanSha256: "6b50a15b8e344d2f25d408885fd17b9b9d2b9528d5a899fb9f9b3232331f93a8"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 126, endLine: 126, spanSha256: "0000badab4f9afdffa3b5867b80cd4c1fcef3e99b9e04e6a1dd8b51e20efddbc"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 127, endLine: 129, spanSha256: "e41433e2dfb3dbe70408e36ba9bc7565e1158c9447b85b460e6d89e924e4d368"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 131, endLine: 132, spanSha256: "1ad62a6cc0779afa5e7faa4e3ed8a538d5e5678fd09acb50e468c0ef18defc03"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 133, endLine: 135, spanSha256: "aa84b4711e4ace451cbbb8c6df79142d008487fb321744a40bce09a79c7fe911"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 135, endLine: 136, spanSha256: "9ed845f8d57c58a803b36e5fe6857e409b2f85dc33e3fb94c98c0123bfa7f7b4"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 137, endLine: 140, spanSha256: "55b4498c2d0df7bd5cedd895e949ab8fc07b74a762a967044b4bb6a19f7d459c"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 141, endLine: 143, spanSha256: "7c294cb9736888f5db34cea280ddeffe7d0f3fa21e86c4b48bc1f8e6a279de2e"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="0538b6d6dec28967" -->
+<!-- qmd:auto:start id="main" sourceHash="0ced0161810da14b" -->
 ## Summary
-`docs/release-agent-qa.md`는 개인 프로젝트·원고·운영 DB가 없는 전용 OS 계정 또는 disposable VM·snapshot을 요구한다. wake queue와 coordination·development locks가 OS UID home에 있어 격리한 `HOME`만으로는 부족하다. 관련 계약은 `runtime-resource-coordination.md`와 `development-resource-safety.md`에 있다. clean state에는 양 호스트의 `memvane`·`qmd-auto-context`, `~/.local/state/memvane`, `~/.local/state/laya`, `~/Library/Application Support/memvane`, `~/Library/Application Support/qmd-auto-context`, 기존 fixture, 전역 Git `core.hooksPath`가 없어야 한다. 새 계정·snapshot 복원·문서화된 제거 중 사용한 초기화 방법을 기록한다.
+`docs/release-agent-qa.md` section 3 기준이다.
+
+QA host account는 지원 hardware의 전용 OS user account이거나 disposable VM/snapshot이어야 하며, 개인 project·manuscript·operating database가 없어야 한다. 격리된 `HOME`만으로는 부족하다. runtime wake queue와 coordination·development lock이 OS UID home에 root하기 때문이다(`runtime-resource-coordination.md`, `development-resource-safety.md`). maintainer의 일상 계정에서는 실행하지 않는다.
+
+Clean state의 조건은 다음과 같다. 두 host 모두 `memvane`·`qmd-auto-context` plugin이 없어야 한다. `~/.local/state/memvane`, `~/.local/state/laya`, `~/Library/Application Support/memvane`, `~/Library/Application Support/qmd-auto-context`에 state가 없어야 한다. 이전 fixture와 global Git `core.hooksPath`도 없어야 한다. reset 방법(new account, snapshot restore, documented removal)을 기록한다.
+
+실행 전에 기록할 승인은 다음과 같다.
+- QA host use와 host session model-usage cost cap
+- embedding runtime provisioning용 network access(npm registry, model host). 검토한 pinned GGUF 로컬 사본을 제공하면 예외다.
+- Wiki extractor/verifier cost cap(RQA-WIKI-*)
+- safe test resources를 쓰는 learning 승인(RQA-RES-02 only)
+
+실제 learning, manuscripts, operating DB write는 별도 승인이 없으면 범위 밖이며, 의존 scenario는 `BLOCKED`다.
+
+Evidence directory는 `EVID=/tmp/qmd-release-qa-evidence-<runId>`, mode 0700으로 모든 fixture 밖에 둔다. selected route의 모든 hook 호출은 `<install state root>/events.jsonl`에 한 줄을 append한다(model context에는 쓰지 않는다). fresh host session마다 `events.jsonl`과 `.1`/`.2` generation을 `$EVID/events-<host>-<run-session-id>.jsonl`로 복사한다. `QMD_FORCE_DEAD_PIDS`, `QMD_SETUP_GUARD_FIXTURE`, `QMD_SANDBOX` 같은 test-only 변수가 있으면 run은 무효다.
+
+Fresh session은 candidate install과 host reload가 끝난 뒤 시작한 host process이며, cwd가 scenario checkout과 같아야 한다.
 <!-- qmd:auto:end -->
