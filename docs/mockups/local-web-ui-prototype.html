@@ -1,0 +1,1904 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MemVane — Local Web Dashboard Prototype</title>
+<style>
+  :root {
+    --bg-app: #0b0e14;
+    --bg-sidebar: #10141c;
+    --bg-surface: #151a24;
+    --bg-surface-2: #1b2230;
+    --bg-hover: #21293a;
+    --bg-input: #0e121a;
+    --border: #263042;
+    --border-strong: #36445d;
+    --text-primary: #e6edf7;
+    --text-secondary: #9aa7bd;
+    --text-muted: #66758f;
+    --accent: #4c8dff;
+    --accent-soft: rgba(76, 141, 255, 0.14);
+    --green: #22c55e;
+    --green-soft: rgba(34, 197, 94, 0.14);
+    --amber: #f59e0b;
+    --amber-soft: rgba(245, 158, 11, 0.14);
+    --red: #f43f5e;
+    --red-soft: rgba(244, 63, 94, 0.14);
+    --purple: #a78bfa;
+    --purple-soft: rgba(167, 139, 250, 0.14);
+    --pin-bg: #ff5c39;
+    --pin-resolved: #475569;
+    --shadow-lg: 0 18px 42px rgba(0, 0, 0, 0.52);
+    --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.28);
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", Roboto, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+  }
+
+  [data-theme="light"] {
+    --bg-app: #f4f6fa;
+    --bg-sidebar: #ffffff;
+    --bg-surface: #ffffff;
+    --bg-surface-2: #f8fafc;
+    --bg-hover: #eef2f7;
+    --bg-input: #f1f5f9;
+    --border: #dce3ee;
+    --border-strong: #c2cede;
+    --text-primary: #111827;
+    --text-secondary: #4b5563;
+    --text-muted: #7c8798;
+    --accent: #2563eb;
+    --accent-soft: rgba(37, 99, 235, 0.10);
+    --green: #16a34a;
+    --green-soft: rgba(22, 163, 74, 0.11);
+    --amber: #d97706;
+    --amber-soft: rgba(217, 119, 6, 0.12);
+    --red: #e11d48;
+    --red-soft: rgba(225, 29, 72, 0.10);
+    --purple: #7c3aed;
+    --purple-soft: rgba(124, 58, 237, 0.10);
+    --shadow-lg: 0 18px 40px rgba(15, 23, 42, 0.14);
+    --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.08);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; padding: 0; background: var(--bg-app); color: var(--text-primary); font-family: var(--font-sans); font-size: 13px; line-height: 1.45; overflow: hidden; }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* App Grid */
+  .app-shell {
+    display: grid;
+    grid-template-columns: 268px 1fr;
+    grid-template-rows: 50px 1fr;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* Topbar */
+  .topbar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 14px;
+    background: var(--bg-sidebar);
+    border-bottom: 1px solid var(--border);
+    z-index: 20;
+    min-width: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .brand {
+    display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13.5px; letter-spacing: -0.01em; padding-right: 10px; border-right: 1px solid var(--border); white-space: nowrap;
+  }
+  .brand-mark {
+    width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, var(--accent), var(--purple)); display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 800;
+  }
+  .breadcrumb { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .breadcrumb strong { color: var(--text-primary); font-weight: 600; }
+
+  .tab-nav { display: flex; align-items: center; gap: 3px; background: var(--bg-input); padding: 3px; border-radius: var(--radius-md); border: 1px solid var(--border); }
+  .tab-btn {
+    border: none; background: transparent; color: var(--text-secondary); padding: 5px 10px; border-radius: 5px; font-size: 12px; font-weight: 500; transition: all .15s; white-space: nowrap;
+  }
+  .tab-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+  .tab-btn.active { background: var(--bg-surface-2); color: var(--text-primary); box-shadow: var(--shadow-sm); border: 1px solid var(--border-strong); }
+
+  .topbar-right { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; border: 1px solid var(--border); background: var(--bg-surface-2); color: var(--text-secondary); white-space: nowrap;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.amber { background: var(--amber); }
+  .dot.red { background: var(--red); }
+  .dot.blue { background: var(--accent); }
+  .dot.muted { background: var(--text-muted); }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-surface-2); color: var(--text-primary); font-size: 12px; font-weight: 500; transition: all .15s; white-space: nowrap;
+  }
+  .btn:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn-primary:hover { filter: brightness(1.08); background: var(--accent); }
+  .btn-comment.active { background: var(--pin-bg); border-color: var(--pin-bg); color: #fff; box-shadow: 0 0 0 3px rgba(255, 92, 57, 0.25); }
+  .btn-labels.active { background: var(--purple); border-color: var(--purple); color: #fff; }
+  .btn-sm { padding: 3px 8px; font-size: 11px; }
+  .btn-danger { color: var(--red); border-color: rgba(244, 63, 94, 0.35); }
+  .btn-danger:hover { background: var(--red-soft); }
+
+  /* Sidebar (Orca style) */
+  .sidebar {
+    background: var(--bg-sidebar);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .sidebar-search { padding: 10px; border-bottom: 1px solid var(--border); }
+  .sidebar-search input {
+    width: 100%; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 9px; font-size: 12px; outline: none;
+  }
+  .sidebar-search input:focus { border-color: var(--accent); }
+  .sidebar-scroll { flex: 1; overflow-y: auto; padding: 8px; }
+  .nav-section-label {
+    font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); padding: 10px 8px 4px; display: flex; justify-content: space-between; align-items: center;
+  }
+  .tree-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; font-size: 12.5px; color: var(--text-secondary); margin-bottom: 2px; border: 1px solid transparent;
+  }
+  .tree-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .tree-item.active { background: var(--accent-soft); color: var(--text-primary); border-color: rgba(76, 141, 255, 0.35); font-weight: 600; }
+  .tree-item-main { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; }
+  .tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tree-toggle { width: 16px; height: 16px; display: grid; place-items: center; border-radius: 4px; color: var(--text-muted); flex-shrink: 0; border: none; background: transparent; padding: 0; }
+  .tree-toggle:hover { background: var(--bg-surface-2); color: var(--text-primary); }
+  .tree-children { margin-left: 14px; padding-left: 8px; border-left: 1px solid var(--border); margin-bottom: 4px; }
+  .tree-wt { font-size: 12px; padding: 5px 8px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 999px; font-size: 10.5px; font-weight: 600; border: 1px solid transparent; white-space: nowrap;
+  }
+  .badge-green { background: var(--green-soft); color: var(--green); border-color: rgba(34, 197, 94, 0.25); }
+  .badge-amber { background: var(--amber-soft); color: var(--amber); border-color: rgba(245, 158, 11, 0.28); }
+  .badge-red { background: var(--red-soft); color: var(--red); border-color: rgba(244, 63, 94, 0.28); }
+  .badge-blue { background: var(--accent-soft); color: var(--accent); border-color: rgba(76, 141, 255, 0.28); }
+  .badge-purple { background: var(--purple-soft); color: var(--purple); border-color: rgba(167, 139, 250, 0.28); }
+  .badge-muted { background: var(--bg-surface-2); color: var(--text-secondary); border-color: var(--border); }
+
+  /* Main Workspace */
+  .main-wrap {
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .comment-banner {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 16px;
+    background: linear-gradient(90deg, rgba(255, 92, 57, 0.18), rgba(76, 141, 255, 0.14));
+    border-bottom: 1px solid rgba(255, 92, 57, 0.45);
+    font-size: 12px;
+    color: var(--text-primary);
+    flex-shrink: 0;
+  }
+  body.comment-mode .comment-banner { display: flex; }
+  body.comment-mode { cursor: crosshair; }
+
+  .main-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px 80px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  /* Cards & Panels */
+  .card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 14px 16px;
+  }
+  .card-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap;
+  }
+  .card-title { font-size: 13.5px; font-weight: 650; display: flex; align-items: center; gap: 8px; }
+  .card-sub { font-size: 11.5px; color: var(--text-secondary); }
+
+  .alert-banner {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-radius: var(--radius-md); background: var(--amber-soft); border: 1px solid rgba(245, 158, 11, 0.35); color: var(--text-primary);
+  }
+  .alert-banner-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .kpi-box { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px 14px; }
+  .kpi-label { font-size: 11.5px; color: var(--text-secondary); margin-bottom: 6px; display: flex; justify-content: space-between; }
+  .kpi-value { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+  .kpi-foot { font-size: 11px; color: var(--text-muted); margin-top: 5px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+  /* Tables */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th { text-align: left; font-size: 11px; font-weight: 600; color: var(--text-muted); padding: 7px 10px; border-bottom: 1px solid var(--border); text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
+  td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tr.clickable:hover td { background: var(--bg-hover); cursor: pointer; }
+  tr.wt-row td:first-child { padding-left: 26px; color: var(--text-secondary); }
+  tr.selected-row td { background: var(--accent-soft); }
+
+  /* Two-column / grids */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .split-wiki { display: grid; grid-template-columns: 310px 1fr; gap: 12px; min-height: 520px; }
+  .split-source { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+  /* Playground */
+  .query-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .query-input {
+    flex: 1; min-width: 240px; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 11px; font-size: 13px; outline: none;
+  }
+  .query-input:focus { border-color: var(--accent); }
+  .stage-col { background: var(--bg-surface-2); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .stage-title { font-size: 11.5px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  .cand-item { padding: 7px 8px; border-radius: 6px; background: var(--bg-surface); border: 1px solid var(--border); font-size: 11.5px; display: flex; flex-direction: column; gap: 3px; }
+  .cand-item.picked { border-color: var(--green); background: var(--green-soft); }
+  .cand-item.dropped { opacity: 0.72; }
+
+  /* Stage timing bar */
+  .timing-bar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--bg-input); border: 1px solid var(--border); margin: 6px 0; }
+  .t-seg { height: 100%; }
+
+  /* Progress Bars */
+  .prog-track { height: 7px; border-radius: 999px; background: var(--bg-input); border: 1px solid var(--border); overflow: hidden; display: flex; }
+  .prog-fill { height: 100%; }
+
+  /* Wiki Card & Source */
+  .wiki-item { padding: 9px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-surface-2); cursor: pointer; margin-bottom: 6px; }
+  .wiki-item:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+  .wiki-item.active { border-color: var(--accent); background: var(--accent-soft); }
+  .filter-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-surface-2); font-size: 11.5px; color: var(--text-secondary); }
+  .chip.active { background: var(--accent-soft); border-color: var(--accent); color: var(--text-primary); font-weight: 600; }
+
+  .code-block {
+    background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55; overflow-x: auto; white-space: pre-wrap;
+  }
+  .source-line { display: flex; gap: 10px; padding: 1px 6px; border-radius: 3px; }
+  .source-line.hl { background: rgba(76, 141, 255, 0.18); border-left: 2px solid var(--accent); }
+  .line-no { color: var(--text-muted); user-select: none; min-width: 28px; text-align: right; }
+
+  .auto-block { border-left: 3px solid var(--accent); padding-left: 10px; margin: 8px 0; background: rgba(76, 141, 255, 0.05); padding: 8px 10px; border-radius: 0 6px 6px 0; }
+  .manual-block { border-left: 3px solid var(--green); padding-left: 10px; margin: 8px 0; background: rgba(34, 197, 94, 0.05); padding: 8px 10px; border-radius: 0 6px 6px 0; }
+
+  /* Comment Pins, Region Highlight, Overlay Badges & Drawer */
+  [data-region] { transition: outline-color .12s, box-shadow .12s; }
+  body.comment-mode [data-region].region-hover {
+    outline: 2px dashed var(--pin-bg) !important;
+    outline-offset: 2px;
+  }
+  .region-pulse {
+    animation: regionPulse 1.4s ease-out;
+  }
+  @keyframes regionPulse {
+    0% { box-shadow: 0 0 0 0 rgba(255, 92, 57, 0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(255, 92, 57, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 92, 57, 0); }
+  }
+
+  .overlay-layer {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 60;
+  }
+  .region-badge {
+    position: fixed;
+    pointer-events: none;
+    background: var(--purple);
+    color: #fff;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    box-shadow: var(--shadow-sm);
+    z-index: 61;
+  }
+  .pin-marker {
+    position: fixed;
+    pointer-events: auto;
+    width: 24px;
+    height: 24px;
+    margin-left: -12px;
+    margin-top: -12px;
+    border-radius: 50% 50% 50% 4px;
+    transform: rotate(-45deg);
+    background: var(--pin-bg);
+    color: #fff;
+    border: 2px solid #fff;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+    display: grid;
+    place-items: center;
+    font-size: 11px;
+    font-weight: 800;
+    cursor: pointer;
+    z-index: 65;
+  }
+  .pin-marker span { transform: rotate(45deg); display: block; line-height: 1; }
+  .pin-marker.resolved { background: var(--pin-resolved); opacity: 0.78; }
+  .pin-marker:hover { transform: rotate(-45deg) scale(1.12); }
+
+  /* Popover */
+  .popover {
+    position: fixed;
+    width: 320px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    padding: 12px;
+    z-index: 80;
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .popover.open { display: flex; }
+  .cat-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+  .cat-chip { padding: 2px 7px; font-size: 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-surface-2); color: var(--text-secondary); }
+  .cat-chip.active { background: var(--pin-bg); border-color: var(--pin-bg); color: #fff; font-weight: 600; }
+  .popover textarea {
+    width: 100%; min-height: 76px; resize: vertical; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 9px; font-size: 12.5px; outline: none;
+  }
+  .popover textarea:focus { border-color: var(--accent); }
+
+  /* Comment Drawer */
+  .drawer {
+    position: fixed;
+    top: 50px;
+    right: 0;
+    bottom: 0;
+    width: 360px;
+    background: var(--bg-sidebar);
+    border-left: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-lg);
+    z-index: 70;
+    display: flex;
+    flex-direction: column;
+    transform: translateX(100%);
+    transition: transform .18s ease-out;
+  }
+  .drawer.open { transform: translateX(0); }
+  .drawer-head { padding: 12px 14px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+  .drawer-list { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .comment-card {
+    background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px; display: flex; flex-direction: column; gap: 6px; cursor: pointer;
+  }
+  .comment-card:hover { border-color: var(--accent); }
+  .comment-card.resolved { opacity: 0.65; }
+
+  /* Modal */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.58); display: none; place-items: center; z-index: 95;
+  }
+  .modal-backdrop.open { display: grid; }
+  .modal {
+    width: min(520px, 92vw); background: var(--bg-surface); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); padding: 16px 18px; box-shadow: var(--shadow-lg); display: flex; flex-direction: column; gap: 10px;
+  }
+
+  /* Toast */
+  .toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: var(--bg-surface-2); border: 1px solid var(--border-strong); color: var(--text-primary);
+    padding: 8px 14px; border-radius: 999px; font-size: 12px; font-weight: 500; box-shadow: var(--shadow-lg);
+    opacity: 0; pointer-events: none; transition: all .2s; z-index: 100;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  @media (max-width: 1080px) {
+    .kpi-grid, .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .split-wiki, .split-source, .grid-2 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <!-- TOPBAR -->
+  <header class="topbar" data-region="T1-topbar" data-region-label="상단 글로벌 상태바 & 탭">
+    <div class="topbar-left">
+      <div class="brand">
+        <span class="brand-mark">M</span>
+        <span>MemVane</span>
+      </div>
+      <div class="breadcrumb" id="breadcrumb"></div>
+      <nav class="tab-nav" id="tabNav" aria-label="Primary Tabs">
+        <button class="tab-btn active" data-tab="overview">Overview</button>
+        <button class="tab-btn" data-tab="recall">Recall &amp; Playground</button>
+        <button class="tab-btn" data-tab="wiki">Wiki Browser</button>
+        <button class="tab-btn" data-tab="runtime">Runtime &amp; Learning</button>
+      </nav>
+    </div>
+    <div class="topbar-right">
+      <span class="pill" title="BroadcastChannel 단일 SSE 리더"><span class="dot green"></span>SSE Leader · 1 tab</span>
+      <span class="pill mono">v1.1.0</span>
+      <span class="pill">Read-Only</span>
+      <button class="btn btn-sm" id="themeBtn" title="다크/라이트 테마 전환">테마</button>
+      <button class="btn btn-sm btn-labels" id="labelsBtn" title="영역 ID 표시 토글 (단축키 L)">영역 ID [L]</button>
+      <button class="btn btn-sm btn-comment" id="commentModeBtn" title="화면 클릭 코멘트 모드 (단축키 C)">코멘트 달기 [C]</button>
+      <button class="btn btn-sm" id="drawerBtn">코멘트 목록 (<span id="commentCount">0</span>)</button>
+    </div>
+  </header>
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar" data-region="S1-sidebar-tree" data-region-label="좌측 프로젝트·워크트리 트리">
+    <div class="sidebar-search">
+      <input type="text" id="sidebarSearch" placeholder="프로젝트 / 워크트리 / 브랜치 검색..." />
+    </div>
+    <div class="sidebar-scroll" id="sidebarTree"></div>
+  </aside>
+
+  <!-- MAIN WORKSPACE -->
+  <main class="main-wrap">
+    <div class="comment-banner">
+      <span><strong>코멘트 모드 ON</strong> — 피드백을 남기고 싶은 UI 영역 어디든 클릭하세요. (단축키 <kbd class="mono">ESC</kbd> 종료)</span>
+      <button class="btn btn-sm" id="exitCommentBtn">코멘트 모드 끝내기</button>
+    </div>
+    <div class="main-scroll" id="mainContent"></div>
+  </main>
+</div>
+
+<!-- OVERLAY PINS & REGION IDS -->
+<div class="overlay-layer" id="overlayLayer"></div>
+
+<!-- COMMENT POPOVER -->
+<div class="popover" id="commentPopover" role="dialog" aria-label="코멘트 작성">
+  <div style="display:flex;justify-content:space-between;align-items:center;">
+    <strong id="popTitle" style="font-size:12.5px;">코멘트 추가</strong>
+    <span class="badge badge-purple mono" id="popRegion"></span>
+  </div>
+  <div class="cat-chips" id="popCats"></div>
+  <textarea id="popText" placeholder="개선 의견, 레이아웃 수정, 빠진 기능 등을 적어 주세요... (Cmd/Ctrl+Enter 저장)"></textarea>
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+    <div style="display:flex;gap:6px;" id="popEditActions"></div>
+    <div style="display:flex;gap:6px;margin-left:auto;">
+      <button class="btn btn-sm" id="popCancel">취소</button>
+      <button class="btn btn-sm btn-primary" id="popSave">저장</button>
+    </div>
+  </div>
+</div>
+
+<!-- COMMENT DRAWER -->
+<aside class="drawer" id="commentDrawer" aria-label="코멘트 목록">
+  <div class="drawer-head">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <strong style="font-size:13.5px;">UI 가안 피드백 목록</strong>
+      <button class="btn btn-sm" id="closeDrawerBtn">닫기</button>
+    </div>
+    <div class="filter-chips" id="drawerFilters">
+      <button class="chip active" data-filter="all">전체</button>
+      <button class="chip" data-filter="tab">현재 탭</button>
+      <button class="chip" data-filter="open">미해결</button>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      <button class="btn btn-sm btn-primary" id="copyMdBtn">피드백 마크다운 복사</button>
+      <button class="btn btn-sm" id="downloadMdBtn">.md 저장</button>
+      <button class="btn btn-sm btn-danger" id="clearAllBtn">전체 삭제</button>
+    </div>
+  </div>
+  <div class="drawer-list" id="drawerList"></div>
+</aside>
+
+<!-- MODAL (Export fallback / Phase 2 previewSha256 demo) -->
+<div class="modal-backdrop" id="modalBackdrop">
+  <div class="modal">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <strong id="modalTitle" style="font-size:14px;"></strong>
+      <button class="btn btn-sm" id="modalCloseBtn">닫기</button>
+    </div>
+    <div id="modalBody"></div>
+    <div id="modalFooter" style="display:flex;justify-content:flex-end;gap:8px;"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------------- Mock Domain Data (Aligned with design-local-web-ui.md r2) ----------------
+  const TARGETS = [
+    {
+      targetId: 'a81f3c2e91b40d7712e90f8a4b6c1d02',
+      installId: 'a81f3c2e91b40d7712e90f8a4b6c1d02',
+      kind: 'main',
+      name: 'service-engineering',
+      branch: 'main',
+      displayRoot: '/Users/dev/work/service-engineering',
+      hosts: ['claude', 'codex'],
+      status: 'active',
+      cards: { verified: 3710, generated: 35, pending: 6, stale: 4, overBudget: 12, hidden: 18 },
+      vectors: 18412,
+      arenaCovered: 18370,
+      lastSync: '2분 전',
+      recalls24h: 148,
+      p50: 1420,
+      p95: 2380,
+      slo: 'ok',
+      sizeClass: 'large',
+      alerts: ['vector_arena: 42 sets pending']
+    },
+    {
+      targetId: 'a81f3c2e91b40d7712e90f8a4b6c1d02:9c4d1e2a7b08',
+      installId: 'a81f3c2e91b40d7712e90f8a4b6c1d02',
+      parentId: 'a81f3c2e91b40d7712e90f8a4b6c1d02',
+      kind: 'worktree',
+      name: 'wt/feat-billing-v2',
+      branch: 'feat/billing-v2',
+      displayRoot: '/Users/dev/work/wt/se-billing-v2',
+      hosts: ['claude'],
+      status: 'active',
+      viewState: 'ready',
+      cards: { verified: 3712, generated: 0, pending: 0, stale: 0, overBudget: 12, hidden: 18 },
+      vectors: 18420,
+      arenaCovered: 18420,
+      lastSync: '4분 전',
+      recalls24h: 39,
+      p50: 1310,
+      p95: 2110,
+      slo: 'ok',
+      sizeClass: 'large',
+      alerts: []
+    },
+    {
+      targetId: 'a81f3c2e91b40d7712e90f8a4b6c1d02:3e71fa04129b',
+      installId: 'a81f3c2e91b40d7712e90f8a4b6c1d02',
+      parentId: 'a81f3c2e91b40d7712e90f8a4b6c1d02',
+      kind: 'worktree',
+      name: 'wt/fix-auth-race',
+      branch: 'fix/auth-race',
+      displayRoot: '/Users/dev/work/wt/se-auth-race',
+      hosts: ['codex'],
+      status: 'active',
+      viewState: 'view_preparing',
+      cards: { verified: 0, generated: 0, pending: 0, stale: 0, overBudget: 0, hidden: 0 },
+      vectors: 0,
+      arenaCovered: 0,
+      lastSync: '대기 중 (initial sync)',
+      recalls24h: 6,
+      p50: 0,
+      p95: 0,
+      slo: 'no-data',
+      sizeClass: 'large',
+      alerts: ['view_preparing: linked worktree cold view']
+    },
+    {
+      targetId: '55b0d91a03ce8812f4a772e19c3088ab',
+      installId: '55b0d91a03ce8812f4a772e19c3088ab',
+      kind: 'main',
+      name: 'memvane',
+      branch: 'main',
+      displayRoot: '/Users/dev/work/memvane',
+      hosts: ['claude', 'codex', 'hermes'],
+      status: 'active',
+      cards: { verified: 178, generated: 4, pending: 2, stale: 1, overBudget: 3, hidden: 0 },
+      vectors: 892,
+      arenaCovered: 892,
+      lastSync: '방금 전',
+      recalls24h: 64,
+      p50: 680,
+      p95: 1390,
+      slo: 'ok',
+      sizeClass: 'standard',
+      alerts: []
+    },
+    {
+      targetId: '55b0d91a03ce8812f4a772e19c3088ab:7f01bc9024aa',
+      installId: '55b0d91a03ce8812f4a772e19c3088ab',
+      parentId: '55b0d91a03ce8812f4a772e19c3088ab',
+      kind: 'worktree',
+      name: 'wt/ui-design',
+      branch: 'feat/local-web-ui',
+      displayRoot: '/Users/dev/work/wt/qmd-ui-design',
+      hosts: ['claude'],
+      status: 'active',
+      viewState: 'ready',
+      cards: { verified: 178, generated: 0, pending: 0, stale: 0, overBudget: 3, hidden: 0 },
+      vectors: 892,
+      arenaCovered: 892,
+      lastSync: '1분 전',
+      recalls24h: 19,
+      p50: 640,
+      p95: 1210,
+      slo: 'ok',
+      sizeClass: 'standard',
+      alerts: []
+    }
+  ];
+
+  const RECENT_ERRORS = [
+    {
+      ts: '14:21:08', install: 'service-engineering', target: 'wt/fix-auth-race', host: 'codex',
+      event: 'recall', outcome: 'empty', reason: 'view_preparing',
+      diagId: '9f8e7d6c5b4a32109f8e7d6c5b4a3210',
+      detail: 'Traceback (diagnostic.part reassembled):\n  endpoint=a81f3c2e... linked_view=3e71fa04129b\n  reason=view_preparing (no published generation head yet; main sync wake queued)'
+    },
+    {
+      ts: '13:47:19', install: 'service-engineering', target: 'main', host: 'claude',
+      event: 'learning.cycle', outcome: 'deferred_resource', reason: 'memory_pressure_warning',
+      diagId: '1a2b3c4d5e6f708192a3b4c5d6e7f809',
+      detail: 'admission_check: system_free_percent=38%, available_mib=6120 (< learning threshold), next_retry=600s'
+    }
+  ];
+
+  const RECALL_TIMELINE = [
+    {
+      id: 'rec-1', ts: '14:23:41', installId: '55b0d91a03ce8812f4a772e19c3088ab', targetId: '55b0d91a03ce8812f4a772e19c3088ab',
+      host: 'claude', session: 'sess_8b21', promptSha: '7d9a4c1e', promptChars: 142,
+      outcome: 'served', reason: 'selected', storeFormat: 'schema3', degraded: null,
+      msTotal: 692, stages: { pinMs: 14, lexicalMs: 18, stillCurrentMs: 12, checkoutMs: 8, queryEmbeddingMs: 42, semanticMs: 190, selectorMs: 408 },
+      sessionExcluded: 1, sessionState: 'ok', semanticOnlyInjected: 1,
+      cards: [
+        { rel: 'concepts/v1-guard-g4-도메인-줄-수-상한.md', cosine: 0.842 },
+        { rel: 'decisions/memvane-웹-ui-프론트엔드-스택-빌드-xss-규칙.md', cosine: 0.791 }
+      ],
+      notes: ['selectorCheckpoint:9c12ab40fe12']
+    },
+    {
+      id: 'rec-2', ts: '14:18:05', installId: 'a81f3c2e91b40d7712e90f8a4b6c1d02', targetId: 'a81f3c2e91b40d7712e90f8a4b6c1d02:9c4d1e2a7b08',
+      host: 'claude', session: 'sess_4e10', promptSha: '3b12f08a', promptChars: 218,
+      outcome: 'served', reason: 'selected', storeFormat: 'schema3', degraded: 'worktree',
+      msTotal: 1465, stages: { pinMs: 22, lexicalMs: 64, stillCurrentMs: 19, checkoutMs: 41, queryEmbeddingMs: 39, semanticMs: 580, selectorMs: 700 },
+      sessionExcluded: 0, sessionState: 'ok', semanticOnlyInjected: 2,
+      cards: [
+        { rel: 'architecture/billing-idempotency-key.md', cosine: 0.874 },
+        { rel: 'incidents/2026-09-retry-storm.md', cosine: 0.803 }
+      ],
+      notes: ['arena_hit:100%']
+    },
+    {
+      id: 'rec-3', ts: '14:11:29', installId: 'a81f3c2e91b40d7712e90f8a4b6c1d02', targetId: 'a81f3c2e91b40d7712e90f8a4b6c1d02:3e71fa04129b',
+      host: 'codex', session: 'sess_99a2', promptSha: 'c4e81201', promptChars: 96,
+      outcome: 'empty', reason: 'view_preparing', storeFormat: 'schema3', degraded: 'worktree',
+      msTotal: 49, stages: { pinMs: 18, lexicalMs: 0, stillCurrentMs: 0, checkoutMs: 24, queryEmbeddingMs: 0, semanticMs: 0, selectorMs: 0 },
+      sessionExcluded: 0, sessionState: 'none', semanticOnlyInjected: 0,
+      cards: [],
+      notes: ['laya_view_preparing']
+    },
+    {
+      id: 'rec-4', ts: '13:59:12', installId: '55b0d91a03ce8812f4a772e19c3088ab', targetId: '55b0d91a03ce8812f4a772e19c3088ab',
+      host: 'hermes', session: 'sess_herm_3', promptSha: '91ab002d', promptChars: 84,
+      outcome: 'served', reason: 'ranked', storeFormat: 'schema3', degraded: null,
+      msTotal: 274, stages: { pinMs: 12, lexicalMs: 15, stillCurrentMs: 11, checkoutMs: 9, queryEmbeddingMs: 38, semanticMs: 189, selectorMs: 0 },
+      sessionExcluded: 0, sessionState: 'none', semanticOnlyInjected: 0,
+      cards: [{ rel: 'concepts/memvane-1-x-영속-계약-settings-키와-plan-scopeid.md', cosine: 0.815 }],
+      notes: ['laya_selector_not_prepared']
+    }
+  ];
+
+  const PLAYGROUND_PRESETS = {
+    '도구는 쓰지 말고 답만 해 줘. v1_guard G5 속성 한도 예외는?': {
+      lexical: [
+        { path: 'concepts/v1-guard-g4-도메인-줄-수-상한.md', score: 'BM25 14.2', rank: 1 },
+        { path: 'entities/memvane-store-모듈-구성-fill-view-reader-journal-reader.md', score: 'BM25 11.8', rank: 2 },
+        { path: 'concepts/memvane-store-공개-api-경계-api-py.md', score: 'BM25 10.9', rank: 3 },
+        { path: 'concepts/memvane-1-x-영속-계약-settings-키와-plan-scopeid.md', score: 'BM25 8.1', rank: 4 }
+      ],
+      semantic: [
+        { path: 'concepts/memvane-사용자-운영-인터페이스-안내-원칙.md', score: 'cos 0.781 (arena)', rank: 1 },
+        { path: 'concepts/v1-guard-g4-도메인-줄-수-상한.md', score: 'cos 0.764 (arena)', rank: 2 },
+        { path: 'concepts/memvane-store-공개-api-경계-api-py.md', score: 'cos 0.739 (arena)', rank: 3 },
+        { path: 'entities/memvane-1-1-x-열린-항목-1-1-0-이월-wiki-구조-recall-도구.md', score: 'cos 0.712 (arena)', rank: 4 }
+      ],
+      hybrid: [
+        { path: 'concepts/v1-guard-g4-도메인-줄-수-상한.md', score: 'RRF 0.0328', rank: 1 },
+        { path: 'concepts/memvane-store-공개-api-경계-api-py.md', score: 'RRF 0.0314', rank: 2 },
+        { path: 'concepts/memvane-사용자-운영-인터페이스-안내-원칙.md', score: 'RRF 0.0241', rank: 3 },
+        { path: 'entities/memvane-store-모듈-구성-fill-view-reader-journal-reader.md', score: 'RRF 0.0161', rank: 4 }
+      ],
+      selector: [
+        { path: 'concepts/v1-guard-g4-도메인-줄-수-상한.md', status: 'picked', note: 'p=0.93 · G4/G5 한도 직접 매치' },
+        { path: 'concepts/memvane-store-공개-api-경계-api-py.md', status: 'picked', note: 'p=0.88 · api.py 속성 상한 설명' },
+        { path: 'concepts/memvane-사용자-운영-인터페이스-안내-원칙.md', status: 'dropped', note: 'p=0.14 · 앞 지시문 과매칭 제외' },
+        { path: 'entities/memvane-store-모듈-구성-fill-view-reader-journal-reader.md', status: 'picked', note: 'p=0.71 · 3번째 슬롯 선택' }
+      ]
+    },
+    '결제 웹훅 멱등성 키 재시도 처리 규칙': {
+      lexical: [
+        { path: 'architecture/billing-idempotency-key.md', score: 'BM25 18.4', rank: 1 },
+        { path: 'incidents/2026-09-retry-storm.md', score: 'BM25 13.7', rank: 2 },
+        { path: 'specs/webhook-signature-v2.md', score: 'BM25 9.4', rank: 3 }
+      ],
+      semantic: [
+        { path: 'architecture/billing-idempotency-key.md', score: 'cos 0.892 (arena)', rank: 1 },
+        { path: 'incidents/2026-09-retry-storm.md', score: 'cos 0.831 (arena)', rank: 2 },
+        { path: 'runbooks/stripe-dlq-replay.md', score: 'cos 0.774 (arena)', rank: 3 }
+      ],
+      hybrid: [
+        { path: 'architecture/billing-idempotency-key.md', score: 'RRF 0.0333', rank: 1 },
+        { path: 'incidents/2026-09-retry-storm.md', score: 'RRF 0.0322', rank: 2 },
+        { path: 'specs/webhook-signature-v2.md', score: 'RRF 0.0159', rank: 3 }
+      ],
+      selector: [
+        { path: 'architecture/billing-idempotency-key.md', status: 'picked', note: 'p=0.97 · 핵심 계약 문서' },
+        { path: 'incidents/2026-09-retry-storm.md', status: 'picked', note: 'p=0.84 · 재시도 백오프 근거' },
+        { path: 'specs/webhook-signature-v2.md', status: 'dropped', note: 'p=0.22 · 서명 검증 전용으로 제외' }
+      ]
+    }
+  };
+
+  const WIKI_CARDS = [
+    {
+      targetId: '55b0d91a03ce8812f4a772e19c3088ab',
+      rel: 'concepts/v1-guard-g4-도메인-줄-수-상한.md',
+      title: 'v1_guard G4·G5 도메인 줄 수 및 API 속성 상한',
+      status: 'verified',
+      createdBy: 'memvane',
+      tokens: 412,
+      budget: 700,
+      stale: false,
+      hiddenBySkip: false,
+      sourcePath: 'tests/structure/README.md',
+      sourceRevisions: [{ path: 'tests/structure/README.md', sha256: '4a9f81c2e3b0', span: 'L9-L14' }],
+      related: ['concepts/memvane-store-공개-api-경계-api-py.md', 'decisions/memvane-웹-ui-프론트엔드-스택-빌드-xss-규칙.md'],
+      autoBody: 'v1_guard.py는 도메인별 총 줄 수(G4: 기본 8,000줄, store 예외 8,100줄)와 api.py 공개 속성 수(G5: 기본 30개, journal 51 / runtime 42 / wiki/workspace 35 / wiki/card 48 핀 고정)를 검사한다.\n\nkernel 도메인(G3)은 __init__.py 제외 최대 14모듈 · 1,500줄 상한을 가진다.',
+      manualBody: '신규 UI 도메인 추가 시 기존 포화 도메인(learning 30/30, runtime 42/42, kernel 14/1,499)을 건드리지 않도록 설계 문서 r2 §2.2 규약을 따른다.',
+      sourceLines: [
+        { n: 8, text: '' },
+        { n: 9, text: '- G1(엄격): 다른 도메인 api.py·types.py에서 _ 이름을 import하거나 미선언 멤버 접근 금지.', hl: true },
+        { n: 10, text: '- G1(엄격, test_import): 제품 모듈이 tests 패키지를 부르는 곳.', hl: false },
+        { n: 11, text: '- G5(엄격): api.py의 공개 속성이 30개를 넘는 경우 등.', hl: true },
+        { n: 12, text: '- G9: CREATE TABLE 소유 도메인 외 SQL 테이블 직접 쿼리 금지.', hl: true },
+        { n: 13, text: '- G4의 도메인 줄 수 상한은 8,000이고 store만 8,100이다(_DOMAIN_LINES).', hl: true },
+        { n: 14, text: '  arena 접착 코드는 pin·read transaction 안에서만 돌 수 있어 store에 남는다.', hl: false }
+      ]
+    },
+    {
+      targetId: '55b0d91a03ce8812f4a772e19c3088ab',
+      rel: 'decisions/memvane-웹-ui-프론트엔드-스택-빌드-xss-규칙.md',
+      title: 'MemVane 웹 UI 프론트엔드 스택·빌드·XSS 규칙',
+      status: 'generated',
+      createdBy: 'memvane',
+      tokens: 528,
+      budget: 700,
+      stale: false,
+      hiddenBySkip: false,
+      sourcePath: 'docs/design-local-web-ui.md',
+      sourceRevisions: [{ path: 'docs/design-local-web-ui.md', sha256: 'e770c9a21b44', span: 'L102-L138' }],
+      related: ['concepts/v1-guard-g4-도메인-줄-수-상한.md'],
+      autoBody: '프론트엔드는 최상위 ui/ 폴더에서 Preact + TypeScript(strict: true) + Vite로 개발하고 사전 빌드 산출물 ui/dist/를 커밋한다.\n\ndangerouslySetInnerHTML, innerHTML, 인라인 style="" 속성 및 외부 CDN 로드는 정적 가드에서 금지한다.',
+      manualBody: '(검증 대기 중 — generated 상태이므로 아직 recall 후보에서 자동 제외됨)',
+      sourceLines: [
+        { n: 102, text: '### 3.1 프론트엔드 스택 확정: Preact + TypeScript + Vite + 순수 CSS', hl: true },
+        { n: 103, text: '- 최종 번들 크기 ~25~40 KB gzip (상한 100 KB gzip)', hl: true },
+        { n: 104, text: '- 외부 UI 프레임워크·CDN 0 유지', hl: true },
+        { n: 105, text: '- unsafe DOM API 및 인라인 style 속성 금지', hl: true }
+      ]
+    },
+    {
+      targetId: '55b0d91a03ce8812f4a772e19c3088ab',
+      rel: 'concepts/memvane-store-공개-api-경계-api-py.md',
+      title: 'memvane store 공개 API 경계와 _query_only_uri',
+      status: 'pending_replace',
+      createdBy: 'memvane',
+      tokens: 742,
+      budget: 700,
+      stale: true,
+      hiddenBySkip: false,
+      sourcePath: 'memvane/kernel/errors.py',
+      sourceRevisions: [{ path: 'memvane/kernel/errors.py', sha256: '1122aabbccdd', span: 'L35-L45' }],
+      related: ['concepts/v1-guard-g4-도메인-줄-수-상한.md'],
+      autoBody: 'macOS 시스템 Python 3.9 Apple libsqlite3는 WAL 잔여 헤더 DB를 ?mode=ro로 열 수 없으므로 모든 읽기 전용 SQLite 경로는 errors._query_only_uri와 PRAGMA query_only=ON을 사용한다.',
+      manualBody: '교체 대기 파일(.pending-9e21fa)이 검증 큐에 올라가 있으며 원문 변경으로 stale 마킹됨. (본문 742 tok — 700 tok 목표 초과)',
+      sourceLines: [
+        { n: 35, text: 'def _query_only_uri(path, *, sealed=False):', hl: true },
+        { n: 36, text: '    """URI for reading existing SQLite data; callers set PRAGMA query_only."""', hl: true },
+        { n: 44, text: "    apple = sys.platform == 'darwin' and (sys.version_info[:2] == (3, 9) or _apple_sqlite())", hl: true },
+        { n: 45, text: "    return Path(path).as_uri() + '?mode=' + ('rw' if apple and not sealed else 'ro')", hl: true }
+      ]
+    },
+    {
+      targetId: 'a81f3c2e91b40d7712e90f8a4b6c1d02',
+      rel: 'architecture/billing-idempotency-key.md',
+      title: '결제 웹훅 멱등성 키 수명주기와 재시도 규칙',
+      status: 'verified',
+      createdBy: 'memvane',
+      tokens: 486,
+      budget: 700,
+      stale: false,
+      hiddenBySkip: false,
+      sourcePath: 'docs/billing/idempotency.md',
+      sourceRevisions: [{ path: 'docs/billing/idempotency.md', sha256: 'f30198ad72c1', span: 'L12-L24' }],
+      related: ['incidents/2026-09-retry-storm.md'],
+      autoBody: '모든 외부 결제 웹훅은 providerEventId + tenantId 조합의 Idempotency-Key를 72시간 보관하며, 상태가 processing인 동안 중복 요청은 202 Accepted로 병합한다.',
+      manualBody: '운영 참고: legacy v1 엔드포인트는 skipPaths로 제외되어 있어 본 카드만 v2 기준으로 제공됨.',
+      sourceLines: [
+        { n: 12, text: '## Idempotency Key TTL', hl: true },
+        { n: 13, text: '- Key = sha256(providerEventId + ":" + tenantId)', hl: true },
+        { n: 14, text: '- Retention: 72h in Redis + PostgreSQL unique constraint', hl: true }
+      ]
+    }
+  ];
+
+  // ---------------- App State & Persistent Comments ----------------
+  const STORAGE_KEY = 'memvane_ui_prototype_comments_v1';
+  const CATEGORIES = ['레이아웃', '기능', '정보 밀도', '추가', '삭제', '기타'];
+
+  const state = {
+    theme: 'dark',
+    tab: 'overview',
+    selectedTargetId: 'ALL',
+    expandedMains: new Set(['a81f3c2e91b40d7712e90f8a4b6c1d02', '55b0d91a03ce8812f4a772e19c3088ab']),
+    sidebarQuery: '',
+    showErrorDetailId: null,
+    playgroundQuery: '도구는 쓰지 말고 답만 해 줘. v1_guard G5 속성 한도 예외는?',
+    playgroundSemantic: true,
+    playgroundSelector: true,
+    playgroundResult: null,
+    recallHostFilter: 'all',
+    selectedRecallId: 'rec-1',
+    wikiFilter: 'all',
+    wikiSearch: '',
+    selectedCardRel: WIKI_CARDS[0].rel,
+    showSourceSplit: true,
+    learningCheckResult: null,
+    autoOpenOnSessionStart: false,
+    autoOpenScope: 'onboarded_sessions',
+    commentMode: false,
+    showLabels: false,
+    drawerOpen: false,
+    drawerFilter: 'all',
+    activeEditId: null,
+    pendingPin: null,
+    comments: []
+  };
+
+  function loadStore() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed.comments)) state.comments = parsed.comments;
+      if (parsed.theme === 'light' || parsed.theme === 'dark') state.theme = parsed.theme;
+    } catch { /* ignore */ }
+  }
+  function saveStore() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ theme: state.theme, comments: state.comments }));
+    } catch { /* ignore */ }
+  }
+
+  function esc(str) {
+    return String(str ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function showToast(msg) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => el.classList.remove('show'), 2200);
+  }
+
+  function currentTarget() {
+    if (state.selectedTargetId === 'ALL') return null;
+    return TARGETS.find(t => t.targetId === state.selectedTargetId) || null;
+  }
+
+  function contextLabel() {
+    const t = currentTarget();
+    if (!t) return 'All Projects';
+    if (t.kind === 'worktree') {
+      const parent = TARGETS.find(p => p.targetId === t.parentId);
+      return (parent ? parent.name : '') + ' > ' + t.name;
+    }
+    return t.name + ' (main)';
+  }
+
+  // ---------------- Render Sidebar & Topbar ----------------
+  function renderTopbar() {
+    document.documentElement.setAttribute('data-theme', state.theme);
+    const bc = document.getElementById('breadcrumb');
+    const t = currentTarget();
+    if (!t) {
+      bc.innerHTML = '<span>Context:</span> <strong>All Projects</strong> <span class="badge badge-muted">2 mains · 3 worktrees</span>';
+    } else if (t.kind === 'worktree') {
+      const p = TARGETS.find(x => x.targetId === t.parentId);
+      bc.innerHTML = `<span>${esc(p ? p.name : '')}</span> <span>/</span> <strong>${esc(t.name)}</strong> <span class="badge badge-purple mono">${esc(t.branch)}</span>`;
+    } else {
+      bc.innerHTML = `<strong>${esc(t.name)}</strong> <span class="badge badge-blue">main</span>`;
+    }
+
+    document.querySelectorAll('#tabNav .tab-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tab === state.tab);
+    });
+    document.getElementById('commentModeBtn').classList.toggle('active', state.commentMode);
+    document.getElementById('labelsBtn').classList.toggle('active', state.showLabels);
+    document.getElementById('commentCount').textContent = String(state.comments.filter(c => !c.resolved).length);
+    document.body.classList.toggle('comment-mode', state.commentMode);
+  }
+
+  function renderSidebar() {
+    const q = state.sidebarQuery.trim().toLowerCase();
+    const mains = TARGETS.filter(t => t.kind === 'main');
+    const container = document.getElementById('sidebarTree');
+    let html = `
+      <div class="tree-item ${state.selectedTargetId === 'ALL' ? 'active' : ''}" data-select-target="ALL">
+        <div class="tree-item-main">
+          <span class="dot blue"></span>
+          <span class="tree-name">All Projects (전체 통합)</span>
+        </div>
+        <span class="badge badge-muted num">${TARGETS.length}</span>
+      </div>
+      <div class="nav-section-label"><span>Onboarded Projects</span><span class="mono">${mains.length}</span></div>
+    `;
+
+    for (const m of mains) {
+      const wts = TARGETS.filter(w => w.parentId === m.targetId);
+      const matchMain = !q || m.name.toLowerCase().includes(q) || m.branch.toLowerCase().includes(q);
+      const matchedWts = wts.filter(w => !q || w.name.toLowerCase().includes(q) || w.branch.toLowerCase().includes(q));
+      if (!matchMain && matchedWts.length === 0) continue;
+      const expanded = state.expandedMains.has(m.targetId) || Boolean(q);
+      const hasAlert = m.alerts.length > 0 || wts.some(w => w.alerts.length > 0);
+      html += `
+        <div class="tree-item ${state.selectedTargetId === m.targetId ? 'active' : ''}" data-select-target="${esc(m.targetId)}">
+          <div class="tree-item-main">
+            <button class="tree-toggle" data-toggle-main="${esc(m.targetId)}" title="워크트리 펼치기/접기">${expanded ? '▾' : '▸'}</button>
+            <span class="dot ${hasAlert ? 'amber' : 'green'}"></span>
+            <span class="tree-name" title="${esc(m.displayRoot)}">${esc(m.name)}</span>
+          </div>
+          <span class="badge badge-muted num">${m.cards.verified}</span>
+        </div>
+      `;
+      if (expanded && matchedWts.length) {
+        html += `<div class="tree-children">`;
+        for (const w of matchedWts) {
+          const isPrep = w.viewState === 'view_preparing';
+          html += `
+            <div class="tree-item tree-wt ${state.selectedTargetId === w.targetId ? 'active' : ''}" data-select-target="${esc(w.targetId)}">
+              <div class="tree-item-main">
+                <span class="dot ${isPrep ? 'amber' : 'green'}"></span>
+                <span class="tree-name mono" title="${esc(w.displayRoot)}">${esc(w.name)}</span>
+              </div>
+              <span class="badge ${isPrep ? 'badge-amber' : 'badge-muted'}">${isPrep ? 'prep' : 'wt'}</span>
+            </div>
+          `;
+        }
+        html += `</div>`;
+      }
+    }
+
+    container.innerHTML = html;
+  }
+
+  // ---------------- Tab 1: Overview ----------------
+  function renderOverview() {
+    const t = currentTarget();
+    const visibleTargets = t ? (t.kind === 'main' ? TARGETS.filter(x => x.targetId === t.targetId || x.parentId === t.targetId) : [t]) : TARGETS;
+    const totalCards = visibleTargets.filter(x => x.kind === 'main').reduce((s, x) => s + x.cards.verified, 0) || visibleTargets[0].cards.verified;
+    const totalRecalls = visibleTargets.reduce((s, x) => s + x.recalls24h, 0);
+
+    const rowsHtml = visibleTargets.map(item => {
+      const isWt = item.kind === 'worktree';
+      const hosts = item.hosts.map(h => `<span class="badge badge-muted">${esc(h)}</span>`).join(' ');
+      const sloBadge = item.slo === 'ok' ? '<span class="badge badge-green">ok</span>' : (item.slo === 'over' ? '<span class="badge badge-red">over</span>' : '<span class="badge badge-muted">no-data</span>');
+      const stateBadge = item.viewState === 'view_preparing'
+        ? '<span class="badge badge-amber">view_preparing</span>'
+        : `<span class="badge badge-green">${esc(item.status)}</span>`;
+      return `
+        <tr class="clickable ${isWt ? 'wt-row' : ''} ${state.selectedTargetId === item.targetId ? 'selected-row' : ''}" data-select-target="${esc(item.targetId)}">
+          <td>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <span class="dot ${item.viewState === 'view_preparing' ? 'amber' : 'green'}"></span>
+              <strong>${esc(item.name)}</strong>
+              <span class="badge badge-muted mono">${esc(item.branch)}</span>
+            </div>
+          </td>
+          <td>${hosts}</td>
+          <td>${stateBadge}</td>
+          <td class="mono num">${item.cards.verified} <span style="color:var(--text-muted)">/ ${item.cards.generated} gen / ${item.cards.pending} pend</span></td>
+          <td class="num">${esc(item.lastSync)}</td>
+          <td class="mono num">${item.recalls24h}건 · ${item.p50 ? item.p50 + 'ms' : '—'}</td>
+          <td>${sloBadge}</td>
+        </tr>
+      `;
+    }).join('');
+
+    const errRows = RECENT_ERRORS.map(e => {
+      const expanded = state.showErrorDetailId === e.diagId;
+      return `
+        <tr>
+          <td class="mono">${esc(e.ts)}</td>
+          <td><strong>${esc(e.install)}</strong> <span class="badge badge-muted">${esc(e.target)}</span></td>
+          <td><span class="badge badge-muted">${esc(e.host)}</span></td>
+          <td class="mono">${esc(e.event)} · ${esc(e.reason)}</td>
+          <td>
+            <button class="btn btn-sm" data-toggle-err="${esc(e.diagId)}">${expanded ? '접기' : '상세 오류 로드'}</button>
+          </td>
+        </tr>
+        ${expanded ? `<tr><td colspan="5"><div class="code-block">${esc(e.detail)}</div></td></tr>` : ''}
+      `;
+    }).join('');
+
+    return `
+      <div class="alert-banner" data-region="O1-alert-banner" data-region-label="상단 상태 경고 배너">
+        <div class="alert-banner-left">
+          <span class="badge badge-amber">주의 2건</span>
+          <span><strong>service-engineering › wt/fix-auth-race</strong>가 <code class="mono">view_preparing</code> 상태입니다 (첫 sync 게시 대기). · vector arena 미적재 세트 <strong>42개</strong></span>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-sm" data-select-target="a81f3c2e91b40d7712e90f8a4b6c1d02:3e71fa04129b">해당 워크트리 보기</button>
+          <button class="btn btn-sm" data-jump-tab="runtime">큐 확인</button>
+        </div>
+      </div>
+
+      <section class="kpi-grid" data-region="O2-kpi-strip" data-region-label="핵심 지표 요약 KPI">
+        <div class="kpi-box">
+          <div class="kpi-label"><span>선택 범위 체크아웃</span><span class="badge badge-green">snapshot ok</span></div>
+          <div class="kpi-value num">${visibleTargets.length} <span style="font-size:13px;font-weight:500;color:var(--text-secondary)">체크아웃</span></div>
+          <div class="kpi-foot"><span>온보딩 2 프로젝트 · 워크트리 3개</span></div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label"><span>24h Recall / SLO</span><span class="badge badge-green">ok</span></div>
+          <div class="kpi-value num">${totalRecalls}<span style="font-size:13px;font-weight:500;color:var(--text-secondary)"> 건</span></div>
+          <div class="kpi-foot mono"><span>p50 1,180ms</span><span>p95 2,290ms</span></div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label"><span>Verified 위키 카드</span><span class="badge badge-blue">schema3</span></div>
+          <div class="kpi-value num">${totalCards.toLocaleString()}</div>
+          <div class="kpi-foot"><span>Arena 적재율 99.7%</span></div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label"><span>Resident 서비스</span><span class="badge badge-green">active</span></div>
+          <div class="kpi-value mono">metal</div>
+          <div class="kpi-foot mono"><span>Embed 1.02 GB</span><span>Idle 30m</span></div>
+        </div>
+      </section>
+
+      <section class="card" data-region="O3-projects-table" data-region-label="멀티 프로젝트·워크트리 통합 테이블">
+        <div class="card-header">
+          <div>
+            <div class="card-title">온보딩 프로젝트 &amp; 연결 Git Worktree 현황</div>
+            <div class="card-sub">행 클릭 시 해당 targetId로 컨텍스트를 전환합니다. (기본 조회: reconcile=false · git 미실행)</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span class="card-sub mono">last_reconcile: 3분 전</span>
+            <button class="btn btn-sm" id="reconcileBtn">상태 재스캔 (Reconcile)</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>프로젝트 / 워크트리</th><th>호스트</th><th>상태</th><th>위키 카드</th><th>마지막 Sync</th><th>24h Recall · p50</th><th>SLO</th></tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" data-region="O4-recent-errors" data-region-label="최근 오류 및 미룸 이벤트">
+        <div class="card-header">
+          <div>
+            <div class="card-title">최근 거부 · 지연 이벤트 (events.jsonl)</div>
+            <div class="card-sub">기본은 메타만 표시하며, 상세 로드는 클릭 시 diagnostic.part를 재조립합니다.</div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>시각</th><th>설치 / 대상</th><th>호스트</th><th>이벤트 · 사유</th><th>상세</th></tr></thead>
+            <tbody>${errRows}</tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  }
+
+  // ---------------- Tab 2: Recall & Query Playground ----------------
+  function renderRecall() {
+    const t = currentTarget();
+    const filteredTimeline = RECALL_TIMELINE.filter(r => {
+      if (state.recallHostFilter !== 'all' && r.host !== state.recallHostFilter) return false;
+      if (t) {
+        if (t.kind === 'worktree') return r.targetId === t.targetId;
+        return r.installId === t.installId;
+      }
+      return true;
+    });
+    const selectedRecall = filteredTimeline.find(r => r.id === state.selectedRecallId) || filteredTimeline[0] || null;
+    const pg = state.playgroundResult || PLAYGROUND_PRESETS[state.playgroundQuery] || Object.values(PLAYGROUND_PRESETS)[0];
+
+    const stageCol = (title, tag, items, isSelector) => `
+      <div class="stage-col">
+        <div class="stage-title"><span>${esc(title)}</span><span class="badge badge-muted mono">${esc(tag)}</span></div>
+        ${items.map(it => `
+          <div class="cand-item ${isSelector ? (it.status === 'picked' ? 'picked' : 'dropped') : ''}">
+            <div style="display:flex;justify-content:space-between;gap:6px;align-items:center;">
+              <strong class="mono" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(it.path)}">${esc(it.path.split('/').pop())}</strong>
+              <span class="badge ${isSelector && it.status === 'picked' ? 'badge-green' : 'badge-muted'} mono">${esc(isSelector ? (it.status === 'picked' ? '선택' : '제외') : '#' + it.rank)}</span>
+            </div>
+            <span style="color:var(--text-secondary);font-size:11px;" class="mono">${esc(isSelector ? it.note : it.score)}</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+
+    let detailHtml = '<div class="card-sub">표시할 recall 이력이 없습니다.</div>';
+    if (selectedRecall) {
+      const s = selectedRecall.stages;
+      const tot = Math.max(1, selectedRecall.msTotal);
+      const pct = v => ((v / tot) * 100).toFixed(1) + '%';
+      detailHtml = `
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <span class="badge badge-blue mono">${esc(selectedRecall.host)}</span>
+            <span class="mono">prompt ${esc(selectedRecall.promptSha)} (${selectedRecall.promptChars} chars)</span>
+            <span class="badge ${selectedRecall.outcome === 'served' ? 'badge-green' : 'badge-amber'}">${esc(selectedRecall.outcome)} · ${esc(selectedRecall.reason)}</span>
+            ${selectedRecall.degraded ? `<span class="badge badge-purple">degraded: ${esc(selectedRecall.degraded)}</span>` : ''}
+          </div>
+          <div class="mono num">총 ${selectedRecall.msTotal} ms · sessionExcluded=${selectedRecall.sessionExcluded}</div>
+        </div>
+        <div class="timing-bar" title="단계별 소요시간 비율">
+          <div class="t-seg" style="width:${pct(s.pinMs + s.stillCurrentMs + s.checkoutMs)};background:var(--text-muted)"></div>
+          <div class="t-seg" style="width:${pct(s.lexicalMs)};background:var(--accent)"></div>
+          <div class="t-seg" style="width:${pct(s.queryEmbeddingMs + s.semanticMs)};background:var(--green)"></div>
+          <div class="t-seg" style="width:${pct(s.selectorMs)};background:var(--purple)"></div>
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--text-secondary);" class="mono">
+          <span>■ 관측/검증 ${s.pinMs + s.stillCurrentMs + s.checkoutMs}ms</span>
+          <span style="color:var(--accent)">■ Lexical ${s.lexicalMs}ms</span>
+          <span style="color:var(--green)">■ Embed+Semantic ${s.queryEmbeddingMs + s.semanticMs}ms</span>
+          <span style="color:var(--purple)">■ Selector ${s.selectorMs}ms</span>
+        </div>
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <span style="font-size:11.5px;color:var(--text-secondary);">주입된 카드:</span>
+          ${selectedRecall.cards.length ? selectedRecall.cards.map(c => `<button class="btn btn-sm" data-open-card="${esc(c.rel)}">${esc(c.rel)} <span class="mono">(${c.cosine})</span></button>`).join('') : '<span class="card-sub">없음</span>'}
+        </div>
+      `;
+    }
+
+    return `
+      <section class="card" data-region="R1-query-playground" data-region-label="Query Playground 입력 및 실행 제어">
+        <div class="card-header">
+          <div>
+            <div class="card-title">라이브 Query Playground <span class="badge badge-green">Dry-Run 무오염 격리</span></div>
+            <div class="card-sub">events.jsonl · edit-recall-sessions · 학습 수집 DB에 기록하지 않고 4단계 검색 순위를 시뮬레이션합니다.</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${Object.keys(PLAYGROUND_PRESETS).map((q, i) => `<button class="btn btn-sm" data-preset-idx="${i}">예시 질의 ${i + 1}</button>`).join('')}
+          </div>
+        </div>
+        <div class="query-bar">
+          <input class="query-input" id="pgInput" value="${esc(state.playgroundQuery)}" placeholder="질문 또는 키워드 입력..." />
+          <label class="pill" style="cursor:pointer;"><input type="checkbox" id="pgSemToggle" ${state.playgroundSemantic ? 'checked' : ''} /> semantic 사용</label>
+          <label class="pill" style="cursor:pointer;"><input type="checkbox" id="pgSelToggle" ${state.playgroundSelector ? 'checked' : ''} /> warm selector 포함</label>
+          <button class="btn btn-primary" id="pgRunBtn">Dry-Run 실행</button>
+        </div>
+      </section>
+
+      <section class="card" data-region="R2-playground-stages" data-region-label="4단계 Recall 파이프라인 비교 결과">
+        <div class="card-header">
+          <div class="card-title">파이프라인 단계별 후보 비교 <span class="badge badge-blue mono">${esc(contextLabel())}</span></div>
+          <div class="card-sub mono">allow_wake=False · ensure_service=None · arena_hit=100%</div>
+        </div>
+        <div class="grid-4">
+          ${stageCol('1. Lexical (FTS5)', 'raw score', pg.lexical, false)}
+          ${state.playgroundSemantic ? stageCol('2. Semantic', 'cosine', pg.semantic, false) : '<div class="stage-col"><div class="stage-title"><span>2. Semantic</span><span class="badge badge-muted">OFF</span></div><div class="card-sub">lexical-only 모드</div></div>'}
+          ${stageCol('3. Hybrid 병합', 'RRF rank', pg.hybrid, false)}
+          ${state.playgroundSelector ? stageCol('4. Selector 최종', 'top 3', pg.selector, true) : '<div class="stage-col"><div class="stage-title"><span>4. Selector</span><span class="badge badge-muted">OFF</span></div><div class="card-sub">hybrid 순위 그대로 사용</div></div>'}
+        </div>
+      </section>
+
+      <section class="card" data-region="R3-recall-timeline" data-region-label="최근 Recall 타임라인 및 단계 지연 분석">
+        <div class="card-header">
+          <div>
+            <div class="card-title">최근 Recall 타임라인 &amp; 지연 분해</div>
+            <div class="card-sub">프롬프트 원문은 저장/표시되지 않습니다 (sha256 · 길이만 표시).</div>
+          </div>
+          <div class="filter-chips">
+            ${['all', 'claude', 'codex', 'hermes'].map(h => `<button class="chip ${state.recallHostFilter === h ? 'active' : ''}" data-host-filter="${h}">${h === 'all' ? '전체 호스트' : h}</button>`).join('')}
+          </div>
+        </div>
+        <div class="table-wrap" style="margin-bottom:12px;">
+          <table>
+            <thead><tr><th>시각</th><th>호스트</th><th>결과</th><th>사유</th><th>지연</th><th>제외/모드</th></tr></thead>
+            <tbody>
+              ${filteredTimeline.map(r => `
+                <tr class="clickable ${selectedRecall && selectedRecall.id === r.id ? 'selected-row' : ''}" data-select-recall="${esc(r.id)}">
+                  <td class="mono">${esc(r.ts)}</td>
+                  <td><span class="badge badge-muted">${esc(r.host)}</span></td>
+                  <td><span class="badge ${r.outcome === 'served' ? 'badge-green' : 'badge-amber'}">${esc(r.outcome)}</span></td>
+                  <td class="mono">${esc(r.reason)}</td>
+                  <td class="mono num">${r.msTotal} ms</td>
+                  <td class="mono">${r.sessionExcluded ? 'excl:' + r.sessionExcluded : '—'} ${r.degraded ? '· ' + r.degraded : ''}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div style="padding:10px 12px;border-radius:8px;background:var(--bg-surface-2);border:1px solid var(--border);">${detailHtml}</div>
+      </section>
+    `;
+  }
+
+  // ---------------- Tab 3: Wiki Browser ----------------
+  function renderWiki() {
+    const t = currentTarget();
+    const cards = WIKI_CARDS.filter(c => {
+      if (t && c.targetId !== t.targetId && (!t.parentId || c.targetId !== t.parentId)) {
+        if (!(t.kind === 'main' && c.targetId === t.targetId)) return false;
+      }
+      if (state.wikiFilter === 'verified' && c.status !== 'verified') return false;
+      if (state.wikiFilter === 'generated' && c.status !== 'generated') return false;
+      if (state.wikiFilter === 'pending' && c.status !== 'pending_replace') return false;
+      if (state.wikiFilter === 'stale' && !c.stale) return false;
+      if (state.wikiFilter === 'over_budget' && c.tokens <= c.budget) return false;
+      if (state.wikiSearch.trim()) {
+        const q = state.wikiSearch.trim().toLowerCase();
+        if (!c.title.toLowerCase().includes(q) && !c.rel.toLowerCase().includes(q)) return false;
+      }
+      return true;
+    });
+    const activeCard = cards.find(c => c.rel === state.selectedCardRel) || cards[0] || WIKI_CARDS[0];
+
+    const statusBadge = st => {
+      if (st === 'verified') return '<span class="badge badge-green">verified</span>';
+      if (st === 'generated') return '<span class="badge badge-amber">generated (비가시)</span>';
+      return '<span class="badge badge-purple">pending 교체 대기</span>';
+    };
+
+    return `
+      <section class="card" data-region="W1-backfill-and-filters" data-region-label="Wiki Backfill 진행률 및 카드 필터">
+        <div class="card-header" style="margin-bottom:8px;">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <span class="card-title">Wiki Backfill &amp; 검증 현황</span>
+            <span class="mono" style="font-size:11.5px;color:var(--text-secondary);">settled 142 · dispatched 6 · pending 18 · skipped 4</span>
+          </div>
+          <input type="text" id="wikiSearchInput" value="${esc(state.wikiSearch)}" placeholder="카드 제목/경로 검색..." style="background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:5px 9px;font-size:12px;width:220px;" />
+        </div>
+        <div class="prog-track" style="margin-bottom:10px;">
+          <div class="prog-fill" style="width:78%;background:var(--green)"></div>
+          <div class="prog-fill" style="width:4%;background:var(--accent)"></div>
+          <div class="prog-fill" style="width:15%;background:var(--amber)"></div>
+        </div>
+        <div class="filter-chips">
+          ${[
+            ['all', '전체'],
+            ['verified', 'verified'],
+            ['generated', 'generated'],
+            ['pending', 'pending 교체'],
+            ['stale', '원문 불일치 (stale)'],
+            ['over_budget', '700 tok 초과']
+          ].map(([k, label]) => `<button class="chip ${state.wikiFilter === k ? 'active' : ''}" data-wiki-filter="${k}">${label}</button>`).join('')}
+        </div>
+      </section>
+
+      <div class="split-wiki">
+        <section class="card" data-region="W2-card-list" data-region-label="위키 카드 목록">
+          <div class="card-header"><div class="card-title">카드 목록 <span class="badge badge-muted num">${cards.length}</span></div></div>
+          <div>
+            ${cards.map(c => `
+              <div class="wiki-item ${activeCard.rel === c.rel ? 'active' : ''}" data-select-wiki="${esc(c.rel)}">
+                <div style="font-weight:600;font-size:12.5px;margin-bottom:4px;">${esc(c.title)}</div>
+                <div class="mono" style="font-size:10.5px;color:var(--text-muted);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.rel)}</div>
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+                  ${statusBadge(c.status)}
+                  <span class="mono num" style="font-size:11px;color:${c.tokens > c.budget ? 'var(--amber)' : 'var(--text-secondary)'}">${c.tokens}/${c.budget} tok</span>
+                </div>
+              </div>
+            `).join('') || '<div class="card-sub">일치하는 카드가 없습니다.</div>'}
+          </div>
+        </section>
+
+        <section class="card" data-region="W3-card-detail-and-source" data-region-label="카드 상세 및 원문 나란히 대조 뷰어">
+          <div class="card-header">
+            <div>
+              <div class="card-title">${esc(activeCard.title)} ${statusBadge(activeCard.status)} ${activeCard.stale ? '<span class="badge badge-red">stale</span>' : ''}</div>
+              <div class="card-sub mono">${esc(activeCard.rel)} · createdBy: ${esc(activeCard.createdBy)} · source: ${esc(activeCard.sourcePath)}</div>
+            </div>
+            <button class="btn btn-sm ${state.showSourceSplit ? 'btn-primary' : ''}" id="toggleSourceBtn">원문 나란히 보기</button>
+          </div>
+          <div class="${state.showSourceSplit ? 'split-source' : ''}">
+            <div>
+              <div style="font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:4px;">AUTO BLOCK (<!-- qmd:auto -->)</div>
+              <div class="auto-block" style="white-space:pre-wrap;font-size:12.5px;">${esc(activeCard.autoBody)}</div>
+              <div style="font-size:11px;font-weight:700;color:var(--text-muted);margin:10px 0 4px;">수동 보존 영역 (블록 외부)</div>
+              <div class="manual-block" style="white-space:pre-wrap;font-size:12.5px;">${esc(activeCard.manualBody)}</div>
+              <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                <span style="font-size:11px;color:var(--text-muted);">related:</span>
+                ${activeCard.related.map(r => `<button class="btn btn-sm mono" data-select-wiki="${esc(r)}">${esc(r.split('/').pop())}</button>`).join('')}
+              </div>
+            </div>
+            ${state.showSourceSplit ? `
+              <div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                  <span style="font-size:11px;font-weight:700;color:var(--text-muted);" class="mono">SOURCE: ${esc(activeCard.sourcePath)} (${esc(activeCard.sourceRevisions[0].span)})</span>
+                  <span class="badge badge-muted">O_NOFOLLOW 검증됨</span>
+                </div>
+                <div class="code-block">
+                  ${activeCard.sourceLines.map(ln => `<div class="source-line ${ln.hl ? 'hl' : ''}"><span class="line-no">${ln.n}</span><span>${esc(ln.text)}</span></div>`).join('')}
+                </div>
+              </div>
+            ` : ''}
+          </div>
+        </section>
+      </div>
+    `;
+  }
+
+  // ---------------- Tab 4: Runtime & Learning ----------------
+  function renderRuntime() {
+    return `
+      <div class="grid-2">
+        <section class="card" data-region="L1-resident-and-wakes" data-region-label="Resident 서비스 & Wake 대기 큐">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Resident 서비스 &amp; 백그라운드 작업 큐 <span class="badge badge-muted">read-only snapshot</span></div>
+              <div class="card-sub">백그라운드에서 실행 중이거나 실행을 기다리는 색인·위키·학습 작업입니다.</div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+            <div class="cand-item"><span class="card-sub">임베딩 상주 프로세스 (Embed Resident)</span><strong class="mono">PID 4821 · metal · 1.02 GB</strong><span class="card-sub mono">bundle v1.1.0 · 소켓 정상</span></div>
+            <div class="cand-item"><span class="card-sub">학습 추론 서비스 (Learning Inference)</span><strong class="mono">PID 4905 · mps · 1.38 GB</strong><span class="card-sub mono">활성 모델 9c12ab40fe12</span></div>
+          </div>
+          <table>
+            <thead><tr><th>작업 종류</th><th>대상 프로젝트</th><th>현재 상태</th><th>다음 실행 / 재시도</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><strong>색인 동기화</strong> <span class="mono card-sub">(laya-sync)</span></td>
+                <td>service-engineering</td>
+                <td><span class="badge badge-blue">실행 중</span></td>
+                <td>1회차 진행 중</td>
+              </tr>
+              <tr>
+                <td><strong>위키 카드 생성</strong> <span class="mono card-sub">(laya-compile)</span></td>
+                <td>memvane</td>
+                <td><span class="badge badge-muted">실행 대기</span></td>
+                <td>18초 뒤 시작 예정</td>
+              </tr>
+              <tr>
+                <td><strong>학습 사이클</strong> <span class="mono card-sub">(learning)</span></td>
+                <td>service-engineering</td>
+                <td><span class="badge badge-amber">자원 부족 보류</span></td>
+                <td>약 7분 뒤 재시도 <span class="card-sub">(3회 미룸)</span></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="card-sub" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">
+            실행 대기: 예약된 시각에 자동 시작 · 자원 부족 보류: 메모리/CPU 여유가 확보되면 자동으로 다시 시도합니다.
+          </div>
+        </section>
+
+        <section class="card" data-region="L2-learning-monitor" data-region-label="학습 승격 4대 임계치 & 무결성 점검">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Selector 학습 · 자동 승격 단계</div>
+              <div class="card-sub">Teacher: claude-haiku-4-5 / codex-mini (격리 실행) · 수집 사례 1,240 / 1,800건 (순환 보관)</div>
+            </div>
+            <button class="btn btn-sm" id="learningCheckBtn">학습 무결성 점검 (--learning-check)</button>
+          </div>
+          <div style="padding:8px 10px;border-radius:6px;background:var(--accent-soft);border:1px solid rgba(76,141,255,0.28);font-size:12px;margin-bottom:10px;">
+            새 Selector 후보 모델을 평가하고 자동 승격하기 위한 <strong>4가지 최소 데이터 조건</strong>입니다. 네 조건이 모두 채워지면 기존 모델과 점수를 비교해 더 나을 때만 자동 적용합니다.
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+            ${[
+              ['학습용 편집 사례', 'candidateTrain', '후보 모델 학습에 사용할 Teacher 정답 사례', 84, 100, 'var(--accent)'],
+              ['검증용 편집 사례', 'candidateEval', '학습에 쓰지 않고 정확도 평가에 쓰는 홀드아웃 사례', 42, 50, 'var(--purple)'],
+              ['카드 선택 정답 사례', 'evalNonEmpty', '관련 카드 주입이 정답인 검증 사례 (충족됨)', 10, 10, 'var(--green)'],
+              ['비선택 정답 사례', 'evalEmpty', '카드 미주입이 정답인 검증 사례 (과주입 방지)', 8, 10, 'var(--amber)']
+            ].map(([title, code, desc, cur, max, col]) => `
+              <div class="cand-item" style="gap:4px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <strong>${title} <span class="mono card-sub">(${code})</span></strong>
+                  <span class="mono num" style="font-weight:700;">${cur}/${max}</span>
+                </div>
+                <div class="prog-track"><div class="prog-fill" style="width:${(cur / max) * 100}%;background:${col}"></div></div>
+                <div class="card-sub" style="font-size:11px;">${desc}</div>
+              </div>
+            `).join('')}
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px;background:var(--bg-surface-2);border-radius:8px;border:1px solid var(--border);flex-wrap:wrap;">
+            <div style="font-size:11.5px;display:flex;gap:12px;flex-wrap:wrap;">
+              <span title="Selector 선택이 Teacher 정답과 완전히 일치한 비율">정확 일치율 <strong class="mono">0.68</strong></span>
+              <span title="카드 단위 정밀도·재현율 조화 평균">카드 F1 <strong class="mono">0.79</strong></span>
+              <span title="Selector 없이 기본 하이브리드 상위 3장 기준선">기본 순위 기준선 <strong class="mono">0.54</strong></span>
+            </div>
+            <svg width="140" height="32" viewBox="0 0 140 32" xmlns="http://www.w3.org/2000/svg" aria-label="정확 일치율 추이">
+              <polyline fill="none" stroke="var(--accent)" stroke-width="2" points="4,26 28,23 52,20 76,17 100,14 134,8" />
+              <circle cx="134" cy="8" r="3" fill="var(--green)" />
+            </svg>
+          </div>
+          ${state.learningCheckResult ? `<div class="badge badge-green mono" style="margin-top:10px;padding:5px 10px;">${esc(state.learningCheckResult)}</div>` : ''}
+        </section>
+      </div>
+
+      <div class="grid-2">
+        <section class="card" data-region="L3-disk-breakdown" data-region-label="디스크 사용량 분해 & Cleanup 미리보기">
+          <div class="card-header">
+            <div>
+              <div class="card-title">디스크 사용량 Breakdown</div>
+              <div class="card-sub">총 2.41 GB · 회수 가능 312 MB (해제 설치 1 + 구 embed 세대 1)</div>
+            </div>
+            <button class="btn btn-sm" id="cleanupPreviewBtn">State 정리 미리보기 (Phase 2)</button>
+          </div>
+          <div class="prog-track" style="height:12px;margin-bottom:10px;">
+            <div class="prog-fill" style="width:22%;background:var(--accent)" title="embed-runtime"></div>
+            <div class="prog-fill" style="width:19%;background:var(--green)" title="installs"></div>
+            <div class="prog-fill" style="width:59%;background:var(--purple)" title="learning support"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;flex-wrap:wrap;gap:8px;" class="mono">
+            <span><span class="dot blue"></span> embed-runtime 530 MB</span>
+            <span><span class="dot green"></span> installs/&lt;id&gt; 460 MB</span>
+            <span><span class="dot" style="background:var(--purple)"></span> Application Support/memvane 1.42 GB</span>
+          </div>
+        </section>
+
+        <section class="card" data-region="L4-ui-preferences" data-region-label="웹 UI 전역 환경설정 (preferences.json)">
+          <div class="card-header">
+            <div>
+              <div class="card-title">UI 전역 동작 설정 (~/.local/state/memvane/v1/ui/preferences.json)</div>
+              <div class="card-sub">1.x 불변 계약(.memvane/settings.json 5키)과 분리된 전역 설정입니다.</div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <label style="display:flex;justify-content:space-between;align-items:center;">
+              <span>세션 시작 시 대시보드 미오픈이면 자동 열기 (전역 1창)</span>
+              <input type="checkbox" id="prefAutoOpen" ${state.autoOpenOnSessionStart ? 'checked' : ''} />
+            </label>
+            <div class="card-sub">적용 범위: 온보딩된 프로젝트·워크트리 세션 시작 시 (<code class="mono">onboarded_sessions</code>, Phase 1 확정)</div>
+            <div class="card-sub mono">idleShutdown: 30m · autoOpenCooldown: 240m · reconnectGrace: 10s</div>
+          </div>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderMain() {
+    const main = document.getElementById('mainContent');
+    if (state.tab === 'overview') main.innerHTML = renderOverview();
+    else if (state.tab === 'recall') main.innerHTML = renderRecall();
+    else if (state.tab === 'wiki') main.innerHTML = renderWiki();
+    else main.innerHTML = renderRuntime();
+    requestAnimationFrame(renderOverlay);
+  }
+
+  // ---------------- Comment Pins & Region Badges Overlay ----------------
+  function renderOverlay() {
+    const layer = document.getElementById('overlayLayer');
+    layer.innerHTML = '';
+
+    // Region ID labels ([L])
+    if (state.showLabels) {
+      document.querySelectorAll('[data-region]').forEach(el => {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return;
+        const badge = document.createElement('div');
+        badge.className = 'region-badge';
+        badge.textContent = el.dataset.region;
+        badge.style.left = Math.max(4, rect.left + 6) + 'px';
+        badge.style.top = Math.max(54, rect.top - 8) + 'px';
+        layer.appendChild(badge);
+      });
+    }
+
+    // Comment pins visible in current tab (or shell chrome T1/S1)
+    const visibleComments = state.comments.filter(c => c.tab === state.tab || c.regionId.startsWith('T') || c.regionId.startsWith('S'));
+    visibleComments.forEach((c) => {
+      const idx = state.comments.findIndex(x => x.id === c.id) + 1;
+      const targetEl = document.querySelector(`[data-region="${c.regionId}"]`);
+      if (!targetEl) return;
+      const rect = targetEl.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      // Clip pins inside scroll viewport
+      const px = rect.left + (c.xPct / 100) * rect.width;
+      const py = rect.top + (c.yPct / 100) * rect.height;
+      if (py < 48 || py > window.innerHeight - 6) return;
+
+      const pin = document.createElement('button');
+      pin.className = 'pin-marker' + (c.resolved ? ' resolved' : '');
+      pin.style.left = px + 'px';
+      pin.style.top = py + 'px';
+      pin.title = `[${c.category}] ${c.text}`;
+      const span = document.createElement('span');
+      span.textContent = c.resolved ? '✓' : String(idx);
+      pin.appendChild(span);
+      pin.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        openPopoverForExisting(c.id, px, py);
+      });
+      layer.appendChild(pin);
+    });
+  }
+
+  // ---------------- Comment Popover & Drawer ----------------
+  const popover = document.getElementById('commentPopover');
+  let selectedCat = CATEGORIES[0];
+
+  function renderPopCats() {
+    const wrap = document.getElementById('popCats');
+    wrap.innerHTML = CATEGORIES.map(cat => `<button type="button" class="cat-chip ${selectedCat === cat ? 'active' : ''}" data-cat="${esc(cat)}">${esc(cat)}</button>`).join('');
+  }
+
+  function placePopover(x, y) {
+    const left = Math.min(window.innerWidth - 336, Math.max(12, x + 14));
+    const top = Math.min(window.innerHeight - 250, Math.max(58, y - 16));
+    popover.style.left = left + 'px';
+    popover.style.top = top + 'px';
+  }
+
+  function openPopoverForNew(regionId, regionLabel, xPct, yPct, clientX, clientY) {
+    state.activeEditId = null;
+    state.pendingPin = { regionId, regionLabel, xPct, yPct };
+    selectedCat = CATEGORIES[0];
+    document.getElementById('popTitle').textContent = '새 피드백 코멘트';
+    document.getElementById('popRegion').textContent = regionId;
+    document.getElementById('popText').value = '';
+    document.getElementById('popEditActions').innerHTML = '';
+    renderPopCats();
+    placePopover(clientX, clientY);
+    popover.classList.add('open');
+    document.getElementById('popText').focus();
+  }
+
+  function openPopoverForExisting(commentId, x, y) {
+    const c = state.comments.find(item => item.id === commentId);
+    if (!c) return;
+    state.activeEditId = c.id;
+    state.pendingPin = null;
+    selectedCat = c.category;
+    document.getElementById('popTitle').textContent = '코멘트 편집 #' + (state.comments.indexOf(c) + 1);
+    document.getElementById('popRegion').textContent = c.regionId;
+    document.getElementById('popText').value = c.text;
+    document.getElementById('popEditActions').innerHTML = `
+      <button type="button" class="btn btn-sm" id="popResolveBtn">${c.resolved ? '미해결로' : '해결됨'}</button>
+      <button type="button" class="btn btn-sm btn-danger" id="popDeleteBtn">삭제</button>
+    `;
+    renderPopCats();
+    placePopover(x, y);
+    popover.classList.add('open');
+    document.getElementById('popResolveBtn').onclick = () => {
+      c.resolved = !c.resolved;
+      saveStore(); closePopover(); renderTopbar(); renderOverlay(); renderDrawer();
+    };
+    document.getElementById('popDeleteBtn').onclick = () => {
+      state.comments = state.comments.filter(item => item.id !== c.id);
+      saveStore(); closePopover(); renderTopbar(); renderOverlay(); renderDrawer();
+    };
+  }
+
+  function closePopover() {
+    popover.classList.remove('open');
+    state.activeEditId = null;
+    state.pendingPin = null;
+  }
+
+  function savePopover() {
+    const text = document.getElementById('popText').value.trim();
+    if (!text) { showToast('코멘트 내용을 입력해 주세요.'); return; }
+    if (state.activeEditId) {
+      const c = state.comments.find(item => item.id === state.activeEditId);
+      if (c) { c.category = selectedCat; c.text = text; }
+    } else if (state.pendingPin) {
+      state.comments.push({
+        id: 'c_' + Date.now() + '_' + Math.random().toString(16).slice(2, 6),
+        tab: state.tab,
+        context: contextLabel(),
+        targetId: state.selectedTargetId,
+        regionId: state.pendingPin.regionId,
+        regionLabel: state.pendingPin.regionLabel,
+        xPct: state.pendingPin.xPct,
+        yPct: state.pendingPin.yPct,
+        category: selectedCat,
+        text,
+        resolved: false,
+        createdAt: new Date().toLocaleTimeString('ko-KR', { hour12: false })
+      });
+    }
+    saveStore();
+    closePopover();
+    renderTopbar();
+    renderOverlay();
+    renderDrawer();
+    showToast('코멘트가 저장되었습니다.');
+  }
+
+  function renderDrawer() {
+    const list = document.getElementById('drawerList');
+    document.querySelectorAll('#drawerFilters .chip').forEach(ch => ch.classList.toggle('active', ch.dataset.filter === state.drawerFilter));
+    const filtered = state.comments.filter(c => {
+      if (state.drawerFilter === 'tab') return c.tab === state.tab;
+      if (state.drawerFilter === 'open') return !c.resolved;
+      return true;
+    });
+    if (!filtered.length) {
+      list.innerHTML = `<div class="card-sub" style="padding:18px;text-align:center;">남긴 코멘트가 없습니다.<br/>상단 <strong>코멘트 달기 [C]</strong>를 눌러 화면을 클릭해 보세요.</div>`;
+      return;
+    }
+    list.innerHTML = filtered.map(c => {
+      const idx = state.comments.indexOf(c) + 1;
+      return `
+        <div class="comment-card ${c.resolved ? 'resolved' : ''}" data-jump-comment="${esc(c.id)}">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+            <span class="badge ${c.resolved ? 'badge-muted' : 'badge-red'}">#${idx} ${esc(c.category)}</span>
+            <span class="mono" style="font-size:10.5px;color:var(--text-muted);">${esc(c.tab)} · ${esc(c.regionId)}</span>
+          </div>
+          <div style="font-size:12.5px;white-space:pre-wrap;">${esc(c.text)}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--text-muted);">
+            <span>${esc(c.context)}</span>
+            <span>${esc(c.createdAt)}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function buildMarkdownExport() {
+    if (!state.comments.length) return '## MemVane UI 가안 피드백\n\n(남긴 코멘트 없음)\n';
+    const lines = ['## MemVane UI 가안 피드백', ''];
+    state.comments.forEach((c, i) => {
+      const status = c.resolved ? '[해결됨] ' : '';
+      lines.push(`${i + 1}. ${status}**[${c.category}] [${c.tab} > ${c.regionId}]** (컨텍스트: ${c.context})`);
+      lines.push(`   - ${c.text.replace(/\n/g, '\n   - ')}`);
+    });
+    return lines.join('\n') + '\n';
+  }
+
+  function openModal(title, bodyHtml, footerHtml) {
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalBody').innerHTML = bodyHtml;
+    document.getElementById('modalFooter').innerHTML = footerHtml || '';
+    document.getElementById('modalBackdrop').classList.add('open');
+  }
+
+  // ---------------- Event Wiring ----------------
+  document.getElementById('tabNav').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-tab]');
+    if (!btn) return;
+    state.tab = btn.dataset.tab;
+    closePopover();
+    renderTopbar(); renderMain(); renderDrawer();
+  });
+
+  document.getElementById('sidebarSearch').addEventListener('input', (e) => {
+    state.sidebarQuery = e.target.value;
+    renderSidebar();
+  });
+
+  document.getElementById('sidebarTree').addEventListener('click', (e) => {
+    if (state.commentMode) return;
+    const tog = e.target.closest('[data-toggle-main]');
+    if (tog) {
+      e.stopPropagation();
+      const id = tog.dataset.toggleMain;
+      if (state.expandedMains.has(id)) state.expandedMains.delete(id); else state.expandedMains.add(id);
+      renderSidebar();
+      return;
+    }
+    const sel = e.target.closest('[data-select-target]');
+    if (sel) {
+      state.selectedTargetId = sel.dataset.selectTarget;
+      renderTopbar(); renderSidebar(); renderMain();
+    }
+  });
+
+  document.getElementById('mainContent').addEventListener('click', (e) => {
+    if (state.commentMode) return;
+    const targetBtn = e.target.closest('[data-select-target]');
+    if (targetBtn) {
+      state.selectedTargetId = targetBtn.dataset.selectTarget;
+      renderTopbar(); renderSidebar(); renderMain(); return;
+    }
+    const jumpTab = e.target.closest('[data-jump-tab]');
+    if (jumpTab) { state.tab = jumpTab.dataset.jumpTab; renderTopbar(); renderMain(); return; }
+    const errBtn = e.target.closest('[data-toggle-err]');
+    if (errBtn) {
+      const id = errBtn.dataset.toggleErr;
+      state.showErrorDetailId = state.showErrorDetailId === id ? null : id;
+      renderMain(); return;
+    }
+    if (e.target.id === 'reconcileBtn') { showToast('reconcile=True 실행 완료 (32행 예산 내 5개 체크아웃 확인)'); return; }
+    const presetBtn = e.target.closest('[data-preset-idx]');
+    if (presetBtn) {
+      const keys = Object.keys(PLAYGROUND_PRESETS);
+      state.playgroundQuery = keys[Number(presetBtn.dataset.presetIdx)] || keys[0];
+      state.playgroundResult = PLAYGROUND_PRESETS[state.playgroundQuery];
+      renderMain(); return;
+    }
+    if (e.target.id === 'pgRunBtn') {
+      const q = (document.getElementById('pgInput') || {}).value || state.playgroundQuery;
+      state.playgroundQuery = q;
+      state.playgroundResult = PLAYGROUND_PRESETS[q] || PLAYGROUND_PRESETS[Object.keys(PLAYGROUND_PRESETS)[0]];
+      showToast('Dry-Run 완료 (events.jsonl · 학습 DB 미기록)');
+      renderMain(); return;
+    }
+    const hostChip = e.target.closest('[data-host-filter]');
+    if (hostChip) { state.recallHostFilter = hostChip.dataset.hostFilter; renderMain(); return; }
+    const recRow = e.target.closest('[data-select-recall]');
+    if (recRow) { state.selectedRecallId = recRow.dataset.selectRecall; renderMain(); return; }
+    const openCard = e.target.closest('[data-open-card]');
+    if (openCard) {
+      state.selectedCardRel = openCard.dataset.openCard;
+      state.tab = 'wiki';
+      renderTopbar(); renderMain(); renderDrawer(); return;
+    }
+    const wChip = e.target.closest('[data-wiki-filter]');
+    if (wChip) { state.wikiFilter = wChip.dataset.wikiFilter; renderMain(); return; }
+    const wCard = e.target.closest('[data-select-wiki]');
+    if (wCard) { state.selectedCardRel = wCard.dataset.selectWiki; renderMain(); return; }
+    if (e.target.id === 'toggleSourceBtn') { state.showSourceSplit = !state.showSourceSplit; renderMain(); return; }
+    if (e.target.id === 'learningCheckBtn') {
+      state.learningCheckResult = 'I-1..I-9, G-1, G-7: 0 violation(s) (read-only 확인)';
+      renderMain(); return;
+    }
+    if (e.target.id === 'cleanupPreviewBtn') {
+      openModal('State 정리 미리보기 (previewSha256)', `
+        <div class="card-sub">Phase 2 제어 액션은 실제 삭제 전 대상 목록의 SHA-256을 확인합니다.</div>
+        <div class="code-block" style="margin-top:8px;">previewSha256: 7f2c90e1a4b8...e912\nremove_installs: ["old-test-install-8812a"] (184 MB)\nremove_generations: ["v1.0.22-embed"] (128 MB)</div>
+      `, '<button class="btn btn-sm btn-primary" onclick="document.getElementById(\'modalBackdrop\').classList.remove(\'open\')">확인 (모의 체험)</button>');
+    }
+  });
+
+  document.getElementById('mainContent').addEventListener('change', (e) => {
+    if (e.target.id === 'pgSemToggle') { state.playgroundSemantic = e.target.checked; renderMain(); }
+    else if (e.target.id === 'pgSelToggle') { state.playgroundSelector = e.target.checked; renderMain(); }
+    else if (e.target.id === 'prefAutoOpen') { state.autoOpenOnSessionStart = e.target.checked; showToast('preferences.json(모의) 갱신됨'); }
+    else if (e.target.id === 'prefScope') { state.autoOpenScope = e.target.value; showToast('autoOpenScope: ' + state.autoOpenScope); }
+  });
+  document.getElementById('mainContent').addEventListener('input', (e) => {
+    if (e.target.id === 'wikiSearchInput') { state.wikiSearch = e.target.value; renderMain(); }
+  });
+
+  // Topbar Controls
+  document.getElementById('themeBtn').addEventListener('click', () => {
+    state.theme = state.theme === 'dark' ? 'light' : 'dark';
+    saveStore(); renderTopbar(); renderOverlay();
+  });
+  document.getElementById('labelsBtn').addEventListener('click', () => {
+    state.showLabels = !state.showLabels;
+    renderTopbar(); renderOverlay();
+  });
+  const toggleCommentMode = (force) => {
+    state.commentMode = typeof force === 'boolean' ? force : !state.commentMode;
+    document.querySelectorAll('.region-hover').forEach(el => el.classList.remove('region-hover'));
+    if (!state.commentMode) closePopover();
+    renderTopbar();
+  };
+  document.getElementById('commentModeBtn').addEventListener('click', () => toggleCommentMode());
+  document.getElementById('exitCommentBtn').addEventListener('click', () => toggleCommentMode(false));
+
+  document.getElementById('drawerBtn').addEventListener('click', () => {
+    state.drawerOpen = !state.drawerOpen;
+    document.getElementById('commentDrawer').classList.toggle('open', state.drawerOpen);
+    renderDrawer();
+  });
+  document.getElementById('closeDrawerBtn').addEventListener('click', () => {
+    state.drawerOpen = false;
+    document.getElementById('commentDrawer').classList.remove('open');
+  });
+
+  // Comment Capture (Capture phase so it intercepts clicks cleanly in commentMode)
+  let lastHoverRegion = null;
+  document.addEventListener('mousemove', (e) => {
+    if (!state.commentMode || popover.classList.contains('open')) return;
+    const region = e.target.closest && e.target.closest('[data-region]');
+    if (lastHoverRegion && lastHoverRegion !== region) lastHoverRegion.classList.remove('region-hover');
+    if (region) region.classList.add('region-hover');
+    lastHoverRegion = region;
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!state.commentMode) return;
+    if (e.target.closest('#commentPopover, #commentDrawer, #modalBackdrop, #commentModeBtn, #exitCommentBtn, #labelsBtn, #drawerBtn, #themeBtn, .pin-marker')) return;
+    const region = e.target.closest('[data-region]');
+    if (!region) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = region.getBoundingClientRect();
+    const xPct = Math.min(97, Math.max(3, ((e.clientX - rect.left) / Math.max(1, rect.width)) * 100));
+    const yPct = Math.min(96, Math.max(4, ((e.clientY - rect.top) / Math.max(1, rect.height)) * 100));
+    openPopoverForNew(region.dataset.region, region.dataset.regionLabel || region.dataset.region, Number(xPct.toFixed(1)), Number(yPct.toFixed(1)), e.clientX, e.clientY);
+  }, true);
+
+  document.getElementById('popCats').addEventListener('click', (e) => {
+    const ch = e.target.closest('[data-cat]');
+    if (!ch) return;
+    selectedCat = ch.dataset.cat;
+    renderPopCats();
+  });
+  document.getElementById('popCancel').addEventListener('click', closePopover);
+  document.getElementById('popSave').addEventListener('click', savePopover);
+  document.getElementById('popText').addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); savePopover(); }
+    if (e.key === 'Escape') closePopover();
+  });
+
+  // Drawer actions
+  document.getElementById('drawerFilters').addEventListener('click', (e) => {
+    const ch = e.target.closest('[data-filter]');
+    if (!ch) return;
+    state.drawerFilter = ch.dataset.filter;
+    renderDrawer();
+  });
+  document.getElementById('drawerList').addEventListener('click', (e) => {
+    const card = e.target.closest('[data-jump-comment]');
+    if (!card) return;
+    const c = state.comments.find(x => x.id === card.dataset.jumpComment);
+    if (!c) return;
+    if (c.tab && c.tab !== state.tab) { state.tab = c.tab; renderTopbar(); renderMain(); }
+    requestAnimationFrame(() => {
+      const target = document.querySelector(`[data-region="${c.regionId}"]`);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.remove('region-pulse');
+        void target.offsetWidth;
+        target.classList.add('region-pulse');
+        setTimeout(renderOverlay, 250);
+      }
+    });
+  });
+
+  document.getElementById('copyMdBtn').addEventListener('click', async () => {
+    const md = buildMarkdownExport();
+    try {
+      await navigator.clipboard.writeText(md);
+      showToast('피드백 마크다운을 클립보드에 복사했습니다! 채팅창에 붙여넣으세요.');
+    } catch {
+      openModal('마크다운 수동 복사', `<textarea readonly style="width:100%;height:220px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:var(--font-mono);font-size:12px;">${esc(md)}</textarea>`);
+    }
+  });
+  document.getElementById('downloadMdBtn').addEventListener('click', () => {
+    const blob = new Blob([buildMarkdownExport()], { type: 'text/markdown;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'memvane-ui-feedback.md';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+  document.getElementById('clearAllBtn').addEventListener('click', () => {
+    if (!state.comments.length) return;
+    state.comments = [];
+    saveStore(); renderTopbar(); renderOverlay(); renderDrawer();
+    showToast('모든 코멘트를 삭제했습니다.');
+  });
+
+  document.getElementById('modalCloseBtn').addEventListener('click', () => document.getElementById('modalBackdrop').classList.remove('open'));
+  document.getElementById('modalBackdrop').addEventListener('click', (e) => {
+    if (e.target.id === 'modalBackdrop') document.getElementById('modalBackdrop').classList.remove('open');
+  });
+
+  // Keyboard shortcuts & Pin repositioning on scroll/resize
+  document.addEventListener('keydown', (e) => {
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+      if (e.key === 'Escape') { closePopover(); e.target.blur(); }
+      return;
+    }
+    if (e.key === 'c' || e.key === 'C') toggleCommentMode();
+    else if (e.key === 'l' || e.key === 'L') { state.showLabels = !state.showLabels; renderTopbar(); renderOverlay(); }
+    else if (e.key === 'Escape') { toggleCommentMode(false); document.getElementById('modalBackdrop').classList.remove('open'); }
+  });
+  document.getElementById('mainContent').addEventListener('scroll', () => requestAnimationFrame(renderOverlay));
+  document.getElementById('sidebarTree').addEventListener('scroll', () => requestAnimationFrame(renderOverlay));
+  window.addEventListener('resize', () => requestAnimationFrame(renderOverlay));
+
+  // Init
+  loadStore();
+  renderTopbar();
+  renderSidebar();
+  renderMain();
+  renderDrawer();
+})();
+</script>
+</body>
+</html>
