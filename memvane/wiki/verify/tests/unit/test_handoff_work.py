@@ -75,10 +75,10 @@ store.Work.create(q, 'hold', {'route': {'scopeId': 'example'}}, b'{"event":1}\\n
 
     def test_reserve_failure_rolls_back_temp_dir_and_copy_quota(self):
         from memvane.wiki.verify import copy_quota
-        from memvane.wiki.workspace.handoff import budget
+        from memvane.wiki.workspace.handoff import api as handoff_api
         hold_dir = self.queue.parent / '.handoff' / 'v1' / 'hold'
         v1 = self.queue.parent / '.handoff' / 'v1'
-        with budget.scope() as ledger:
+        with handoff_api.budget.scope() as ledger:
             ledger.debit('private', ledger.available('private') - 10)
             with self.assertRaisesRegex(BlockingIOError, 'handoff_private_pass_limit'):
                 self.create('hold')
