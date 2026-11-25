@@ -5,8 +5,9 @@ aliases:
   - "leading-body-prefix-v1"
   - "예측 본문 접두부 구성"
 related:
-  - "memvane-learning-compact-input-storage"
-  - "laya-live-selection-fallback"
+  - "laya-chunked-pairing-windows"
+  - "laya-chunked-pairing-budget-and-scoring"
+  - "memvane-teacher-capture-compact-inputs"
 type: concept
 status: verified
 created: 2026-11-02
@@ -16,33 +17,31 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/continual-learning.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/continual-learning.md", collection: "qmd-auto-context", sha256: "c2365d953b429e5d4b750feaa680c8483192f28e285358b441007af7e934be15", size: 39559, mtimeNs: 1794981800085725663}
+  - {kind: "file", path: "docs/continual-learning.md", collection: "qmd-auto-context", sha256: "2ac28d325becf458a5d7e15c30c6dab4b56800c6ebb7e1268a45f98c3f7f59eb", size: 71586, mtimeNs: 1795479671851083728}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "claude"
-verifiedAt: "2026-11-18T17:25:31.492166Z"
+verifiedAt: "2026-11-24T02:47:11.325648Z"
 verifiedMode: "self"
-verifiedBodyHash: "792b0bae9669a252932ebb4b789ca1bb8af735d7e65bd4e969c918a7676ad87a"
+verifiedBodyHash: "afe9c228fad8417cec6ab87580b8f8a4e05bf5c97a921793e0d6648a277d55d1"
 sourceSpans:
-  - {path: "docs/continual-learning.md", sourceSha256: "c2365d953b429e5d4b750feaa680c8483192f28e285358b441007af7e934be15", startLine: 64, endLine: 67, spanSha256: "ae1ff5d7d0de5016ba344abc8daabd5568875ccb5ef04802fb2eaf4ea223aa35"}
-  - {path: "docs/continual-learning.md", sourceSha256: "c2365d953b429e5d4b750feaa680c8483192f28e285358b441007af7e934be15", startLine: 67, endLine: 69, spanSha256: "52ac467e03be358d35ca2a9586d59ad2bca2e9b683c01579ac3f3abab06bead2"}
-  - {path: "docs/continual-learning.md", sourceSha256: "c2365d953b429e5d4b750feaa680c8483192f28e285358b441007af7e934be15", startLine: 69, endLine: 71, spanSha256: "d03a2248c8e0fa7e820a9c299d27ccbd8b418bf2d2cd06c1e232cb1aad96ed46"}
-  - {path: "docs/continual-learning.md", sourceSha256: "c2365d953b429e5d4b750feaa680c8483192f28e285358b441007af7e934be15", startLine: 71, endLine: 73, spanSha256: "7aa461fa05dfcd4c1ff66b3f0821be6b4c0ae5f30fc5624fa0b0c3e9f54e846c"}
-  - {path: "docs/continual-learning.md", sourceSha256: "c2365d953b429e5d4b750feaa680c8483192f28e285358b441007af7e934be15", startLine: 73, endLine: 77, spanSha256: "030f2f8db27ac4f9dbc1174795f01cad40d757b8f1a19837181d6a22f8973e22"}
-  - {path: "docs/continual-learning.md", sourceSha256: "c2365d953b429e5d4b750feaa680c8483192f28e285358b441007af7e934be15", startLine: 77, endLine: 78, spanSha256: "062ed2868fd7480ffff39f0d6f2e55350565bd78f9b88ee4870ce095d8ba51ec"}
-  - {path: "docs/continual-learning.md", sourceSha256: "c2365d953b429e5d4b750feaa680c8483192f28e285358b441007af7e934be15", startLine: 79, endLine: 83, spanSha256: "c7cbffc37a3cd45e3196a2f842da1df3779dd88522d140919fa77fc5a5d96c91"}
-  - {path: "docs/continual-learning.md", sourceSha256: "c2365d953b429e5d4b750feaa680c8483192f28e285358b441007af7e934be15", startLine: 83, endLine: 83, spanSha256: "652c8fba4d5188e527fd04853329701817e08763f6e03c54912c4d251173da06"}
-  - {path: "docs/continual-learning.md", sourceSha256: "c2365d953b429e5d4b750feaa680c8483192f28e285358b441007af7e934be15", startLine: 84, endLine: 84, spanSha256: "985ac1bd88d898961c7889597bc7b25f223e5b30afc20efff831dad76379531e"}
-  - {path: "docs/continual-learning.md", sourceSha256: "c2365d953b429e5d4b750feaa680c8483192f28e285358b441007af7e934be15", startLine: 84, endLine: 86, spanSha256: "1b3792c6b1ed734507e78a5183ca06312c6293a380d45f34d532521f1b20fc96"}
-  - {path: "docs/continual-learning.md", sourceSha256: "c2365d953b429e5d4b750feaa680c8483192f28e285358b441007af7e934be15", startLine: 86, endLine: 88, spanSha256: "144c1ca38652dddd9664c73166a41e58af0e7fe6dfef3642b9eed4c2e4bbca99"}
-  - {path: "docs/continual-learning.md", sourceSha256: "c2365d953b429e5d4b750feaa680c8483192f28e285358b441007af7e934be15", startLine: 88, endLine: 89, spanSha256: "bbf2c0f01e0b13506298384f74afc0319640d910bfc91c4d5ee4969ceb749051"}
-  - {path: "docs/continual-learning.md", sourceSha256: "c2365d953b429e5d4b750feaa680c8483192f28e285358b441007af7e934be15", startLine: 90, endLine: 91, spanSha256: "031c263ba542462ac0a5b27d450840bbe43e94f1b261df7d97fc613dbb600ad1"}
+  - {path: "docs/continual-learning.md", sourceSha256: "2ac28d325becf458a5d7e15c30c6dab4b56800c6ebb7e1268a45f98c3f7f59eb", startLine: 74, endLine: 77, spanSha256: "ae1ff5d7d0de5016ba344abc8daabd5568875ccb5ef04802fb2eaf4ea223aa35"}
+  - {path: "docs/continual-learning.md", sourceSha256: "2ac28d325becf458a5d7e15c30c6dab4b56800c6ebb7e1268a45f98c3f7f59eb", startLine: 77, endLine: 79, spanSha256: "52ac467e03be358d35ca2a9586d59ad2bca2e9b683c01579ac3f3abab06bead2"}
+  - {path: "docs/continual-learning.md", sourceSha256: "2ac28d325becf458a5d7e15c30c6dab4b56800c6ebb7e1268a45f98c3f7f59eb", startLine: 79, endLine: 80, spanSha256: "fbd068be2b1966bc898511ce883749fc3f8ddc734a9ec5ed1e932980452a9c36"}
+  - {path: "docs/continual-learning.md", sourceSha256: "2ac28d325becf458a5d7e15c30c6dab4b56800c6ebb7e1268a45f98c3f7f59eb", startLine: 106, endLine: 108, spanSha256: "a976dc9d4e8620d7a4ecbd48b83da3b1c2324f2f31cfed9c746b852221aaee73"}
+  - {path: "docs/continual-learning.md", sourceSha256: "2ac28d325becf458a5d7e15c30c6dab4b56800c6ebb7e1268a45f98c3f7f59eb", startLine: 109, endLine: 112, spanSha256: "99894e1a95dc867749c99b00cdc2e1eed52d01c5b75dc6733dd6416f6d9f64b2"}
+  - {path: "docs/continual-learning.md", sourceSha256: "2ac28d325becf458a5d7e15c30c6dab4b56800c6ebb7e1268a45f98c3f7f59eb", startLine: 112, endLine: 114, spanSha256: "81a5484f2476846a23ba4fe42d0edd1349029a052bc83477f6e861fa8b173775"}
+  - {path: "docs/continual-learning.md", sourceSha256: "2ac28d325becf458a5d7e15c30c6dab4b56800c6ebb7e1268a45f98c3f7f59eb", startLine: 114, endLine: 115, spanSha256: "2518cff7934492d5f19834333bf78bb50ceb1869119f57acf7839d0c83272ae8"}
+  - {path: "docs/continual-learning.md", sourceSha256: "2ac28d325becf458a5d7e15c30c6dab4b56800c6ebb7e1268a45f98c3f7f59eb", startLine: 115, endLine: 116, spanSha256: "067cce6c4dfd857a8562313205fbfbb316d1565be194d12d9ac8551f7cf7c0d6"}
+  - {path: "docs/continual-learning.md", sourceSha256: "2ac28d325becf458a5d7e15c30c6dab4b56800c6ebb7e1268a45f98c3f7f59eb", startLine: 116, endLine: 117, spanSha256: "2ef478a0d790d8bb23e4b6a999b2d068b72ddd5e08c2c22888cdf8da8f092c2b"}
+  - {path: "docs/continual-learning.md", sourceSha256: "2ac28d325becf458a5d7e15c30c6dab4b56800c6ebb7e1268a45f98c3f7f59eb", startLine: 119, endLine: 121, spanSha256: "2116f64180c410954039999ed839e6fa41de6c7523e0ddca4c0cefab1c2a3db4"}
+  - {path: "docs/continual-learning.md", sourceSha256: "2ac28d325becf458a5d7e15c30c6dab4b56800c6ebb7e1268a45f98c3f7f59eb", startLine: 170, endLine: 171, spanSha256: "5cabc665fa9d7eeae91326538d5d0ed30e1784443401c6dab44d6f8369e7934f"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="0910d27569a7aa1a" -->
+<!-- qmd:auto:start id="main" sourceHash="feb6bdda454ed726" -->
 ## Summary
-`docs/continual-learning.md`: Laya 0.3.20 adapter는 정확한 prompt와 전체 compact body를 토큰화하고 두 option marker와 전체 state token ID를 확인하며, 모델의 sequence budget에 맞지 않는 학습 사례는 거절한다. multilingual checkpoint는 tokenizer가 8192를 광고해도 `max_len=1024`를 선언하므로 adapter는 모델의 1024-token budget을 쓴다. 16 KiB는 저장 상한이지 Laya 적합 보장이 아니다. 학습 입력은 절대 자르지 않는다. 예측(live selection, held-out evaluation)은 버전된 pairing `leading-body-prefix-v1`로 모든 후보를 유지한다: 전체 사용자 요청 + 카드 body의 leading prefix. body를 offset과 함께 한 번 토큰화해 요청 옆 남은 token room에 맞춰 body-token 끝(codepoint index, UTF-8 분할 없음)에서 자르고, 재토큰화 후 초과분만큼 뒤로 물린다(최대 16회 확인). 같은 입력은 같은 prefix를 유지하며 최장 prefix 증명은 아니다. prefix는 앞쪽 빈 줄 뒤 첫 heading 줄 전체를 보존하며, 그 여유가 없거나 요청 자체가 초과하면 `input_budget_exceeded`로 fail closed한다. tokenizer offset 누락·이상도 fail closed. 16 KiB 카드 15장 pairing은 1024-token checkpoint에서 약 0.07 s. 선택 시 16 KiB 초과 body는 먼저 codepoint 경계에서 앞 16 KiB로 자른다. inference receipt는 `checks`에 `prediction_leading_body_prefix_v1`를 기록하며, 없으면 admission 실패 후 selector heal이 다시 준비한다. 준비 단계는 모델 자체 budget(1024 또는 8192 tokens)에서 합성 사례로 pairing을 증명한다. `raw.py`는 가정된 0.3.23 candidate pin의 별도 raw-data adapter다.
+`docs/continual-learning.md`: Laya 0.3.20 adapter는 정확한 prompt와 전체 compact body를 tokenize하고 두 option marker와 전체 state token ID를 확인하며, 모델의 sequence budget에 들어가지 않는 학습 사례를 거절한다. multilingual checkpoint는 tokenizer가 8192를 광고해도 `max_len=1024`를 선언하므로 adapter는 **모델의 1024-token budget**을 쓴다. 따라서 16 KiB는 저장 상한이지 Laya 적합 보장이 아니다. legacy·experiment view는 `leading-body-prefix-v1` 방식을 유지한다. 학습 입력은 자르지 않고, 예측은 사용자 요청 전체와 카드 본문 앞부분을 쓴다. 본문을 offset과 함께 한 번 tokenize해 남은 token 여유로 cut을 정하고, 재tokenize 후 여전히 길면 측정된 초과만큼 cut을 되돌린다(최대 16회 검사). prefix는 앞의 빈 줄 뒤 첫 heading 줄 전체를 유지하며, 그 여유도 없으면 `input_budget_exceeded`로 fail closed한다. edit view는 이 fit을 단일 청크 쌍의 안전망으로만 쓴다. tokenizer offset이 없거나 깨지면 fail closed. selection에서는 16 KiB를 넘는 body를 codepoint 경계에서 앞 16 KiB로 먼저 자른다. inference receipt의 `checks`에 `prediction_chunked_max_v1`이 없으면 admission이 실패하고 selector heal이 다시 준비한다. `raw.py`는 가정된 0.3.23 candidate pin의 별도 raw-data adapter로, 검증된 0.3.20 통합이 아니다.
 <!-- qmd:auto:end -->

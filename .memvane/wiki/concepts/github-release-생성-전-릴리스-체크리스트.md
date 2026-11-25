@@ -6,11 +6,10 @@ aliases:
   - "Release Checklist"
   - "GitHub Release 전 점검"
 related:
-  - "release-qa-artifact-identity"
-  - "memvane-1x-release-live-evidence"
-  - "memvane-1x-release-evidence-queries"
-  - "memvane-version-bump-checklist"
-  - "release-qa-approval-and-release-gate"
+  - "release-post-release-smoke-q-items"
+  - "release-rs-core-smoke-procedure"
+  - "release-q5-affected-paths"
+  - "release-evidence-retention"
 type: concept
 status: verified
 created: 2026-11-18
@@ -20,42 +19,43 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/release.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/release.md", collection: "qmd-auto-context", sha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", size: 4794, mtimeNs: 1794981800090496158}
+  - {kind: "file", path: "docs/release.md", collection: "qmd-auto-context", sha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", size: 11083, mtimeNs: 1795479671854671109}
 triggers:
   - "post_sync_source"
 redactions:
 verifiedBy: "claude"
-verifiedAt: "2026-11-18T13:08:47.664862Z"
+verifiedAt: "2026-11-24T03:10:16.020520Z"
 verifiedMode: "self"
-verifiedBodyHash: "51f31856e9db94624dd3521a6fe89cc99f94b72e115ac7aa4e139e096ab1f6f6"
+verifiedBodyHash: "5f3035f1494b78712bd0dce227bd3353f2835887a48aa0b49652b5b2d306b079"
 sourceSpans:
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 5, endLine: 5, spanSha256: "aa642586ed51705ad520a5be497920dea23979699a5b0fd9448ed469e7c36819"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 6, endLine: 8, spanSha256: "c7a9920c34bd1629e426940fbd899ce9709e22e26975439fe7db00e3df7a79a7"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 9, endLine: 9, spanSha256: "d1c0ca70396fbe44fce402728f9f4ed51c0bf05910d95d3589420c0b3e65fbd2"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 10, endLine: 13, spanSha256: "8a29069acdb93a6989cd9edc1a16f16101e1e3d15bb4f75d206adb3499fbbf0c"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 14, endLine: 16, spanSha256: "ac359ecb4648994d910d985d3da3fb87b31d6ef257cce700c42522034642029f"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 16, endLine: 17, spanSha256: "97e69ade9b70dae91506b7b7a8565543b674bcf57ebb36439047a5906b355675"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 18, endLine: 20, spanSha256: "f3377549aea91f7c942e2acbd694e0d3e4d04eccab7d1fe741ce26d06d5cd619"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 21, endLine: 22, spanSha256: "e9af686e0c66658054d767f8231901398e5ee916131524582daf92ccb3afa8ac"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 23, endLine: 26, spanSha256: "87b8e8679dc93f09cc810fabb4bdacc170c931416bafcbd1ce80dd473ce65703"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 26, endLine: 27, spanSha256: "ff9b0f70afa1f303248a580a04b95635f2b5a372a4907e8f1620ae4d9f0a0552"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 27, endLine: 29, spanSha256: "cd24f29260899d9d8be2e5e8383c25cee1cad66dc93f7b9d93ef00834ede6642"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 30, endLine: 32, spanSha256: "60b6dfd53e8680148e60af43e97451cfaabe96973db748749a84535ef56eef0d"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 33, endLine: 35, spanSha256: "ea3151d40df0df9906f9054785e84291848b114e0c650c2219c61a91b40a84df"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 36, endLine: 38, spanSha256: "0ec01b12002a8e33881567c0f63e86d26a3e629f6ad55c0149e6ed7841509a2e"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 3, endLine: 4, spanSha256: "77dcc114a9025d93d595d82fca111884d65482348c9a764cae2e8c7ab38e190f"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 4, endLine: 6, spanSha256: "81751172e26c475c25d6922887ff61d3199d687aaba38f9178b6a6f505d2df0b"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 6, endLine: 6, spanSha256: "2319ad7318f0f96a7f55a7117cf3e0c108a5a4bf84bde99f3175b42c5bde4af0"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 8, endLine: 9, spanSha256: "d02abbcc9be3a0b5121bf4980bc81c8d086a4013052895b4c571f9845bdc0119"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 9, endLine: 12, spanSha256: "8e963e7cf08da8d4732bee783fd418094cfafe4276b24e5a904b5fba7121b72f"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 12, endLine: 13, spanSha256: "734c95ef1bac6a77a7d5d7276f14db10b9abdd40efb4364a1ea7560f7b8f928f"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 19, endLine: 19, spanSha256: "3cf48ec62971cf9bba0238cfe567991e7f3fdd68ea74924080932b8d0f163013"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 20, endLine: 20, spanSha256: "1930ffc27f62cb034508de4d2ec9d7458aa496967485ce67be59a2c77a7c1c15"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 21, endLine: 21, spanSha256: "346b1ea31aa727fff75dc01b3b1be67a359cb3b1a2f08e31e760c23a5a741229"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 22, endLine: 22, spanSha256: "f1ba7594091be1309490a39a394b58f81ee7022a0508411b627452a8959ae95a"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 23, endLine: 23, spanSha256: "12011dbd494ef8d49f68bd7b7beb542c88e1d53db7e18706627c8c7ed36eba0e"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 24, endLine: 24, spanSha256: "7ca4fe67c4f5019327dee67dcbff59bd21670fd856ffd8c47e566b8cc0943cb8"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 26, endLine: 30, spanSha256: "02f82e42a9c3e4f525d931ecd941f152fb56bdd662890917471598d1fc83bb19"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 34, endLine: 35, spanSha256: "037f27e1b9dfd98f094814052f487adfadf625b436f0f353b29e37a405fa8c05"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 37, endLine: 37, spanSha256: "e55871ee7f64a0b164b00d9cffefbc2c9ff475a989ba0766d9e2188dbe5eb4e7"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 41, endLine: 43, spanSha256: "7e47988e062d79f50059db48721b6f79b42402dd8eea6e56e3f2f41703555390"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="6ccbc5787e6ba8dc" -->
+<!-- qmd:auto:start id="main" sourceHash="64a249d95ef46875" -->
 ## Summary
-`docs/release.md` Release Checklist의 GitHub Release 생성 전 단계:
-1. version이 모든 host manifest와 marketplace entry에 일치하는지 확인한다.
-2. Source verification(L0, prerequisite only): release commit에서 `npm test`와 `git diff --check`를 실행한다. 이 source checks는 step 4의 installed-candidate gate를 절대 대체하지 않는다.
-3. JSON manifests가 parse되는지 확인한다.
-4. **Mandatory for every version release:** final installed candidate에 대해 fresh, real Claude Code와 Codex host sessions에서 release agent QA gate(`release-agent-qa.md`)를 실행하고 run record template(`templates/release-agent-qa-run.md`)으로 기록한다. 모든 mandatory matrix cell에서 모든 mandatory scenario가 `PASS`여야 한다. `FAIL`, `BLOCKED`, `NOT RUN`은 `PASS`로 세지 않으며 mandatory matrix cell에서 formal release를 막는다. Optional, unverified host/OS 조합은 release notes에 명시한다.
-5. QA 후 code나 deployable artifact가 바뀌면 영향받은 scenarios와 core smoke를 재실행한다(gate spec section 11 규칙).
-6. wiki compile을 광고하면 one-time notice와 disable path를 확인한다(RQA-WIKI-03이 OFF path를 다룬다). built-in learning path에는 `RQA-RES-02`가 approved synthetic installed-candidate run에서 durable learning workload queue, resource admission, owned-process stop, exact cursor resume을 보여야 하며 learning을 광고하지 않아도 필수다. L0 mock이나 model smoke로는 충족 불가. Search·embedding workload queue 확장은 v2 이후 선택 결정이며 search·embedding product functionality는 자체 Laya gate가 필요하다. memvane-db replacement release에는 exact installed plugin에서 모든 `LI-*` row가 필요하며 source·synthetic coverage로 충족할 수 없다.
-7. compatibility notes, user-visible changes, upgrade notes, known limitations를 담아 GitHub Release를 게시하고 검증하지 않은 모든 OS·host를 명시한다.
-이후 step 8(public marketplace 설치, RQA-ID-00 + core smoke)은 `release-qa-artifact-identity` 카드 참조.
+`docs/release.md` Release Checklist는 두 층이다. 병합 전 체크는 필수이며 병합을 막는다. 릴리스 후 체크는 설치 버전에서 백그라운드로 돌고 병합·릴리스를 막지 않으며 실패는 다음 패치로 고친다. announcement 단계는 없다. 상태는 `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`이며 누락·부분 결과는 `PASS`가 아니다. 모든 결과는 release commit SHA와 설치된 `artifactManifestSha256`에 묶이고 event log rows, process lists, hashes로만 판정한다(model output, prompt text, card bodies 금지). 기록은 `templates/release-gate-run.md`.
+- P1 static(PR CI): 모든 host manifest, marketplace entries, `teacher_model_tiers.RELEASE`가 `package.json` 버전과 일치(테스트가 단정). old-bundle compatibility tags는 직전 세 릴리스. 문서 링크 resolve. provider file 변경 시 known worker/provider SHA pair table에 이전 릴리스 포함. 외부 다운로드 주소 pin·목록화(structure tests). teacher tier table을 각 host 모델 문서와 대조(사람이 날짜 기록).
+- P2 focused: 변경 도메인과 영향 범위를 Python 3.13과 `/usr/bin/python3`(3.9)에서(guard run ids).
+- P3 PR CI: macOS arm64 system Python 3.9 job 포함 전 job green(run URL).
+- P4 full suite: 최종 커밋에서 편집하지 않는 별도 worktree로 `npm test`(four guard run ids).
+- P5 real model: resident embedding smoke `npm run dev:guard -- --kind model-test -- node --test --test-concurrency=1 memvane/resident/tests/resident-model-smoke.test.mjs`를 승인된 기계에서 단독 실행. learning cycle path 변경 시 real-model learning check도. guard refusal·stop은 pass 아님. `ready`, guard refusal, guard stop을 따로 기록.
+- P6 independent review: 최종 패치에 blocking finding 없는 리뷰 문서.
+P4·P5 뒤 최종 커밋이 바뀌면 새 커밋에서 재실행한다. Publishing: 병합 → compatibility notes, user-visible changes, upgrade notes, known limitations를 담은 GitHub Release → working machine과 smoke account의 plugin 업데이트. 업데이트 단위는 계정 전체(Codex plugin은 프로젝트별이 아니고 per-user resident는 설치된 최고 버전을 실행).
 <!-- qmd:auto:end -->

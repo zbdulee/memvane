@@ -18,30 +18,28 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/git-worktree-search-sync-policy.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/git-worktree-search-sync-policy.md", collection: "qmd-auto-context", sha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", size: 8776, mtimeNs: 1794981800088861131}
+  - {kind: "file", path: "docs/git-worktree-search-sync-policy.md", collection: "qmd-auto-context", sha256: "6e8934ec6f471be86caacd590672b6cfe0c288242b42e2719c396684ad95a598", size: 8827, mtimeNs: 1795479671853005731}
 triggers:
   - "post_sync_source"
 redactions:
-verifiedBy: "claude"
-verifiedAt: "2026-11-19T11:45:36.777344Z"
+verifiedBy: "codex"
+verifiedAt: "2026-11-24T01:28:58.686427Z"
 verifiedMode: "self"
-verifiedBodyHash: "d90e814b3004fe0372972247d9e259ad098ae1a9f363e394f04dc727c54e3ef1"
+verifiedBodyHash: "fcbb5816d0dfd9e35fb250f1df3ac316bdba0394077757dc228ce880b7a9c91b"
 sourceSpans:
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 91, endLine: 92, spanSha256: "026ae87cba5430e7beeeede2c87c58bdbd4e794dfa3fbea58f9968c6934888ad"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 92, endLine: 93, spanSha256: "48ae93ce654002d419d46c27a344a3c19bcba29260f456960e2240429617501e"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 93, endLine: 94, spanSha256: "625ff0c4ae2e914091a9a3f830a5ea5ac91abae590cfd7b2b843fb0415331aa6"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 94, endLine: 96, spanSha256: "f920ffdb41df6671fb8ec6d64fe86fcbdd68e139f182fc8ba09e8f3f53c8f78a"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 96, endLine: 96, spanSha256: "ed9d37766bf338ae2e4eb91da233e65af24883d47449d577fa2b965a60ce94de"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 105, endLine: 106, spanSha256: "bd1c7d0ce68617fa563e40c9b438cc800fe4b238bfe10bf86c16a78c1ceb92c4"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 106, endLine: 107, spanSha256: "4354ff8f86eefb060bf51b3b0cabcb133c195383a27965ad89a12f071f15de23"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 107, endLine: 108, spanSha256: "bd9d12d2b1685c839a29932396873812500b4410aabe41606cd48f27aef4979b"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 115, endLine: 115, spanSha256: "09d45001a73760c964156113c15814a6d97268ade813b293207f672d2196ae3b"}
-  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "61a221cea419231717a5de3c1bb4bbb610b5ff0ffd2bc59ed04e23d9f7a1a031", startLine: 115, endLine: 116, spanSha256: "20b387f5bbd15089bac6d0ababfbf78cc1d9509f3b70ae972ce000179bf91a69"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "6e8934ec6f471be86caacd590672b6cfe0c288242b42e2719c396684ad95a598", startLine: 91, endLine: 92, spanSha256: "026ae87cba5430e7beeeede2c87c58bdbd4e794dfa3fbea58f9968c6934888ad"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "6e8934ec6f471be86caacd590672b6cfe0c288242b42e2719c396684ad95a598", startLine: 92, endLine: 93, spanSha256: "48ae93ce654002d419d46c27a344a3c19bcba29260f456960e2240429617501e"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "6e8934ec6f471be86caacd590672b6cfe0c288242b42e2719c396684ad95a598", startLine: 93, endLine: 94, spanSha256: "625ff0c4ae2e914091a9a3f830a5ea5ac91abae590cfd7b2b843fb0415331aa6"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "6e8934ec6f471be86caacd590672b6cfe0c288242b42e2719c396684ad95a598", startLine: 94, endLine: 96, spanSha256: "f920ffdb41df6671fb8ec6d64fe86fcbdd68e139f182fc8ba09e8f3f53c8f78a"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "6e8934ec6f471be86caacd590672b6cfe0c288242b42e2719c396684ad95a598", startLine: 96, endLine: 96, spanSha256: "ed9d37766bf338ae2e4eb91da233e65af24883d47449d577fa2b965a60ce94de"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "6e8934ec6f471be86caacd590672b6cfe0c288242b42e2719c396684ad95a598", startLine: 105, endLine: 107, spanSha256: "b9f8851caadb473bfab9b19e3fe4146abdf605c358157375d1fad7117766caa6"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "6e8934ec6f471be86caacd590672b6cfe0c288242b42e2719c396684ad95a598", startLine: 107, endLine: 107, spanSha256: "78c69d74a890eecf012fd964a88242de9efdc282e8ca6d5fe0c995dcd7e2794c"}
+  - {path: "docs/git-worktree-search-sync-policy.md", sourceSha256: "6e8934ec6f471be86caacd590672b6cfe0c288242b42e2719c396684ad95a598", startLine: 108, endLine: 108, spanSha256: "8f976ad6591439586bdb1c8ad64a39f072050622d479592b1ef9016e793d8ce1"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="b2a43f879010e0fe" -->
+<!-- qmd:auto:start id="main" sourceHash="60d3e17bc7dc7b4b" -->
 ## Summary
-`docs/git-worktree-search-sync-policy.md`의 정책 목표: 콘텐츠 캐시 재사용 키에는 바이트 해시뿐 아니라 파서, 청킹 및 임베딩 모델의 버전·설정을 포함한다. rename은 새 경로로 교체하되 같은 콘텐츠의 유효한 파생물은 재사용할 수 있다. 삭제는 해당 view에서만 제외하며, 공유 콘텐츠 캐시의 GC와 worktree 삭제는 별도 절차로 둔다. schema3 reader가 선택된 설치에서는 chunk·vector set이 카드 blob SHA와 recipe(tokenizer/chunker artifact SHA 포함)·profile(model bytes SHA 포함)로 묶이며, view·경로가 달라도 재사용된다. 공유 set의 GC는 없다. main 공유 위키는 현재 checkout과 모든 관련 원문 의존성이 일치할 때만 재사용한다는 것이 목표다. 기존 파일의 해시가 같아도 파일 추가·삭제로 전체 의존 집합이 바뀌면 무효화한다. schema3에서는 다른 view의 카드 trust를 같은 blob이라도 빌리지 않으며, 의존 집합 전체를 대조하는 판정은 없다. view store는 checkout별 게시 세대와 content set 재사용 키를 가진다. 공유 set GC, raw 즉시 검색, 공유 위키의 완전한 의존성 판정은 구현돼 있지 않다.
+정책 목표는 콘텐츠 캐시 키에 바이트 해시와 파서·청킹·임베딩 모델 버전·설정을 넣고 rename에서 유효 파생물을 재사용하는 것이다. 삭제는 해당 view에서 제외하고 공유 캐시 GC와 worktree 삭제는 별도 절차로 둔다. schema3 chunk·vector set은 카드 blob SHA·recipe(tokenizer/chunker artifact SHA 포함)·profile(model bytes SHA 포함)로 묶여 view·경로를 넘어 재사용되며 공유 set GC는 미구현이다. main 공유 위키는 관련 원문 의존 집합이 파일 추가·삭제까지 일치할 때만 재사용하는 것이 목표다. schema3는 같은 blob이어도 다른 view의 카드 trust를 사용하지 않으며 의존 집합 전체를 대조하지 않는다.
 <!-- qmd:auto:end -->

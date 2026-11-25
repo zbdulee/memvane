@@ -6,9 +6,9 @@ aliases:
   - "L1 installed-candidate QA"
   - "QA operator 규칙"
 related:
-  - "release-qa-status-release-rule"
-  - "release-qa-outcome-scope-queue-evidence-reuse"
-  - "release-qa-preflight-contract"
+  - "release-qa-status-values-release-rule"
+  - "release-qa-environment-isolation"
+  - "release-qa-evidence-reuse"
 type: concept
 status: verified
 created: 2026-11-18
@@ -18,31 +18,44 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context", sha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", size: 58013, mtimeNs: 1794981800090078568}
+  - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context", sha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", size: 59869, mtimeNs: 1795479671854230233}
 triggers:
   - "post_sync_source"
 redactions:
 verifiedBy: "claude"
-verifiedAt: "2026-11-18T13:08:28.832374Z"
+verifiedAt: "2026-11-24T03:09:36.604895Z"
 verifiedMode: "self"
-verifiedBodyHash: "922f17346090b3c362bcc3c0b71bee3a142305eb9856ff5591823d0a2edf3a75"
+verifiedBodyHash: "5ba169a2489a7423a2af8643cb7e2f1c499fe078079c617c07f7ae475aee8c23"
 sourceSpans:
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 3, endLine: 4, spanSha256: "98abd0805025778e7ca0e71679119ef2a5ddc4734a0361df28389a4dc844e461"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 4, endLine: 4, spanSha256: "6c9f1d4b0e251abde60c520a1d748f9d12b6c44b9cb8e7414abd12946b9625a8"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 4, endLine: 7, spanSha256: "ddcc43d96fd5c332d96aab0174aded5bc9bc352f12ebec6c03b5506b0bdadf6c"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 53, endLine: 53, spanSha256: "fc4d96f07505c3190255973e0e5ad232ac0123c43994d18bb8f6f605bab43a11"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 54, endLine: 54, spanSha256: "247ffc5251c379dfe883bfed9a0ac819b9467a926a54eb8f1dcc30574436a34c"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 56, endLine: 56, spanSha256: "f9238a1e715eb8293ca9dc9eaf16722030b54d2a57fb42348031177f31f609c2"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 56, endLine: 58, spanSha256: "50175b0b1e62a7f1fdb3a04074045db9561416311a17cff2775aac0c17efc18d"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 62, endLine: 63, spanSha256: "0a975ba247d0575b7d8cd9c10170c90606c3e97c7240aec5edb81230fb5be70b"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 64, endLine: 66, spanSha256: "17e84df015ccb2b0854701dd2da44c1b1ad3a9e353fe43d5b5c9e9ffc1d1f0dd"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 67, endLine: 70, spanSha256: "b8b7b9091e840396e38514de93523610e9b79a9bd0f0751d30b7b55cbf2f8b8b"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 71, endLine: 72, spanSha256: "549d18e848fd6b1dc7c4a3e566835726048a52b5bbd63d37b7d1184ea1d11b90"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 3, endLine: 4, spanSha256: "60f73649e868687aff67e9283d71d61c26355796f15f69e0c7b8b18f999226fd"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 4, endLine: 5, spanSha256: "021563c999973815f3d451a56c4889886ff720d029d2c50449b14f4b98778aca"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 5, endLine: 7, spanSha256: "e71e68147c7844fdd8c15209e11102a3512359aecc5b4b4709b3c0f5d3e8a838"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 7, endLine: 7, spanSha256: "79cfc84e13f3b11c9fddb4ac0c2aa16dbd9c5957d18dece9e41a53b1caf027aa"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 7, endLine: 10, spanSha256: "ba5f650c4941ffad83f591b500d5ec73caa2d51de78c611442c33e806becc9db"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 10, endLine: 11, spanSha256: "f40be7dc9f7f988c0cd6f2c7b0a5d0ee0561faff11314a1711b23cf3e6160fd0"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 14, endLine: 15, spanSha256: "4f58017951a0e0aae503f980d3473bbc570542200a1763a6ef6d916a917e031c"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 16, endLine: 17, spanSha256: "a9f5d7064c941b47e550073fa71dc8e90ef9ac900c00211eb1b127a10447b2c3"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 56, endLine: 56, spanSha256: "fc4d96f07505c3190255973e0e5ad232ac0123c43994d18bb8f6f605bab43a11"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 57, endLine: 57, spanSha256: "247ffc5251c379dfe883bfed9a0ac819b9467a926a54eb8f1dcc30574436a34c"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 59, endLine: 59, spanSha256: "f9238a1e715eb8293ca9dc9eaf16722030b54d2a57fb42348031177f31f609c2"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 59, endLine: 61, spanSha256: "50175b0b1e62a7f1fdb3a04074045db9561416311a17cff2775aac0c17efc18d"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 65, endLine: 66, spanSha256: "0a975ba247d0575b7d8cd9c10170c90606c3e97c7240aec5edb81230fb5be70b"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 66, endLine: 69, spanSha256: "e94e07ef1080d0ab9270ce219a5c004300907f2e095a9809ef5e8a0db9bcdc40"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 70, endLine: 73, spanSha256: "b8b7b9091e840396e38514de93523610e9b79a9bd0f0751d30b7b55cbf2f8b8b"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 74, endLine: 75, spanSha256: "549d18e848fd6b1dc7c4a3e566835726048a52b5bbd63d37b7d1184ea1d11b90"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="a58f4ec108d04846" -->
+<!-- qmd:auto:start id="main" sourceHash="28e97c6a86276a91" -->
 ## Summary
-`docs/release-agent-qa.md`의 Release agent QA gate는 모든 버전 릴리스에서 **final installed candidate**에 대해 통과해야 한다. 이 gate는 unit test를 다시 돌리지 않는다. operator agent가 실제 Claude Code·Codex fresh host session에서 disposable synthetic fixture를 대상으로 재현 가능한 scenario를 수행하고 객관적 증거를 남긴다. L0 source verification(`npm test`, focused tests, synthetic fixtures, source checkout의 직접 `entry/` maintainer 호출)은 전제조건일 뿐 gate를 충족하지 못한다(`release.md` 참조). L1 installed-candidate QA는 정확한 후보를 host marketplace로 설치한 뒤 실제 hook이 실행되는 fresh host session에서 자연어 요청과 노출된 skill로 진행하며, 유일하게 인정되는 수준이다. hook-path 증거는 직접 script 호출로 대체할 수 없다. cached plugin directory는 같은 version string으로 다른 코드를 담을 수 있으므로 identity는 content hash(section 5)로 증명한다. Operator rules: 제품 조작은 자연어 요청 또는 노출된 skill(`setup`, `query`, `update`, `wiki-compile`)만 쓴다. `entry/*`나 `skills/*/scripts/*`를 직접 실행해 scenario를 진행시키면 그 scenario 실행은 무효이며 precondition부터 다시 시작한다. 제품 밖에서는 사용자 시뮬레이션(fixture helper의 Git 동작, host marketplace install/update, preflight에서 검토한 정확한 명령으로 한정한 hook trust), 증거 읽기, hash 계산만 허용한다. Probe prompt는 tool 사용을 금지하며 transcript에 probe turn의 tool call이 보이면 그 probe는 무효이고 반복해야 하며 집계하지 않는다.
+`docs/release-agent-qa.md`의 Release agent QA gate는 [release checklist](release.md)의 Q6인 full run 계약이다. **final installed version**을 대상으로 operator agent가 수행하며, 모든 minor version마다 실행한다. 이 run은 merge나 release를 막지 않는다. 막는 검사는 checklist의 P1부터 P6이며, release별 smoke는 RS-core다. unit test를 다시 돌리지 않는다. 실제 Claude Code·Codex fresh host session에서 disposable synthetic fixture를 대상으로 재현 가능한 scenario를 수행하고, scenario마다 객관적 증거를 남긴다. 기록은 `templates/release-agent-qa-run.md`로 한다. Open QA item과 user-deferred assertion은 `ROADMAP.md`에서 추적한다. `architecture/flows/README.md`의 flow chart는 L1 verdict가 아니다.
+
+L0 source verification(`npm test`, focused tests, synthetic fixtures, source checkout의 직접 `entry/` maintainer 호출)은 전제조건일 뿐이며 gate를 충족하지 못한다. L1 installed-candidate QA만 인정된다. L1은 정확한 후보를 host marketplace로 설치한 뒤, 실제 hook이 실행되는 fresh host session에서 자연어 요청과 노출된 skill로 진행한다. hook-path 증거는 직접 script 호출로 대체할 수 없다. cached plugin directory는 같은 version string으로 다른 코드를 담을 수 있으므로 identity는 content hash(section 5)로 증명한다.
+
+Operator rules:
+- 제품 조작은 자연어 요청 또는 노출된 skill(`setup`, `query`, `update`, `wiki-compile`)만 쓴다.
+- `entry/*`나 `skills/*/scripts/*`를 직접 실행해 scenario를 진행시키면 그 run은 무효이며 precondition부터 다시 시작한다.
+- 제품 밖에서는 세 가지만 허용한다. 첫째, 사용자 시뮬레이션(fixture helper의 Git 동작, host marketplace install/update, preflight section 3에서 검토한 정확한 명령으로 한정한 hook trust)이다. 둘째는 증거 읽기, 셋째는 hash 계산이다.
+- Probe prompt는 tool 사용을 금지한다. transcript에서 probe turn에 tool call이 보이면 그 probe는 무효이며, 반복하고 집계하지 않는다.
 <!-- qmd:auto:end -->

@@ -5,8 +5,8 @@ aliases:
   - "QA 증거 재사용"
   - "Evidence reuse"
 related:
-  - "release-qa-l0-l1-levels-operator-rules"
-  - "release-qa-status-release-rule"
+  - "release-qa-outcome-scope"
+  - "release-qa-queue-interpretation"
 type: concept
 status: verified
 created: 2026-11-02
@@ -16,34 +16,27 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context", sha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", size: 58013, mtimeNs: 1794981800090078568}
+  - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context", sha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", size: 59869, mtimeNs: 1795479671854230233}
 triggers:
   - "session_start_source"
 redactions:
-verifiedBy: "claude"
-verifiedAt: "2026-11-18T13:06:14.472390Z"
+verifiedBy: "codex"
+verifiedAt: "2026-11-24T03:52:42.322951Z"
 verifiedMode: "self"
-verifiedBodyHash: "3121fb7d121795a5ee5bb95b84db37971d046741bd5a0c7c6673eea286312368"
+verifiedBodyHash: "b7a42f99c7f01aa6cc359e072c55116c8da7e93e4618945d06bd09c5c0e38f25"
 sourceSpans:
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 18, endLine: 18, spanSha256: "e1cedb60c8450540532aee44c4d49f026934d064b89ddd7a3509937aa55c4d32"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 18, endLine: 21, spanSha256: "cbe90799240e81f75954b7d4a22dfe8e802da11ff78ee6cc966da02a04e4c36c"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 25, endLine: 25, spanSha256: "943af6c7701888436a34651272e8793880810562851f3ae07aadabc3d5430ac8"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 26, endLine: 26, spanSha256: "e43bd89bd1f71bf0d29405c18b845c14bc8167a0ba4a0fddd6d72434d21116c1"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 27, endLine: 27, spanSha256: "a1bf080cb43a51ad7dc143e14a1483703638f16d365c23352bdd7544b3c7e548"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 28, endLine: 28, spanSha256: "eeeb0804546987e1fa07a1c07094954771e925273db331bee17ad7094e00f493"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 29, endLine: 29, spanSha256: "ff262da05eb068ce3da2c08de262d3cf9469db8e5ce112e3731c0e01f69b4133"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 31, endLine: 34, spanSha256: "cc249a78e0aff45a1acd0c117bd17c53914c2785ce32e1b8b8b2845afa0b9277"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 34, endLine: 36, spanSha256: "0624d46ce46aed559255528f1fe06dce41e8f96cbf48334230300b2a451b6d0a"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 37, endLine: 38, spanSha256: "5df3645ac5ec483dbe429e2c6a1294ea2b4d30ca05d42f575c7077ebf58eec5c"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 40, endLine: 42, spanSha256: "1e46faef0a1771f5aa8d8482ec934bf5458b0968e000250e7eeebc67c3e26d4f"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 42, endLine: 43, spanSha256: "7832a588f52a100b814599801e9cb6803a78c0f2ec02eba8d63776f4135e957d"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 43, endLine: 45, spanSha256: "56c8071a6cff3d04764b02e5b1b337994c9d575fd995a85d63bc4262c353c869"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "c59a038c2188026464e8c5db8c7f217a142d92d17bd012e9bab1551642565521", startLine: 46, endLine: 47, spanSha256: "b00fe05e1857cdbc1582f4b1026493c31d9c5a0885fddfc988c7eaf0ebf4b061"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 21, endLine: 24, spanSha256: "cbe90799240e81f75954b7d4a22dfe8e802da11ff78ee6cc966da02a04e4c36c"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 24, endLine: 24, spanSha256: "8342b12e82d9f10931bb22ad1d19167a926b986d04919dabcb68a7eda4034b3b"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 43, endLine: 45, spanSha256: "1e46faef0a1771f5aa8d8482ec934bf5458b0968e000250e7eeebc67c3e26d4f"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 45, endLine: 46, spanSha256: "7832a588f52a100b814599801e9cb6803a78c0f2ec02eba8d63776f4135e957d"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 46, endLine: 48, spanSha256: "56c8071a6cff3d04764b02e5b1b337994c9d575fd995a85d63bc4262c353c869"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 48, endLine: 49, spanSha256: "9a86cabdd72893b6d05e79e504d50f64ed6c716fd80e95d86d1f7f1a9c61a024"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 50, endLine: 50, spanSha256: "a323aff5d509df7385a343ce686201fa937129f3957dc3eee33c7a0263c4f6af"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="435a0952894a87de" -->
+<!-- qmd:auto:start id="main" sourceHash="a02cff02c30662b7" -->
 ## Summary
-`docs/release-agent-qa.md`는 다섯 사용자 결과를 보호한다. Install and settings: 정확한 설치 bytes와 loaded hooks, scoped setup decision, 유지된 settings(version string 일치나 직접 core script 호출만으로는 불충분). Source to wiki: 동의된 변경이 source revision·locator를 가진 verified current card에 도달하고 중복 trigger가 중복 유료 작업을 만들지 않음(다른 QA 전 전역 queue 비우기는 non-goal). Search and injection: 두 host가 현재 wiki card를 선택하고 bounded wiki text와 verified source locator를 주입하며 Laya에는 독립 raw document hit가 없음. Onboarding and recovery: source/wiki/settings 보존, wiki-only Laya seal, scoped activation, 첫 selected write 전 restore와 이후 forward recovery(새 후보가 있다는 이유만으로 old store 삭제 금지). Boundaries: cross-project 결과 없음, 정상 작업 응답성, 미지원 cell 정직 보고(optional hardware cell을 Mini에서 테스트한 것으로 간주 금지). 한 session·backup이 여러 scenario ID의 증거가 될 수 있으나 non-PASS 포함 모든 ID를 run record에 남긴다. Queue: `pending`은 scenario가 그 revision의 timeout 내 수렴을 요구하지 않는 한 일반 비동기 작업이다. 필요 시 queued revision, current source hash, verified card provenance, selected index를 비교한다. revisionless legacy row만으로 새 revision 누락을 증명할 수 없다. `worker_failed` retries, scenario deadline 초과, stale selected card는 별개 실패다. 전역 `queue_count=0` precondition은 없고 sync snapshot은 wiki compile ACK가 아니며 빈 queue는 검색 결과가 아니다. 증거 재사용: 입력이 불변인 source-level CI, immutable model provenance, consistent backup, synthetic guard 결과는 preflight로 유지한다. 이전 후보의 L1 `PASS`는 다른 artifact hash로 이전되지 않는다. 수정은 final QA 전에 묶고 exact installed identity/core smoke와 section 11의 영향받은 assertion만 재실행한다. 모든 applicable data-safety row는 면제되지 않는다.
+`docs/release-agent-qa.md`는 입력이 동일한 source-level CI, immutable model provenance, consistent backup, synthetic guard 결과를 preflight에 재사용한다. 한 host session·backup·trace가 정확한 artifact, project, source revision, owning domain을 증명하면 여러 scenario ID의 증거로 쓰고 non-PASS를 포함한 모든 ID를 run record에 남긴다. L1 `PASS`는 동일 artifact hash에만 유효하다. 수정은 final QA 전에 묶고 exact installed identity/core smoke와 section 11의 영향받은 scenario assertions를 실행한다. 모든 applicable data-safety row는 필수다.
 <!-- qmd:auto:end -->

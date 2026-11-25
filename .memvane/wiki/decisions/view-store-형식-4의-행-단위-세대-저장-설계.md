@@ -18,29 +18,32 @@ updated: 2026-11-18
 createdBy: memvane
 confidence: medium
 sources:
-  - {kind: "file", path: "docs/plans/2026-11-11-schema3-row-generations-design.md", collection: "qmd-auto-context"}
+  - {kind: "file", path: "docs/development-view-candidate.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/plans/2026-11-11-schema3-row-generations-design.md", collection: "qmd-auto-context", sha256: "adfdd834ef92cd2d68764de59e2b0c378691c98c9b979b94eb606b5d1bc8675e", size: 1198, mtimeNs: 1794981800089171970}
+  - {kind: "file", path: "docs/development-view-candidate.md", collection: "qmd-auto-context", sha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", size: 19547, mtimeNs: 1795479671852677314}
 triggers:
   - "post_sync_source"
 redactions:
-verifiedBy: "claude"
-verifiedAt: "2026-11-18T13:06:52.164553Z"
+verifiedBy: "codex"
+verifiedAt: "2026-11-24T01:25:41.027709Z"
 verifiedMode: "self"
-verifiedBodyHash: "95bca5f029b48f43d9cf3766f2f3acb85bdafca29aa11bab6297b10f824fd32f"
+verifiedBodyHash: "ee8432dd79388b6cb098f134d8016845b828895d398d2c4af618ffe5b5e28f59"
 sourceSpans:
-  - {path: "docs/plans/2026-11-11-schema3-row-generations-design.md", sourceSha256: "adfdd834ef92cd2d68764de59e2b0c378691c98c9b979b94eb606b5d1bc8675e", startLine: 3, endLine: 3, spanSha256: "ec521f2baf8206d2ea0d1a07128a2d87a8c7079352742480aa704f842c745b84"}
-  - {path: "docs/plans/2026-11-11-schema3-row-generations-design.md", sourceSha256: "adfdd834ef92cd2d68764de59e2b0c378691c98c9b979b94eb606b5d1bc8675e", startLine: 5, endLine: 5, spanSha256: "6bebdd84662556c66a6522c272db2e173ef70c36c75666b53c3224fd3d912b03"}
-  - {path: "docs/plans/2026-11-11-schema3-row-generations-design.md", sourceSha256: "adfdd834ef92cd2d68764de59e2b0c378691c98c9b979b94eb606b5d1bc8675e", startLine: 6, endLine: 6, spanSha256: "209b0cbbb84aa3b9e06a6d291e35e381b4c2927dea1d8309dc84c104e73a972a"}
-  - {path: "docs/plans/2026-11-11-schema3-row-generations-design.md", sourceSha256: "adfdd834ef92cd2d68764de59e2b0c378691c98c9b979b94eb606b5d1bc8675e", startLine: 7, endLine: 7, spanSha256: "3b9b405380fc76aefd3f096bdeaab70d669fb7bda395a55d92a727de0c928ee6"}
-  - {path: "docs/plans/2026-11-11-schema3-row-generations-design.md", sourceSha256: "adfdd834ef92cd2d68764de59e2b0c378691c98c9b979b94eb606b5d1bc8675e", startLine: 8, endLine: 8, spanSha256: "24672b4bd708be2119f18ccc948fe01358121d5c49d458ac2192f73fbb437bfd"}
-  - {path: "docs/plans/2026-11-11-schema3-row-generations-design.md", sourceSha256: "adfdd834ef92cd2d68764de59e2b0c378691c98c9b979b94eb606b5d1bc8675e", startLine: 9, endLine: 9, spanSha256: "7ca891b1418dcec8dccfac6f2b045e8c14ee09cfe2c4188137cdc849dc97c4d8"}
-  - {path: "docs/plans/2026-11-11-schema3-row-generations-design.md", sourceSha256: "adfdd834ef92cd2d68764de59e2b0c378691c98c9b979b94eb606b5d1bc8675e", startLine: 11, endLine: 11, spanSha256: "509ce57f3682c113a80d47e65e135024c8788c908bce0b8c3dd77b9fe118b681"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 4, endLine: 4, spanSha256: "2c8181f2e2d66237330a55c7dcb949cdf5ae9076d39b3633ab89483043a47f70"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 26, endLine: 26, spanSha256: "793864470c5fca348834dc8009355eb9fc5008fbce9789d3865cd737a9f51a41"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 27, endLine: 27, spanSha256: "588f37ac0336bcadbb15a36be3de3126d50135673efc535318c2b00306b4f4ee"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 108, endLine: 108, spanSha256: "22b279fc16c75a9b240bab66000efe05a011453466cff53c613f5c21fcf2ec10"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 110, endLine: 110, spanSha256: "a9a2a86c39852fa73033aa97a4fc3cc036a513adb8d26479937e402184d898ba"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 111, endLine: 112, spanSha256: "f95ad17392def9da2b58914b09d1f426863d0330a4d658b4e67f552fa8bc21c1"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 113, endLine: 114, spanSha256: "c2f183b4f5eb9fda71f75a67f16b4621aa878ec9f7a52585aac3b125f114b40d"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 115, endLine: 116, spanSha256: "7f864ea9c58fcbba24ccfa9239822d34afb3445d921e6306b23e8ca22fbfa64c"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 116, endLine: 117, spanSha256: "2009b676f55561f67add2ff07411ac3736573bf2e92064c9f17cca1397551921"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 119, endLine: 119, spanSha256: "1bd9a735aff3350d797c5c34312c036300775ba649e065a8847984ccb2c7be27"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="4644056a3e366523" -->
+<!-- qmd:auto:start id="main" sourceHash="c1955e8f80670ee5" -->
 ## Summary
-`docs/plans/2026-11-11-schema3-row-generations-design.md` 설계에서 View store는 형식 4의 행 단위 세대를 사용한다. 카드와 원문 관측은 유효 구간으로 보관하고, 게시할 때는 바뀐 행과 delta만 기록한다. 게시는 한 transaction 안에서 head FTS를 갱신하고 봉인을 만든 뒤 head를 CAS로 옮긴다. view마다 현재 head FTS 하나를 유지하며, 검색은 pin한 head의 봉인·행·FTS를 검증한다. 첫 게시 이후 rollback은 직전 게시의 delta를 역적용한 새 세대로 만든다. view 행 GC는 head와 직전 세대를 보존한다. content와 완전한 chunk/vector set은 불변이며 view 간 공유할 수 있지만, 신뢰와 검색 자격은 해당 view에서 판정한다. 큰 변경은 유계 stage에 저장하고, capture·head·설정 정체성을 재확인한 뒤 게시한다. cold view는 첫 게시 전까지 검색 결과를 제공하지 않는다. 공유 content GC는 view 행 GC와 별도 과제다. 참조 관계와 동시 writer·reader 증명은 열린 항목(`../TODO.md`)을 따른다. API와 실패 의미는 view store 계약(`../development-view-candidate.md`), 내용과 provenance는 blob 계약(`../development-blob-candidate.md`)을 따른다.
+`prepare_generation(handle, manifest, *, expected_head, vector_spec=None)`은 head와 capture에 묶인 유계 stage에 변경 행과 vector spec을 기록하고 세대 ID를 반환한다. `publish_generation(handle, gen_id, *, expected_head)`는 동일 view의 stage·seal·base를 재확인하고 변경 행·head FTS·delta·봉인을 한 transaction에 기록한 뒤 `(view_id, incarnation, gen_id, epoch)` CAS로 head를 전진시킨다. epoch는 ABA를 구분하며 다른 view의 게시와 CAS가 독립적이다. replay는 동일 게시가 현재 head와 정확히 일치할 때 허용하고 실패·CAS 충돌 시 기존 head를 보존한다. prepare·publish는 원래 handle의 capture·settings·파일 관측을 재확인하고 vector complete set의 실제 행·입력 SHA·바이트·provenance를 검증한다. 원문 scan과 모델 작업은 writer transaction 밖에서 수행하며 파일·Git·settings 재확인은 검증 시점의 관측이다.
 <!-- qmd:auto:end -->

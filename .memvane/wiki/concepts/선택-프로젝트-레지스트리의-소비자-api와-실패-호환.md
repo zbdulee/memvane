@@ -7,9 +7,7 @@ aliases:
   - "registry_corrupt"
 related:
   - "memvane-project-registry"
-  - "memvane-project-registry-reconcile"
   - "external-edit-registry-candidates"
-  - "external-edit-target-selection"
 type: concept
 status: verified
 created: 2026-11-18
@@ -19,31 +17,36 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/project-registry.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/project-registry.md", collection: "qmd-auto-context", sha256: "7ecf23ae2bec28b7855d278cbf978b24730657f27f6cd6bd24ca1fa366c6b578", size: 9163, mtimeNs: 1794981800089645853}
+  - {kind: "file", path: "docs/project-registry.md", collection: "qmd-auto-context", sha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", size: 9188, mtimeNs: 1795479671853757316}
 triggers:
   - "post_sync_source"
 redactions:
-verifiedBy: "claude"
-verifiedAt: "2026-11-18T13:08:11.920488Z"
+verifiedBy: "codex"
+verifiedAt: "2026-11-24T03:47:37.007281Z"
 verifiedMode: "self"
-verifiedBodyHash: "96fb60daab709707aa7859ef6ad679796478613554e2b9eee60f9451299554b3"
+verifiedBodyHash: "444fd56f203346df5755ef7c5f29041ef70eefdcb5bda4bcb45bd579ff79af77"
 sourceSpans:
-  - {path: "docs/project-registry.md", sourceSha256: "7ecf23ae2bec28b7855d278cbf978b24730657f27f6cd6bd24ca1fa366c6b578", startLine: 91, endLine: 91, spanSha256: "2cfe88c316132e34cfe247c4b585b454cd10db720e26d7459978011117063b0c"}
-  - {path: "docs/project-registry.md", sourceSha256: "7ecf23ae2bec28b7855d278cbf978b24730657f27f6cd6bd24ca1fa366c6b578", startLine: 92, endLine: 93, spanSha256: "11b35225d4b058c96079a913fcec1b1a863da5397feeed39bbd9cf524c3a83a3"}
-  - {path: "docs/project-registry.md", sourceSha256: "7ecf23ae2bec28b7855d278cbf978b24730657f27f6cd6bd24ca1fa366c6b578", startLine: 94, endLine: 95, spanSha256: "175a561462595e775cb729e6fd47717f1dbfaee4745039261bb2fb1defb0a7c1"}
-  - {path: "docs/project-registry.md", sourceSha256: "7ecf23ae2bec28b7855d278cbf978b24730657f27f6cd6bd24ca1fa366c6b578", startLine: 97, endLine: 99, spanSha256: "28f3e631e722139126b073b1072c0ac925175f78626c757e6e313678ac9f6577"}
-  - {path: "docs/project-registry.md", sourceSha256: "7ecf23ae2bec28b7855d278cbf978b24730657f27f6cd6bd24ca1fa366c6b578", startLine: 102, endLine: 104, spanSha256: "15495acd6c28caba628a864f19d7d67e4bfefb99746566f84bd5bb7e703b3a93"}
-  - {path: "docs/project-registry.md", sourceSha256: "7ecf23ae2bec28b7855d278cbf978b24730657f27f6cd6bd24ca1fa366c6b578", startLine: 106, endLine: 109, spanSha256: "9cfb88b961b39bcd5cba78e48178b235f462f28805241f441258700eeacefed3"}
-  - {path: "docs/project-registry.md", sourceSha256: "7ecf23ae2bec28b7855d278cbf978b24730657f27f6cd6bd24ca1fa366c6b578", startLine: 113, endLine: 114, spanSha256: "1a5bbefa99b9b3f449721ad07af3c1a253ce792845ab9e6b7bc3b17530e0fe84"}
-  - {path: "docs/project-registry.md", sourceSha256: "7ecf23ae2bec28b7855d278cbf978b24730657f27f6cd6bd24ca1fa366c6b578", startLine: 114, endLine: 116, spanSha256: "18876a31df40ac22cf3e7433a007b9d158a9cd0c52a4b178086154f7c29b16b6"}
-  - {path: "docs/project-registry.md", sourceSha256: "7ecf23ae2bec28b7855d278cbf978b24730657f27f6cd6bd24ca1fa366c6b578", startLine: 118, endLine: 118, spanSha256: "b555d347ddfd26818865f1c12fc853d370884b7eb0cd1852d09b3cdbacad5d52"}
-  - {path: "docs/project-registry.md", sourceSha256: "7ecf23ae2bec28b7855d278cbf978b24730657f27f6cd6bd24ca1fa366c6b578", startLine: 119, endLine: 121, spanSha256: "d86b4cfbabbd0cfd4a5e51686cd19735b8f05d9796bc6d962b7cf8e023ce966d"}
-  - {path: "docs/project-registry.md", sourceSha256: "7ecf23ae2bec28b7855d278cbf978b24730657f27f6cd6bd24ca1fa366c6b578", startLine: 122, endLine: 122, spanSha256: "1247d2d5cb91900cbcadd229e14152fdff712ece1259e1a2e7eec7e9c1d32c60"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 91, endLine: 91, spanSha256: "2cfe88c316132e34cfe247c4b585b454cd10db720e26d7459978011117063b0c"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 92, endLine: 92, spanSha256: "f318b563cba5c927377dc2245322d1b2c8649f70dfe06539fe941a4dcab8db84"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 92, endLine: 93, spanSha256: "11b35225d4b058c96079a913fcec1b1a863da5397feeed39bbd9cf524c3a83a3"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 94, endLine: 94, spanSha256: "33bd4208c4dd14eb846ffe8acb2c4c68fee9f1dda51382b579ea7c168ad0d0a3"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 94, endLine: 95, spanSha256: "175a561462595e775cb729e6fd47717f1dbfaee4745039261bb2fb1defb0a7c1"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 113, endLine: 113, spanSha256: "be5e289fab494a8aec63452477dc320eb8666a6b0bc9f6a8d2dc277f98e827f7"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 114, endLine: 114, spanSha256: "3a6d3a6891fe0162510383f2cce455f2f4385850d2e1e2035bffb3ad089b3a9f"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 114, endLine: 115, spanSha256: "e1c6209b8e71c8243f8b139838f5b822c8f597953f960f19f4902366430d505f"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 115, endLine: 115, spanSha256: "cb93bbe67b9e54285f16f061255e9cac2f456ce2ca8ea49186be4eeacbbab846"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 116, endLine: 117, spanSha256: "86b45a85172adb4cb3f2263a6c9cf43f874bf360342b4fefa763aba5d2c3c5e6"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 118, endLine: 118, spanSha256: "b555d347ddfd26818865f1c12fc853d370884b7eb0cd1852d09b3cdbacad5d52"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 119, endLine: 119, spanSha256: "5abb52e5c756119d65988940705f1c15de685ebdb4d9898774e93c16c64f391f"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 119, endLine: 120, spanSha256: "525db9cd6fd29bdbfe48c371136327e6eb1dcc94664334f02ec90d85909ceb7a"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 120, endLine: 121, spanSha256: "98437389038bf9beb06e04778c52c6c8882f2c6535aa48b667b0d50dac72d16d"}
+  - {path: "docs/project-registry.md", sourceSha256: "ba684fcf65c07b1756bb6bc6c7a9c53ac2ea61126b1e968e5a3d45efc09f35f8", startLine: 122, endLine: 122, spanSha256: "1247d2d5cb91900cbcadd229e14152fdff712ece1259e1a2e7eec7e9c1d32c60"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="443704882202645c" -->
+<!-- qmd:auto:start id="main" sourceHash="cc3944e49a29e1b0" -->
 ## Summary
-`docs/project-registry.md`의 소비자: `routing_rows()`는 `active` main 행과 backfill 완료 여부를 준다. `lookup(path)`는 경로 구성요소 경계의 최장 일치이며 최장 일치 root에 행이 둘 이상이거나 `conflict`면 `ambiguous`다. `snapshot()`은 대시보드용 전체 행·base별 완료 시각·`stale` 표시를 주고 손상·미지원 schema·안전하지 않은 경로는 `recovery_required`로 보인다. `external_edits` 대상 탐색에서 행은 state root가 HOME state base 바로 아래이고 그 이름·journal project root·route install ID가 행과 같을 때만 후보다. 완료 조회에서만 편집 경로와 owner root 사이에 다른 프로젝트 폴더(`.memvane/settings.json` 또는 `.auto-context/settings.json`)가 있으면 라우팅하지 않으며(등록되지 않은 중첩 설치 보호, 열거 모드는 이 검사 없음), 원문 트리 깊이 상한(`source_scan.MAX_DEPTH`, 32단계)까지 폴더당 stat 2회로 보고 단계마다 hook deadline을 확인한다; 더 깊은 경로·deadline 초과·판독 오류는 전달하지 않는다. 실패: 부재·손상·busy·미지원 schema·안전하지 않은 경로는 `RegistryUnavailable`이고 hook 읽기는 busy 대기 50ms로 끝난다. 레지스트리를 삭제·재생성하지 않고 미지원 schema·손상 파일에는 쓰지 않는다. schema는 파일을 새로 만든 연결만 초기화하며, 이미 있던 빈 파일은 tombstone을 담았을 수 있어 `registry_corrupt`로 거절한다. SQLite 기본 rollback journal 모드로 py3.9 hook이 새 python이 쓴 파일을 읽는다. journal 읽기는 `read_only_journals()` 안에서 하며 중단된 v3/v4 journal의 rollback 복구 없이 그 설치를 건너뛰고, busy 대기는 `install_journal.reader_deadline`으로 pass 예산에 묶인다. 같은 프로젝트의 직접 세션은 레지스트리와 무관하게 기존 route 증명으로 동작한다.
+`docs/project-registry.md`에서 `routing_rows()`는 `active` main 행과 backfill 완료 여부를 반환한다. `lookup(path)`는 경로 구성요소 경계의 최장 일치를 사용하며, 최장 일치 root에 행이 둘 이상이거나 `conflict`면 `ambiguous`다. `snapshot()`은 대시보드용 전체 행·base별 완료 시각·`stale` 표시를 반환한다. 손상·미지원 schema·안전하지 않은 경로는 `recovery_required`로 표시한다.
+부재·손상·busy·미지원 schema·안전하지 않은 경로는 `RegistryUnavailable`이며 hook 읽기의 busy 대기는 50ms다. 레지스트리를 삭제·재생성하지 않으며 미지원 schema·손상 파일에는 쓰지 않는다. 파일을 새로 만든 연결만 schema를 초기화한다. 이미 있던 빈 파일은 tombstone을 담았을 가능성이 있어 `registry_corrupt`로 거절하고 재생성·backfill로 채우지 않는다. SQLite 기본 rollback journal 모드로 py3.9 hook이 새 python이 쓴 파일을 읽는다. `read_only_journals()` 안에서 journal을 읽고, 중단된 v3/v4 journal은 rollback 복구 없이 해당 pass에서 건너뛴다. journal busy 대기는 `install_journal.reader_deadline`으로 pass 예산에 묶인다. 같은 프로젝트의 직접 세션은 기존 route 증명으로 동작한다.
 <!-- qmd:auto:end -->

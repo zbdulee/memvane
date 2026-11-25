@@ -6,7 +6,6 @@ aliases:
   - "View fill fence"
 related:
   - "laya-view-fill-job"
-  - "laya-view-fill-budgets"
 type: concept
 status: verified
 created: 2026-11-02
@@ -16,30 +15,32 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/development-view-candidate.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/development-view-candidate.md", collection: "qmd-auto-context", sha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", size: 17937, mtimeNs: 1793607024896226767}
+  - {kind: "file", path: "docs/development-view-candidate.md", collection: "qmd-auto-context", sha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", size: 19547, mtimeNs: 1795479671852677314}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T15:35:11.980233Z"
+verifiedAt: "2026-11-24T01:25:10.892113Z"
 verifiedMode: "self"
-verifiedBodyHash: "ceb3cb6b5c40a4d8636e15560752ef956403080ed78bd0797b7194314f5f89eb"
+verifiedBodyHash: "e1befb3d4c3f1d9b785aa39327065d51ad088cc79323b31870ccca793f4393c4"
 sourceSpans:
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 89, endLine: 89, spanSha256: "73d923491a070173398468d1cfcca0f46acd886d7976d496dd6527ef00b221c6"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 90, endLine: 90, spanSha256: "9301c31f477046811255fad66abce025bc2b7e13e50673e5fdf356bc9dcf30c6"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 91, endLine: 91, spanSha256: "9b17e15eede3f876341790b10477cbc8520c81ca8f23827bb12b7e5a932d1c4d"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 92, endLine: 92, spanSha256: "ac05ef29f6df30f32c7a794072185a9eb2ccd2ebd68d2360ff98dd6168f73f3c"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 93, endLine: 93, spanSha256: "d3856cf8c1dcd5acfe8053d03af3b4f3914a689ef01ac0ddfbb4994c0ec436f4"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 95, endLine: 95, spanSha256: "230b3429cb8ef9766a366a50b3bd104725fe7077b8b6dc8dea863dafbe4f7983"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 96, endLine: 96, spanSha256: "09b0c8f2dbafa9701fec537a3e125c16ec62940e3c333125a7cacd31c8610697"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 97, endLine: 97, spanSha256: "ca499999904edbf6207bc5f1d56ba664442ebac2e3d0c890de7491ec76f7f75f"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 98, endLine: 98, spanSha256: "f0d4e0a5b6f3f3fe2397e61e94b69f143ef7bbd53dc817ea01bcf5162173fd80"}
-  - {path: "docs/development-view-candidate.md", sourceSha256: "6c7d1de086c630517629d63606762998aaf94d49c954d8ab6d78966f4999e1f1", startLine: 99, endLine: 99, spanSha256: "29aa07491ce0ddde698450ced848d9dcf243b0bb3d2798aae1469d94795866d9"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 93, endLine: 93, spanSha256: "73d923491a070173398468d1cfcca0f46acd886d7976d496dd6527ef00b221c6"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 94, endLine: 94, spanSha256: "9301c31f477046811255fad66abce025bc2b7e13e50673e5fdf356bc9dcf30c6"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 95, endLine: 95, spanSha256: "9b17e15eede3f876341790b10477cbc8520c81ca8f23827bb12b7e5a932d1c4d"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 96, endLine: 96, spanSha256: "ac05ef29f6df30f32c7a794072185a9eb2ccd2ebd68d2360ff98dd6168f73f3c"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 97, endLine: 97, spanSha256: "d3856cf8c1dcd5acfe8053d03af3b4f3914a689ef01ac0ddfbb4994c0ec436f4"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 99, endLine: 99, spanSha256: "230b3429cb8ef9766a366a50b3bd104725fe7077b8b6dc8dea863dafbe4f7983"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 100, endLine: 100, spanSha256: "09b0c8f2dbafa9701fec537a3e125c16ec62940e3c333125a7cacd31c8610697"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 101, endLine: 101, spanSha256: "ca499999904edbf6207bc5f1d56ba664442ebac2e3d0c890de7491ec76f7f75f"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 102, endLine: 102, spanSha256: "f0d4e0a5b6f3f3fe2397e61e94b69f143ef7bbd53dc817ea01bcf5162173fd80"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 103, endLine: 103, spanSha256: "29aa07491ce0ddde698450ced848d9dcf243b0bb3d2798aae1469d94795866d9"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 104, endLine: 104, spanSha256: "0233cb31b522f3aac0b8aa9212b8b1fe62cb5e0caaca487013d3b00f60b0ca2a"}
+  - {path: "docs/development-view-candidate.md", sourceSha256: "2c76e63aaf28e7d691637d3d12a981d2a81558335ddc9e3acd00e692b4915335", startLine: 203, endLine: 203, spanSha256: "f6e19b5c813647f17085fc2b5cd6441aeab21cee54482cd9e93d16cf00c9672a"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="ad94927064d9b071" -->
+<!-- qmd:auto:start id="main" sourceHash="4cda2c414bb5d8d2" -->
 ## Summary
-fill은 완전한 content set을 먼저 commit하고 cursor는 별도 짧은 transaction에 기록한다. cursor 기록 실패 후에도 set은 남아 다음 호출이 provider 없이 재사용한다. 첫 DB 변경 전에 fence가 필요하며 호출 전체에서 `write_fence()`는 한 번만 실행한다. 완료된 동일 job 재호출은 DB 쓰기·fence·provider 호출이 없다. 빈 job은 한 번의 fenced 초기화 뒤 읽기 전용이다. callback·fence·content lock 획득 중 SQLite transaction을 유지하지 않는다. callback 뒤 checkout·settings를 재관측하고 cursor commit 직전 재확인한다. 변경 시 불변 content 캐시는 유지할 수 있지만 stale job은 전진하지 않는다. 다른 content owner lock과 경합하면 대기·TTL 인계 없이 deferred다.
+`fill_view`는 완전한 content set을 먼저 commit하고 별도 짧은 transaction에서 cursor를 기록한다. cursor 기록 실패 후에는 provider 호출 없이 기존 set을 재사용하며 첫 DB 변경 전에 `write_fence()`를 한 번 호출한다. 호출당 fence는 job·content·cursor 변경 전체에서 한 번이다. 완료 job의 재호출은 읽기 전용이며 빈 job은 한 번의 fenced 초기화로 완료한다. callback·fence·content lock 획득 중에는 SQLite transaction을 열어 두지 않는다. callback 뒤와 cursor commit 직전 checkout·settings를 재확인하며 변경 시 유효 set은 보존할 수 있고 stale cursor는 전진하지 않는다. content lock 경합은 대기나 TTL 인계 없이 `deferred`로 반환한다. deadline은 기본 30초, `0 < seconds <= 300`이며 callback을 선점할 수 없다.
 <!-- qmd:auto:end -->

@@ -6,9 +6,10 @@ aliases:
   - "canary 릴리스 증거"
   - "live checks"
 related:
-  - "memvane-1x-release-evidence-queries"
-  - "memvane-1x-embedding-smoke"
-  - "release-checklist-pre-github-release"
+  - "release-smoke-account-boundary"
+  - "release-rs-core-recall-verdict"
+  - "release-qa-affected-path-matrix"
+  - "release-gate-retained-evidence"
 type: concept
 status: verified
 created: 2026-11-18
@@ -18,37 +19,27 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/release.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/release.md", collection: "qmd-auto-context", sha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", size: 4794, mtimeNs: 1794981800090496158}
+  - {kind: "file", path: "docs/release.md", collection: "qmd-auto-context", sha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", size: 11083, mtimeNs: 1795479671854671109}
 triggers:
   - "post_sync_source"
 redactions:
-verifiedBy: "claude"
-verifiedAt: "2026-11-18T13:08:58.603079Z"
+verifiedBy: "codex"
+verifiedAt: "2026-11-24T04:08:44.951990Z"
 verifiedMode: "self"
-verifiedBodyHash: "d9a7c68d9aa18f602197279938deadb570847565189727526ea7ebcd9739e17b"
+verifiedBodyHash: "7b1e626c2070ed51ffa799e5cf6b5e2096f6b2611aadaa73b7dfbcb6359a5874"
 sourceSpans:
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 63, endLine: 64, spanSha256: "939a21062c1a5b65a1a5f71d298b674c0a81b21ed3e60e398f6310d938337c8d"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 64, endLine: 65, spanSha256: "a201650ad263d3e4639aafc9524ab05fd64fb13d3e301b0cf56b7a4c0550c1fb"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 65, endLine: 66, spanSha256: "6dfe4028ab654229a849751ec10deb75463abdd4d2b64937169e717ccab7abf8"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 66, endLine: 66, spanSha256: "6065d393e145dffc1ad8242e229a07d75197712ea4993fef7739734f44976ccc"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 66, endLine: 67, spanSha256: "316b6cb3bc72d044ab21b1bdecd2e553bce1026281ef118580c4687f1238ad46"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 67, endLine: 67, spanSha256: "716451fc7af01ef4093155a94e43a4b78ee8638dbd71f7f0a41fdca2cabc83e2"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 68, endLine: 69, spanSha256: "37686ca16e6caf58898cc38fabd02bcdd232e5ac9bcc9447c17c8f28b814510b"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 69, endLine: 70, spanSha256: "69b4e9d10eeedf83ce3f9793dc76b8a4c61393924ff88877fcdced9d5d2bb8f9"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 82, endLine: 84, spanSha256: "88a0f40ae8dd84fdecbf515a20bc0095b5b18022b039768dd830e96dfc021308"}
-  - {path: "docs/release.md", sourceSha256: "f1b28f7cca908ccfaa6bc2f46527be5cbd5995d79a1f52e8bdb778a3727bd997", startLine: 84, endLine: 85, spanSha256: "18987146321bfb48af9971a1a3eb37badb991a59a4e0455c92fa5b2f06ef0efe"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 4, endLine: 5, spanSha256: "284c16b531e4ad5620ef5946345f65d694469a4129bbf698fbee762fdfbd3522"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 56, endLine: 56, spanSha256: "5b30ecfa38176f15f4ababacae4959202d2b44d3a4e723ce8f4ab76c3c5050e7"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 57, endLine: 57, spanSha256: "7896b432dddc56dea57be859f52a50911ea736a5140356e8a7faf7bcf32cf1a9"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 58, endLine: 58, spanSha256: "ceb76f9919b5ed85b663a08c31dfc793e8a083fa3af952b3c22a165bd91ac3c0"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 59, endLine: 59, spanSha256: "095592fe43809c0fa34833427771471642e0778872d68e78714b3b43bf4e5717"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 60, endLine: 60, spanSha256: "63e5381a39c6b829663d8e15d4eaae8010d75f57d61f06487fc013a56dcc0af4"}
+  - {path: "docs/release.md", sourceSha256: "b48ffeed772996d64bb93454a77d16668ec670eec720a7887ed744b12d2d9559", startLine: 61, endLine: 61, spanSha256: "cbd6d930f3f0994576cedcfc4d67f1b523ecf5d659367ed73fc465e19a1794c1"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="02cf1b1273fab5c5" -->
+<!-- qmd:auto:start id="main" sourceHash="2438feb1259d9dac" -->
 ## Summary
-`docs/release.md` MemVane 1.x release evidence: 설치 후 canary와 large project 모두에 대해 read-only 증거를 보존한다.
-- 최근 100개 recall events와 stage percentiles, semantic usage와 `deferred_work_budget` count
-- sync publish events와 lexical versus vector head counts
-- host를 번갈아 쓰는 동안의 bundle 및 reattestation events
-- version별 running MemVane process counts
-- selector proof, heal과 warm outcomes
-live checks 완료 표시 전에 changed-card visibility와 24-hour pending interval을 release targets와 비교 측정한다. model output이나 event body text는 절대 release evidence로 쓰지 않는다.
-latency는 log summary의 recent recall distribution과 per-stage medians로 평가하고, 각 live window는 timestamped sync 및 provider events로 평가한다. total generation count만으로는 ten consecutive changed passes를 증명하지 못하며, event가 없거나 window가 불완전하면 `NOT RUN`이다.
+`docs/release.md`의 `Q1 RS-AGED`는 업데이트 직전·직후 장기 설치본에서 서로 다른 카드를 겨냥한 프롬프트 5개와 편집 1회를 검사한다. `pinMs`, `lexicalMs`, `stillCurrentMs` 중앙값은 각각 최대 50 ms이며 편집이 인덱싱되고 sync pass가 단축되어야 한다. 저장된 장치 번호와 실제 번호가 같으면 장치 항목은 `NOT RUN`이다. `Q2 RS-core`는 업데이트 당일 smoke 계정의 새 합성 프로젝트에서 실행한다. `Q3 first daily check`는 당일 작업 머신에서 SLO, 구버전 프로세스 부재, selector maintenance 완료, 설치별 저장·실제 장치 번호를 읽기 전용으로 확인한다. `Q4 SLO`는 24 hours 및 7 days에 canary와 large project 요약에 `over` 행이 없어야 한다. `Q5 affected paths`는 변경별로 실행한다. `Q6 full run`은 모든 minor version에서 `release-agent-qa.md` 전체와 embedding runtime이 없는 계정의 신규 설치를 검사하며 README만 따라 첫 semantic recall에 도달해야 한다.
 <!-- qmd:auto:end -->

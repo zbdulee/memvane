@@ -8,8 +8,9 @@ aliases:
   - "RecallAnswer"
   - "RecallTrace"
 related:
-  - "memvane-learning-capture-sources-edit-cases"
-  - "laya-reader-format-generation"
+  - "memvane-recall-need-signals"
+  - "memvane-recall-query-vector"
+  - "laya-selector-budget"
 type: entity
 status: verified
 created: 2026-11-18
@@ -19,29 +20,29 @@ confidence: high
 sources:
   - {kind: "file", path: "memvane/recall/README.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "memvane/recall/README.md", collection: "qmd-auto-context", sha256: "2f59a61a745485fe081f25a7aad35a8dd52bcaefa9f192c80e6eae656112b801", size: 1642, mtimeNs: 1794981800204092860}
+  - {kind: "file", path: "memvane/recall/README.md", collection: "qmd-auto-context", sha256: "930a21ad0fb79885d04b009fc1d5e87483295d1f7d55dcd1fb2cb0a11df07e2c", size: 3368, mtimeNs: 1795479671906378447}
 triggers:
   - "post_sync_source"
 redactions:
 verifiedBy: "claude"
-verifiedAt: "2026-11-18T16:14:44.901074Z"
+verifiedAt: "2026-11-24T03:25:13.346958Z"
 verifiedMode: "self"
-verifiedBodyHash: "c39d44ec85c22afc7167103b22b6e15d7333e60aa61bf4b1952fad300b9cd7b6"
+verifiedBodyHash: "1f7c2c08d15a84832cf49acc9d80fb52f6cdec904e7719c6ec36df0337c2e3de"
 sourceSpans:
-  - {path: "memvane/recall/README.md", sourceSha256: "2f59a61a745485fe081f25a7aad35a8dd52bcaefa9f192c80e6eae656112b801", startLine: 3, endLine: 3, spanSha256: "1cd6924d9f4cd004df07865c4d73c79c0b303a83eecdb43e9f361abbd0080c33"}
-  - {path: "memvane/recall/README.md", sourceSha256: "2f59a61a745485fe081f25a7aad35a8dd52bcaefa9f192c80e6eae656112b801", startLine: 5, endLine: 5, spanSha256: "05d8a4bb52deb4794b3dbf094098966eb679f61818cafcf75a8d92d610f84200"}
-  - {path: "memvane/recall/README.md", sourceSha256: "2f59a61a745485fe081f25a7aad35a8dd52bcaefa9f192c80e6eae656112b801", startLine: 7, endLine: 7, spanSha256: "0b06abc9937ccc4fd5134fd11907fb88cde6bcafdd9989cd72144ea3ac4e18fb"}
-  - {path: "memvane/recall/README.md", sourceSha256: "2f59a61a745485fe081f25a7aad35a8dd52bcaefa9f192c80e6eae656112b801", startLine: 8, endLine: 8, spanSha256: "54c9c7c64a114d74cdaafe33ade3810d6c8ca4237982b32cb076949b3e3ca540"}
-  - {path: "memvane/recall/README.md", sourceSha256: "2f59a61a745485fe081f25a7aad35a8dd52bcaefa9f192c80e6eae656112b801", startLine: 9, endLine: 9, spanSha256: "9e15d9e76786733ec408697018abba3d98f6b04398296dbad355b17c14047c77"}
-  - {path: "memvane/recall/README.md", sourceSha256: "2f59a61a745485fe081f25a7aad35a8dd52bcaefa9f192c80e6eae656112b801", startLine: 10, endLine: 10, spanSha256: "66ad70e236be9733041613db7f33bf091b315f7566fa30e47bc9bcd3601ebe08"}
-  - {path: "memvane/recall/README.md", sourceSha256: "2f59a61a745485fe081f25a7aad35a8dd52bcaefa9f192c80e6eae656112b801", startLine: 11, endLine: 11, spanSha256: "46b60c5d9a5786f97d4ca44924709bb49c17256081bb4a13cb3dfc75446c0be3"}
-  - {path: "memvane/recall/README.md", sourceSha256: "2f59a61a745485fe081f25a7aad35a8dd52bcaefa9f192c80e6eae656112b801", startLine: 13, endLine: 13, spanSha256: "b1ce1582875fec25f3a33398bc625f8cd9e18469b95bd6e571609f78989a75bd"}
-  - {path: "memvane/recall/README.md", sourceSha256: "2f59a61a745485fe081f25a7aad35a8dd52bcaefa9f192c80e6eae656112b801", startLine: 15, endLine: 16, spanSha256: "096cc8d151161ab6d342bb3ea8d3854bfd11707dcaea89b05ad5a3367b496391"}
+  - {path: "memvane/recall/README.md", sourceSha256: "930a21ad0fb79885d04b009fc1d5e87483295d1f7d55dcd1fb2cb0a11df07e2c", startLine: 3, endLine: 3, spanSha256: "1cd6924d9f4cd004df07865c4d73c79c0b303a83eecdb43e9f361abbd0080c33"}
+  - {path: "memvane/recall/README.md", sourceSha256: "930a21ad0fb79885d04b009fc1d5e87483295d1f7d55dcd1fb2cb0a11df07e2c", startLine: 5, endLine: 5, spanSha256: "05d8a4bb52deb4794b3dbf094098966eb679f61818cafcf75a8d92d610f84200"}
+  - {path: "memvane/recall/README.md", sourceSha256: "930a21ad0fb79885d04b009fc1d5e87483295d1f7d55dcd1fb2cb0a11df07e2c", startLine: 7, endLine: 7, spanSha256: "0b06abc9937ccc4fd5134fd11907fb88cde6bcafdd9989cd72144ea3ac4e18fb"}
+  - {path: "memvane/recall/README.md", sourceSha256: "930a21ad0fb79885d04b009fc1d5e87483295d1f7d55dcd1fb2cb0a11df07e2c", startLine: 8, endLine: 8, spanSha256: "b3791b76deee0ea3c06ae6727d5ec31c4de94d0da10ae345955884c4bedea688"}
+  - {path: "memvane/recall/README.md", sourceSha256: "930a21ad0fb79885d04b009fc1d5e87483295d1f7d55dcd1fb2cb0a11df07e2c", startLine: 9, endLine: 9, spanSha256: "9e15d9e76786733ec408697018abba3d98f6b04398296dbad355b17c14047c77"}
+  - {path: "memvane/recall/README.md", sourceSha256: "930a21ad0fb79885d04b009fc1d5e87483295d1f7d55dcd1fb2cb0a11df07e2c", startLine: 10, endLine: 10, spanSha256: "66ad70e236be9733041613db7f33bf091b315f7566fa30e47bc9bcd3601ebe08"}
+  - {path: "memvane/recall/README.md", sourceSha256: "930a21ad0fb79885d04b009fc1d5e87483295d1f7d55dcd1fb2cb0a11df07e2c", startLine: 11, endLine: 11, spanSha256: "875762067a83dad62749455e84abd2f93efb966623e8a33aee51cfc41a8dfbde"}
+  - {path: "memvane/recall/README.md", sourceSha256: "930a21ad0fb79885d04b009fc1d5e87483295d1f7d55dcd1fb2cb0a11df07e2c", startLine: 14, endLine: 14, spanSha256: "b1ce1582875fec25f3a33398bc625f8cd9e18469b95bd6e571609f78989a75bd"}
+  - {path: "memvane/recall/README.md", sourceSha256: "930a21ad0fb79885d04b009fc1d5e87483295d1f7d55dcd1fb2cb0a11df07e2c", startLine: 15, endLine: 17, spanSha256: "72ab5942474ba96df62ea726b55a1ec5986cec6b3e2234b22537115d79f11583"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="cc4e1efb40183a43" -->
+<!-- qmd:auto:start id="main" sourceHash="f2657f440cc9baa8" -->
 ## Summary
-`memvane/recall/README.md`: recall은 게시된 선택 view를 읽고 검색 결과를 구성한다. 게시 head가 없을 때 다른 view로 대체하지 않는다. recall은 선택 recall의 판정을 소유하고 평범한 결과 `RecallAnswer`(`types.py`)를 돌려준다. host는 그 결과를 host별 hook 출력으로 렌더링하고 learning capture를 기록한다. trace 필드·진단 note·최종 사유는 host가 넘긴 `RecallTrace` 포트로 보고하며, 이 보고는 답을 바꾸지 않는다. 모듈 구성: `selected_recall.py`는 journal이 고른 reader endpoint와 schema3 view의 recall을 맡고 설정·provider·vector fallback을 판정한다. `verified_rows.py`는 색인이 검증한 행의 카드 선택(`_select_verified_cards`)과 선택 후 재확인·답 구성(`_serve_verified_rows`)을 맡는다. `recall_scope.py`는 한 recall과 그 재시도가 공유하는 상태(journal epoch 하한, project root별 sync wake 1회, writer floor)와 provider owner wake를 맡는다. `domain/rules.py`는 순수 규칙으로 lexical 질의·RRF 결합, 검증 pool(상위 15행), 답 상한(`topN`과 3 중 작은 값), selector 사유 판정을 담당한다. selector 사유 코드는 `learning.types`의 `SELECTOR_ANSWERS`·`SELECTOR_CANDIDATE_INVALID`를 쓴다. `keywords.py`, `reader_dispatch.py`는 질의어 구성과 reader 질의를 맡는다. recall은 융합 후보별 `store`(Accelerate)·`python`·`lexical` 출처를 보관한다. host는 이 정보를 capture 입력과 함께 전달하고, learning은 표본을 저장한 뒤 같은 `request_id`의 `learning.capture.sources` 진단 이벤트에 후보 id의 SHA-256과 출처를 기록한다. 학습 표본과 compile 행의 모양은 유지한다.
+`memvane/recall/README.md`: recall은 게시된 선택 view를 읽고 검색 결과를 구성한다. 게시 head가 없을 때 다른 view로 대체하지 않는다. recall은 선택 recall의 판정을 소유하고 평범한 결과 `RecallAnswer`(`types.py`)를 돌려준다. host는 그 결과를 host별 hook 출력으로 렌더링하고 learning capture를 기록한다. trace 필드·진단 note·최종 사유는 host가 넘긴 `RecallTrace` 포트로 보고하며, 이 보고는 답을 바꾸지 않는다. 모듈 구성: `selected_recall.py`는 journal이 고른 reader endpoint와 schema3 view의 recall을 맡고 설정·provider·vector fallback을 판정한다. `verified_rows.py`는 색인이 검증한 행의 카드 선택(`_select_verified_cards`)과 선택 후 재확인·답 구성(`_serve_verified_rows`)을 맡는다. selector에는 검증 pool의 상위 10행을 넘기고 capture는 pool 전체를 받는다. lane별 예산은 프롬프트 recall이 `min(queryTimeout, 3초)`(hook deadline − 1초 안)와 쌍 12개, 편집 recall이 꼬리 deadline과 쌍 91개다. selector가 답한 recall은 주입 카드 가운데 hybrid 상위 3행과 겹치는 수를 `rankedOverlap`으로 남긴다(근거는 `docs/continual-learning.md`의 "Selector budget"). `recall_scope.py`는 한 recall과 그 재시도가 공유하는 상태(journal epoch 하한, project root별 sync wake 1회, writer floor)와 provider owner wake를 맡는다. `domain/rules.py`는 순수 규칙으로 lexical 질의·RRF 결합, 검증 pool(상위 15행), 답 상한(`topN`과 3 중 작은 값), selector 사유 판정을 담당한다. selector 사유 코드는 `learning.types`의 `SELECTOR_ANSWERS`·`SELECTOR_CANDIDATE_INVALID`를 쓴다. `keywords.py`, `reader_dispatch.py`는 질의어 구성과 reader 질의를 맡는다. recall은 융합 후보별 `store`(Accelerate)·`python`·`lexical` 출처를 보관한다. host는 이 정보를 capture 입력과 함께 전달하고, learning은 표본을 저장한 뒤 같은 `request_id`의 `learning.capture.sources` 진단 이벤트에 후보 id의 SHA-256과 출처를 기록한다. 학습 표본과 compile 행의 모양은 유지한다.
 <!-- qmd:auto:end -->

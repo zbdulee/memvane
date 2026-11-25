@@ -5,8 +5,8 @@ aliases:
   - "릴리스 에이전트 QA 게이트"
   - "Release agent QA gate"
 related:
-  - "release-qa-queue-interpretation"
-  - "release-qa-evidence-reuse"
+  - "release-qa-approval-and-release-gate"
+  - "release-qa-l0-l1-levels-operator-rules"
 type: concept
 status: verified
 created: 2026-11-02
@@ -16,30 +16,30 @@ confidence: high
 sources:
   - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context"}
 sourceRevisions:
-  - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context", sha256: "02b754809a5a30c23c9da80a475dee34584ba6c7588d2f225dc5bf1a568949aa", size: 98059, mtimeNs: 1793239754200264429}
+  - {kind: "file", path: "docs/release-agent-qa.md", collection: "qmd-auto-context", sha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", size: 59869, mtimeNs: 1795479671854230233}
 triggers:
   - "session_start_source"
 redactions:
 verifiedBy: "codex"
-verifiedAt: "2026-11-02T13:52:13.298679Z"
+verifiedAt: "2026-11-24T03:48:02.271305Z"
 verifiedMode: "self"
-verifiedBodyHash: "472c114b6d7fb4a45e93c122ab2a780e703dbad7a076c3a431b9cd4a9b615b8f"
+verifiedBodyHash: "69ee2c4992bca2487a3ef675546fe174c7959b2b6d19a88db341aaabba58a27a"
 sourceSpans:
-  - {path: "docs/release-agent-qa.md", sourceSha256: "02b754809a5a30c23c9da80a475dee34584ba6c7588d2f225dc5bf1a568949aa", startLine: 3, endLine: 4, spanSha256: "98abd0805025778e7ca0e71679119ef2a5ddc4734a0361df28389a4dc844e461"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "02b754809a5a30c23c9da80a475dee34584ba6c7588d2f225dc5bf1a568949aa", startLine: 4, endLine: 4, spanSha256: "6c9f1d4b0e251abde60c520a1d748f9d12b6c44b9cb8e7414abd12946b9625a8"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "02b754809a5a30c23c9da80a475dee34584ba6c7588d2f225dc5bf1a568949aa", startLine: 4, endLine: 6, spanSha256: "c4b020a111e22109f4c7170c19a5166b4636f64fe33b3ac54696d226a326bba7"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "02b754809a5a30c23c9da80a475dee34584ba6c7588d2f225dc5bf1a568949aa", startLine: 7, endLine: 8, spanSha256: "f40be7dc9f7f988c0cd6f2c7b0a5d0ee0561faff11314a1711b23cf3e6160fd0"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "02b754809a5a30c23c9da80a475dee34584ba6c7588d2f225dc5bf1a568949aa", startLine: 11, endLine: 12, spanSha256: "e30defcc24890c9f2c4c4c7ddccdc9e5ed33b480cd8141ceab8be6d0a0aaa20a"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "02b754809a5a30c23c9da80a475dee34584ba6c7588d2f225dc5bf1a568949aa", startLine: 12, endLine: 13, spanSha256: "18f2424b5530cd52bfc3840578e70db967c2c2d2854034331009adae15bdc2fd"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "02b754809a5a30c23c9da80a475dee34584ba6c7588d2f225dc5bf1a568949aa", startLine: 14, endLine: 15, spanSha256: "a9f5d7064c941b47e550073fa71dc8e90ef9ac900c00211eb1b127a10447b2c3"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "02b754809a5a30c23c9da80a475dee34584ba6c7588d2f225dc5bf1a568949aa", startLine: 26, endLine: 26, spanSha256: "943af6c7701888436a34651272e8793880810562851f3ae07aadabc3d5430ac8"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "02b754809a5a30c23c9da80a475dee34584ba6c7588d2f225dc5bf1a568949aa", startLine: 26, endLine: 29, spanSha256: "7bfbfc2d8470d65515f79d4cd2b4fab47ff2ea84fa1ee8a6b26fc990c510ae46"}
-  - {path: "docs/release-agent-qa.md", sourceSha256: "02b754809a5a30c23c9da80a475dee34584ba6c7588d2f225dc5bf1a568949aa", startLine: 30, endLine: 30, spanSha256: "ff262da05eb068ce3da2c08de262d3cf9469db8e5ce112e3731c0e01f69b4133"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 3, endLine: 4, spanSha256: "60f73649e868687aff67e9283d71d61c26355796f15f69e0c7b8b18f999226fd"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 4, endLine: 5, spanSha256: "021563c999973815f3d451a56c4889886ff720d029d2c50449b14f4b98778aca"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 5, endLine: 6, spanSha256: "653ae46405bfcbc049ded68d7d7a2f35123ef9b74b722ff8ed1781e876217eff"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 7, endLine: 7, spanSha256: "79cfc84e13f3b11c9fddb4ac0c2aa16dbd9c5957d18dece9e41a53b1caf027aa"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 7, endLine: 9, spanSha256: "362c602bf8ba028661408c815edd12dd8c9f6951d9ed9e8ec7c4466487a0da30"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 9, endLine: 11, spanSha256: "afb2cf2c28572a5b1f56cae6c916ab665cc9963870b61966c6b5f5ee9ffffd5c"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 14, endLine: 15, spanSha256: "4f58017951a0e0aae503f980d3473bbc570542200a1763a6ef6d916a917e031c"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 16, endLine: 17, spanSha256: "a9f5d7064c941b47e550073fa71dc8e90ef9ac900c00211eb1b127a10447b2c3"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 81, endLine: 81, spanSha256: "b28b21f74bcb11aef0a2e5560ccc5b0bf66b55c24c3f2207889b3b1625c36bb3"}
+  - {path: "docs/release-agent-qa.md", sourceSha256: "27f855d66c6ef4007b64581960a1922ded434828da6239581108f18625d3278b", startLine: 90, endLine: 91, spanSha256: "bd42eb066dfeab79db289b22c3203a0b8c2df88ed2a1df5440da48dc86a8d1e2"}
 ---
 
 > Auto-generated by MemVane from conversation/work context. Review, edit, or delete if wrong.
 
-<!-- qmd:auto:start id="main" sourceHash="e22b2e82924ed1f4" -->
+<!-- qmd:auto:start id="main" sourceHash="54ef40a6c4e3659f" -->
 ## Summary
-`docs/release-agent-qa.md`의 릴리스 게이트는 final installed candidate를 대상으로 disposable synthetic fixtures와 새로운 실제 Claude Code·Codex host sessions에서 실행한다. 단위 테스트 재실행이 아니라 설치·설정, source→wiki, 검색·주입, 온보딩·복구, 프로젝트 경계와 응답성을 검증한다. 버전 문자열 일치나 core script 직접 호출은 설치 증거가 아니다. 실행 기록은 `templates/release-agent-qa-run.md`를 사용한다. `TODO.md`는 열린 QA를 추적하며, 날짜별 과거 기록과 `architecture/flows/README.md`는 현재 L1 판정이 아니다.
+`docs/release-agent-qa.md` 도입부에서 full run은 `release.md`의 Q6이며, 모든 minor version의 **final installed version**을 대상으로 한다. operator agent가 disposable synthetic fixtures를 사용해 새로 시작한 실제 Claude Code와 Codex host sessions에서 재현 가능한 scenario를 수행하고 객관적 증거를 `templates/release-agent-qa-run.md`에 기록한다. 단위 테스트는 재실행하지 않는다. 열린 QA와 user-deferred assertions는 `ROADMAP.md`에서 추적한다. `architecture/flows/README.md`는 구현 경계의 설명이고 L1 판정은 실행 증거로 남긴다. 출시 차단 규칙은 같은 문서의 도입부와 section 2가 상충한다.
 <!-- qmd:auto:end -->
