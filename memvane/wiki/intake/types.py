@@ -17,5 +17,9 @@ class DiscoveryBlocked(Exception):
     """Fail-closed reason code; never a path or source byte."""
 
 
+class DiscoveryBusy(Exception):
+    """The lock stayed held past its bounded wait."""
+
+
 class GrantUncertain(DiscoveryBlocked):
     """A failed write left an id that may still be active."""

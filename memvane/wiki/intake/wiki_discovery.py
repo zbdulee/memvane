@@ -71,7 +71,8 @@ MAX_MEMBERS = 50_000
 # defaults (200 files / 5 MB) would block larger, otherwise valid projects at
 # activation and on every subsequent wake. This separate finite budget leaves
 # the indexed wiki catalog and vector budget unchanged.
-from memvane.wiki.intake.types import RAW_SCAN_MAX_FILES, RAW_SCAN_MAX_BYTES, DiscoveryBlocked, GrantUncertain
+from memvane.wiki.intake.types import (RAW_SCAN_MAX_FILES, RAW_SCAN_MAX_BYTES, DiscoveryBlocked,
+                                        DiscoveryBusy, GrantUncertain)
 MAX_GRANT_COUNT = 1000
 from memvane.wiki.intake.types import HOOK_LOCK_SECONDS
 WORKER_LOCK_SECONDS = 5.0
@@ -83,14 +84,6 @@ _STATE_KEYS = frozenset({'schema', 'scopeId', 'storeIncarnation', 'collectionRoo
                          'rawCollections', 'baseGen', 'rawSnapshot', 'pending', 'spentGrants'})
 _GRANT_KEYS = frozenset({'schema', 'scopeId', 'storeIncarnation', 'grants', 'provisional'})
 SOURCE_ENGINES = frozenset(('claude', 'codex', 'hermes', 'gemini', 'unknown'))
-
-
-
-
-
-
-class DiscoveryBusy(Exception):
-    """The lock stayed held past its bounded wait."""
 
 
 def _binding(decision):
@@ -517,12 +510,12 @@ def seed_source_snapshot(decision, baseline, *, generation, replace_inert=False)
             or any(not _raw_path(path, raw) or not isinstance(sha, str)
                    or not _HEX64.fullmatch(sha) for path, sha in baseline.items())):
         raise DiscoveryBlocked('baseline_invalid')
+    # A background origin plan can accept more raw files than the bounded
+    # discovery scan. Refuse *before* route publication rather than select
+    # a candidate whose source cursor can never advance. Retain the
+    # supplied baseline so the next sync discovers intervening revisions.
+    _raw_snapshot(decision, raw)
     with _locked(lock, WORKER_LOCK_SECONDS):
-        # A background origin plan can accept more raw files than the bounded
-        # discovery scan. Refuse *before* route publication rather than select
-        # a candidate whose source cursor can never advance. Retain the
-        # supplied baseline so the next sync discovers intervening revisions.
-        _raw_snapshot(decision, raw)
         existing = _read(state_path)
         if existing is not None:
             _validate_state(existing, decision)

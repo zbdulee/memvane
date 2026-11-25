@@ -305,6 +305,7 @@ def discover(decision, snapshot, config, live, engines):
                'items': {path: {'sha256': sha, 'stage': 'pending'}
                          for path, sha in _eligible(decision, snapshot, config).items()}}
         d._write(_path(decision), row)
+        return row
     eligible = _eligible(decision, snapshot, config)
     changed = False
     for path, item in row['items'].items():

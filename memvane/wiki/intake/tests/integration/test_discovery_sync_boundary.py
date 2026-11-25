@@ -343,7 +343,7 @@ class DiscoverySyncBoundary(FixtureCase):
         payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
                    'tool_input': {'command': 'touch docs/note.md'},
                    'tool_response': {'exit_code': 0}, 'cwd': str(project.root)}
-        cases = ((discovery.DiscoveryBusy('lock_busy'), 'selected_wiki_grant_failed', 0),
+        cases = ((discovery.DiscoveryBlocked('state_unsafe'), 'selected_wiki_grant_failed', 0),
                  (intake.GrantUncertain('grant_uncertain'), 'selected_wiki_grant_revoke_failed', 1))
         for error, reason, provisional in cases:
             with self.subTest(reason=reason), patch.object(intake, 'activate_grant', side_effect=error), \
@@ -433,3 +433,65 @@ class DiscoverySyncBoundary(FixtureCase):
         self.assertEqual(discovery._read(cursor)['pending'], {})
         queue = project.root / '.memvane/compile/source-queue.jsonl'
         self.assertEqual(len(pending_text(queue).splitlines()), 1)
+
+    def test_busy_discovery_lock_keeps_sync_wake_without_refusing_hook(self):
+        import fcntl
+        import os
+        from memvane.diagnostics import api as event_log
+        from memvane.wiki.intake import api as intake
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'initial source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_sync_source'],
+            'extractor': {'builtins': ['claude']}}))
+        install.settle()
+        source.write_text('pending revision\n')
+        install.run_sync()
+        decision = install.select()
+        cursor_path, _grants_path, lock_path = discovery._paths(decision)
+        pending = discovery._read(cursor_path)['pending']
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
+                   'tool_input': {'command': 'touch docs/note.md'},
+                   'tool_response': {'exit_code': 0}, 'cwd': str(project.root)}
+
+        lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(discovery, 'HOOK_LOCK_SECONDS', 0.05), \
+                 patch('memvane.wiki.intake.api.record_grant',
+                       side_effect=lambda *args, **kwargs: discovery.record_grant(*args, wait=0.05, **kwargs)), \
+                 patch.object(runtime, 'request', return_value={'status': 'queued'}) as req, \
+                 patch.object(runtime, 'hook_wake'):
+                self.assertEqual(host.serve_selected('file-change-event', 'claude', decision, payload), {})
+            req.assert_any_call('laya-sync', decision['projectRoot'])
+        finally:
+            os.close(lock_fd)
+
+        grants = discovery.observe_grants(decision)
+        self.assertEqual(grants['grants']['sync'], [])
+        self.assertEqual(grants['provisional']['sync'], [])
+        install.run_sync()
+        self.assertEqual(discovery._read(cursor_path)['pending'], pending)
+        self.assertFalse(pending_text(queue).strip())
+        rows = [row for row in event_log.build_progress_events(install.state) if row.get('event') == 'file-change-event']
+        self.assertEqual((rows[-1]['outcome'], rows[-1]['reason'], rows[-1].get('grant')),
+                         ('ok', 'sync_requested', 'busy_skipped'))
+
+        with patch.object(intake, 'activate_grant', side_effect=discovery.DiscoveryBusy('lock_busy')), \
+             patch.object(runtime, 'request', return_value={'status': 'queued'}), \
+             patch.object(runtime, 'hook_wake') as wake:
+            self.assertEqual(host.serve_selected('file-change-event', 'claude', decision, payload), {})
+            self.assertGreaterEqual(wake.call_count, 1)
+        grants = discovery.observe_grants(decision)
+        self.assertEqual(grants['grants']['sync'], [])
+        self.assertEqual(grants['provisional']['sync'], [])
+        install.run_sync()
+        self.assertEqual(discovery._read(cursor_path)['pending'], pending)
+        self.assertFalse(pending_text(queue).strip())
+        rows = [row for row in event_log.build_progress_events(install.state) if row.get('event') == 'file-change-event']
+        self.assertEqual((rows[-1]['outcome'], rows[-1]['reason'], rows[-1].get('grant')),
+                         ('ok', 'sync_requested', 'busy_skipped'))

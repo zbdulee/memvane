@@ -210,6 +210,52 @@ class HostBundleHandoff(FixtureCase):
             self.assertEqual(host_bundle.background_installed(), root)
             listing.assert_called_once_with()
         host_bundle._BACKGROUND_INVENTORY.update(until=0, root=None)
+
+    def test_host_listing_uses_cold_codex_timeout_budget(self):
+        codex = self.tmp / 'codex'
+        codex.write_text('#!/bin/sh\nexit 0\n', encoding='utf8')
+        codex.chmod(0o700)
+        result = types.SimpleNamespace(returncode=0, stdout=b'{"installed":[]}', stderr=b'')
+        with mock.patch.dict(os.environ, {'PATH': str(self.tmp)}), \
+             mock.patch.object(host_bundle.subprocess, 'run', return_value=result) as run:
+            self.assertEqual(host_bundle._codex_inventory(self.home), {'installed': []})
+        self.assertEqual(run.call_args.kwargs['timeout'], host_bundle.HOST_LISTING_TIMEOUT_SECONDS)
+        self.assertGreaterEqual(host_bundle.HOST_LISTING_TIMEOUT_SECONDS, 60)
+
+    def test_background_inventory_failure_retries_before_one_hour_cache(self):
+        old = self.bundle('codex', 'market', '1.0.2')
+        new = self.bundle('codex', 'market', '1.0.3')
+        identity = host_bundle.BundleIdentity(old)
+        host_bundle._BACKGROUND_INVENTORY.clear()
+        host_bundle._BACKGROUND_INVENTORY.update(until=0.0, root=None)
+        responses = iter([subprocess.TimeoutExpired('codex', host_bundle.HOST_LISTING_TIMEOUT_SECONDS),
+                          (new, True)])
+
+        def next_inventory(_home=None):
+            value = next(responses)
+            if isinstance(value, BaseException):
+                raise value
+            return [(host_bundle.version_key('1.0.3'), value[0])], value[1]
+
+        with mock.patch.dict(os.environ, {'MEMVANE_TEST_RUNTIME_ROOT': '',
+                                          'CODEX_HOME': str(self.home / '.codex'),
+                                          'CLAUDE_CONFIG_DIR': str(self.home / '.claude'),
+                                          'HERMES_HOME': str(self.home / '.hermes')}), \
+             mock.patch.object(host_bundle, '_inventory', side_effect=next_inventory) as inv, \
+             mock.patch.object(host_bundle.time, 'monotonic', return_value=100.0) as clock:
+            self.assertTrue(identity.preferred_background())
+            self.assertEqual(inv.call_count, 1)
+            clock.return_value = 120.0
+            self.assertTrue(identity.preferred_background())
+            self.assertEqual(inv.call_count, 1)
+            clock.return_value = 100.0 + host_bundle.INVENTORY_RETRY_SECONDS + 1.0
+            self.assertFalse(identity.preferred_background())
+            self.assertEqual(inv.call_count, 2)
+            clock.return_value = 1000.0
+            self.assertFalse(identity.preferred_background())
+            self.assertEqual(inv.call_count, 2)
+        host_bundle._BACKGROUND_INVENTORY.clear()
+        host_bundle._BACKGROUND_INVENTORY.update(until=0.0, root=None)
     def test_retired_timer_rearms_in_detached_handoff_if_lease_is_busy(self):
         from memvane.runtime import runtime_work as runtime
         queue = runtime.WakeQueue()
