@@ -3,7 +3,7 @@
 ## 기준 상태
 
 - 브랜치: `claude/1.1.2` (기준 `main`: `dd314fce8`, 출시 태그: `v1.1.1`)
-- 마지막 갱신: 2026-11-25 (Step 1-E 독립 리뷰 반영 `c4047731` 및 최종 전체 5파트 검사 통과)
+- 마지막 갱신: 2026-11-25 (1.1.2 버전 bump 및 집중 검증 완료)
 - 기본 규칙: [공통 개발 규칙](contexts/working-rules.md), [릴리스 체크리스트](contexts/release.md)
 
 ## 전체 진행 순서와 확정 결정
@@ -38,7 +38,7 @@
      - **구현**: [copy_quota.py](../../memvane/wiki/verify/copy_quota.py), [handoff_work.py](../../memvane/wiki/verify/handoff_work.py), [first_card.py](../../memvane/wiki/verify/first_card.py), [upgrade_queue.py](../../memvane/wiki/verify/upgrade_queue.py), [queue_batch_prepare.py](../../memvane/wiki/verify/queue_batch_prepare.py), [deferred_review.py](../../memvane/wiki/verify/deferred_review.py), [native_review.py](../../memvane/wiki/verify/native_review.py), [batch_handoff.py](../../memvane/wiki/verify/batch_handoff.py), [pending_handoff.py](../../memvane/wiki/verify/pending_handoff.py), [ordinary_slot.py](../../memvane/wiki/verify/ordinary_slot.py), [README.md](../../memvane/wiki/verify/README.md), [test_handoff_work.py](../../memvane/wiki/verify/tests/unit/test_handoff_work.py), [test_first_card.py](../../memvane/wiki/verify/tests/integration/test_first_card.py).
      - **검증**: `v1_guard.py --strict`·`--tests --rules G1,G8`(exit 0), `/usr/bin/python3` import(`PY39_OK`), `memvane/wiki/verify/tests/run.test.mjs`(18/18)·`tests/structure/static.test.mjs`(21/21), 카나리 임시 복사본(`min_age_seconds=0.0`, 원본 `.memvane/` 무변경) `orphans: 219→0`, `allocs: 160→152`, `unresolved: True→False` 확인.
      - **독립 리뷰 & 후속 검증**: Orca Claude(`claude-opus-5-5`, `ctx_0addfa132930`) 증분 리뷰 `APPROVE`(차단 0건, 비차단 7건) → 비차단 지적 6건(`handoff_work.py`, `test_handoff_work.py`, `test_first_card.py`)을 `c4047731`에 반영 후 집중 테스트 82/82(`verify`·`compile`·`static`), `v1_guard.py --strict`·`--tests --rules G1,G8`(0/0), `/usr/bin/python3` import(`PY39_OK`), 최종 전체 `npm test` 5파트(`part 1/5` `110/0/2`, `part 2/5` `113/0/2`, `part 3/5` `113/0/2`, `part 4/5` `116/0/2`, `part 5/5` `220/0/4`) `fail 0` 통과.
-     - **다음**: `1.1.2` 버전 bump 진행 여부 사용자 확인.
+     - **다음**: 최종 릴리스 전 `npm test` 재실행 및 PR/푸시/태그 진행 여부 사용자 확인.
 3. **2순위 — 위키 파이프라인 구조 개편 (설계 전, 1.2 후보, 사용자 방향·순위 확정 2026-11-25)**
    - 진행 방식: 1-E 최소 수정·1.1.2 출시와 병행한다. 첫 단계는 코드 변경 없는 설계다. 위키 파이프라인 상태 파일(handoff hold·`.first-*`·`.*.pending-*`·`.memvane/compile/*.jsonl`·compile intent)의 writer·reader 전수(출시된 1.x 포함)와 상태 조합표를 먼저 쓰고, 설계 리뷰 뒤 구현에 들어간다. 스캔 상한(`handoff_scan_limit`)이 무관한 대상의 게시를 막는 문제도 여기서 다룬다.
    - 배경: 1-E처럼 위키 쪽 결함은 상태가 여러 파일(handoff hold 디렉터리, `.w-*`, `.first-*`, `.*.pending-*`, `.memvane/compile/*.jsonl` 원장)에 나뉘어 단계 사이 실패마다 잔재와 경로별 정리 코드가 생기는 데서 반복된다. sync는 SQLite 하나와 트랜잭션, 세대 단위 게시를 써서 같은 부류의 결함이 구조적으로 생기지 않는다.
@@ -60,7 +60,7 @@
 - [x] 독립 리뷰(Orca Claude 세션) 수행 및 비차단 8건 반영(`585a2f53`)
 - [x] 1-E 첫 카드 게시 정체(1.1.1 회귀) 수정·전체 검사 `test:part1~5` 통과·카나리 복사본 실증
 - [x] Orca Claude `1-E` 증분 리뷰 `APPROVE`·비차단 6건 반영(`c4047731`)·최종 `npm test` 5파트 통과
-- [ ] `1.1.2` 버전 bump 여부 사용자 확인 대기
+- [x] `1.1.2` 버전 bump(7개 manifest + `teacher_model_tiers.RELEASE` + `old-bundle` 호환 태그 `v1.0.24`/`v1.1.0`/`v1.1.1` + `docs/ROADMAP.md`) 및 `main` PR 머지 진행
 
 ## 유지해야 할 제약
 
