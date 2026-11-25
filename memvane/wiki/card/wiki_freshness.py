@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -153,14 +154,36 @@ def _append_event_unlocked(path: Path, event: dict, *, source=None) -> bool:
     return True
 
 
-def record_pending_refresh(root: Path, source_path: str, engine: str) -> dict | None:
+def _acquire_pending_lock(fd: int, timeout: float | None) -> None:
+    if timeout is None:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(0.01, remaining))
+
+
+def record_pending_refresh(root: Path, source_path: str, engine: str, *,
+                           compact: bool = True, lock_timeout: float | None = None,
+                           error_out: list | None = None) -> dict | None:
     """Durably invalidate one source before its separate queue append."""
     from memvane.wiki.card.trust import incompatible_source
     if incompatible_source(source_path, report=True):
+        if error_out is not None:
+            error_out.append("failed")
         return None
     source = _safe_source_path(source_path)
     public = _pending_path(root)
     if source is None or public is None:
+        if error_out is not None:
+            error_out.append("failed")
         return None
     event = {
         "eventId": uuid.uuid4().hex,
@@ -172,14 +195,23 @@ def record_pending_refresh(root: Path, source_path: str, engine: str) -> dict | 
     try:
         path = refresh_lanes.private_path(public, create=True)
         with _pending_lock_path(public).open("a", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            _acquire_pending_lock(lock.fileno(), lock_timeout)
             # This event is private. Public-ledger reassessment still gates the
             # worker's card write; it must not discard the edit before queueing.
             if not _append_event_unlocked(path, event):
+                if error_out is not None:
+                    error_out.append("failed")
                 return None
-    except (OSError, ValueError):
+    except BlockingIOError:
+        if error_out is not None:
+            error_out.append("busy")
         return None
-    _compact(path, public, False)
+    except (OSError, ValueError):
+        if error_out is not None:
+            error_out.append("failed")
+        return None
+    if compact:
+        _compact(path, public, False)
     return event
 
 
@@ -210,8 +242,10 @@ def _unresolved(root, strict, *, receipt=None):
     return result
 
 
-def unresolved_pending_refreshes(root: Path) -> list[dict]:
+def unresolved_pending_refreshes(root: Path, *, compact: bool = False) -> list[dict]:
     """Each ledger owns its latest unresolved event for a source."""
+    if compact:
+        compact_pending_refreshes(root)
     try:
         return _unresolved(root, False) or []
     except (OSError, ValueError, RuntimeError):

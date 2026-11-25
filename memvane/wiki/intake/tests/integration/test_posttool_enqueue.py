@@ -159,3 +159,35 @@ class PosttoolEnqueue(FixtureCase):
         pending = self.rows(self.pending)[-1]
         self.assertEqual(job['pendingRefresh'], {key: pending[key] for key in ('eventId', 'ts', 'engine')})
         self.assertEqual(job['engine'], 'claude')
+
+    def test_pending_only_records_refresh_without_touching_queue_or_selecting_sync_owner(self):
+        payload = {'hook_event_name': 'PostToolUse', 'cwd': str(self.root),
+                   'engine': 'claude', 'tool_input': {'file_path': str(self.source)}}
+        with patch.object(workspace, 'selected', side_effect=AssertionError('selected must not run')):
+            outcome = enqueue.enqueue_payload(payload, pending_only=True, selected_route=None)
+        self.assertEqual(outcome, {'queued': 1, 'failed': 0, 'reason': 'pending_recorded'})
+        self.assertFalse(self.queue.exists())
+        self.assertFalse(self.public_queue.exists())
+        self.assertEqual([(r['sourcePath'], r['engine']) for r in self.rows(self.pending)], [('docs/source.md', 'claude')])
+
+    def test_pending_only_multi_file_shares_single_lock_budget_and_reports_busy(self):
+        import fcntl
+        import time
+        extra_a = self.root / 'docs/a.md'
+        extra_b = self.root / 'docs/b.md'
+        extra_a.write_text('# a\n')
+        extra_b.write_text('# b\n')
+        lock_path = self.public_pending.with_name(f'{self.public_pending.name}.lock')
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            'hook_event_name': 'PostToolUse', 'cwd': str(self.root), 'engine': 'claude',
+            'tool_name': 'apply_patch',
+            'tool_input': {'patch': '*** Begin Patch\n*** Update File: docs/source.md\n*** Update File: docs/a.md\n*** Update File: docs/b.md\n*** End Patch'},
+        }
+        with lock_path.open('a', encoding='utf-8') as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            started = time.monotonic()
+            outcome = enqueue.enqueue_payload(payload, pending_only=True, selected_route=None)
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 0.35)
+        self.assertEqual(outcome, {'queued': 0, 'failed': 3, 'failedReason': 'busy', 'reason': 'pending_busy'})

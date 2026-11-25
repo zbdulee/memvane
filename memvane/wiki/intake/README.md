@@ -10,4 +10,5 @@
 
 source 큐의 새 이미지는 같은 부모 디렉터리에서 작성·동기화하고 길이와 SHA-256을 다시 읽어 확인한다. 기존 큐 잠금을 즉시 얻고 원본 파일의 신원이 일치하면 이미지를 한 번 교체하고 부모 디렉터리를 동기화한다. 다른 설치의 행과 식별할 수 없는 완전한 행은 원래 바이트를 유지한다.
 
-같은 작업의 편집을 합칠 때 마지막 편집 정보에 미완료 시도의 `partialCompile`과 worker가 읽은 원문 SHA를 보존한다. worker는 claim 안에서도 같은 설치·작업 키로 행을 합친다.
+- `wiki_discovery.drain_after_sync`는 discovery lock 아래에서 `unresolved_pending_refreshes_strict`를 락 없이 읽어 unresolved pending refresh가 있는 비삭제 경로의 중복 `post_sync_source` 적재를 건너뛰고 커서만 갱신한다(`strict` 읽기 실패 시에는 기존대로 적재).
+- `wiki_compile_enqueue.enqueue_payload(..., pending_only=True, selected_route=...)`는 훅 경로에서 큐 파일과 `sync_owner`를 잡지 않고 `0.15s` non-blocking lock 상한으로 `record_pending_refresh(..., compact=False)`만 남긴다.

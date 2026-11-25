@@ -174,9 +174,13 @@ class SelectedActions(HostInstallCase):
         self.assertIn('laya-compile', self.wakes.kinds())
         self.assert_sync_woken()
         self.wakes.calls.clear()
+        before = len(self.install.events())
         with mock.patch('memvane.wiki.card.api.unresolved_pending_refreshes_strict', return_value=None):
-            with self.assertRaisesRegex(HostResponseError, '^wiki_pending_refresh_unknown$'):
-                self.serve('update', {'hook_event_name': 'SessionStart'}, 'codex')
+            self.serve('update', {'hook_event_name': 'SessionStart'}, 'codex')
+        self.assertIn('laya-compile', self.wakes.kinds())
+        self.assert_sync_woken()
+        row = [event for event in self.install.events()[before:] if event.get('event') == 'update'][-1]
+        self.assertEqual(row.get('pendingRefresh'), 'unknown')
 
     def test_a_successful_bash_wakes_the_full_scan_owner_only(self):
         bash = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
@@ -244,15 +248,53 @@ class SelectedActions(HostInstallCase):
         with self.assertRaisesRegex(HostResponseError, '^edit_path_missing$'):
             self.serve('posttool', empty)
 
-    def test_compile_hands_the_proved_edit_to_the_source_queue(self):
+    def test_compile_hands_the_proved_edit_to_pending_refresh_without_sync_owner(self):
         event = self.edit('notes/heron.md')
-        with mock.patch('memvane.wiki.intake.api.enqueue_payload',
-                        return_value={'queued': 1, 'reason': 'queued'}) as enqueue:
+        decision = self.select('compile')
+        with mock.patch('memvane.runtime.api.sync_owner', side_effect=AssertionError('sync_owner forbidden in hook')), \
+             mock.patch('memvane.wiki.intake.api.enqueue_payload',
+                        return_value={'queued': 1, 'failed': 0, 'reason': 'pending_recorded'}) as enqueue:
             self.assertEqual(self.serve('compile', event, 'codex'), {})
-        enqueue.assert_called_once_with({'cwd': str(self.project), **event, 'engine': 'codex'})
+        self.assertEqual(enqueue.call_count, 1)
+        self.assertEqual(enqueue.call_args.args, ({'cwd': str(self.project), **event, 'engine': 'codex'},))
+        self.assertTrue(enqueue.call_args.kwargs['pending_only'])
+        self.assertEqual(enqueue.call_args.kwargs['selected_route'][0], decision)
+        self.assertIn('laya-compile', self.wakes.kinds())
+        self.wakes.calls.clear()
+        with mock.patch('memvane.wiki.intake.api.enqueue_payload',
+                        return_value={'queued': 1, 'failed': 1, 'failedReason': 'busy', 'reason': 'pending_busy'}):
+            self.wakes.calls.clear()
+            self.assertEqual(self.serve('compile', event, 'codex'), {})
+        self.assertIn('laya-compile', self.wakes.kinds())
+        with mock.patch('memvane.wiki.intake.api.enqueue_payload',
+                        return_value={'queued': 1, 'failed': 0, 'reason': 'pending_recorded'}), \
+             mock.patch('memvane.runtime.api.request', return_value={'status': 'rejected'}):
+            with self.assertRaisesRegex(HostResponseError, '^selected_compile_enqueue_failed$'):
+                self.serve('compile', event, 'codex')
         with mock.patch('memvane.wiki.intake.api.enqueue_payload', return_value={'queued': -1}):
             with self.assertRaisesRegex(HostResponseError, '^selected_compile_enqueue_failed$'):
                 self.serve('compile', event, 'codex')
+        order = []
+        def record_enqueue(*args, **kwargs):
+            order.append('enqueue')
+            return {'queued': 1, 'failed': 0, 'reason': 'pending_recorded'}
+        def record_wake(kind, *args, **kwargs):
+            order.append(kind)
+            return {'status': 'queued'}
+        with mock.patch('memvane.wiki.intake.api.enqueue_payload', side_effect=record_enqueue) as enqueue, \
+             mock.patch('memvane.runtime.api.request', side_effect=record_wake):
+            self.wakes.calls.clear()
+            self.assertEqual(self.serve('index', event, 'hermes'), {})
+            self.assertEqual(enqueue.call_count, 1)
+            self.assertIn('enqueue', order)
+            self.assertIn('laya-sync', order)
+            self.assertIn('laya-compile', order)
+            self.assertLess(order.index('enqueue'), order.index('laya-sync'))
+            enqueue.reset_mock()
+            self.wakes.calls.clear()
+            self.assertEqual(self.serve('index', event, 'codex'), {})
+            enqueue.assert_not_called()
+            self.assertNotIn('laya-compile', self.wakes.kinds())
         with self.assertRaisesRegex(HostResponseError, '^invalid_edit_event$'):
             self.serve('compile', self.edit('notes/heron.md', event='PreToolUse'))
 

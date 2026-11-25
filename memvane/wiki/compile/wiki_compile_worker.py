@@ -1443,9 +1443,9 @@ def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, 
     return result
 
 
-def _unsettled_refreshes(root: Path) -> list[dict]:
+def _unsettled_refreshes(root: Path, *, compact: bool = False) -> list[dict]:
     from memvane.wiki.compile import refresh_settlement
-    return refresh_settlement.unsettled(root, wiki_freshness.unresolved_pending_refreshes(root))
+    return refresh_settlement.unsettled(root, wiki_freshness.unresolved_pending_refreshes(root, compact=compact))
 
 
 def _settle_unrecoverable(root: Path, pending: dict) -> None:
@@ -1465,7 +1465,7 @@ def recover_pending_refreshes(root: Path, config: dict, queue: Path) -> int:
     """
     records = []
     from memvane.wiki.compile import refresh_settlement
-    pending_events = _unsettled_refreshes(root)
+    pending_events = _unsettled_refreshes(root, compact=True)
     public = refresh_settlement.queued_events(queue) if pending_events else set()
     for pending in pending_events:
         if (pending.get('sourcePath'), pending.get('eventId')) in public:
