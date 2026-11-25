@@ -202,7 +202,8 @@ def _record_shared_wait(manifest, reason, terminal, failures):
     if reason == 'startup_failed':
         # Project the shared launch failure onto this installation while keeping
         # its prior local proof-attempt count in the linked proof record.
-        _write_state(manifest, reason, attempts=max(attempts, failures), proof_attempts=attempts)
+        _write_state(manifest, reason, attempts=max(attempts, failures),
+                     proof_attempts=min(attempts, _MAX_FAILURES - 1))
     elif reason == 'resource_deferred' and attempts:
         _write_state(manifest, reason, attempts=attempts, proof_attempts=attempts)
     else:

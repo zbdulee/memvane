@@ -1159,6 +1159,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
                 raise
             # The existing discovery grant is a durable scan hint, not proof
             # of a source or route. Its worker re-proves both before enqueue.
+            # Keep fail-closed (allow_busy=False) here so compile owner_busy never silently drops a grant.
             from memvane.wiki.intake import api as laya_wiki_discovery
             grant=laya_wiki_discovery.record_grant(decision,'sync',engine=host)
             _accept_wiki_grant(decision,'sync',grant)

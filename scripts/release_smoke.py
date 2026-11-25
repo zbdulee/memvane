@@ -703,6 +703,8 @@ def send(remote, out, host, name, *, screen=None, pause=time.sleep, paste_reads=
     resolved = '%s-%s' % (name, host)
     if resolved in plan['prompts']:
         name = resolved
+    if name not in plan['prompts']:
+        raise SystemExit('unknown prompt %r; available: %s' % (name, ', '.join(sorted(plan['prompts']))))
     prompt = plan['prompts'][name]
     session = shlex.quote(screen or session_name(host))
     base = plan['remoteFixture'].rstrip('/').rsplit('/', 1)[0]

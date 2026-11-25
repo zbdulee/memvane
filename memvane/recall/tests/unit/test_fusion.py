@@ -52,10 +52,14 @@ class Fusion(unittest.TestCase):
         for tok in ('"smk001ad"*', '"smk001ch"*', '"smk00104"*'):
             self.assertIn(tok, q3)
 
-        # Non-structural path stems, plain backtick words and disabled EP terms do not fan out.
+        # Non-structural path stems, plain backtick words, short alnum tokens and disabled EP terms do not fan out.
         self.assertEqual(len(rules._hybrid_fts_queries('docs/settings.md 구조', ())), 1)
         self.assertEqual(len(rules._hybrid_fts_queries('`npm test` 실패', ())), 1)
+        self.assertEqual(len(rules._hybrid_fts_queries('v2 API에서 mp3 파일을 어떻게 처리해?', ())), 1)
         self.assertEqual(len(rules._hybrid_fts_queries('`EP12` 복선 정리해줘', ())), 1)
+        for token, expected in (('RS-1', '"rs 1"'), ('foo_bar', '"foo_bar"*'),
+                                ('sha256', '"sha256"*'), ('camelCase', '"camelcase"*')):
+            self.assertIn(expected, rules._hybrid_fts_queries(f'확인 {token} 위치', ()))
         # Single structural identifier does not duplicate lexQueries[0].
         self.assertEqual(rules._hybrid_fts_queries('SMKFEED0900', ()), ['"smkfeed0900"*'])
 

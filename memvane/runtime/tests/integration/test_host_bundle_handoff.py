@@ -227,7 +227,7 @@ class HostBundleHandoff(FixtureCase):
         new = self.bundle('codex', 'market', '1.0.3')
         identity = host_bundle.BundleIdentity(old)
         host_bundle._BACKGROUND_INVENTORY.clear()
-        host_bundle._BACKGROUND_INVENTORY.update(until=0.0, root=None)
+        host_bundle._BACKGROUND_INVENTORY.update(until=0.0, root=None, failures=0)
         responses = iter([subprocess.TimeoutExpired('codex', host_bundle.HOST_LISTING_TIMEOUT_SECONDS),
                           (new, True)])
 
@@ -255,7 +255,53 @@ class HostBundleHandoff(FixtureCase):
             self.assertFalse(identity.preferred_background())
             self.assertEqual(inv.call_count, 2)
         host_bundle._BACKGROUND_INVENTORY.clear()
-        host_bundle._BACKGROUND_INVENTORY.update(until=0.0, root=None)
+        host_bundle._BACKGROUND_INVENTORY.update(until=0.0, root=None, failures=0)
+
+    def test_background_inventory_repeated_failure_backs_off_and_resets_on_change(self):
+        root = self.bundle('codex', 'market', '1.0.3')
+        config = self.home / '.codex' / 'config.toml'
+        config.write_text('[plugins."memvane@market"]\nenabled = true\n')
+        host_bundle._BACKGROUND_INVENTORY.clear()
+        host_bundle._BACKGROUND_INVENTORY.update(until=0.0, root=None, failures=0)
+        responses = iter([
+            subprocess.TimeoutExpired('codex', host_bundle.HOST_LISTING_TIMEOUT_SECONDS),
+            subprocess.TimeoutExpired('codex', host_bundle.HOST_LISTING_TIMEOUT_SECONDS),
+            subprocess.TimeoutExpired('codex', host_bundle.HOST_LISTING_TIMEOUT_SECONDS),
+            (root, True),
+        ])
+
+        def next_inventory(_home=None):
+            value = next(responses)
+            if isinstance(value, BaseException):
+                raise value
+            return [(host_bundle.version_key('1.0.3'), value[0])], value[1]
+
+        with mock.patch.dict(os.environ, {'MEMVANE_TEST_RUNTIME_ROOT': '',
+                                          'CODEX_HOME': str(self.home / '.codex'),
+                                          'CLAUDE_CONFIG_DIR': str(self.home / '.claude'),
+                                          'HERMES_HOME': str(self.home / '.hermes')}), \
+             mock.patch.object(host_bundle, '_inventory', side_effect=next_inventory) as inv, \
+             mock.patch.object(host_bundle.time, 'monotonic', return_value=100.0) as clock:
+            self.assertIsNone(host_bundle.background_installed())
+            self.assertEqual(inv.call_count, 1)
+            clock.return_value = 161.0
+            self.assertIsNone(host_bundle.background_installed())
+            self.assertEqual(inv.call_count, 2)
+            clock.return_value = 361.0  # 161 + 200 < 161 + 300: 2nd backoff holds
+            self.assertIsNone(host_bundle.background_installed())
+            self.assertEqual(inv.call_count, 2)
+            clock.return_value = 462.0
+            self.assertIsNone(host_bundle.background_installed())
+            self.assertEqual(inv.call_count, 3)
+            clock.return_value = 1462.0  # 462 + 1000 < 462 + 3600: 3rd backoff holds
+            self.assertIsNone(host_bundle.background_installed())
+            self.assertEqual(inv.call_count, 3)
+            config.write_text('[plugins."memvane@market"]\nenabled = true\n# changed\n')
+            self.assertEqual(host_bundle.background_installed(), root)
+            self.assertEqual(inv.call_count, 4)
+            self.assertEqual(host_bundle._BACKGROUND_INVENTORY['failures'], 0)
+        host_bundle._BACKGROUND_INVENTORY.clear()
+        host_bundle._BACKGROUND_INVENTORY.update(until=0.0, root=None, failures=0)
     def test_retired_timer_rearms_in_detached_handoff_if_lease_is_busy(self):
         from memvane.runtime import runtime_work as runtime
         queue = runtime.WakeQueue()

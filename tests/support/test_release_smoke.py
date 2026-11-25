@@ -356,6 +356,31 @@ class Verdict(FixtureCase):
         codex_note = next(item['note'] for item in res['items'] if item['id'] == 'RS-RECALL-codex')
         self.assertIn('first turn', codex_note)
 
+    def test_sync_supports_legacy_single_p4_plan(self):
+        after = smoke_fixture.delta(self.tree, json.loads(json.dumps(self.plan)))
+        for key in ('P4-added', 'P4-changed', 'P4-deleted'):
+            after['prompts'].pop(key, None)
+        token = 'SMKFEED01P4'
+        legacy_text = 'legacy ' + token
+        after['prompts']['P4'] = {
+            'text': legacy_text,
+            'sha256': hashlib.sha256(legacy_text.encode('utf-8')).hexdigest(),
+            'mark': token,
+            'chars': len(legacy_text),
+        }
+        rows = Rows(after)
+        rows.sync(after)
+        self.assertEqual(self.status(after, rows.rows)[0]['RS-SYNC'], smoke.PASS)
+        with_deleted = Rows(after)
+        with_deleted.sync(after)
+        with_deleted.rows[-1]['cards'].append(
+            {'path': after['delta']['deleted']['path'], 'sha': after['delta']['deleted']['sha256']})
+        self.assertEqual(self.status(after, with_deleted.rows)[0]['RS-SYNC'], smoke.FAIL)
+        missing_hash = Rows(after)
+        missing_hash.sync(after)
+        missing_hash.rows[-1]['cards'] = missing_hash.rows[-1]['cards'][:1]
+        self.assertEqual(self.status(after, missing_hash.rows)[0]['RS-SYNC'], smoke.FAIL)
+
 
 class RoundTrip(FixtureCase):
     def remote(self, **env):
@@ -485,6 +510,13 @@ class RoundTrip(FixtureCase):
         (record / 'plan.json').unlink()
         rebuilt = smoke.prepare(remote, record, 'c' * 40, target=str(account / 'second/fixture'), build=build)
         self.assertTrue(rebuilt['shipped'])
+
+    def test_send_unknown_prompt_raises_clear_system_exit(self):
+        remote, _account, _state, record, _plan = self.prepared()
+        with self.assertRaises(SystemExit) as caught:
+            smoke.send(remote, record, 'claude', 'P4')
+        self.assertIn("unknown prompt 'P4'", str(caught.exception))
+        self.assertIn('P1', str(caught.exception))
 
     def test_send_pastes_waits_for_the_paste_then_presses_enter_and_finds_the_row(self):
         remote, account, state, record, plan = self.prepared()
