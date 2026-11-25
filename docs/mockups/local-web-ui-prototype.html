@@ -151,13 +151,19 @@
     font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); padding: 10px 8px 4px; display: flex; justify-content: space-between; align-items: center;
   }
   .tree-item {
-    display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; font-size: 12.5px; color: var(--text-secondary); margin-bottom: 2px; border: 1px solid transparent;
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; font-size: 12.5px; color: var(--text-secondary); margin-bottom: 2px; border: 1px solid transparent;
   }
   .tree-item:hover { background: var(--bg-hover); color: var(--text-primary); }
   .tree-item.active { background: var(--accent-soft); color: var(--text-primary); border-color: rgba(76, 141, 255, 0.35); font-weight: 600; }
-  .tree-item-main { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; }
+  .tree-item-main { display: flex; align-items: flex-start; gap: 7px; min-width: 0; flex: 1; }
+  .tree-item-main .dot { margin-top: 5px; }
+  .tree-item-text { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 2px; }
   .tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tree-toggle { width: 16px; height: 16px; display: grid; place-items: center; border-radius: 4px; color: var(--text-muted); flex-shrink: 0; border: none; background: transparent; padding: 0; }
+  .tree-branch {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 1.25; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; font-weight: 400;
+  }
+  .tree-item.active .tree-branch { color: var(--text-secondary); }
+  .tree-toggle { width: 16px; height: 16px; margin-top: 1px; display: grid; place-items: center; border-radius: 4px; color: var(--text-muted); flex-shrink: 0; border: none; background: transparent; padding: 0; }
   .tree-toggle:hover { background: var(--bg-surface-2); color: var(--text-primary); }
   .tree-children { margin-left: 14px; padding-left: 8px; border-left: 1px solid var(--border); margin-bottom: 4px; }
   .tree-wt { font-size: 12px; padding: 5px 8px; }
@@ -427,7 +433,7 @@
     </div>
     <div class="topbar-right">
       <span class="pill" title="BroadcastChannel 단일 SSE 리더"><span class="dot green"></span>SSE Leader · 1 tab</span>
-      <span class="pill mono">v1.1.0</span>
+      <span class="pill mono">v1.1.1</span>
       <span class="pill">Read-Only</span>
       <button class="btn btn-sm" id="themeBtn" title="다크/라이트 테마 전환">테마</button>
       <button class="btn btn-sm btn-labels" id="labelsBtn" title="영역 ID 표시 토글 (단축키 L)">영역 ID [L]</button>
@@ -513,7 +519,7 @@
 (() => {
   'use strict';
 
-  // ---------------- Mock Domain Data (Aligned with design-local-web-ui.md r2) ----------------
+  // ---------------- Mock Domain Data (Aligned with design-local-web-ui.md r4 / v1.1.1) ----------------
   const TARGETS = [
     {
       targetId: 'a81f3c2e91b40d7712e90f8a4b6c1d02',
@@ -584,7 +590,7 @@
       installId: '55b0d91a03ce8812f4a772e19c3088ab',
       kind: 'main',
       name: 'memvane',
-      branch: 'main',
+      branch: 'release/1.1.2',
       displayRoot: '/Users/dev/work/memvane',
       hosts: ['claude', 'codex', 'hermes'],
       status: 'active',
@@ -606,7 +612,7 @@
       kind: 'worktree',
       name: 'wt/ui-design',
       branch: 'feat/local-web-ui',
-      displayRoot: '/Users/dev/work/wt/qmd-ui-design',
+      displayRoot: '/Users/dev/work/wt/memvane-ui-design',
       hosts: ['claude'],
       status: 'active',
       viewState: 'ready',
@@ -635,6 +641,12 @@
       event: 'learning.cycle', outcome: 'deferred_resource', reason: 'memory_pressure_warning',
       diagId: '1a2b3c4d5e6f708192a3b4c5d6e7f809',
       detail: 'admission_check: system_free_percent=38%, available_mib=6120 (< learning threshold), next_retry=600s'
+    },
+    {
+      ts: '13:12:04', install: 'memvane', target: 'main', host: 'codex',
+      event: 'recall', outcome: 'empty', reason: 'worker_attestation_unavailable',
+      diagId: '4c5d6e7f8091a2b3c4d5e6f70819a2b3',
+      detail: 'attestation_reads: temporary EAGAIN reading provider-reattest-pairs.json; recall returned empty context (fail-closed), next auto-retest <= 3600s'
     }
   ];
 
@@ -642,7 +654,8 @@
     {
       id: 'rec-1', ts: '14:23:41', installId: '55b0d91a03ce8812f4a772e19c3088ab', targetId: '55b0d91a03ce8812f4a772e19c3088ab',
       host: 'claude', session: 'sess_8b21', promptSha: '7d9a4c1e', promptChars: 142,
-      outcome: 'served', reason: 'selected', storeFormat: 'schema3', degraded: null,
+      outcome: 'served', reason: 'selected', semantic: 'complete', vectorCovered: 178, vectorEligible: 178,
+      storeFormat: 'schema3', degraded: null,
       msTotal: 692, stages: { pinMs: 14, lexicalMs: 18, stillCurrentMs: 12, checkoutMs: 8, queryEmbeddingMs: 42, semanticMs: 190, selectorMs: 408 },
       sessionExcluded: 1, sessionState: 'ok', semanticOnlyInjected: 1,
       cards: [
@@ -654,19 +667,21 @@
     {
       id: 'rec-2', ts: '14:18:05', installId: 'a81f3c2e91b40d7712e90f8a4b6c1d02', targetId: 'a81f3c2e91b40d7712e90f8a4b6c1d02:9c4d1e2a7b08',
       host: 'claude', session: 'sess_4e10', promptSha: '3b12f08a', promptChars: 218,
-      outcome: 'served', reason: 'selected', storeFormat: 'schema3', degraded: 'worktree',
+      outcome: 'served', reason: 'selected', semantic: 'partial', vectorCovered: 3668, vectorEligible: 3710,
+      storeFormat: 'schema3', degraded: 'worktree',
       msTotal: 1465, stages: { pinMs: 22, lexicalMs: 64, stillCurrentMs: 19, checkoutMs: 41, queryEmbeddingMs: 39, semanticMs: 580, selectorMs: 700 },
       sessionExcluded: 0, sessionState: 'ok', semanticOnlyInjected: 2,
       cards: [
         { rel: 'architecture/billing-idempotency-key.md', cosine: 0.874 },
         { rel: 'incidents/2026-09-retry-storm.md', cosine: 0.803 }
       ],
-      notes: ['arena_hit:100%']
+      notes: ['arena_hit:98.9%', 'semantic=partial (3668/3710)']
     },
     {
       id: 'rec-3', ts: '14:11:29', installId: 'a81f3c2e91b40d7712e90f8a4b6c1d02', targetId: 'a81f3c2e91b40d7712e90f8a4b6c1d02:3e71fa04129b',
       host: 'codex', session: 'sess_99a2', promptSha: 'c4e81201', promptChars: 96,
-      outcome: 'empty', reason: 'view_preparing', storeFormat: 'schema3', degraded: 'worktree',
+      outcome: 'empty', reason: 'view_preparing', semantic: 'provider_absent', vectorCovered: 0, vectorEligible: 0,
+      storeFormat: 'schema3', degraded: 'worktree',
       msTotal: 49, stages: { pinMs: 18, lexicalMs: 0, stillCurrentMs: 0, checkoutMs: 24, queryEmbeddingMs: 0, semanticMs: 0, selectorMs: 0 },
       sessionExcluded: 0, sessionState: 'none', semanticOnlyInjected: 0,
       cards: [],
@@ -675,11 +690,12 @@
     {
       id: 'rec-4', ts: '13:59:12', installId: '55b0d91a03ce8812f4a772e19c3088ab', targetId: '55b0d91a03ce8812f4a772e19c3088ab',
       host: 'hermes', session: 'sess_herm_3', promptSha: '91ab002d', promptChars: 84,
-      outcome: 'served', reason: 'ranked', storeFormat: 'schema3', degraded: null,
-      msTotal: 274, stages: { pinMs: 12, lexicalMs: 15, stillCurrentMs: 11, checkoutMs: 9, queryEmbeddingMs: 38, semanticMs: 189, selectorMs: 0 },
+      outcome: 'served', reason: 'ranked', semantic: 'lexical_only', vectorCovered: 0, vectorEligible: 178,
+      storeFormat: 'schema3', degraded: null,
+      msTotal: 274, stages: { pinMs: 12, lexicalMs: 15, stillCurrentMs: 11, checkoutMs: 9, queryEmbeddingMs: 0, semanticMs: 0, selectorMs: 0 },
       sessionExcluded: 0, sessionState: 'none', semanticOnlyInjected: 0,
-      cards: [{ rel: 'concepts/memvane-1-x-영속-계약-settings-키와-plan-scopeid.md', cosine: 0.815 }],
-      notes: ['laya_selector_not_prepared']
+      cards: [{ rel: 'concepts/memvane-1-x-영속-계약-settings-키와-plan-scopeid.md', cosine: 0.0 }],
+      notes: ['laya_vector_selected_provider_start_failed', 'laya_selector_not_prepared']
     }
   ];
 
@@ -796,7 +812,7 @@
       sourceRevisions: [{ path: 'memvane/kernel/errors.py', sha256: '1122aabbccdd', span: 'L35-L45' }],
       related: ['concepts/v1-guard-g4-도메인-줄-수-상한.md'],
       autoBody: 'macOS 시스템 Python 3.9 Apple libsqlite3는 WAL 잔여 헤더 DB를 ?mode=ro로 열 수 없으므로 모든 읽기 전용 SQLite 경로는 errors._query_only_uri와 PRAGMA query_only=ON을 사용한다.',
-      manualBody: '교체 대기 파일(.pending-9e21fa)이 검증 큐에 올라가 있으며 원문 변경으로 stale 마킹됨. (본문 742 tok — 700 tok 목표 초과)',
+      manualBody: '.handoff/v1/ private 교체 후보(.pending-9e21fa)가 검증 큐에 올라가 있으며 원문 변경으로 stale 마킹됨. (본문 742 tok — 700 tok 목표 초과)',
       sourceLines: [
         { n: 35, text: 'def _query_only_uri(path, *, sealed=False):', hl: true },
         { n: 36, text: '    """URI for reading existing SQLite data; callers set PRAGMA query_only."""', hl: true },
@@ -918,7 +934,7 @@
       const p = TARGETS.find(x => x.targetId === t.parentId);
       bc.innerHTML = `<span>${esc(p ? p.name : '')}</span> <span>/</span> <strong>${esc(t.name)}</strong> <span class="badge badge-purple mono">${esc(t.branch)}</span>`;
     } else {
-      bc.innerHTML = `<strong>${esc(t.name)}</strong> <span class="badge badge-blue">main</span>`;
+      bc.innerHTML = `<strong>${esc(t.name)}</strong> <span class="badge badge-blue">main</span> <span class="badge badge-purple mono">${esc(t.branch)}</span>`;
     }
 
     document.querySelectorAll('#tabNav .tab-btn').forEach(btn => {
@@ -957,7 +973,10 @@
           <div class="tree-item-main">
             <button class="tree-toggle" data-toggle-main="${esc(m.targetId)}" title="워크트리 펼치기/접기">${expanded ? '▾' : '▸'}</button>
             <span class="dot ${hasAlert ? 'amber' : 'green'}"></span>
-            <span class="tree-name" title="${esc(m.displayRoot)}">${esc(m.name)}</span>
+            <div class="tree-item-text">
+              <span class="tree-name" title="${esc(m.displayRoot)}">${esc(m.name)}</span>
+              <span class="tree-branch mono" title="현재 브랜치: ${esc(m.branch)}">⎇ ${esc(m.branch)}</span>
+            </div>
           </div>
           <span class="badge badge-muted num">${m.cards.verified}</span>
         </div>
@@ -970,7 +989,10 @@
             <div class="tree-item tree-wt ${state.selectedTargetId === w.targetId ? 'active' : ''}" data-select-target="${esc(w.targetId)}">
               <div class="tree-item-main">
                 <span class="dot ${isPrep ? 'amber' : 'green'}"></span>
-                <span class="tree-name mono" title="${esc(w.displayRoot)}">${esc(w.name)}</span>
+                <div class="tree-item-text">
+                  <span class="tree-name mono" title="${esc(w.displayRoot)}">${esc(w.name)}</span>
+                  <span class="tree-branch mono" title="현재 브랜치: ${esc(w.branch)}">⎇ ${esc(w.branch)}</span>
+                </div>
               </div>
               <span class="badge ${isPrep ? 'badge-amber' : 'badge-muted'}">${isPrep ? 'prep' : 'wt'}</span>
             </div>
@@ -1058,7 +1080,7 @@
         <div class="kpi-box">
           <div class="kpi-label"><span>Verified 위키 카드</span><span class="badge badge-blue">schema3</span></div>
           <div class="kpi-value num">${totalCards.toLocaleString()}</div>
-          <div class="kpi-foot"><span>Arena 적재율 99.7%</span></div>
+          <div class="kpi-foot"><span>Arena 적재율 99.7% · fullCoverage 96.4%</span></div>
         </div>
         <div class="kpi-box">
           <div class="kpi-label"><span>Resident 서비스</span><span class="badge badge-green">active</span></div>
@@ -1145,7 +1167,9 @@
             <span class="badge badge-blue mono">${esc(selectedRecall.host)}</span>
             <span class="mono">prompt ${esc(selectedRecall.promptSha)} (${selectedRecall.promptChars} chars)</span>
             <span class="badge ${selectedRecall.outcome === 'served' ? 'badge-green' : 'badge-amber'}">${esc(selectedRecall.outcome)} · ${esc(selectedRecall.reason)}</span>
+            <span class="badge ${selectedRecall.semantic === 'complete' ? 'badge-green' : (selectedRecall.semantic === 'partial' ? 'badge-blue' : 'badge-amber')} mono">${esc(selectedRecall.semantic)}${selectedRecall.semantic === 'partial' ? ' (' + selectedRecall.vectorCovered.toLocaleString() + '/' + selectedRecall.vectorEligible.toLocaleString() + ')' : ''}</span>
             ${selectedRecall.degraded ? `<span class="badge badge-purple">degraded: ${esc(selectedRecall.degraded)}</span>` : ''}
+            ${selectedRecall.notes.map(n => `<span class="badge badge-muted mono">${esc(n)}</span>`).join('')}
           </div>
           <div class="mono num">총 ${selectedRecall.msTotal} ms · sessionExcluded=${selectedRecall.sessionExcluded}</div>
         </div>
@@ -1190,7 +1214,7 @@
       <section class="card" data-region="R2-playground-stages" data-region-label="4단계 Recall 파이프라인 비교 결과">
         <div class="card-header">
           <div class="card-title">파이프라인 단계별 후보 비교 <span class="badge badge-blue mono">${esc(contextLabel())}</span></div>
-          <div class="card-sub mono">allow_wake=False · ensure_service=None · arena_hit=100%</div>
+          <div class="card-sub mono">${t && t.installId === 'a81f3c2e91b40d7712e90f8a4b6c1d02' ? 'no-spawn (cold pre-check) · semantic=partial (3,668/3,710) · arena_hit=98.9%' : 'no-spawn (cold pre-check) · semantic=complete (178/178) · arena_hit=100%'}</div>
         </div>
         <div class="grid-4">
           ${stageCol('1. Lexical (FTS5)', 'raw score', pg.lexical, false)}
@@ -1221,7 +1245,7 @@
                   <td><span class="badge ${r.outcome === 'served' ? 'badge-green' : 'badge-amber'}">${esc(r.outcome)}</span></td>
                   <td class="mono">${esc(r.reason)}</td>
                   <td class="mono num">${r.msTotal} ms</td>
-                  <td class="mono">${r.sessionExcluded ? 'excl:' + r.sessionExcluded : '—'} ${r.degraded ? '· ' + r.degraded : ''}</td>
+                  <td class="mono">${r.semantic}${r.semantic === 'partial' ? ' (' + r.vectorCovered + '/' + r.vectorEligible + ')' : ''}${r.sessionExcluded ? ' · excl:' + r.sessionExcluded : ''}${r.degraded ? ' · ' + r.degraded : ''}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -1263,7 +1287,8 @@
         <div class="card-header" style="margin-bottom:8px;">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <span class="card-title">Wiki Backfill &amp; 검증 현황</span>
-            <span class="mono" style="font-size:11.5px;color:var(--text-secondary);">settled 142 · dispatched 6 · pending 18 · skipped 4</span>
+            ${t && t.kind === 'worktree' ? '<span class="badge badge-blue">Compile·Backfill·Private Handoff 기록은 main checkout 기준</span>' : ''}
+            <span class="mono" style="font-size:11.5px;color:var(--text-secondary);">settled 142 · dispatched 6 · pending 18 · skipped 4 · private handoff: 교체 대기 2 · 보류 1 (1.4 / 64 MiB)</span>
           </div>
           <input type="text" id="wikiSearchInput" value="${esc(state.wikiSearch)}" placeholder="카드 제목/경로 검색..." style="background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:5px 9px;font-size:12px;width:220px;" />
         </div>
@@ -1324,7 +1349,7 @@
               <div>
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
                   <span style="font-size:11px;font-weight:700;color:var(--text-muted);" class="mono">SOURCE: ${esc(activeCard.sourcePath)} (${esc(activeCard.sourceRevisions[0].span)})</span>
-                  <span class="badge badge-muted">O_NOFOLLOW 검증됨</span>
+                  <span class="badge badge-muted" title="O_NOFOLLOW · excluded_source(wiki_source=True) 검증됨">O_NOFOLLOW 검증됨</span>
                 </div>
                 <div class="code-block">
                   ${activeCard.sourceLines.map(ln => `<div class="source-line ${ln.hl ? 'hl' : ''}"><span class="line-no">${ln.n}</span><span>${esc(ln.text)}</span></div>`).join('')}
@@ -1349,7 +1374,7 @@
             </div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
-            <div class="cand-item"><span class="card-sub">임베딩 상주 프로세스 (Embed Resident)</span><strong class="mono">PID 4821 · metal · 1.02 GB</strong><span class="card-sub mono">bundle v1.1.0 · 소켓 정상</span></div>
+            <div class="cand-item"><span class="card-sub">임베딩 상주 프로세스 (Embed Resident)</span><strong class="mono">PID 4821 · metal · 1.02 GB</strong><span class="card-sub mono">bundle v1.1.1 · 공유 실패 0/3 (w-8f2a...sock 정상)</span><span class="card-sub mono">설치별 증명 2/2 정상 · 실패 시 1시간 뒤 자동 재증명</span></div>
             <div class="cand-item"><span class="card-sub">학습 추론 서비스 (Learning Inference)</span><strong class="mono">PID 4905 · mps · 1.38 GB</strong><span class="card-sub mono">활성 모델 9c12ab40fe12</span></div>
           </div>
           <table>
@@ -1395,8 +1420,8 @@
             ${[
               ['학습용 편집 사례', 'candidateTrain', '후보 모델 학습에 사용할 Teacher 정답 사례', 84, 100, 'var(--accent)'],
               ['검증용 편집 사례', 'candidateEval', '학습에 쓰지 않고 정확도 평가에 쓰는 홀드아웃 사례', 42, 50, 'var(--purple)'],
-              ['카드 선택 정답 사례', 'evalNonEmpty', '관련 카드 주입이 정답인 검증 사례 (충족됨)', 10, 10, 'var(--green)'],
-              ['비선택 정답 사례', 'evalEmpty', '카드 미주입이 정답인 검증 사례 (과주입 방지)', 8, 10, 'var(--amber)']
+              ['카드 선택 정답 사례', 'candidateEvalNonEmpty', '관련 카드 주입이 정답인 검증 사례 (충족됨)', 10, 10, 'var(--green)'],
+              ['비선택 정답 사례', 'candidateEvalEmpty', '카드 미주입이 정답인 검증 사례 (과주입 방지)', 8, 10, 'var(--amber)']
             ].map(([title, code, desc, cur, max, col]) => `
               <div class="cand-item" style="gap:4px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
