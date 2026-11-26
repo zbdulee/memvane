@@ -33,6 +33,35 @@ class EditInbox(FixtureCase):
         self.assertEqual(stored[-1], {**event, 'schema': 'memvane-edit-inbox-v1'})
         self.assertEqual(card.unresolved_pending_refreshes_strict(self.root), [event])
 
+    def test_the_release_contract_row_reads_the_same_as_the_writer_row(self):
+        """release.md's inbox required keys are exactly what the reader needs from a writer row."""
+        required = ('schema', 'state', 'eventId', 'sourcePath', 'ts', 'engine')
+        contract = Path(__file__).resolve().parents[5] / 'docs/dev/contexts/release.md'
+        line, = [row for row in contract.read_text(encoding='utf-8').splitlines()
+                 if '`memvane-edit-inbox-v1`' in row and row.startswith('- ')]
+        for key in required:
+            self.assertIn(f'`{key}`', line)
+        self.assertIn('`"pending_refresh"`', line)
+        written = json.loads(self.inbox.read_bytes().splitlines()[-1])
+        documented = {key: written[key] for key in required}
+        expected = wiki_freshness._inbox_event(json.dumps(written).encode())
+        self.assertIsNotNone(expected)
+        self.assertEqual(wiki_freshness._inbox_event(json.dumps(documented).encode()), expected)
+        self.assertEqual(wiki_freshness._inbox_event(
+            json.dumps({**documented, 'privateKey': 1}).encode()), expected, 'other keys are not read')
+        for key in required:
+            with self.subTest(missing=key):
+                row = {k: v for k, v in documented.items() if k != key}
+                self.assertIsNone(wiki_freshness._inbox_event(json.dumps(row).encode()))
+        for key, value in (('state', 'resolved'), ('eventId', ''), ('sourcePath', '../x.md'),
+                           ('ts', '2026-11-26T00:00:00'), ('engine', '')):
+            with self.subTest(invalid=key):
+                row = {**documented, key: value}
+                self.assertIsNone(wiki_freshness._inbox_event(json.dumps(row).encode()))
+        self.assertIsNotNone(wiki_freshness._inbox_event(
+            json.dumps({**documented, 'eventId': 'not-hex', 'ts': '2026-11-26T09:00:00+09:00'}).encode()),
+            'the reader takes any non-empty eventId and any zoned ISO 8601 time')
+
     def test_absorb_once_across_both_crash_windows(self):
         from tests.support.wiki_handoff import failing_ledger_method
         # I2: stopped after the rename, before the insert commits.

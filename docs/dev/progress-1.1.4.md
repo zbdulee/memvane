@@ -96,7 +96,7 @@
 
 - 이름: `.memvane/compile/edit-inbox.jsonl` 하나. lock: 같은 디렉터리의 `edit-inbox.jsonl.lock`(훅은 기존과 같이 `LOCK_EX | LOCK_NB`를 최대 0.15초 폴링).
 - 훅 writer: `record_pending_refresh`가 이 파일에 한 행을 `O_APPEND`로 쓴다. 다른 훅 쓰기는 프로젝트 compile 디렉터리에 없다.
-- 행 모양 `memvane-edit-inbox-v1`: `{"schema":"memvane-edit-inbox-v1","eventId":<32 hex>,"sourcePath":<프로젝트 상대>,"ts":<RFC3339 Z>,"engine":"claude"|"codex"|"hermes"|"gemini"}` + 기존 private refresh 행의 선택 키를 그대로 허용한다(1.1.2 private lane 행과 같은 키).
+- 행 모양 `memvane-edit-inbox-v1`: writer(`wiki_freshness.record_pending_refresh`)는 `{"schema":"memvane-edit-inbox-v1","state":"pending_refresh","eventId":<32 hex>,"sourcePath":<프로젝트 상대>,"ts":<UTC Z>,"engine":"claude"|"codex"|"hermes"|"gemini"}`를 쓴다. reader(`wiki_freshness._inbox_event`)가 요구하는 조건과 무시하는 키는 [release.md](contexts/release.md)의 inbox 항목이 정의하고, `test_the_release_contract_row_reads_the_same_as_the_writer_row`가 두 모양의 reader 결과가 같음을 단정한다.
 
 ### 3.2 소비 규칙 (worker, `.compile-run.lock` 아래)
 
