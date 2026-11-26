@@ -264,3 +264,13 @@ teeth(제품 줄을 깨서 FAIL 확인, 확인 후 원복):
 ## 10. 다음 재개 지점
 
 C7(큐)부터 진행한다(§5의 C6 refresh는 C5에 포함됐다). C4의 `migrate_from_v1`은 아직 진입 경로에 연결하지 않았다(C12).
+
+### 10.1 C7(큐)+C9(혼재 장치) 설계 메모
+
+- 순수 계획 함수(`wiki/intake/wiki_source_intent.py`의 `operation_key`·`revision_key`·`queue_revision`·`plan_source_batch`·`merge_source_job`)는 저장소와 무관하므로 그대로 쓴다. 저장만 바꾼다.
+- `compile_jobs`에 `op_key`(operation_key의 canonical JSON, 없으면 NULL)와 `revision_token` 열을 더한다. 적재(`_append_unqueued` 대체)는 한 트랜잭션: 같은 `op_key`의 `queued` 행 조회 → `plan_source_batch` → 대체 행 삭제·새 행 삽입. 같은 revision 행이 이미 있으면 넣지 않고 wake만 낸다(현행 `wakePending`).
+- worker claim은 `queued` 전부를 `claimed`(pid·token)로 바꿔 `(raw_text, job)` 행과 `finish(remaining_lines)`를 가진 객체로 돌려준다. `remaining`에 원문 그대로 남은 행은 `queued`로, 바뀐 job JSON은 payload를 바꿔 `queued`로, 나머지는 `done`. 죽은 pid의 claim은 시작 시 `recover_dead_compile_claims`(최대 3회 뒤 `dropped`, 사유 `requeue_exhausted` — `discard-ledger.jsonl` 대체)로 되돌린다.
+- verify 큐도 같은 모양(`verify_jobs`, `target_path` 색인). 교체본은 `pending_blob`.
+- 이로써 claimed 파일·private 반환(`queue_return`)·inode batch(`batch_handoff`·`batch_consumer`)·`upgrade_queue`·`queue_publication`·`legacy_handoff`·`ordinary_slot`의 slot 파일·`pending_ownership`·`deferred_review`가 필요 없어진다(A4). 삭제 전후 시험 개수를 §9에 적는다.
+- reader: `selected_execution._backlog/_idle_locked`, `refresh_settlement.queued_events`, worker `_busy_report`. writer: `wiki_compile_enqueue`(비훅 경로), `recover_pending_refreshes`, `wiki_backfill`, `wiki_discovery.drain_after_sync`(sync owner), `wiki_dedup_*`의 requeue.
+
