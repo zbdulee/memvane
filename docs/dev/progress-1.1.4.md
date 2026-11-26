@@ -238,6 +238,7 @@ C4~C11은 서로 의존한다(C7은 C5·C6, C8은 C7, C9는 C7·C8). 각 커밋 
 | C5 inbox + refresh 원장 | `ec84ef63` | 훅 `record_pending_refresh` → `.memvane/compile/edit-inbox.jsonl`(`memvane-edit-inbox-v1`, `edit-inbox.jsonl.lock` 0.15초, 한 번의 `O_APPEND`, 짧은 쓰기는 `ftruncate`로 원복, 8 MiB `busy`). worker `absorb_edit_inbox`(rename→`INSERT OR IGNORE eventId`+파일명 기록 한 트랜잭션→삭제→원문별 최신만 남김). 미해결 판정은 원장+미흡수 inbox를 `ts` 순으로 접는다. 정산(`source-refresh-settled.json`) → `refresh_events.settled_*`. SessionStart는 매번 `laya-compile` wake(A2), 훅은 원장을 열지 않는다. `refresh_lanes.py`·`quarantine_corrupt_pending`·`compact_pending_refreshes`·`read_pending_refreshes`·CLI 삭제(제품 호출부 0). 1.x 공용/전용 refresh 혼재 시험 삭제: `test_markerless_backfill_refresh.py`(4), `test_source_path_line_separators.py`(2), `test_wiki_freshness`의 공용 원장·quarantine 시험(Python 52→46). 검사: card 9/9(py46)·intake 13/13(py189)·host 24/24(py219)·compile 41/41(py264)·verify 18/18(py191)·workspace 6/6·lifecycle 10/10·dedup 6/6·diagnostics 9/9·sync 16/16, structure 28/28, v1_guard 0, py3.9 import. teeth: 원복 없는 짧은 쓰기·도착순 정렬·`OR IGNORE` 제거·8 MiB 상한 제거·SessionStart wake 제거 각각 FAIL 확인 |
 | C7a 큐 API | `5dab68fd` | `queues.py` mixin: `claim_jobs`(queued 전부)·`finish_claim`(남은 행을 claim 시점 순서로 앞에 재적재)·`plan_jobs`(planner 한 트랜잭션)·`append_jobs`·`recover_dead_claims`(4번째 claim에서 `dropped`/`requeue_exhausted`)·`job_blob`. `compile_jobs`/`verify_jobs`에 `reason`. pipeline 3/3(py21), structure 26/26, v1_guard 0. worker·enqueue 연결은 C7b |
 | C7b source 큐 → 원장 | `6f253093` | `workspace/ledger_queue.py`: `claim_queue`/`read_queue`가 source 큐에서 원장 claim(`LedgerClaim`)·행(`LedgerRows.finish`)을 돌려준다. 죽은 claim은 다음 claim이 되돌리고, 재시도 한도를 넘은 행은 receipt(`write_discard_receipt`)가 기록된 뒤에만 `dropped`(`requeue_exhausted`, `audit_events` discard 로그)로 바꾸며 기록 실패 시 claim을 남긴다. `intake/source_queue.py`는 `plan_source_batch`를 원장 한 트랜잭션에서 돌리고 교체 행은 원래 자리를 지킨다. reader(`selected_execution._backlog`, `_queue_busy`, worker `_busy_report`, `refresh_settlement.queued_events`)는 원장 행을 센다. `safe_queue_path(native=True)`는 원장 큐에서 공개 경로를 돌려준다. 파일 claim·private 반환 전용 시험 삭제: `test_claim_recovery.py`(15), `test_private_backfill_return.py`(1), `test_stale_backlog_1015`의 batch 3개, `test_revision_skip`의 무잠금 대조 1개(원장 claim이 중복 과금을 막아 전제가 사라짐), `test_source_enqueue`의 파일 이미지 9개, `test_wiki_backfill`의 discard 원장 1개, `test_native_queue_rows`의 source 1개. 검사: compile 39/39(py244), intake 13/13(py179), verify 18/18(py191), lifecycle 10/10(py112), workspace 6/6(py15), host·card·pipeline·dedup·sync·diagnostics·runtime 통과, structure 28/28, v1_guard 0, py3.9 import. teeth: finish 순서·교체 자리·receipt 실패 시 claim 유지·queued_events 원장 읽기 각각 FAIL 확인 |
+| C7c 계획 게이트 | (이 커밋) | §10.3: 제품 verify는 선택된 route 전용이라 기계 삭제가 닿지 않음을 확인, 행 모델·V1~V21·Q1~Q5·커밋 단위 C8a~C9. 문서만 변경 |
 
 ①의 검사 결과(커밋 `a0fad489` 워킹트리):
 
@@ -265,7 +266,9 @@ teeth(제품 줄을 깨서 FAIL 확인, 확인 후 원복):
 
 ## 10. 다음 재개 지점
 
-**이 dispatch(task_4eea2e2522db)는 C7b까지 하고 미완으로 종료했다.** 코디네이터가 §10.2 질문(msg_dd37abb859e8)에 답하지 않고 멈춰, 재설계 방향은 승인된 원칙(D1=A·원칙 3·A4) 안에 있다고 보되 규모(제품 약 4,000줄 삭제, 시험 약 30파일 재작성)를 고려해 새 worker가 이어받도록 정했다. 다음 worker는 §10.2를 C7c로 시작하고, 이어서 C10(tombstone 제거·dedup 이름표 이전)→C11(로그·억제·쿨다운·dedup 큐)→C12(마이그레이션 연결: worker 시작·`selected_execution` 양보·wiki-compile skill 거절)→C13(조회 CLI)→C14(E2E)→C15(문서·release.md 개정·working-rules 77·79행·ROADMAP Python 3.11)를 진행한다. §5의 C6 refresh는 C5에 포함됐다. C4의 `migrate_from_v1`은 아직 진입 경로에 연결하지 않았다(C12).
+**현재 재개 지점(task_004cb80b546e): C7c 계획 게이트(§10.3) 커밋 뒤 코디네이터 검토 대기.** 답을 받기 전에는 verify 제품 코드를 고치지 않는다. 승인 뒤 C8a→C8b→C8c→C9→C10~C15 순서로 진행한다.
+
+이전 dispatch(task_4eea2e2522db)는 C7b까지 하고 미완으로 종료했다. 코디네이터가 §10.2 질문(msg_dd37abb859e8)에 답하지 않고 멈춰, 재설계 방향은 승인된 원칙(D1=A·원칙 3·A4) 안에 있다고 보되 규모(제품 약 4,000줄 삭제, 시험 약 30파일 재작성)를 고려해 새 worker가 이어받도록 정했다. 다음 worker는 §10.2를 C7c로 시작하고, 이어서 C10(tombstone 제거·dedup 이름표 이전)→C11(로그·억제·쿨다운·dedup 큐)→C12(마이그레이션 연결: worker 시작·`selected_execution` 양보·wiki-compile skill 거절)→C13(조회 CLI)→C14(E2E)→C15(문서·release.md 개정·working-rules 77·79행·ROADMAP Python 3.11)를 진행한다. §5의 C6 refresh는 C5에 포함됐다. C4의 `migrate_from_v1`은 아직 진입 경로에 연결하지 않았다(C12).
 
 ### 10.1 C7(큐)+C9(혼재 장치) 설계 메모
 
@@ -285,3 +288,86 @@ teeth(제품 줄을 깨서 FAIL 확인, 확인 후 원복):
 - worker: claim → (사람 편집·원문 변경 재확인) → 유료 검수 1회 → `publish_card`(첫 카드 `rename_noreplace`, 교체·stamp는 교환+대조, `generation=` manifest 행) → finish. 같은 대상의 중복 행은 claim 시 대상별 최신만 남긴다(현행 `_dedup_by_target`).
 - 삭제: `upgrade_queue`·`legacy_handoff`·`queue_publication`·`ordinary_slot`·`batch_handoff`·`batch_consumer`·`queue_batch_prepare`·`deferred_review`·`pending_ownership`·`native_review`·`completed_review`·`candidate_stage`·`pending_replacement`의 숨김 파일 경로, `workspace/queue_return.py`·`handoff/api.py`의 반환·배달, `verify/handoff_work.py`의 `Work`(대체 후 미사용).
 - 규모: 제품 약 4,000줄 삭제·약 500줄 신규, verify 18개·compile 약 12개 시험 파일 재작성. 상태 조합표는 §6.1 P칸(게시)과 새 V칸(검수 중 사람 편집·원문 변경·같은 대상 중복·claim 중단·검수 실패 삭제 R4/R5)으로 다시 쓴다.
+- 사용자 승인: 이 방향(행 하나, 숨김 파일·`Work` hold를 행 상태로, claim→재확인→유료 검수 1회→`publish_card`→finish, 혼합 버전 장치 삭제). 세부는 §10.3.
+
+### 10.3 C7c 계획 게이트 — verify 행 모델·V칸·커밋 단위 (task_004cb80b546e, 검토 대기)
+
+#### 조사로 확인한 사실 (HEAD `fa12f578`)
+
+- **제품에서 verify는 선택된 route에서만 돈다.** verify `run`의 유일한 제품 호출부는 `wiki_compile_worker.py:1519`이고, compile worker `main`은 `selected_route is None`이면 `QMD_SETUP_GUARD_FIXTURE=1`(시험) 밖에서 바로 끝난다(`wiki_compile_worker.py:1619-1622`, `:1646-1647`). `wiki_verify_worker.main`은 `entry/`·skill 어디서도 부르지 않는다(`rg`).
+- **선택된 route는 기계 삭제를 하지 않는다.** `run`이 `onFail`·`onInconclusive`를 `none`으로 덮는다(`wiki_verify_worker.py:1543-1546`, `settings/types.py:253` 주석). 따라서 제품에서 `apply_negative_verdict`의 `delete` 분기, `record_verify_deletion`(`verify-deleted.jsonl`), `record_verify_suppression`(`verify-skipped.jsonl` 쓰기), `promotion.retire`·`finish_retirement`·`missing_retirement`의 verify 쪽, manifest `verify-deleted` 행 쓰기는 시험 fixture에서만 닿는다. 부정 판정의 제품 동작은 "첫 카드는 `generated`로 남고, 교체본은 버리고 옛 카드를 유지"다.
+- 부정 판정으로 교체본을 버린 뒤 같은 revision은 `wiki_lifecycle`의 `REFRESH_RETRY_SECONDS`(7일) 뒤에만 다시 들어간다. `pending_source_review`는 큐·claim·대기 hold에 **남아 있는** 행만 본다(`pending_replacement.py:70-147`). 첫 카드는 `already_compiled_revision`(`wiki_compile_worker.py:700-711`)이 같은 revision 재추출을 막는다.
+- 첫 카드는 지금 검수 전에 `generated`로 노출된다(`first_card._resume` → rename 후 manifest 행, `wiki_compile.py:1337-1338` 주석). 교체는 검수 통과까지 옛 카드가 남는다.
+- `publish_card`는 `generation=`을 `published`·`published_user_edited`일 때만 `card_generations`에 넣는다(`store.finish_publish_txn`). `claim_jobs`는 queued 전부를 claim하고 `finish_claim`은 claim 행을 지운 뒤 남은 것을 다시 넣는다(행별 종결 상태를 남기지 않는다).
+
+#### 호출부 (CodeGraphContext `execute_cypher_query` CALLS, repo `/Users/dulee/work/qmd-auto-context`, + `rg`)
+
+| 기호 | 제품 호출부 | 시험 호출부 |
+|---|---|---|
+| `verify.api.create_first_card`·`enqueue_replacement`·`stage_candidate`·`pending_name_reserved`·`missing_retirement` | 각 1: `wiki/compile/wiki_compile.py` | 0 |
+| `verify.api.pending_source_review` | `wiki/compile/wiki_compile_worker.py` | 0 |
+| `verify.api.claim_source_queue` | `wiki/compile/wiki_compile_worker.py` | 0 |
+| `verify.api.queue_batch_pending` | `wiki/compile/{selected_execution,wiki_compile_worker}.py` | 0 |
+| `verify.api.native_review_pending`·`prepare_queue` | `wiki/compile/selected_execution.py` | `prepare_queue` 7: compile `test_pending_handoff`·`test_tagged_queue_controls`·`tagged_queue_driver`·`publication_child`, verify `test_verify_batch_prepare` |
+| `process_verify_job` | `wiki_verify_worker.py` 2 | 9: verify `test_wiki_provenance_intent`·`test_verify_pending`·`test_promotion`·`test_negative_suppression_retry`·`test_excluded_selected_sources`, `tests/e2e/wiki_db_provenance.py` |
+| `apply_verify_verdict_locked` | `wiki_verify_worker.py` | 2: `test_wiki_provenance_intent` |
+| `record_verify_deletion`·`record_verify_suppression` | `wiki_verify_worker.py`, `pending_ownership.py` | `test_wiki_verify_worker`, `pipeline/tests/tagged_v1_ledgers.py`(출시 태그 writer 드라이버 — 태그 번들의 함수라 영향 없음) |
+| `stamp_verification` | `wiki_verify_worker.py`, `verify/api.py` | 5: compile `test_checkout_fingerprints`·`test_revision_skip`, card `test_verification_stamp`, workspace `test_wiki_mutation_lock`, verify `test_verify_pending` |
+| 모듈 import(`rg`): `upgrade_queue`·`legacy_handoff`·`queue_publication`·`ordinary_slot`·`batch_handoff`·`batch_consumer`·`queue_batch_prepare`·`deferred_review`·`pending_ownership`·`native_review`·`completed_review`·`candidate_stage`·`pending_replacement`·`pending_handoff`·`first_card`·`handoff_work` | verify 도메인 안끼리 + `verify/api.py`, `tests/structure/context-map.json`. 밖에서는 `workspace/queue_return.py`를 `workspace/{queue_paths,queue,wiki_selected_laya}.py`·`handoff/api.py`가 쓴다 | verify 시험 18파일, compile 시험 약 20파일(아래 표) |
+
+#### 행 모델
+
+- `verify_jobs` 행 하나 = 검수 작업 하나. `payload_json`의 `kind`: `review`(이미 보이는 `generated` 첫 카드를 검수·stamp) 또는 `replace`(교체본 `pending_blob`, `expectedTargetHash` = 교체 대상 live 카드 SHA). DDL은 바꾸지 않는다(필요한 값은 payload에 둔다).
+- **첫 카드(추천 Q1-a)**: compile이 `verify_jobs`에 `review` 행을 먼저 넣고, `publish_card(expected=None, generation=manifest 행)`으로 `generated` 카드를 곧바로 게시한다. 현재처럼 검수 전에도 보인다. 행만 있고 게시 전에 죽으면 worker는 `card_missing`으로 끝내고, claim이 남은 compile job은 dead claim 회수로 다시 compile된다.
+- **교체**: compile은 `replace` 행(+`pending_blob`)만 넣는다. 옛 카드는 통과 게시 전까지 그대로다. 숨김 `.<card>.pending-*`·`.pc-*`·`.first-*` 쓰기는 없다.
+- **worker 한 행**: `recover_publishes` → `recover_dead_claims` → claim → 대상별 최신만 남김 → (재확인: live SHA = 기대값, 원문 revision이 현재와 같고 미해결 refresh 없음) → 유료 검수 1회 → **판정을 행 payload에 기록(추천 Q4)** → pass면 stamp 바이트를 렌더해 `publish_card(expected=검수한 바이트의 SHA)`(교환+대조), compile intent는 게시 전 기록·게시 실패 시 `.superseded` → 행 `done`. 예산(`maxPerRun`·`VERIFY_PRODUCED_HARD_CAP`·fresh 우선·backlog 예약 1건), 엔진 계획·식힘·`defer_or_drop`·`pass` 근거 규칙·`skipPaths` 거절은 그대로 옮긴다.
+- 종결 상태: `done`(+`reason`: `verified`·`kept`·`card_missing`·`changed_before_verify`·`changed_during_verify`·`stale_revision`·`superseded`·`invalid_verdict` 등), `queued`(식힘·127·timeout·락 경합으로 보존), `dropped`(`requeue_exhausted`). 행을 지우지 않고 `done`으로 남긴다(같은 대상 판정과 조회 CLI용). 오래된 `done` 행 정리는 C11에서 refresh와 같은 방식으로 한다.
+
+#### V칸 (선택된 route 기준, 유료 = extract/verify 호출 수)
+
+| 칸 | 상황 | 기대 결과 | 유료 | 회귀 시험(예정, verify 또는 compile) |
+|---|---|---|---|---|
+| V1 | 첫 카드, 중단 없음, pass | `generated` 게시 → `verified` stamp 교환 게시, `card_generations` 1행 | extract 1 + verify 1 | `test_first_card_review_publishes_stamp` |
+| V2 | 첫 카드, fail/inconclusive | `generated` 유지, 행 `done/kept`. 같은 revision은 `already_compiled_revision`으로 재추출 없음(R4 대체) | 1회차만 extract 1 + verify 1, 이후 0 | `test_negative_first_card_does_not_loop` |
+| V3 | 교체, pass | 통과 전 옛 카드 유지, 교환 게시, manifest `updated` 1행 | extract 1 + verify 1 | `test_replace_pass_exchanges_card` |
+| V4 | 교체, fail/inconclusive | 옛 카드 유지, blob 버림(`pending_blob` NULL), 숨김 파일 0. 같은 revision은 7일 refresh 재시도만 | 1회차 extract 1 + verify 1 | `test_negative_replace_keeps_old_card` |
+| V5 | claim 전 사람 편집(live SHA ≠ 기대값) | 유료 호출 없이 `done/changed_before_verify`, 사람 파일 그대로 | 0 | `test_human_edit_before_verify_skips_paid_call` |
+| V6 | 검수 중 사람 편집(게시 CAS 실패) | `conflict_user_edited`, 사람 파일 보존, `done/changed_during_verify`, 같은 행 재검수 없음 | verify 1(이미 쓴 것) | `test_human_edit_during_verify_keeps_edit` |
+| V7 | 교환 창의 편집기 저장 | P8과 같음(재교환 복원) | 0 추가 | 기존 `test_exchange_crash_recovers_clean_...` |
+| V8 | claim 전 원문 변경(revision 불일치·미해결 refresh) | 유료 호출 없이 `done/stale_revision`. 새 revision은 refresh 원장의 compile이 새 행을 만든다(추천 Q3) | 0 | `test_source_change_before_verify_drops_without_paid_call` |
+| V9 | 검수 중 원문 변경 | 게시하지 않고 `done/stale_revision`. 새 revision은 V8과 같은 경로 | verify 1(이미 쓴 것) | `test_source_change_during_verify_does_not_publish` |
+| V10 | 같은 대상 행 2개(다른 revision) | 최신만 검수, 옛 행 `done/superseded`. dead claim에서 되돌아온 옛 행도 더 새 행(상태 무관)이 있으면 superseded | 최신 1건만 verify 1 | `test_same_target_latest_wins_across_requeue` |
+| V11 | claim 뒤 유료 호출 전 중단 | 다음 run의 `recover_dead_claims`가 되돌려 다시 처리 | verify 1(총) | `test_dead_claim_before_verdict_requeues` |
+| V12 | 판정 기록 뒤 게시 전 중단 | 다음 run이 기록된 판정을 재사용해 게시, 추가 유료 0 | verify 1(총) | `test_recorded_verdict_is_reused_after_crash` |
+| V13 | 유료 호출 뒤 판정 기록 전 중단 | 한 번 더 검수(attempt ≤3, 넘으면 `dropped/requeue_exhausted`) | 최대 verify 3 | `test_dead_claim_attempt_limit` |
+| V14 | 게시 중 중단(temp·rename·교환) | P2~P8 복구 뒤 V12 경로로 같은 바이트면 `published`(P10) | 0 추가 | `test_publish_crash_then_recorded_verdict_settles` |
+| V15 | 원문 변경 뒤 재생성(R5) | 새 revision → 새 `replace` 행 | extract 1 + verify 1 | `test_new_revision_after_negative_regenerates` |
+| V16 | queued 1,030행 + 독립 대상 | 스캔 상한 없음, 예산만큼 처리, 남은 행 `queued` | 예산만큼 | `test_verify_backlog_beyond_1024` |
+| V17 | 127·timeout·식힘·락 경합 | 행 `queued` 유지, 판정 없음 | 기존 규칙 | 기존 `test_wiki_verify_worker` 이전 |
+| V18 | `invalid_verdict` 후보 소진 | `done/invalid_verdict`, 카드 그대로(교체 blob 버림) | 기존 규칙 | 기존 `test_verdict_rules` 이전 |
+| V19 | `verify.enabled: false` | 첫 카드는 행 없이 `generated` 게시, 교체는 현행대로 `merge-needed`(`verified_replacement_requires_review`) | extract 1 | 기존 compile 시험 |
+| V20 | compile 중 같은 revision의 `replace` 행이 queued/claimed, live = 기대값 | compile은 `awaiting_pending_verification`으로 재추출하지 않음. claimed 행이 이 원문을 인용하면 compile job 보존 | 0 | `test_compile_waits_for_queued_replace_row` |
+| V21 | `st_dev` 변화 | 행·게시 대조에 `st_dev`를 쓰지 않음(P13) | 0 | P13 시험 |
+
+#### 결정 요청 (전부 승인된 방향 안의 세부)
+
+| ID | 쟁점 | 추천안 | 대안 |
+|---|---|---|---|
+| Q1 | 첫 카드 노출 시점 | **a. 현재처럼 compile이 `generated`로 바로 게시하고 `review` 행이 stamp를 교환 게시한다.** 검수 엔진이 없거나 식힘이어도 카드가 보인다(`recallVerifiedOnly: false` 사용자 동작 유지) | b. 검수 뒤에만 게시(§10.2 글자 그대로). 검수가 미뤄지면 카드가 보이지 않는다 |
+| Q2 | 기계 삭제 경로 | **제품에서 닿지 않으므로 지운다.** verify는 카드를 지우지 않는다: `apply_negative_verdict`의 `delete` 분기, `record_verify_deletion`, `record_verify_suppression`, `promotion.retire`·`finish_retirement`·`retirement_status`, manifest `verify-deleted` 쓰기, `verify-deleted.jsonl`·`verify-skipped.jsonl` 쓰기. `onFail`·`onInconclusive` 설정 키는 허용 목록에 남기고 무시한다(문서 C15). compile은 C4에서 가져온 `suppressions(kind='verify')`를 계속 읽는다(A3) | 시험 fixture용으로 유지(원장 이관 비용 + 죽은 경로) |
+| Q3 | 원문이 바뀐 행 | **`done/stale_revision`으로 끝낸다(V8·V9).** 새 revision은 refresh 원장과 compile이 새 행으로 다시 낸다. 현재는 보존 후 재시도라 같은 낡은 행이 run마다 다시 읽힌다 | 현재처럼 보존 |
+| Q4 | 판정 뒤 게시 전 중단 | **판정을 행 payload에 기록하고 재사용한다(V12, 추가 유료 0).** DDL 변경 없음 | 재검수(+1 유료) |
+| Q5 | `staged_cards`·`Work`·64 MiB 쿼터 | **C9에서 `handoff_work.py`·`store`의 work API·quota와 `staged_cards` DDL을 지운다.** `wiki-pipeline.sqlite3`는 미출시라 `user_version` 1 그대로 둔다. `publish_card`의 `stage_id` 인자도 지운다 | 테이블만 남겨 둔다 |
+
+#### 커밋 단위
+
+| 커밋 | 범위 | focused 검사 |
+|---|---|---|
+| **C8a** 원장 verify API | `queues.py`: 행별 `finish_verify_job(job_id, token, state, reason)`, `record_verdict(job_id, token, verdict)`, 대상별 최신 선택(상태 무관 더 새 행이면 superseded), compile용 `verify_rows_for_source(revision)`. pipeline 단위 시험 | pipeline |
+| **C8b** compile 생산자 | `wiki_compile.py`: 첫 카드 = `review` 행 + `publish_card(generation=)`, 교체 = `replace` 행 + blob. `write_pending_card`·`replacement_image`의 숨김 이름·`pending_name_reserved` 제거. `wiki_compile_worker`: `pending_source_review` → 원장 조회(V20), `claim_source_queue`의 `queue_batch_prepare` 호출 제거. `selected_execution`의 `prepare_queue`·`native_review_pending`·`queue_batch_pending` → 원장 개수 | compile, intake |
+| **C8c** verify worker 재작성 | `wiki_verify_worker.run`·`process_verify_job`을 행 모델로. 부정 판정은 `kept`(Q2). V1~V21 시험. 옛 메커니즘 시험은 같은 커밋에서 삭제·재작성하고 파일별 전후 개수를 §9에 적는다 | verify, compile, card, workspace |
+| **C9** 장치 삭제 | 위 16개 verify 모듈, `promotion.py`의 retire·stamp intent 폴더(남는 것이 있으면 `verification_stamp`로), `workspace/queue_return.py`, `handoff/api.py`의 반환·배달, `handoff_work.py`, `staged_cards`(Q5), `context-map.json`, verify README | verify, compile, workspace, pipeline, runtime |
+
+재작성·삭제 대상 시험(전 개수): verify `test_candidate_stage`(5)·`test_first_card`(9)·`test_incomplete_stamp`(6)·`test_legacy_handoff`(7)·`test_native_batch_delivery`(1)·`test_native_occurrence_review`(3)·`test_negative_suppression_retry`(2)·`test_pending_cleanup_recovery`(22)·`test_promotion`(18)·`test_verify_batch_prepare`(7)·`test_verify_pending`(17)·`test_wiki_provenance_intent`(20)·`test_wiki_verify_worker`(44)·`test_batch_handoff`(5)·`test_handoff_work`(10), compile `test_bounded_verify_handoff`(3)·`test_first_card_lock`(1)·`test_ordinary_sibling_recovery`(2)·`test_pending_handoff`(15)·`test_tagged_editor_controls`(1)·`test_candidate_reservations`(4)·`test_write_identity`(8)·`test_publication_recovery`(1)·`test_machine_deletion_recovery`(16)·`test_upgrade_queue`(3)·`test_writer_lifecycle`(6)·`test_visible_card_handoff`(2)·`test_legacy_transition_race`(1)·`test_mixed_ledger_first_review`(2)·`test_revision_skip`(28, 일부)·`test_legacy_online_preservation`(1)·`test_tagged_queue_controls`(7)·`test_manifest_scan`(5, 일부)·`test_summary_history`(2, 일부)·`test_legacy_ledgers`(1). 판정 시험 입력은 현재 compile writer가 낸 행이다. 출시 태그 writer 입력은 마이그레이션(C12) 칸에만 해당한다(1.x verify 행은 버린다, §1).
+
+C8b·C8c는 시험이 서로 물려 한 커밋으로 합칠 수 있다. 그 경우에도 V칸 시험과 teeth를 커밋 안에서 칸별로 기록한다.
