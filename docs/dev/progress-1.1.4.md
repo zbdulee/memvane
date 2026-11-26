@@ -184,6 +184,6 @@
 - `pipeline/store.py`·`types.py`·`api.py`: `insert_work/get_work/list_works/works_for_target/work_blob/cas_work/delete_work/staged_quota_bytes`, `StageQuotaExceeded`, `open_pipeline_dir(compile_dir)`. 기존 `stage_card` 계열 제거.
 - `verify/handoff_work.py`: `Work`를 SQLite backend로 교체(공개 API 유지, `HOLD_SCAN_LIMIT`·스캔 상한·`_ScanLimit` 제거, quota는 `charged_bytes` 합계, inode raw만 `.handoff/v1/staged/<id>/raw`). `copy_quota.py` 삭제(git rm 스테이징됨). 호출부 7개 모듈에서 `max_entries=HOLD_SCAN_LIMIT` 제거.
 - 시험: `test_handoff_work.py` SQLite 의미로 재작성, `test_batch_handoff.py`의 `assertTrue(calls)` 제거(제어 파일 `os.read`가 없어짐), `verify/tests/support.py` quota 상수.
-- 남은 실패: `test_first_card.py`(64건 초과·`.first-*` 등록 temp 시험), `test_pending_cleanup_recovery.py`(`native_review.process`가 `store.private_root(queue)`를 직접 열어 `.handoff` 부재로 `FileNotFoundError`). compile 도메인 결과 미확인.
+- 남은 실패: `test_first_card.py`(64건 초과·`.first-*` 등록 temp 시험), `test_pending_cleanup_recovery.py`(`native_review.process`가 `store.private_root(queue)`를 직접 열어 `.handoff` 부재로 `FileNotFoundError`). compile 도메인 결과 미확인. `doc-links.test.mjs`는 `copy_quota.py` 삭제로 `docs/dev/progress-1.1.2.md`의 링크 1건이 깨진다 — C3 커밋에서 그 링크를 고친다.
 - 그다음 순서: 위 두 실패 수정 → pipeline 시험이 옛 `stage_card` API를 쓰는 부분 갱신 → C2(publish 교환·멱등·temp 정리, D2 결정에 맞춘 migrate) → C4 → C5(§2.4 게이트 포함) → C6 → C7.
 
