@@ -141,7 +141,7 @@ def retained_batches(queue):
 
 
 def full_copy_quota(queue):
-    from memvane.wiki.verify.copy_quota import LIMIT
+    from memvane.wiki.pipeline.types import STAGE_QUOTA_BYTES as LIMIT
     from memvane.wiki.verify.handoff_work import Work
     retained = []
     for index in range(8):

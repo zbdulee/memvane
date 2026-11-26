@@ -58,9 +58,9 @@ class ManualExtract(FixtureCase):
         self.assertNotIn('decoy.md', text)
         queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
         self.assertFalse(queue.exists() and queue.read_bytes())
-        active, = (queue.parent / '.handoff/v1/hold').glob('*/work')
-        state = json.loads(active.read_bytes())
-        job = json.loads((active.parent / 'raw').read_bytes())
+        from tests.support.wiki_handoff import work_rows
+        (state, raw, _), = work_rows(queue, 'hold')
+        job = json.loads(raw)
         self.assertEqual((state['phase'], state['binding']['job']), ('held', job))
         self.assertEqual([x['path'] for x in job['authoritativeSources']], ['docs/api.md'])
         self.assertEqual(job['sourceRevisions'][0]['sha256'], hashlib.sha256(source.read_bytes()).hexdigest())

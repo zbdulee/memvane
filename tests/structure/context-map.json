@@ -1735,11 +1735,6 @@
       "layer": "application",
       "pinned": false
     },
-    "memvane/wiki/verify/copy_quota.py": {
-      "context": "wiki/verify",
-      "layer": "application",
-      "pinned": false
-    },
     "memvane/wiki/verify/deferred_review.py": {
       "context": "wiki/verify",
       "layer": "application",

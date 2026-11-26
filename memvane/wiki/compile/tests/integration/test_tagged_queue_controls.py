@@ -82,7 +82,10 @@ class TaggedQueueControls(FixtureCase):
                 with patch.object(workspace, 'recheck'):
                     self.assertTrue(verify.prepare_queue(self.root, self.queue, self.bound, self.config))
                 self.assertEqual(self.queue.read_bytes(), b'')
-                self.assertIn(saved, [p.read_bytes() for p in self.queue.parent.rglob('raw')])
+                from tests.support.wiki_handoff import work_rows
+                captured = [raw for _, raw, _ in work_rows(self.queue, 'hold') if raw is not None]
+                captured += [p.read_bytes() for p in self.queue.parent.rglob('raw')]
+                self.assertIn(saved, captured)
                 self.assertEqual(self.invoke(tag, 'verify'), {'remaining': 0, 'calls': 0})
                 self.assertEqual(self.target.read_bytes(), base)
                 self.assertEqual(fixtures.PendingHandoff.native_verify(self), {'remaining': 0, 'calls': 1})

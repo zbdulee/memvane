@@ -8,7 +8,7 @@ import os
 import stat
 
 from memvane.wiki.verify import batch_consumer, batch_handoff
-from memvane.wiki.verify.handoff_work import HEX_ID, HOLD_SCAN_LIMIT, Work
+from memvane.wiki.verify.handoff_work import HEX_ID, Work
 from memvane.wiki.verify.pending_replacement import _VERIFY_QUEUE_BYTES
 from memvane.wiki.workspace import api as workspace
 
@@ -33,18 +33,15 @@ def _dead(queue, claim):
 
 def unresolved(queue, holds=None):
     if holds is None:
-        if not (queue.parent / '.handoff').exists():
-            return False
-        holds = Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT)
-    # A foreign generation alone has no authority over an independent native input.
-    uncertain = any(issue['reason'] == 'handoff_scan_limit' or HEX_ID.fullmatch(issue['name'])
-                    for issue in holds.issues)
+        holds = Work.entries(queue, 'hold', control_only=True)
+    # An unreadable work row is uncertain; there is no scan limit to exhaust.
+    uncertain = any(HEX_ID.fullmatch(issue['name']) for issue in holds.issues)
     return uncertain or any(not batch_consumer.parked(batch_handoff.Batch(item)) for item in holds
                             if item.state['blobs']['raw'].get('storage') == 'inode')
 
 
 def opaque_ranges(queue, holds=None):
-    holds = Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT) if holds is None else holds
+    holds = Work.entries(queue, 'hold', control_only=True) if holds is None else holds
     return any(item.state['blobs']['raw'].get('storage') == 'inode' and
                item.state.get('proof', {}).get('opaque') for item in holds)
 
@@ -95,7 +92,7 @@ def delivery(queue):
     from memvane.wiki.workspace.handoff.api import delivery_pending
     if next(queue.parent.glob(queue.name + '.claimed.*'), None) is not None:
         return None
-    for work in Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT):
+    for work in Work.entries(queue, 'hold', control_only=True):
         state = work.state
         if state['blobs']['raw'].get('storage') != 'inode' or state['phase'] != 'held':
             continue
@@ -174,7 +171,7 @@ def prepare(root, queue, bound):
     source = _source(queue)
     if source is None and not unresolved(queue):
         return True
-    held = Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT)
+    held = Work.entries(queue, 'hold', control_only=True)
     for work in held:
         state = work.state
         if state['phase'] != 'held' or state['blobs']['raw'].get('storage') != 'inode':

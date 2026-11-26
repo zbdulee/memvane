@@ -8,7 +8,7 @@ import os
 import uuid
 
 from memvane.kernel.atomic_rename import canonical_json_bytes
-from memvane.wiki.verify.handoff_work import HOLD_SCAN_LIMIT, Work, WorkEntries
+from memvane.wiki.verify.handoff_work import Work, WorkEntries
 from memvane.wiki.workspace import api as workspace
 
 
@@ -93,7 +93,7 @@ def _protect_predecessors(root, queue, successor):
 
 
 def cancel(queue, parent):
-    entries = Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT)
+    entries = Work.entries(queue, 'hold', control_only=True)
     for work in entries:
         state = work.state
         if _ours(work) and state['binding'].get('parent') == parent.state['id'] and state['phase'] == 'reserved':
@@ -108,7 +108,7 @@ def _same_job(work, job):
 
 def waiting(queue):
     result = WorkEntries()
-    all_work = Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT)
+    all_work = Work.entries(queue, 'hold', control_only=True)
     issues = list(all_work.issues)
     for work in all_work:
         state = work.state
@@ -132,7 +132,7 @@ def waiting(queue):
 
 
 def references(queue, *, exclude_parent=None, exclude_work=None):
-    all_work = Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT)
+    all_work = Work.entries(queue, 'hold', control_only=True)
     paths = set()
     uncertain = bool(all_work.issues)
     for work in all_work:
@@ -177,7 +177,7 @@ def process(queue, selected, work, callback):
         work = Work.lookup(queue, 'hold', identity)
         from memvane.wiki.verify import handoff_work as store
         rotation = 'review-turn-' + hashlib.sha256(queue.name.encode()).hexdigest()[:24]
-        with store.private_root(queue) as fd:
+        with store.private_root(queue, create=True) as fd:
             store._publish(fd, rotation, identity.encode('ascii'), replace=store._exists(fd, rotation))
         if work is None or work.state['phase'] != 'held':
             return False, False
@@ -187,7 +187,7 @@ def process(queue, selected, work, callback):
         if (not proof.get('published') or _alive(proof.get('owner')) or not _same_job(work, state['binding']['job']) or
                 route != (workspace.route_identity(selected) if selected is not None else None)):
             return False, True
-        others = Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT)
+        others = Work.entries(queue, 'hold', control_only=True)
         if any(w.state['binding'].get('targetPath') == state['binding']['targetPath']
                and _alive(w.state.get('proof', {}).get('owner')) for w in others):
             return False, True
@@ -213,18 +213,17 @@ def scheduled(queue, works):
     if not works:
         return []
     name = 'review-turn-' + hashlib.sha256(queue.name.encode()).hexdigest()[:24]
-    with store.private_root(queue) as fd:
-        try:
+    try:
+        with store.private_root(queue) as fd:
             previous = store._file(fd, name, 32).decode('ascii')
-        except FileNotFoundError:
-            previous = None
-        order = [work.state['id'] for work in works]
-        start = order.index(previous) + 1 if previous in order else 0
-        chosen = (works[start:] + works[:start])[:16]
-    return chosen
+    except FileNotFoundError:
+        previous = None
+    order = [work.state['id'] for work in works]
+    start = order.index(previous) + 1 if previous in order else 0
+    return (works[start:] + works[:start])[:16]
 
 
 def busy(queue):
-    entries = Work.entries(queue, 'hold', control_only=True, max_entries=HOLD_SCAN_LIMIT)
+    entries = Work.entries(queue, 'hold', control_only=True)
     return bool(entries.issues or any((_ours(w) or w.state['binding'].get('purpose') == 'deferred-replacement')
                                       and w.state['phase'] != 'finished' for w in entries))

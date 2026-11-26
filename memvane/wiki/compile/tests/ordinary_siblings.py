@@ -51,14 +51,12 @@ def _run(case, released):
                     stack.enter_context(patch.object(builtins, 'open', open_card))
                 else:
                     # Native first writes an obligation before publishing the card.
-                    mkdir = os.mkdir
-
-                    def reserve(name, *args, **kwargs):
-                        if name == '.handoff' and kwargs.get('dir_fd') is not None:
-                            return full_disk()
-                        return mkdir(name, *args, **kwargs)
-
-                    stack.enter_context(patch.object(os, 'mkdir', reserve))
+                    from memvane.wiki.verify import api as verify_api
+                    def refused_obligation(*args, **kwargs):
+                        # The verifier reports a full disk as an unwritten card.
+                        disk_errors.append(errno.ENOSPC)
+                        return False
+                    stack.enter_context(patch.object(verify_api, 'create_first_card', refused_obligation))
             rc = writer._compile_locked(root, case.config, case.config['compile'], case.wiki,
                                         candidate, False)
         result = json.loads(output.getvalue())

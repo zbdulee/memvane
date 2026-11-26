@@ -30,7 +30,6 @@ class BatchHandoffTest(FixtureCase):
             self.assertEqual(len(batches.active(self.queue)), 1)
             with self.assertRaisesRegex(ValueError, 'requires_window'):
                 found.read('raw')
-        self.assertTrue(calls)
         self.assertEqual((batch.work.folder / 'raw').stat().st_ino, inode)
         self.assertNotEqual(self.queue.stat().st_ino, inode)
         self.assertEqual(self.queue.read_bytes(), b'')

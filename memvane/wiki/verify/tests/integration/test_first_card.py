@@ -151,50 +151,35 @@ class InitialCard(FixtureCase):
         unregistered, = self.wiki.glob('.first-*')
         self.recover()
         self.assertNotEqual(self.path.stat().st_ino, unregistered.stat().st_ino)
-        archived, = (self.folder / '.handoff/v1/closed/hold').glob('*/work')
-        self.assertIn(unregistered.name, json.loads(archived.read_bytes())['proof']['unknown'])
+        import sqlite3
+        from memvane.wiki.pipeline.types import DB_NAME
+        with sqlite3.connect(str(self.queue.parent / DB_NAME)) as db:
+            archived, = db.execute("SELECT control_json FROM staged_cards WHERE kind = 'hold' AND closed = 1")
+        self.assertIn(unregistered.name, json.loads(archived[0])['proof']['unknown'])
         self.assertEqual(unregistered.read_bytes(), self.image)
         self.assertFalse(native_review.busy(self.queue))
 
-    def test_orphan_hold_and_over_64_valid_holds_recover_and_publish_first_cards(self):
-        import subprocess, sys, time
+    def test_interrupted_create_and_over_1024_valid_holds_recover_and_publish_first_cards(self):
+        import subprocess, sys
         from memvane.wiki.verify import queue_batch_prepare
         script = """
 import os, sys
 from pathlib import Path
 from memvane.wiki.verify import handoff_work as store
-q, stage = sys.argv[1:]
-if stage == 'publish':
-    real_rename = store.rename_noreplace
-    def stop(parent, src, dst, **kwargs):
-        if dst == 'raw':
-            os._exit(74)
-        return real_rename(parent, src, dst, **kwargs)
-    store.rename_noreplace = stop
-else:
-    store._save = lambda *args, **kwargs: os._exit(74)
-store.Work.create(q, 'hold', {'route': {'scopeId': 'example'}, 'stage': stage}, b'{"event":1}\\n', image=b'candidate\\n')
+store._canonical = lambda state: os._exit(74)
+store.Work.create(Path(sys.argv[1]), 'hold', {'route': {'scopeId': 'example'}}, b'{"event":1}\\n', image=b'candidate\\n')
 """
-        for stage in ('publish', 'save'):
-            child = subprocess.run([sys.executable, '-B', '-c', script, str(self.queue), stage], capture_output=True)
-            self.assertEqual(child.returncode, 74, child.stderr)
-        for index in range(65):
+        child = subprocess.run([sys.executable, '-B', '-c', script, str(self.queue)], capture_output=True)
+        self.assertEqual(child.returncode, 74, child.stderr)
+        for index in range(1030):
             Work.create(self.queue, 'hold', {'purpose': 'unrelated', 'ordinal': index}, b'{}\n').commit('held')
         with patch.object(first_card, '_released_target_clear', return_value=False):
             self.assertFalse(self.create())
         self.assertFalse(self.path.exists())
-        self.assertTrue(queue_batch_prepare.unresolved(self.queue))
-        hold_dir = self.folder / '.handoff' / 'v1' / 'hold'
-        self.assertEqual(len([p for p in hold_dir.iterdir() if not (p / 'work').exists()]), 2)
-        old = time.time() - 120
-        for p in hold_dir.iterdir():
-            if not (p / 'work').exists():
-                for item in p.iterdir():
-                    os.utime(item, (old, old))
-                os.utime(p, (old, old))
+        # Neither the interrupted create nor 1,030 independent holds stall the queue.
+        self.assertFalse(queue_batch_prepare.unresolved(self.queue))
         self.recover()
         self.assertFalse(queue_batch_prepare.unresolved(self.queue))
-        self.assertEqual([p for p in hold_dir.iterdir() if not (p / 'work').exists()], [])
         self.assertEqual(list(self.wiki.glob('.first-*')), [])
         self.assertEqual(self.path.read_bytes(), self.image)
         manifest = settings.ledger(self.root, ct.MANIFEST)

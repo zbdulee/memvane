@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 
 from memvane.wiki.verify import candidate_stage, deferred_review, native_review, queue_batch_prepare, queue_publication as publication
-from memvane.wiki.verify.handoff_work import HOLD_SCAN_LIMIT, Work
+from memvane.wiki.verify.handoff_work import Work
 from memvane.store.types import MAX_BODY
 from memvane.settings import api as settings, types as settings_types
 from memvane.wiki.workspace.handoff.api import evidence as regular
@@ -67,7 +67,7 @@ def _references(queue, *, exclude_parent=None):
 
 
 def retained_references(queue, *, exclude_parent=None, exclude_work=None):
-    holds = Work.entries(queue, 'hold', max_entries=HOLD_SCAN_LIMIT)
+    holds = Work.entries(queue, 'hold')
     refs = set()
     opaque = False
     for held in holds:

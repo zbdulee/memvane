@@ -75,12 +75,11 @@ class PendingHandoff(FixtureCase):
     def current_private_job(self):
         digest = self.project.revision(self.source)['sha256']
         jobs = []
-        for path in (self.queue.parent / '.handoff/v1/hold').glob('*/work'):
-            state = json.loads(path.read_bytes())
+        from tests.support.wiki_handoff import work_rows
+        for state, raw, _ in work_rows(self.queue, 'hold'):
             binding = state['binding']
             if binding.get('purpose') != 'native-review' or state['phase'] != 'held' or not state.get('proof', {}).get('published'):
                 continue
-            raw = (path.parent / 'raw').read_bytes()
             job = json.loads(raw)
             self.assertEqual(job, binding['job'])
             if any(r['sha256'] == digest for r in job['sourceRevisions']):

@@ -53,10 +53,10 @@ def _registration(queue, origin, before, offset, raw, job, proof, bound):
         if work is None:
             binding = dict(purpose='native-review', action='borrow', route=workspace.route_identity(bound),
                            targetPath=job['targetPath'], job=job, slot=slot)
-            work = next((w for w in store.Work.entries(queue, 'hold', control_only=True, max_entries=store.HOLD_SCAN_LIMIT) if w.state['binding'] == binding), None)
+            work = next((w for w in store.Work.entries(queue, 'hold', control_only=True) if w.state['binding'] == binding), None)
             if work is None:
                 work = store.Work.create(queue, 'hold', binding, raw)
-            with store.private_root(queue) as fd:
+            with store.private_root(queue, create=True) as fd:
                 store._publish(fd, slot, work.state['id'].encode('ascii'))
         if work.state['phase'] == 'reserved' and work.read('raw') == raw:
             work.commit('held', transaction=work.state['id'], proof=dict(proof, published=True))
@@ -76,7 +76,7 @@ def _inputs(queue):
             yield queue, before, offset, raw
     except (OSError, ValueError):
         pass
-    for work in store.Work.entries(queue, 'hold', control_only=True, max_entries=store.HOLD_SCAN_LIMIT):
+    for work in store.Work.entries(queue, 'hold', control_only=True):
         state = work.state
         if state['blobs']['raw'].get('storage') != 'inode' or state['phase'] != 'held':
             continue
@@ -186,7 +186,7 @@ def preserve_pending(root, wiki, queue, rows):
                 identity = store._file(fd, name, 32).decode('ascii')
                 work = store.Work.lookup(queue, 'hold', identity)
             except FileNotFoundError:
-                works = store.Work.entries(queue, 'hold', control_only=True, max_entries=store.HOLD_SCAN_LIMIT)
+                works = store.Work.entries(queue, 'hold', control_only=True)
                 work = next((w for w in works if w.state['binding'] == binding), None)
                 if work is None:
                     work = store.Work.create(queue, 'hold', binding, raw, image=image)

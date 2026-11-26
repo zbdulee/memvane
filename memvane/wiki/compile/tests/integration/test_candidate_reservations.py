@@ -78,13 +78,14 @@ class CandidateReservations(FixtureCase):
         self.prepare('unknown')
         with patch.object(verify, 'stage_candidate', side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
             self.write('Newest source for this decision.')
-        record, = (self.queue.parent / '.handoff/v1/publication').glob('*/work')
-        record.write_bytes(b'unreadable reservation')
+        from tests.support.wiki_handoff import corrupt_work, work_control, work_rows
+        (_, _, record), = work_rows(self.queue, 'publication')
+        corrupt_work(self.queue, record)
         with patch.object(verify, 'pending_name_reserved', wraps=verify.pending_name_reserved) as checked:
             self.assertEqual(self.write('Newest source for this decision.'), 0)
         self.assertEqual([call.kwargs['fresh'] for call in checked.call_args_list], [False, False, True])
         paths = [call.args[1] for call in checked.call_args_list]
         self.assertEqual(len(set(paths)), 3)
         self.assertEqual(self.current_private_job()['pendingPath'], paths[-1])
-        self.assertEqual(record.read_bytes(), b'unreadable reservation')
+        self.assertEqual(work_control(self.queue, record), b'unreadable reservation')
         self.finish_after_downgrade('v1.1.0')

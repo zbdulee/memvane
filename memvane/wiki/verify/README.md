@@ -14,7 +14,7 @@ writer는 대상마다 검수할 교체본 한 건을 넘긴다. 파일 옆의 �
 
 한 번에 검사하는 범위는 live 큐와 claim을 합쳐 8 MiB, claim 64개다. 큰 단독 live 큐나, live가 비고 소유 프로세스가 종료된 단독 대형 claim은 원본 inode를 private에 보관하고 여러 pass에 나눠 읽는다. 줄 끝은 바이트 LF로 판정한다. 판독할 수 없는 원행과 잘린 끝부분도 보존한다. 구 writer가 열린 파일에 뒤늦게 나머지 바이트와 LF를 쓰면 같은 inode에서 완성된 행을 이어서 처리한다.
 
-65번째 claim 때문에 숨김 경로의 모든 참조를 확인할 수 없으면 공용 행과 claim을 그대로 두고, 교체 원행과 후보 이미지를 private에 보관한다. 처음 생성할 경로도 구 claim의 대상일 수 있으면 최초 노출을 보류한다. claim이 끝나면 참조를 다시 확인해 후보를 검수·게시한다. 그동안에도 현재 원문 revision·marker·카드 본문이 확인되는 독립 일반 카드는 검수할 수 있다. 원래 행을 다시 만날 때는 같은 카드의 완료 근거를 대조해 중복 검수를 피한다. `Work._reserve`는 `work` 커밋 전 예외 시 임시 파일(`.w-*`)·`raw`/`image`·디렉터리·`copy_quota`를 되돌리며, `first_card.recover`와 `upgrade_queue.prepare`는 잠금 아래에서 `work` 없는 만료 고아(`ORPHAN_MIN_AGE_SECONDS` 이상) `hold` 디렉터리를 회수하고 `hold` 복구·판정 스캔은 `HOLD_SCAN_LIMIT`(1,024)까지 읽는다.
+65번째 claim 때문에 숨김 경로의 모든 참조를 확인할 수 없으면 공용 행과 claim을 그대로 두고, 교체 원행과 후보 이미지를 private에 보관한다. 처음 생성할 경로도 구 claim의 대상일 수 있으면 최초 노출을 보류한다. claim이 끝나면 참조를 다시 확인해 후보를 검수·게시한다. 그동안에도 현재 원문 revision·marker·카드 본문이 확인되는 독립 일반 카드는 검수할 수 있다. 원래 행을 다시 만날 때는 같은 카드의 완료 근거를 대조해 중복 검수를 피한다. `Work`(`handoff_work.py`)는 control·raw·image를 `wiki-pipeline.sqlite3`의 `staged_cards` 행 하나에 담는다. 생성·phase 전이·보관·해제가 각각 control JSON을 비교하는 한 트랜잭션이라, 중단된 생성은 행을 남기지 않는다. 복사본 쿼터(64 MiB)는 행의 `charged_bytes` 합계로 강제하고 해제가 행을 지우면 함께 줄어든다. 전체 hold 조회에는 스캔 상한이 없다. claimed 큐 파일을 inode로 넘겨받는 batch의 `raw`만 `.handoff/v1/staged/<id>/raw`에 남고, `reclaim_orphans`는 행이 없는 빈 디렉터리만 지운다.
 
 프로젝트의 보류 사본 한도는 64 MiB다. 한도가 차면 사본이 필요한 교체는 기존 카드와 원문 작업을 유지하고 공간이 생긴 뒤 재시도한다. 원본 inode를 보유한 배치는 계속 읽을 수 있다. 첫 게시와 검수를 위한 제어 기록을 쓸 수 있으면 독립 카드는 새로 만들고 검수할 수 있다. 제어 기록을 쓸 공간이 없어도 이미 검수된 카드의 본문·마커와 현재 원문 revision이 일치하면 공용 큐의 단일 일반 행을 추가 모델 호출 없이 완료한다. 대조에 실패하면 원행을 유지한다.
 
