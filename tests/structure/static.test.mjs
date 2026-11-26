@@ -519,3 +519,25 @@ test('every call that can download is a listed, pinned call', () => {
     }
   }
 });
+
+test('documents and instructions name the state base the product writes', () => {
+  // memvane_paths.STATE_PARTS; setup refuses a new install root outside it (unsupported_state_root_creation).
+  const paths = readFileSync('memvane/kernel/memvane_paths.py', 'utf8');
+  const parts = paths.match(/^STATE_PARTS = \(([^)]*)\)/m)[1];
+  const format = parts.match(/'(v\d+)'\s*$/)[1];
+  const listed = spawnSync('git', ['ls-files', '-z'], {encoding: 'utf8'}).stdout.split('\0').filter(Boolean);
+  // Dated design records and the 1.1.4 progress log describe earlier layouts on purpose.
+  const history = [/^docs\/design-local-web-ui\.md$/, /^docs\/mockups\//, /^docs\/reviews\//, /^docs\/dev\/progress-/];
+  const stale = [];
+  for (const file of listed) {
+    if (history.some(re => re.test(file)) || !/\.(md|py|mjs|sh|json|yaml)$/.test(file) || file.startsWith('.memvane/')) continue;
+    if (file.includes('/tests/') || file.startsWith('tests/')) continue;
+    if (!existsSync(file)) continue;
+    readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+      for (const match of line.matchAll(/\.local\/state\/memvane\/(v\d+)/g)) {
+        if (match[1] !== format) stale.push(`${file}:${index + 1}`);
+      }
+    });
+  }
+  assert.deepEqual(stale, []);
+});

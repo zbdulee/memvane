@@ -61,7 +61,7 @@ development execution guard is separate; see
   `targetHeadroomFraction` 0.35) is a conservative cold-start proxy, not a
   measured peak. One per-user resident service
   (`resident_service.py`, private root
-  `<account home>/.local/state/memvane/v1/service/`, same-owner peer check on every
+  `<account home>/.local/state/memvane/v2/service/`, same-owner peer check on every
   socket) hosts the embedding model for every selected or pending
   installation and the learning inference service. It loads one exact worker
   per vector profile (provider identity, model and dimension) through
@@ -606,7 +606,7 @@ from injected analytical tests; the shared OS reporter always attaches it.
 - Learning: the hosted inference service refuses the socket `shutdown`
   command; an idle learning-only service of an earlier bundle is retired.
 - Embedding runtime: the embedding worker runs the Laya embedding runtime under
-  `~/.local/state/memvane/v1/embed-runtime` (`active.json`, `previous.json`,
+  `~/.local/state/memvane/v2/embed-runtime` (`active.json`, `previous.json`,
   content-addressed `generations/g-<id>/`). On a new machine the owner
   runs `memvane/app/setup_entry.py provision-index-runtime
   --approve-index-runtime-download [--provider-model-file <local gguf>]`

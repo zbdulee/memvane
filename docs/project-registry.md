@@ -1,7 +1,7 @@
 # 선택 프로젝트 레지스트리
 
 `memvane/registry/memvane_registry.py`는 사용자 단위 조회 색인이다. HOME state base 아래
-소유자 전용 SQLite 파일 `~/.local/state/memvane/v1/auto-context/registry/projects.sqlite` 하나에
+소유자 전용 SQLite 파일 `~/.local/state/memvane/v2/auto-context/registry/projects.sqlite` 하나에
 선택된 main checkout과 그 연결 git worktree의 경로를 기록한다. 레지스트리 행은
 조회 후보일 뿐 권한이 아니다. 소비자는 사용 직전에 기존 선택 route 증명(route
 기록·설치 journal·attestation)을 그대로 수행하고, 행만으로 recall·외부 편집

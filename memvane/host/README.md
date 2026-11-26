@@ -9,7 +9,7 @@ hook에서 외부 CLI는 실행하지 않는다. 설치 버전이나 세션을 �
 편집 recall(`posttool`) 응답 뒤 capture는 기존 CPU share를 확보한 경우에만 supervisor를
 시작한다. 프롬프트 recall은 학습 사례를 수집하지 않는다. share FD는 supervisor와 worker가 종료할 때까지 유지한다.
 
-선택 프로젝트 레지스트리(`memvane/registry/memvane_registry.py`, `~/.local/state/memvane/v1/auto-context/registry/projects.sqlite`)는 선택된 main checkout과 연결 worktree 경로의 조회 색인이다. 행은 후보일 뿐이고 소비자는 기존 route 증명을 다시 한다. 활성화 성공 뒤 setup이 등록하고, restore·retire·abandon 성공 뒤 재관측으로 해제가 증명될 때만 `detached`로 바꾸며, 선택 route의 SessionStart와 `snapshot()`이 유계 reconcile을 한다. journal·route·ledger·store·intent를 쓰지 않고 새 lock·wake kind·hook action이 없다. resident service는 레지스트리를 다루지 않는다. 외부 편집 대상 탐색이 이 색인을 쓴다. 상태 규칙·예산·실패 방향은 `docs/project-registry.md`에 있다.
+선택 프로젝트 레지스트리(`memvane/registry/memvane_registry.py`, `~/.local/state/memvane/v2/auto-context/registry/projects.sqlite`)는 선택된 main checkout과 연결 worktree 경로의 조회 색인이다. 행은 후보일 뿐이고 소비자는 기존 route 증명을 다시 한다. 활성화 성공 뒤 setup이 등록하고, restore·retire·abandon 성공 뒤 재관측으로 해제가 증명될 때만 `detached`로 바꾸며, 선택 route의 SessionStart와 `snapshot()`이 유계 reconcile을 한다. journal·route·ledger·store·intent를 쓰지 않고 새 lock·wake kind·hook action이 없다. resident service는 레지스트리를 다루지 않는다. 외부 편집 대상 탐색이 이 색인을 쓴다. 상태 규칙·예산·실패 방향은 `docs/project-registry.md`에 있다.
 
 프로젝트 밖 원문 편집은 `memvane/wiki/intake/external_edits.py`가 소유 설치의 journal·route·provider attestation 메타데이터를 확인해 private blob 알림과 `laya-sync` wake를 전달한다. 외부 store는 훅에서 열지 않는다. 소유 sync 워커가 전체 write 증명·현재 blob·설정·compile 동의를 다시 확인한 뒤 기존 source 큐와 삭제 수명 주기로 넘긴다. recall과 로컬 compile 범위는 세션 프로젝트를 따른다. 범위·상한은 `docs/out-of-project-edit-routing.md`에 있다.
 

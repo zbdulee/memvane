@@ -48,7 +48,7 @@ def state_base(home=None):
 
 
 def install_root(install_id, home=None):
-    """``~/.local/state/memvane/v1/installs/<install id>``."""
+    """``~/.local/state/memvane/v2/installs/<install id>``."""
     return installs_base(home) / install_id
 
 
@@ -57,7 +57,7 @@ def installs_base(home=None):
 
 
 def install_socket(state_root, *, create=False):
-    """Return the private, stable per-install socket in the v1 run directory."""
+    """Return the private, stable per-install socket in the state base run directory."""
     state = Path(state_root)
     if (not state.is_absolute() or state.parent.name != 'installs'
             or not re.fullmatch(r'[0-9a-f]{32}', state.name)

@@ -1,6 +1,6 @@
-"""Keep development checkouts from writing the account's live v1 state.
+"""Keep development checkouts from writing the account's live state.
 
-Live state (the account's ``~/.local/state/memvane/v1/``: installs, the wake
+Live state (the account's ``~/.local/state/memvane/v2/``: installs, the wake
 queue, the sync owner locks, the resident service) is written only by a
 plugin copy that runs from a host install path:
 

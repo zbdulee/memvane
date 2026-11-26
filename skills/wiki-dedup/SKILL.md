@@ -47,7 +47,7 @@ each queued pair autonomously.
 
 - Step 1 only reads the queue; every mutation goes through the resolver's
   `memvane/wiki/dedup/wiki_dedup_resolve.py` calls — never edit the ledger or the resolver scripts directly.
-- The resolver acquires a per-project run-lock (`~/.local/state/memvane/v1/auto-context/dedup-resolve-lock/<project_key>`);
+- The resolver acquires a per-project run-lock (`~/.local/state/memvane/v2/auto-context/dedup-resolve-lock/<project_key>`);
   if one is already active it will stop on its own. Don't bypass it by editing pages by hand.
 - Cards with `status: generated` (unreviewed) are valid targets — the resolver handles them.
 - For a selected MemVane project, the resolver CLI keeps a private copy of each

@@ -37,4 +37,4 @@
 
 설정 파일만으로 작업이 시작되지는 않습니다. 프로젝트를 온보딩해야 색인·recall·compile·학습이 동작합니다. 선택을 해제하려면 에이전트에게 restore를 요청하세요. 기존 설치 디렉터리는 보존되며 이후 다시 온보딩할 수 있습니다.
 
-로컬 임베딩 런타임은 `~/.local/state/memvane/v1/embed-runtime`에 있습니다. 설치와 다운로드는 setup skill의 검토·승인을 따릅니다. 진단과 데이터 처리 범위는 [privacy.md](privacy.md)를 참고하세요.
+로컬 임베딩 런타임은 `~/.local/state/memvane/v2/embed-runtime`에 있습니다. 설치와 다운로드는 setup skill의 검토·승인을 따릅니다. 진단과 데이터 처리 범위는 [privacy.md](privacy.md)를 참고하세요.
