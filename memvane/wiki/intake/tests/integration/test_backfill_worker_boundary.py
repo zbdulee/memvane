@@ -357,6 +357,8 @@ class BackfillWorkerBoundary(FixtureCase):
                    'wiki-compile-worker', '--cwd', str(project.root), '--json', '--flush-all']
         child = subprocess.run(command, cwd=str(project.root), env=env, capture_output=True, text=True, timeout=90)
         self.assertEqual(child.returncode, 0, child.stderr)
+        # A pass that ends before any extractor names why in its report and candidate log.
+        self.assertTrue(calls.exists(), child.stdout + json.dumps(pipeline.log_rows(project.root, 'candidate')))
         self.assertEqual(calls.read_text().splitlines(), ['codex', 'claude', 'hermes'])
         progress = backfill.summary(backfill._load(decision))
         self.assertEqual((progress['state'], progress['skipped'], progress['settled']),

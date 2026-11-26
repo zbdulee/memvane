@@ -287,6 +287,10 @@ _TEST_G1_EXCEPTIONS = {
     # Provenance E2E exercises worker entry and a real stamp failure boundary.
     ('tests/e2e/wiki_db_provenance.py', 'memvane.wiki.compile.wiki_compile_worker'): 'compile fingerprint producer',
     ('tests/e2e/wiki_db_provenance.py', 'memvane.wiki.verify.wiki_verify_worker'): 'verify worker and stamp fault',
+    # Wiki pipeline E2E: the worker entry in process, a kill inside the card exchange, Hermes hooks.
+    ('tests/e2e/wiki_pipeline_e2e.py', 'memvane.wiki.compile.wiki_compile_worker'): 'compile worker entry',
+    ('tests/e2e/wiki_pipeline_e2e.py', 'memvane.wiki.pipeline.publish'): 'worker killed inside the card exchange',
+    ('tests/e2e/wiki_pipeline_e2e.py', 'hermes_adapter.core_bridge'): 'Hermes plugin hooks in a child',
 }
 _EMBEDDED_FROM = re.compile(r'\bfrom[ \t]+([A-Za-z_][\w.]*)[ \t]+import[ \t]*(?:\(([^)]*)\)|([\w \t,]+))')
 _EMBEDDED_IMPORT = re.compile(r'(?<![\w.])import[ \t]+([A-Za-z_][\w.]*(?:[ \t]+as[ \t]+\w+)?'
