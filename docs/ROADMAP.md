@@ -122,14 +122,10 @@ L2 후속 ── L3
 - **세션 밖 변경의 즉시 반영.** 세션 밖 변경(에디터 편집, 터미널의 `git pull`·checkout)은 다음 SessionStart, 프로젝트 안 편집(`index`), Claude의 성공한 Bash(`file-change-event`) 때 full-scan sync로 반영된다. 프롬프트(UserPromptSubmit)는 sync를 깨우지 않아서, 열린 세션에서 에이전트가 편집·Bash를 하기 전까지 색인이 옛 상태로 남는다. 후보는 셋이다. (A) resident가 선택된 프로젝트를 OS 파일 이벤트(macOS FSEvents)로 감시해 sync를 깨운다. (B) recall hook이 sync 요청을 함께 남기고 짧은 간격의 중복은 합친다. (C) resident의 주기 점검. A를 기본, B를 보조로 검토한다.
 - **resident 상시 기동(OS 로그인 항목).** 지금 resident는 hook이 처음 필요할 때 띄우고, 재부팅 뒤 첫 프롬프트가 기동과 모델 로드를 기다리며, 죽거나 영구 실패에 빠지면 다음 hook 전까지 되살리는 주체가 없다. OS 로그인 항목으로 상시 기동하는 안을 위 감시 항목과 함께 검토한다. macOS는 launchd 사용자 agent(`~/Library/LaunchAgents`, KeepAlive), Windows는 작업 스케줄러 로그온 작업 또는 시작 프로그램, Linux는 systemd `--user` unit이다(Windows·Linux는 지원 플랫폼이 되면 적용). 검토할 것: 등록·해제를 setup의 명시 승인으로만 하고 플러그인 제거 때 함께 지우는 방법, 플러그인 버전이 바뀔 때 실행 경로를 갱신하는 방법(지금의 번들 인계와의 관계), 쓰지 않는 날의 메모리(resident 약 350MB, 학습 resident는 수 GB), hook 기동 방식과의 공존. 새 로그인 항목과 설정 키는 사용자 결정 사항이다.
 - **학습 되돌리기 사유.** `candidate_rollback.resume`의 `rollback_pending` 사유가 `unlabeled`로 남는다. compile 진척 streak은 상태 파일을 쓰지 못하는 동안 쌓이지 않는다.
-- **문서.** `release.md`의 계약 밖 파생물 목록에 `runtime-wake-progress.json`, `source-refresh-settled.json.lock`, 세션 reset 마커가 없다.
+- **문서.** `release.md`의 계약 밖 파생물 목록에 `runtime-wake-progress.json`, 세션 reset 마커가 없다.
 - **시험 격리.** `test_setup_entry_inventory_119`가 Claude Code 안에서 돌면 `CLAUDECODE`·`CLAUDE_CODE_*` 환경 변수 때문에 실패한다. 시험이 host 환경 변수를 지우지 않고, host 판별이 환경 변수에 기대는지 확인한다.
 - **리뷰 범위.** `vectorcache/writer.py`의 compaction·append, teacher와 `automatic_staging`의 유료 호출 경로를 독립 리뷰한다.
 - **일반 편집 후보의 부분 실패.** 한 원문에서 나온 두 후보 중 하나의 첫 쓰기가 실패하면, 재시도가 원문을 다시 추출하고 남은 후보가 사라진다. 원래 응답과 후보별 완료 기록, 혼합 버전의 재시도 경계를 설계한다.
-- **음성 판정 억제 원장.** `verify-skipped.jsonl` 쓰기가 실패하면 재시도에서 같은 음성 판정의 검수와 삭제 감사가 한 번 더 일어난다. 첫 감사 전에 판정을 대상 세대에 묶고 원문별 억제를 따로 복구한다.
-- **중단된 기계 삭제와 압축.** 카드를 퇴출한 뒤 manifest 기록 전에 끊기고 그 사이 manifest가 압축되면, verifier 재개가 `reindex_wiki`와 완료 기록 없이 작업을 끝내 색인 제거가 다음 sync까지 늦어진다.
-- **manifest 검사 경계.** 읽기 전용 검사는 8 MiB 경계에서 이미 있는 행을 다시 더해 보수적으로 미룬다. 256 KiB 이하이면서 4,096행을 넘는 manifest는 호출마다 첫 배치를 다시 읽는다.
-- **원장 전환.** 출시된 writer와 state를 함께 쓰는 프로젝트의 원장 교체는 구 writer를 멈추고 격리하는 오프라인 절차로 한다. 온라인 경로는 원본 보존, 대상별 삭제 보호, 무관한 대상의 새 생성까지만 한다.
 - **Hermes.** 설치 manifest가 `plugin.json`과 `plugin.yaml`로 갈리고, `pre_llm_call`이 cwd를 넘기지 않아 recall이 일어나지 않는다.
 
 ## 1.0.x 패치
@@ -326,6 +322,7 @@ L2 후속 ── L3
 | 원문 소실 보류(`held_missing`)와 삭제 receipt | L | 확인 | 삭제 근거를 store에서 찾아야 하는 사례가 생길 때 |
 | 학습 중지·재개의 end-to-end 증거, 학습 자식 부하 측정 | M | 없음 | 1.1-3과 함께 |
 | 코드 구조 신호를 쓰는 recall([설계](design-code-structure-recall.md)) | L | 없음 | 카나리와 service-engineering에서 편집 recall이 놓친 직접 import 이웃의 정답 카드를 확인하고, 게시된 출처 또는 명시적 문서 인용으로 연결할 수 있을 때 |
+| Python 하한 3.9 → 3.11 | M | 없음 | 1.1.4 다음의 별도 버전. 훅은 bare `python3`을 실행하고 macOS 시스템 Python이 3.9이므로, `hooks/run-hook`의 버전 검출·설치 안내와 CI 행렬(시스템 3.9 → 3.11)을 같은 버전에서 바꾼다. 그 전까지 새 모듈은 3.9 문법(PEP 604는 `from __future__ import annotations`, `match`·`except*` 금지)을 지킨다 |
 
 ## 2.0 후보
 

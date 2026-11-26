@@ -18,14 +18,17 @@
 - wake 큐 `runtime-wakes.sqlite3`의 위치·DDL과 `runtime-worker.lock`·`runtime-worker-handoff.lock`·`runtime-wake-timer.lock`.
 - journal reader record의 필수 키 집합과 `store_format: schema3`·`schema3-ro-v1`·`selected-main-schema3-v1`.
 - 프로젝트 포인터 `.memvane/route.json`·`.memvane/selection.json`, marker schema `memvane-selection-v1`.
-- 프로젝트·설치 lock `.topical-publish.lock`·`laya-install.lock`·`.install-update.lock`·`initial-build.lock`, `reader-locks/<install>/reader-lifetime.lock`.
+- 프로젝트·설치 lock `.topical-publish.lock`·`laya-install.lock`·`.install-update.lock`·`initial-build.lock`, `reader-locks/<install>/reader-lifetime.lock`, 프로젝트 `.memvane/compile/`의 `.compile-run.lock`·`.card-write.lock`·`edit-inbox.jsonl.lock`.
 - state base(`~/.local/state/memvane/v2`)의 `layout.json` 바이트 `{"stateFormat":2}\n`과 `STATE_FORMAT` 기반 `same_major`·단조 증가하는 `writer_floor`·최고 plugin 버전의 비교 규칙.
-- 카드 frontmatter 필드와 `.memvane/compile/*.jsonl` 행 모양.
+- 카드 frontmatter 필드.
+- 위키 파이프라인 원장 `.memvane/compile/wiki-pipeline.sqlite3`: application id `0x4D565750`, `user_version` 1, `auto_vacuum=INCREMENTAL`, 테이블 DDL(`pipeline_meta`·`refresh_events`·`compile_jobs`·`verify_jobs`·`audit_events`·`cooldowns`·`pipeline_fences`·`publish_txns`·`card_generations`·`suppressions`·`dedup_pairs`·`backfill_checkpoints`)과 1.x cutover 마커 키 `migrated_from_v1_at`. 훅은 이 파일을 열지 않는다.
+- 훅 편집 inbox `.memvane/compile/edit-inbox.jsonl`의 행 모양 `memvane-edit-inbox-v1`(`schema`·`eventId`(32 hex)·`sourcePath`(프로젝트 상대)·`ts`(RFC3339 Z)·`engine`, 1.1.2 private refresh 행의 선택 키 허용), worker가 흡수 중에 쓰는 이름 `edit-inbox.jsonl.consuming-<token>`, 카드 게시 temp 이름 `.publish-<txid>.tmp`.
+- 조회 CLI `entry/run.py wiki-ledger <dedup-pairs|dedup-skip|verify-log|audit <kind>> [--json]`의 출력 키(wiki-dedup skill·resolver agent·logs skill이 읽는다): `dedup-pairs` `{index, pageA, pageB, score}`(`index`는 `wiki-dedup-resolve --index`), `dedup-skip` `{pageA, pageB, hashes}`, `verify-log`·`audit`는 로그 payload.
 - attestation `providerRelativePath`와 onboarding artifact sha map에 기록되는 provider 파일 상대 경로(`memvane/provider/adapters/local_embed_provider.py`·`laya_local_embed_worker.mjs`)와 접두사 `memvane/provider/adapters/`. 정의는 `memvane/kernel/bundle_paths.py` 한 곳이다.
 - 재봉인 호환 기록 `provider-reattest.json`: schema `memvane-provider-reattest-v1`, 키 `schema`·`attested`·`current`·`attestedIdentity`·`currentIdentity`·`outcome`·`timeNs`. 정체성 키는 `modelSha256`·`tokenizer`·`chunkerSha256`·`chunkRules`·`dimension`·`metric`·`pooling`·`normalization`·`maxTokens`다. 쌍별 기록 `provider-reattest-pairs.json`: schema `memvane-provider-reattest-pairs-v1`, 최상위 키 `schema`·`records`, 각 행 키 `attested`·`current`·`attestedIdentity`·`currentIdentity`·`outcome`·`timeNs`. 쌍별 정체성은 v1 키에 `queryTemplate`·`documentTemplate`·`contextMargin`을 더한다. 각 쌍은 `worker`·`provider` SHA를 담고 최대 16행이다.
 - compile intent(`<install state root>/provenance-intents/`)의 필수 키 집합(`kind`·`viewId`·`targetPath`·`cardSha`·`expectedTargetHash`·`sourceFingerprints`·`sourceSpans`·`verifiedMode`·`verifyEngine`·`producingEngine`·`verdict_digest`·`result_digest`), 이름의 id 입력, 결과 접미사(`.consumed`·`.rejected`·`.superseded`). 추가 키는 허용한다: consumer는 필수 키만 읽고 나머지는 무시하며, `result_digest`는 필수 키로만 계산한다. 한 호스트의 verify worker가 쓴 intent를 다른 1.x 호스트의 sync가 소비한다.
 
-계약 밖의 파생물(없거나 깨지면 다시 만들거나 0부터 세고, 지워도 된다): `<install state root>/vector-cache/`(vector arena. 레코드·헤더 모양을 바꾸면 `vectorcache.types.FORMAT`을 올리고 같은 번호로 모양을 바꾸지 않는다. 더 높은 번호의 arena는 건드리지 않는다), `<install state root>/linked-reoffer.json`, 프로젝트의 `.memvane/compile/source-refresh-settled.json`, 학습 namespace의 `apply-failures.json`·`worker-retry.json`.
+계약 밖의 파생물(없거나 깨지면 다시 만들거나 0부터 세고, 지워도 된다): `<install state root>/vector-cache/`(vector arena. 레코드·헤더 모양을 바꾸면 `vectorcache.types.FORMAT`을 올리고 같은 번호로 모양을 바꾸지 않는다. 더 높은 번호의 arena는 건드리지 않는다), `<install state root>/linked-reoffer.json`, 프로젝트의 `.memvane/compile/wiki-retrieval/cards.sqlite`(카드 FTS 캐시), 학습 namespace의 `apply-failures.json`·`worker-retry.json`.
 
 임베딩 정체성(모델·토크나이저·chunker·차원·pooling·정규화·최대 토큰 길이·질의 및 문서 템플릿·context 여유)이 바뀌면 재빌드가 필요하다. 실행 방식만 바뀌면 백그라운드 sync owner가 정체성을 확인하고 재봉인한다.
 

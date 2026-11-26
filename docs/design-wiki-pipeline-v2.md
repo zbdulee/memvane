@@ -100,7 +100,7 @@
 - **오프훅 컴팩션·중복 억제·`writer_floor`**:
   - `_compact`는 훅 밖(`recover_pending_refreshes` / `wiki_compile_worker`)으로 이동한다.
   - `wiki_discovery.drain_after_sync`는 unresolved pending refresh에 이미 있는 경로(settle 여부 무관, 삭제 제외)를 커서 스냅샷에 반영하되 `post_sync_source` 중복 적재를 건너뛴다(`unresolved_pending_refreshes_strict`가 `None`이면 기존대로 적재).
-  - `source-refresh-settled.json`은 계약 밖 파생 캐시([compile README](../memvane/wiki/compile/README.md#L9), [1.x 영속 계약](dev/contexts/release.md#L28))이므로 그대로 재계산한다.
+  - refresh 정산은 원장 `refresh_events`의 `settled_*` 열에 있고([compile README](../memvane/wiki/compile/README.md#L9)) 원문 바이트로 다시 계산할 수 있다.
   - **Phase 1에서는 `writer_floor`를 올리지 않는다**(`1.1.1+` 출시 worker가 `.handoff/v1/refresh/events.jsonl`을 이미 복구 가능).
 
 ### 4.2 Phase 2 (`v1.1.4` 통합 릴리스, `stateFormat: 2`)
@@ -114,13 +114,19 @@
   - 위치: `.memvane/compile/wiki-pipeline.sqlite3` (`.memvane/wiki/` 아래에 두지 않음).
   - 읽기 전용 열기는 `errors._query_only_uri` + `PRAGMA query_only=ON`을 사용하고, 파일 신원 대조에서 프로세스·재부팅 간 `st_dev`를 제외한다.
   - `.memvane/compile/wiki-retrieval/cards.sqlite`([wiki_compile_retrieval.py](../memvane/wiki/compile/wiki_compile_retrieval.py))는 일회성 FTS 오버레이 캐시이므로 내구 트랜잭션 원장(`wiki-pipeline.sqlite3`)과 분리 유지한다.
-- **원장 스키마 및 `copy_quota`·게시·intent 처리**:
-  - 주요 테이블: `compile_jobs`, `verify_jobs`, `staged_cards`(이미지 블롭 포함, `SUM(LENGTH(image_blob)) <= 64 MiB` 쿼리로 기존 `copy_quota` / `allocated-*` 대체), `refresh_events`, `audit_events`(manifest/tombstones/verify-deleted/verify-skipped/dedup-skipped), `cooldowns`, `pipeline_fences`(`scope='global_publish'` 등), `publish_txns`(`temp_name`, `temp_ino`, `expected_target_sha`, `state`).
-  - **게시 순서**: `.publish-<txid>.tmp`(`O_CREAT|O_EXCL|O_NOFOLLOW`, `fsync`) → `publish_txns(state='publishing')` 커밋 → `.card-write.lock` → `.topical-publish.lock` → live 카드 CAS(`expectedTargetHash`) 확인 → `os.replace`/`rename_noreplace` + `fsync(parent)` → `publish_txns(state='published')` 커밋.
-  - **compile intent 경계**: `provenance-intents/compile-<id>.json` 파일 포맷·키 집합·접미사 계약은 그대로 유지한다([영속 계약](dev/contexts/release.md#L26)).
+- **원장 스키마·게시·intent 처리**:
+  - 테이블: `compile_jobs`·`verify_jobs`(큐 행, 교체본 이미지는 `verify_jobs.pending_blob`), `refresh_events`, `card_generations`(생성 카드 이력, 원문 삭제 은퇴와 identity 이력의 판정 원장), `suppressions`(`verify`·`dedup`: 같은 원문 body hash의 재추출과 같은 쌍의 재판정을 막는 유료 호출 가드), `dedup_pairs`(retroactive scan 쌍 큐), `audit_events`(로그 전용: candidate·merge_needed·verify_log·dedup_deleted·discard·migration 등. 어떤 생성·삭제 판정도 읽지 않는다), `cooldowns`, `pipeline_fences`, `publish_txns`(`temp_name`, `temp_ino`, `expected_target_sha`, `state`), `backfill_checkpoints`(frozen backfill의 유료 추출 답 재개 checkpoint), `pipeline_meta`. application id `0x4D565750`, `user_version` 1, `auto_vacuum=INCREMENTAL`.
+  - 훅은 원장을 열지 않는다. 훅이 프로젝트에 쓰는 것은 `.memvane/compile/edit-inbox.jsonl`(`memvane-edit-inbox-v1`, `edit-inbox.jsonl.lock` 0.15초, 한 번의 `O_APPEND`, 8 MiB 상한) 한 행이고, compile worker가 `.compile-run.lock` 아래에서 `consuming-<token>`으로 옮겨 `eventId`로 한 번만 흡수한다. SessionStart는 원장을 읽지 못하므로 매번 `laya-compile` wake를 낸다.
+  - 검수 작업은 `verify_jobs` 행 하나다(`review` 첫 카드, `replace` 교체본). 위키 폴더에는 검수 중 사본이나 숨김 파일이 없다. 검수의 부정 판정은 카드를 지우지 않는다.
+  - **게시 순서**: `.publish-<txid>.tmp`(`O_CREAT|O_EXCL|O_NOFOLLOW`, `fsync`) → `publish_txns(state='publishing')` 커밋 → `.card-write.lock` → `.topical-publish.lock` → live 카드 CAS(`expectedTargetHash`) 확인 → 새 카드 `rename_noreplace`, 교체 `rename_exchange` + 밀려난 파일 대조, `fsync(parent)` → `publish_txns(state='published')` 커밋. 중단된 txn은 `recover_publishes`가 `(st_ino, sha256)` 대조로 roll-forward하거나 사람 편집을 남긴다.
+  - **compile intent 경계**: `provenance-intents/compile-<id>.json` 파일 포맷·키 집합·접미사 계약은 그대로 유지한다([영속 계약](dev/contexts/release.md#L29)).
+- **사람이 지운 카드와 dedup 병합**: 지운 카드를 기억해 되살리지 않는 장치(1.x `tombstones.jsonl`)는 없다. 사람이 지운 카드는 그 원문이 다시 바뀌면 다시 만들어진다. 카드를 없애려면 원문을 지운다(기계 생성 카드는 `card_generations`와 카드 frontmatter로 판정해 `retired-wiki/`로 은퇴한다). dedup 병합(`wiki-dedup-resolve merge`)은 B를 지우기 전에 B의 `canonicalKey`·`title`·`aliases`를 A의 `aliases`로, B의 `sources`를 A의 `sources`로 옮긴다. 다른 카드의 이름표와 겹치면 `alias_conflict`로, A 게시가 실패하면 B를 지우지 않고 거절한다. 그래서 B의 원문 변경은 `resolve_target`이 A로 잇는다.
+- **원장 보존**: compile worker가 회차마다 claim 전에 `.compile-run.lock` 아래에서 한 번, 단계마다 최대 500행을 자기 트랜잭션으로 정리하고 `incremental_vacuum(256)`을 부른다. `audit_events`는 종류별로 90일 또는 10,000행(본문을 담는 `dedup_deleted`는 30일 또는 2,000행), `suppressions`는 기간으로 지우지 않고 원문이 모든 수집 root에서 없다고 증명될 때(dedup은 한쪽 카드가 없을 때)만, `card_generations`는 카드마다 최신 5행, `cooldowns`는 키마다 한 행과 만료 삭제, 끝난 큐 행·게시 txn·dedup 쌍·backfill checkpoint는 30일 뒤 지운다. 상세는 [pipeline README](../memvane/wiki/pipeline/README.md).
 - **1회성 1.x → 2.0 마이그레이션 범위**:
-  - 공용 큐 + `*.claimed.*`, `.memvane/compile/*.jsonl` 전체 + `compact-stamp` + `source-refresh-settled.json`, 쿨다운 파일, `.handoff/v1/*` 전체(`hold`/`work`/`closed`/`returns`+`fragment-*`/`refresh`/`manifest-scan`/`backfill`/`copy-quota`+`allocated-*`/`publication`/`ownership-*`/`review-turn-*`), 위키 숨김 파일(`.first-*`, `.*.pending-*`, `.pending-ownership.json`, `.verify-swap-*`)을 원장으로 흡수하고 구형 파일을 정리한다.
-  - `copy_quota`는 이관된 `staged_cards` 바이트 합계로 재산정해 기존 누수 `allocated-*`를 0으로 정리한다. `.memvane/compile/retired-wiki/`의 사용자 복구용 아카이브 파일은 보존한다.
+  - 가져오는 것: `generated-manifest.jsonl`(→ `card_generations`, `(줄 번호, 줄 SHA-256)` 키로 한 번만), `verify-skipped.jsonl`·`dedup-skipped.jsonl`(→ `suppressions`). 가져오기와 마커 `migrated_from_v1_at`은 한 트랜잭션이다.
+  - 마커 커밋 뒤 지우는 것: 큐와 `*.claimed.*`, refresh 원장·정산 파일, 쿨다운 파일, `tombstones.jsonl`과 로그성 jsonl(`candidates`·`merge-needed`·`verify-log`·`verify-deleted`·`dedup-needed`·`dedup-deleted`·`discard-ledger`), `.handoff/` 전체, 위키 숨김 파일(`.first-*`, `.*.pending-*`, `.pc-*`, `.pending-ownership.json`, `.verify-swap-*`). 숨김 위키 파일을 먼저, compile 파일을 나중에 지워 남은 compile 파일이 미완 삭제를 표시한다. 버린 진행 중 작업은 원문 변경과 full-scan sync가 다시 만든다.
+  - 보존: `.memvane/compile/retired-wiki/`(사용자 복구 아카이브), `wiki-retrieval/`(FTS 캐시).
+  - 진입: compile worker `_main`이 `.compile-run.lock`을 검증한 뒤 claim 전에 card·mutation lock 아래에서 실행한다. 실패하면 마커도 claim도 없고 다음 wake가 다시 시도한다. 1.x 잔재가 남은 동안 `selected_execution`의 idle 판정은 할 일이 남은 것으로 보고, wiki-compile skill은 쓰지 않고 `pipeline_migration_pending`과 `laya-compile` wake를 낸다.
 
 ---
 

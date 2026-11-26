@@ -37,7 +37,7 @@
 - 검수 근거의 권위는 행이 갖는다. `wiki_compile_worker`가 실제 원문을 목록 앞에 두고 같은 경로의 모델 항목을 버리며(`is_same_file_source`), 실제 원문을 `authoritativeSources`에 따로 적어 `load_sources`가 `MAX_SOURCES`(3)와 무관하게 읽는다. 이 필드는 행에만 있고 frontmatter로 나가지 않는다.
 - 카드를 만든 엔진이 별도 호출로 검수한다(`plan_verify_attempts`, `verifiedMode: self`). 다른 CLI로 대신 검수하지 않는다. 생산 엔진 라벨은 행의 `engine`이 정하고, worker는 `candidate.engine`을 행 값으로 덮어쓴다. 해석할 수 없는 라벨은 `producing_engine_unavailable`로 행을 보존한다.
 - 유료 호출은 행당 run당 1회다. 실패(인증 안 된 CLI·verdict 미출력·timeout)는 그 엔진을 식히고(`set_engine_cooldown`, 24시간 상한) 식힘 중이면 `engines_cooling`으로 보존한다. 이 경로들은 판정을 만들지 않는다. `invalid_extractor_json`·`invalid_verdict`는 같은 입력에서 재현되므로 행을 닫는다. 기존 카드의 자동 재검증은 없다.
-- 판정은 `verify-log.jsonl`에 남는다. 로그 키 `producedBy`(생성)·`engine`(검수)·`verifiedMode`(달성)의 의미는 고정이다. recall은 `verifiedMode`를 읽지 않는다.
+- 판정은 `audit_events`의 `verify_log` 종류로 남는다(조회: `entry/run.py wiki-ledger verify-log`). 로그 키 `producedBy`(생성)·`engine`(검수)·`verifiedMode`(달성)의 의미는 고정이다. recall은 `verifiedMode`를 읽지 않는다.
 
 ## compile intent
 
