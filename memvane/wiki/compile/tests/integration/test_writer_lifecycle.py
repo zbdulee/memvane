@@ -77,7 +77,8 @@ class WriterLifecycle(WriterFixture):
         wiki = self.project.root / '.memvane/wiki'
         pair = {'pageA': str((self.project.root / keeper['targetPath']).relative_to(wiki)),
                 'pageB': str((self.project.root / loser['targetPath']).relative_to(wiki))}
-        (self.project.root / '.memvane/compile/dedup-needed.jsonl').write_text(json.dumps(pair) + '\n')
+        from memvane.wiki.pipeline import api as pipeline
+        pipeline.queue_dedup_pairs(self.project.root, [pair])
         repo = Path(__file__).resolve().parents[5]
         merge = subprocess.run([sys.executable, '-B', str(repo / 'entry/run.py'), 'wiki-dedup-resolve',
                                 '--cwd', str(self.project.root), '--index', '0', '--action', 'merge',

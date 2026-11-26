@@ -463,7 +463,7 @@ _API_PARTS = ('api', 'types')
 # refreshes, source spans) and each called from wiki/compile, wiki/verify,
 # wiki/lifecycle, wiki/dedup, wiki/intake, store, sync, host or learning. Card is the stored
 # card contract every wiki writer and reader shares; no two names share a callee.
-_API_NAME_LIMITS = {'journal': 51, 'runtime': 42, 'wiki/workspace': 35, 'wiki/card': 48}
+_API_NAME_LIMITS = {'journal': 51, 'runtime': 42, 'wiki/workspace': 33, 'wiki/card': 48}
 _CREATE_TABLE = re.compile(r'\bCREATE\s+(?:TEMP(?:ORARY)?\s+|VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
                            r'(?!IF\b)["`\[]?(?:\w+\.)?(\w+)', re.I)
 _TABLE_USE = re.compile(r'\b(DELETE\s+FROM|FROM|INTO|UPDATE|JOIN)\s+["`\[]?(?:main\.)?(\w+)')

@@ -83,3 +83,18 @@ def cooldown_active(project_root, scope, key='global'):
 def set_cooldown(project_root, scope, seconds, key='global'):
     from memvane.wiki.pipeline.records import set_cooldown as implementation
     return implementation(project_root, scope, seconds, key)
+
+
+def queue_dedup_pairs(project_root, pairs):
+    from memvane.wiki.pipeline.records import queue_dedup_pairs as implementation
+    return implementation(project_root, pairs)
+
+
+def dedup_queue(project_root):
+    from memvane.wiki.pipeline.records import dedup_queue as implementation
+    return implementation(project_root)
+
+
+def finish_dedup_pair(project_root, pair_key):
+    from memvane.wiki.pipeline.records import finish_dedup_pair as implementation
+    return implementation(project_root, pair_key)

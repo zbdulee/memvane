@@ -28,8 +28,8 @@ class LockOrder(FixtureCase):
         loser.write_text('# Loser\n\nB.\n', encoding='utf-8')
         compile_dir = project.root / '.memvane' / 'compile'
         compile_dir.mkdir()
-        (compile_dir / 'dedup-needed.jsonl').write_text(
-            json.dumps({'pageA': 'entities/a.md', 'pageB': 'entities/b.md'}) + '\n', encoding='utf-8')
+        from memvane.wiki.pipeline import api as pipeline
+        pipeline.queue_dedup_pairs(project.root, [{'pageA': 'entities/a.md', 'pageB': 'entities/b.md'}])
         env = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}
         argv = [sys.executable, '-B', str(REPO / 'entry' / 'run.py'), 'wiki-dedup-resolve',
                 '--cwd', str(project.root), '--index', '0', '--action', 'merge', '--delete', 'entities/b.md']

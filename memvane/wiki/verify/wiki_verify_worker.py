@@ -59,7 +59,7 @@ from memvane.wiki.card import api as wsm
 from memvane.wiki.card import api as source_spans
 from memvane.wiki.card.api import card_sources_allowed, parse_frontmatter
 from memvane.wiki.card import api as yaml_scalars
-from memvane.wiki.workspace.api import append_jsonl, read_queue
+from memvane.wiki.workspace.api import read_queue
 from memvane.wiki.verify.review_queue import candidate_matches_job
 from memvane.wiki.verify.verification_stamp import render_verification_text
 # 경로는 전부 `compile_paths` 상수 테이블에서 온다.

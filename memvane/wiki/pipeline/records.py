@@ -114,3 +114,29 @@ def set_cooldown(project_root: Path | str, scope: str, seconds, key: str = GLOBA
         return True
     except (OSError, ValueError, TypeError, sqlite3.Error):
         return False
+
+
+def queue_dedup_pairs(project_root: Path | str, pairs: list[dict]) -> int:
+    """Queue ``{pageA, pageB, score}`` pairs; a pair already queued is left as is."""
+    from memvane.wiki.pipeline.store import open_pipeline
+    added = 0
+    with open_pipeline(project_root) as store:
+        for pair in pairs:
+            added += bool(store.enqueue_dedup_pair(pair['pageA'], pair['pageB'], pair.get('score')))
+    return added
+
+
+def dedup_queue(project_root: Path | str) -> list[dict]:
+    """Queued pairs in resolver order (``created_ns``, ``pair_key``); empty without a ledger."""
+    from memvane.wiki.pipeline.store import open_pipeline
+    try:
+        with open_pipeline(project_root, readonly=True) as store:
+            return store.dedup_pairs(state='queued')
+    except FileNotFoundError:
+        return []
+
+
+def finish_dedup_pair(project_root: Path | str, pair_key: str) -> bool:
+    from memvane.wiki.pipeline.store import open_pipeline
+    with open_pipeline(project_root) as store:
+        return store.set_dedup_pair_state(pair_key, 'done')

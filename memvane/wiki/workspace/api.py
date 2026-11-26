@@ -47,16 +47,6 @@ def queue_lock_path(path):
     return _queue_lock_path(path)
 
 
-def requeue_lines(path, raw_lines):
-    from memvane.wiki.workspace.queue_paths import requeue_lines as implementation
-    return implementation(path, raw_lines)
-
-
-def append_jsonl(path, payload):
-    from memvane.wiki.workspace.queue import append_jsonl as implementation
-    return implementation(path, payload)
-
-
 def read_queue(path):
     from memvane.wiki.workspace.queue import read_queue as implementation
     return implementation(path)

@@ -6,7 +6,7 @@ hashing shared by the dedup resolver and the verify worker.
 use; ``load_skip_suppressions`` reads the ledger's ``dedup`` suppressions.
 
 ``run`` finds near-duplicate wiki cards that already sit on disk and queues
-each pair to ``.memvane/compile/dedup-needed.jsonl`` for the
+each pair as a ledger ``dedup_pairs`` row for the
 wiki-dedup-resolver agent (``skills/wiki-dedup``). It runs in the wiki
 lifecycle child (``wiki_lifecycle.main``), which the project's
 ``laya-compile`` wake starts after SessionStart or a source edit; it has no
@@ -39,7 +39,6 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
-import json
 import math
 import os
 from pathlib import Path
@@ -48,7 +47,7 @@ import sys
 import time
 from memvane.kernel import memvane_paths
 from memvane.settings import api as source_text
-from memvane.kernel.paths import read_jsonl, safe_managed_dir
+from memvane.kernel.paths import safe_managed_dir
 from memvane.wiki.card.api import parse_frontmatter
 from memvane.wiki.card.types import FRONTMATTER_RE
 
@@ -240,7 +239,6 @@ def _cosine(left: list[float], right: list[float]) -> float:
 
 def run(cwd: str) -> dict:
     """One bounded scan for the project at ``cwd``; returns a summary."""
-    from memvane.wiki.workspace import api as cp, types as ct
     from memvane.settings import api as project_dir
     from memvane.settings import api as qmd_config, types as settings_types
     from memvane.wiki.workspace import api as scan_state
@@ -277,8 +275,7 @@ def run(cwd: str) -> dict:
         log("ABORT: wiki root differs from the selected route")
         return result
     compile_dir = project_dir.compile_dir(root, create=True)
-    queue_path = qmd_config.ledger(root, ct.DEDUP_NEEDED)
-    if compile_dir is None or queue_path is None:
+    if compile_dir is None:
         log("ABORT: unsafe_compile_path")
         return result
 
@@ -319,13 +316,8 @@ def run(cwd: str) -> dict:
     max_pairs = max(1, min(max_pairs, 100))
     threshold = settings_types.DEDUP_AUTO_MERGE_THRESHOLD
     suppressions = load_skip_suppressions(root)
-    # A resolver run holds its rows in `dedup-needed.jsonl.claimed.*` until it
-    # requeues the unresolved ones; those pairs are queued too.
-    queued_keys = {pair_key(str(row.get("pageA", "")), str(row.get("pageB", "")))
-                   for path in (queue_path, *sorted(queue_path.parent.glob(
-                       queue_path.name + ".claimed.*")))
-                   if not path.is_symlink()
-                   for row in read_jsonl(path)}
+    from memvane.wiki.pipeline import api as pipeline
+    queued_keys = {pair_key(row["pageA"], row["pageB"]) for row in pipeline.dedup_queue(root)}
     lines = []
     for card in to_scan:
         if (len(lines) >= max_pairs or result["compared"] >= MAX_PAGES_PER_SCAN
@@ -355,12 +347,10 @@ def run(cwd: str) -> dict:
             continue
         score, other = best
         queued_keys.add(pair_key(card.rel, other.rel))
-        lines.append(json.dumps({"pageA": card.rel, "pageB": other.rel,
-                                 "score": round(score, 6)}, ensure_ascii=False))
+        lines.append({"pageA": card.rel, "pageB": other.rel, "score": round(score, 6)})
     result["pending"] = len(to_scan) - result["compared"]
     if lines:
-        from memvane.wiki.workspace.api import requeue_lines
-        requeue_lines(queue_path, lines)
+        pipeline.queue_dedup_pairs(root, lines)
     result["queued"] = len(lines)
     # Written only after the queue append: a crash before it re-compares the
     # same cards next run, and `queued_keys` keeps a pair from doubling.

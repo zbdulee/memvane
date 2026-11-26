@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Resolve one entry in the retroactive wiki dedup queue.
 
-Reads .memvane/compile/dedup-needed.jsonl, applies one action to the
-entry at --index, and rewrites the queue with that entry removed. Never
-touches entries other than the one resolved this run.
+Reads the queued ``dedup_pairs`` ledger rows in resolver order (oldest
+first), applies one action to the row at --index, and marks that row done
+when the action applied. Never touches rows other than the one resolved
+this run.
 
 This script's `merge` action DELETES a file. The caller (the
 wiki-dedup-resolver subagent) has already folded any unique content into the
@@ -22,7 +23,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from memvane.wiki.workspace import api as cp, types as ct
+from memvane.wiki.workspace import api as cp
 from memvane.settings import api as project_dir, types as project_types
 from memvane.settings import api as qmd_config
 from memvane.wiki.workspace import api as workspace_files
@@ -36,33 +37,12 @@ from memvane.wiki.card import types as card_types
 from memvane.wiki.card.types import FRONTMATTER_RE
 from memvane.wiki.dedup import wiki_dedup_scan as dedup_scan
 from memvane.wiki.workspace import api as wiki_selected_laya
-from memvane.wiki.workspace.api import claim_queue, requeue_lines
 
 ACTIONS = {"merge", "skip"}
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def load_entries(claimed: Path) -> list[tuple[str, dict | None]]:
-    if not claimed.exists():
-        return []
-    rows = []
-    try:
-        content = claimed.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return []
-    for line in content.splitlines():
-        if not line.strip():
-            continue
-        try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError:
-            rows.append((line, None))
-            continue
-        rows.append((line, parsed if isinstance(parsed, dict) else None))
-    return rows
 
 
 def record_skip(root: Path, wiki_root: Path, compile_dir: Path, entry: dict) -> bool:
@@ -383,20 +363,10 @@ def main() -> int:
     if wiki_root is None or compile_dir is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_managed_path"}, ensure_ascii=False))
         return 1
-    queue_path = qmd_config.ledger(root, ct.DEDUP_NEEDED)
-    if queue_path is None:
-        print(json.dumps({"action": "rejected", "reason": "unsafe_compile_path"}, ensure_ascii=False))
-        return 1
-
+    from memvane.wiki.pipeline import api as pipeline
     if args.recover_queue:
-        # claim_queue reclaims dead-owner *.claimed.* files under the queue
-        # lock. Give the currently claimed rows back unchanged before the
-        # agent inspects the queue. No card or index is touched here.
-        claimed = claim_queue(queue_path)
-        if claimed is not None:
-            rows = load_entries(claimed)
-            requeue_lines(queue_path, [raw for raw, _ in rows])
-            claimed.unlink(missing_ok=True)
+        # Queued pairs are ledger rows that stay queued until a resolution
+        # applies; there is nothing claimed to give back.
         print(json.dumps({'action': 'recovered'}, ensure_ascii=False))
         return 0
 
@@ -404,8 +374,7 @@ def main() -> int:
         print(json.dumps({"action": "rejected", "reason": "missing_delete_arg"}, ensure_ascii=False))
         return 1
 
-    # Resolve the journal-bound route before claiming or mutating a pair. A
-    # blocked Laya route must never fall through to the legacy QMD queue.
+    # Resolve the journal-bound route before reading or mutating a pair.
     laya_bound = wiki_selected_laya.selected(root)
     if laya_bound is not None:
         selected_wiki = next(item['sourceRoot'] for item in laya_bound[0]['collections']
@@ -413,46 +382,22 @@ def main() -> int:
         if selected_wiki != str(wiki_root.resolve()):
             raise ValueError('selected_dedup_wiki_root_changed')
 
-    claimed = claim_queue(queue_path)
-    if claimed is None:
+    rows = pipeline.dedup_queue(root)
+    if not rows:
         print(json.dumps({"action": "rejected", "reason": "queue_empty"}, ensure_ascii=False))
         return 1
-
-    rows = load_entries(claimed)
     if not (0 <= args.index < len(rows)):
-        requeue_lines(queue_path, [raw for raw, _ in rows])
-        claimed.unlink(missing_ok=True)
         print(json.dumps({"action": "rejected", "reason": "index_out_of_range"}, ensure_ascii=False))
         return 1
+    row = rows[args.index]
+    entry = {**row['payload'], 'pageA': row['pageA'], 'pageB': row['pageB'], 'score': row['score']}
 
-    raw, entry = rows[args.index]
-
-    if entry is None:
-        remaining_raw = [r for i, (r, _) in enumerate(rows) if i != args.index]
-        requeue_lines(queue_path, remaining_raw)
-        claimed.unlink(missing_ok=True)
-        print(json.dumps({"action": "rejected", "reason": "malformed_entry"}, ensure_ascii=False))
-        return 1
-
-    # Ordering invariant: resolve_entry() must complete BEFORE this entry is
-    # excluded from the requeue, so a crash never loses the entry.
-    try:
-        result = resolve_entry(root, wiki_root, compile_dir, entry, args.action, args.delete,
-                               laya_bound=laya_bound)
-    except Exception:
-        requeue_lines(queue_path, [r for r, _ in rows])
-        claimed.unlink(missing_ok=True)
-        raise
-
-    # A "rejected" outcome means the resolution did NOT apply (e.g. --delete
-    # failed re-validation) -- the entry must stay in the queue for a retry,
-    # unlike "deleted"/"skipped" which did apply and are done with.
-    if result.get("action") == "rejected":
-        requeue_lines(queue_path, [r for r, _ in rows])
-    else:
-        remaining_raw = [r for i, (r, _) in enumerate(rows) if i != args.index]
-        requeue_lines(queue_path, remaining_raw)
-    claimed.unlink(missing_ok=True)
+    # The row stays queued until resolve_entry() applies, so a crash never loses it.
+    result = resolve_entry(root, wiki_root, compile_dir, entry, args.action, args.delete,
+                           laya_bound=laya_bound)
+    # "rejected" did not apply (e.g. --delete failed re-validation) and stays queued.
+    if result.get("action") != "rejected":
+        pipeline.finish_dedup_pair(root, row['pairKey'])
 
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("action") != "rejected" else 1
