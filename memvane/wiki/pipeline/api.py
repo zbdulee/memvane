@@ -58,3 +58,28 @@ def audit_log(project_root, kind):
 def log_rows(project_root, kind):
     from memvane.wiki.pipeline.records import log_rows as implementation
     return implementation(project_root, kind)
+
+
+def suppressions(project_root, kind):
+    from memvane.wiki.pipeline.records import suppressions as implementation
+    return implementation(project_root, kind)
+
+
+def set_suppression(project_root, kind, key, body_hash, payload):
+    from memvane.wiki.pipeline.records import set_suppression as implementation
+    return implementation(project_root, kind, key, body_hash, payload)
+
+
+def cooling_keys(project_root, scope):
+    from memvane.wiki.pipeline.records import cooling_keys as implementation
+    return implementation(project_root, scope)
+
+
+def cooldown_active(project_root, scope, key='global'):
+    from memvane.wiki.pipeline.records import cooldown_active as implementation
+    return implementation(project_root, scope, key)
+
+
+def set_cooldown(project_root, scope, seconds, key='global'):
+    from memvane.wiki.pipeline.records import set_cooldown as implementation
+    return implementation(project_root, scope, seconds, key)

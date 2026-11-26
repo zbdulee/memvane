@@ -56,7 +56,7 @@ class VerdictTable(VerifyCase):
     def verdict(self, answer):
         self.setup()
         # An unusable answer cools the producer; each row starts uncooled.
-        (self.compile_dir / 'verify-engine-cooldown.json').unlink(missing_ok=True)
+        self.clear_engine_cooldown()
         fake = self.fake(answer)
         result = self.run_verify()
         self.assertEqual(len(fake.calls), 1)

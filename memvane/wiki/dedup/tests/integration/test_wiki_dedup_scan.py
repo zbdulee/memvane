@@ -129,11 +129,10 @@ class Queueing(ScanCase):
 
     def test_skip_ledger_suppresses_unchanged_bodies_only(self):
         self.publish(standard())
-        ledger = self.queue.with_name('dedup-skipped.jsonl')
-        ledger.parent.mkdir(parents=True, exist_ok=True)
-        ledger.write_text(json.dumps({'pageA': 'entities/alpha-copy.md', 'pageB': 'entities/alpha.md',
-                                      'pageAHash': scan.body_hash(ALPHA_COPY),
-                                      'pageBHash': scan.body_hash(ALPHA)}) + '\n', encoding='utf-8')
+        from memvane.wiki.pipeline import api as pipeline
+        self.assertTrue(pipeline.set_suppression(
+            self.root, 'dedup', 'entities/alpha-copy.md\nentities/alpha.md',
+            scan.body_hash(ALPHA_COPY) + ':' + scan.body_hash(ALPHA), {}))
         result = self.run_scan()
         self.assertEqual(result['queued'], 0, result)
         self.assertGreaterEqual(result['suppressed'], 1)

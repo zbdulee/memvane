@@ -238,7 +238,8 @@ class CheckoutFingerprints(FixtureCase):
                  ('resource_deferred', 1, (False, True), False)]
         for reason, exit_code, expected, cooled in cases:
             with self.subTest(reason=reason):
-                worker.cooldown_path(self.project.root).unlink(missing_ok=True)
+                with pipeline.open_pipeline(self.project.root) as store:
+                    store.clear_cooldown('compile', 'global')
                 with patch.object(engines, 'run_extractor', return_value=(None, reason, exit_code)):
                     result = self.process()
                 self.assertEqual(result[:2], expected)
@@ -307,10 +308,8 @@ class CheckoutFingerprints(FixtureCase):
                 self.source.write_text(transient)
                 changed.append(True)
             return result
-        skipped = self.project.root / '.memvane/compile/verify-skipped.jsonl'
-        skipped.parent.mkdir(parents=True, exist_ok=True)
-        skipped.write_text(json.dumps({'sourcePath': 'docs/source.md',
-                                       'sourceBodyHash': verify.source_body_hash(transient)}) + '\n')
+        self.assertTrue(pipeline.set_suppression(self.project.root, 'verify', 'docs/source.md',
+                                                 verify.source_body_hash(transient), {}))
         payloads = []
         def extract(argv, payload, timeout, root):
             payloads.append(payload)

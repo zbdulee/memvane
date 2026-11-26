@@ -32,16 +32,6 @@ def pending_source_review(root, config, revision, *, reuse=True):
     return implementation(root, config, revision, reuse=reuse)
 
 
-def verify_skipped_path(root, vcfg):
-    from memvane.wiki.verify.wiki_verify_worker import verify_skipped_path as implementation
-    return implementation(root, vcfg)
-
-
-def load_verify_suppressions(path):
-    from memvane.wiki.verify.wiki_verify_worker import load_verify_suppressions as implementation
-    return implementation(path)
-
-
 def source_body_hash(text):
     from memvane.wiki.verify.verify_ledger import source_body_hash as implementation
     return implementation(text)

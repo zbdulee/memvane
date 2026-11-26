@@ -12,16 +12,6 @@ def builtin_adapter_argv(engine):
     return implementation(engine)
 
 
-def cooling_engines(path):
-    from memvane.wiki.engines.execution import cooling_engines as implementation
-    return implementation(path)
-
-
-def load_engine_cooldowns(path):
-    from memvane.wiki.engines.execution import load_engine_cooldowns as implementation
-    return implementation(path)
-
-
 def reasoning_effort_audit(raw, requested=None, reason="capability_not_declared", capability_declared=True):
     from memvane.wiki.engines.execution import reasoning_effort_audit as implementation
     return implementation(raw, requested, reason, capability_declared)
@@ -35,11 +25,6 @@ def resolve_extractor_argv(compile_cfg, engine, builtins=None):
 def run_extractor(argv, payload, timeout, root):
     from memvane.wiki.engines.execution import run_extractor as implementation
     return implementation(argv, payload, timeout, root)
-
-
-def set_engine_cooldown(path, key, seconds, *, _queue_lock_path, write_text_atomic):
-    from memvane.wiki.engines.execution import set_engine_cooldown as implementation
-    return implementation(path, key, seconds, _queue_lock_path=_queue_lock_path, write_text_atomic=write_text_atomic)
 
 
 def budget_of(compile_cfg):

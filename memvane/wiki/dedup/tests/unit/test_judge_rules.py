@@ -132,20 +132,15 @@ class BodyHash(unittest.TestCase):
         self.assertRegex(scan.body_hash(CARD), r'^[0-9a-f]{64}$')
 
     def test_skip_ledger_keeps_the_last_row_per_sorted_pair(self):
-        rows = [
-            '{"pageA":"b.md","pageB":"a.md","pageAHash":"hb1","pageBHash":"ha1"}',
-            'not json',
-            '{"pageA":"a.md","pageB":"c.md","pageAHash":"","pageBHash":"hc"}',
-            '{"pageA":"a.md","pageB":"b.md","pageAHash":"ha2","pageBHash":"hb2"}',
-            '{"pageA":"d.md","pageB":"c.md","pageAHash":"hd","pageBHash":"hc"}',
-        ]
+        from memvane.wiki.pipeline import api as pipeline
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'dedup-skipped.jsonl'
-            path.write_text('\n'.join(rows) + '\n', encoding='utf-8')
-            self.assertEqual(scan.load_skip_suppressions(path),
+            root = Path(tmp).resolve()
+            self.assertEqual(scan.load_skip_suppressions(root), {})
+            for key, value in (('a.md\nb.md', 'ha1:hb1'), ('a.md\nc.md', ':hc'),
+                               ('a.md\nb.md', 'ha2:hb2'), ('c.md\nd.md', 'hc:hd')):
+                self.assertTrue(pipeline.set_suppression(root, 'dedup', key, value, {}))
+            self.assertEqual(scan.load_skip_suppressions(root),
                              {('a.md', 'b.md'): ('ha2', 'hb2'), ('c.md', 'd.md'): ('hc', 'hd')})
-            self.assertEqual(scan.load_skip_suppressions(Path(tmp) / 'absent.jsonl'), {})
-        self.assertEqual(scan.load_skip_suppressions(None), {})
         self.assertEqual(scan.pair_key('b', 'a'), ('a', 'b'))
 
 

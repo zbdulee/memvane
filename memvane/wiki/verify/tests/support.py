@@ -119,9 +119,20 @@ class VerifyCase(FixtureCase):
         text = self.card_now()
         return text[:text.index('\n---\n', 4)]
 
-    def engine_cooldown(self):
-        path = self.compile_dir / 'verify-engine-cooldown.json'
-        return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    def engine_cooldown(self, scope='verify_engine'):
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.root) as store:
+            return store.cooldowns(scope)
+
+    def clear_engine_cooldown(self):
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.root) as store:
+            for key in store.cooldowns('verify_engine'):
+                store.clear_cooldown('verify_engine', key)
+
+    def suppressed(self):
+        from memvane.wiki.pipeline import api as pipeline
+        return pipeline.suppressions(self.root, 'verify')
 
     def assert_status(self, status):
         self.assertRegex(self.card_now(), '(?m)^status: %s$' % status)

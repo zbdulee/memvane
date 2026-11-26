@@ -2,11 +2,7 @@
 from datetime import datetime, timezone
 
 from memvane.wiki.verify import verification_stamp
-from memvane.wiki.verify import wiki_verify_worker as worker
-from memvane.settings import api as settings
-from memvane.wiki.workspace import types as workspace_types
 from tests.support.case import FixtureCase
-from tests.support.project import make_project
 
 
 class VerificationRender(FixtureCase):
@@ -22,14 +18,3 @@ class VerificationRender(FixtureCase):
         self.assertIn('2026-01-02T03:04:05.000000Z', first)
         self.assertEqual(card.read_text(), original)
 
-    def test_unsafe_ledger_paths_fall_back_to_fixed_project_locations(self):
-        project = make_project(self.home, git=False)
-        directory = project.root / '.memvane/compile'
-        directory.mkdir()
-        outside = self.home / 'outside.jsonl'
-        outside.write_text('unchanged')
-        for name in (workspace_types.VERIFY_SKIPPED, workspace_types.VERIFY_DELETED):
-            (directory / name).symlink_to(outside)
-            self.assertIsNone(settings.ledger(project.root, name))
-        self.assertEqual(worker.verify_skipped_path(project.root, {}), directory / workspace_types.VERIFY_SKIPPED)
-        self.assertEqual(outside.read_text(), 'unchanged')

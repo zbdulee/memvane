@@ -122,10 +122,10 @@ class WriterLifecycle(WriterFixture):
         directory.mkdir()
         outside = self.home / 'outside.jsonl'
         outside.write_text('unchanged')
-        (directory / workspace_types.VERIFY_DELETED).symlink_to(outside)
-        self.assertIsNone(settings.ledger(self.project.root, workspace_types.VERIFY_DELETED))
-        self.assertEqual(settings.ledger(self.project.root, workspace_types.VERIFY_SKIPPED),
-                         directory / workspace_types.VERIFY_SKIPPED)
+        (directory / 'escaping.jsonl').symlink_to(outside)
+        self.assertIsNone(settings.ledger(self.project.root, 'escaping.jsonl'))
+        self.assertEqual(settings.ledger(self.project.root, workspace_types.MANIFEST),
+                         directory / workspace_types.MANIFEST)
         self.assertEqual(outside.read_text(), 'unchanged')
 
     def test_selected_verified_replacement_is_staged_for_review(self):

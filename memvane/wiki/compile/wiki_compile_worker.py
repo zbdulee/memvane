@@ -29,7 +29,6 @@ from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.wiki.engines import api as engines_api
 from memvane.wiki.engines.api import (builtin_adapter_argv as _builtin_adapter_argv,
-    load_engine_cooldowns, cooling_engines,
     reasoning_effort_audit, resolve_extractor_argv, budget_of, decode_source_bounded)
 from memvane.settings import api as qmd_config, types as settings_types
 from memvane.kernel import cooldown as qmd_cooldown
@@ -91,28 +90,18 @@ def candidate_log(root: Path):
     return pipeline.audit_log(root, 'candidate')
 
 
-def cooldown_path(root: Path) -> Path:
-    return cp.under(root, ct.COMPILE_COOLDOWN)
-
-
 def cooldown_active(root: Path) -> bool:
-    """판정은 `cooldown.expiry_active`가 SSOT다. `now < float(파일내용)`만 보면 오염된
-    만료값(`1e300`) 하나가 **영구 True**가 되어 이 프로젝트의 compile이 다시는 돌지
-    않는다 — `load_engine_cooldowns`가 4단계에 받은 상한 클램프와 같은 처방이다."""
-    path = cooldown_path(root)
-    try:
-        raw = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return False
-    return qmd_cooldown.expiry_active(raw, datetime.now(timezone.utc).timestamp())
+    """The compile-wide extractor pause (``compile`` cooldown row) is active.
+
+    ``kernel.cooldown.expiry_active`` judges it, so a corrupt expiry never stops
+    compile for good."""
+    from memvane.wiki.pipeline import api as pipeline
+    return pipeline.cooldown_active(root, 'compile')
 
 
-def set_cooldown(root: Path, seconds: int) -> None:
-    path = cooldown_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # 쓰기도 같은 상한으로 클램프한다 — 정상 경로가 절대 읽기 상한을 넘지 않게.
-    expiry = qmd_cooldown.expiry_value(datetime.now(timezone.utc).timestamp(), seconds)
-    path.write_text(f"{expiry}\n", encoding="utf-8")
+def set_cooldown(root: Path, seconds: int) -> bool:
+    from memvane.wiki.pipeline import api as pipeline
+    return pipeline.set_cooldown(root, 'compile', seconds)
 
 
 def gather_similar_pages(
@@ -224,8 +213,8 @@ def verify_suppression_hash(root: Path, compile_cfg: dict, rel: str) -> str | No
     if not vcfg.get("enabled", True):
         return None
     try:
-        path = wiki_verify.verify_skipped_path(root, vcfg)
-        return wiki_verify.load_verify_suppressions(path).get(rel)
+        from memvane.wiki.pipeline import api as pipeline
+        return pipeline.suppressions(root, 'verify').get(rel)
     except Exception:
         return None
 
@@ -1097,7 +1086,9 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
             job['_backfillSkipped'] = True
             return True, False, []  # permanent: drop
         cooldown_seconds = int(extractor.get("cooldownSeconds", 600) or 600)
-        set_cooldown(root, cooldown_seconds)
+        if not set_cooldown(root, cooldown_seconds):
+            # Working-rules 1: without the pause the next run re-bills the failing extractor.
+            cpath.append({**bounded_failure("extractor_failed", job, reason), "cooldownWriteFailed": True})
         return False, True, []  # transient: cooldown + preserve
 
     candidates = extracted.get("candidates") if isinstance(extracted, dict) else None

@@ -3,7 +3,7 @@
 hashing shared by the dedup resolver and the verify worker.
 
 ``body_hash`` is the one normalized body hash both sides of skip suppression
-use; ``load_skip_suppressions`` reads the append-only skip ledger.
+use; ``load_skip_suppressions`` reads the ledger's ``dedup`` suppressions.
 
 ``run`` finds near-duplicate wiki cards that already sit on disk and queues
 each pair to ``.memvane/compile/dedup-needed.jsonl`` for the
@@ -98,23 +98,16 @@ def pair_key(a: str, b: str) -> tuple[str, str]:
     return tuple(sorted((a, b)))
 
 
-def load_skip_suppressions(skipped_path: Path | None) -> dict[tuple[str, str], tuple[str, str]]:
-    """Map sorted (pageA, pageB) -> (pageAHash, pageBHash), keeping only the
-    LAST record per pair -- the file is append-only, so later records simply
-    overwrite earlier ones during this in-order pass. Malformed rows are
-    ignored (fail-open); rows stored unsorted are normalized, not dropped."""
+def load_skip_suppressions(root: Path) -> dict[tuple[str, str], tuple[str, str]]:
+    """Map sorted (pageA, pageB) -> (pageAHash, pageBHash) from the ledger's
+    ``dedup`` suppressions (the last record per pair wins). Unreadable keys are
+    ignored (fail-open)."""
+    from memvane.wiki.pipeline import api as pipeline
     suppressions: dict[tuple[str, str], tuple[str, str]] = {}
-    if skipped_path is None:
-        return suppressions
-    for row in read_jsonl(skipped_path):
-        page_a = row.get("pageA")
-        page_b = row.get("pageB")
-        hash_a = row.get("pageAHash")
-        hash_b = row.get("pageBHash")
-        if not all(isinstance(v, str) and v for v in (page_a, page_b, hash_a, hash_b)):
-            continue
-        key = pair_key(page_a, page_b)
-        suppressions[key] = (hash_a, hash_b) if key == (page_a, page_b) else (hash_b, hash_a)
+    for key, value in pipeline.suppressions(root, 'dedup').items():
+        pages, hashes = key.split('\n'), value.split(':')
+        if len(pages) == 2 and len(hashes) == 2 and all(pages) and all(hashes):
+            suppressions[pair_key(*pages)] = (hashes[0], hashes[1])
     return suppressions
 
 
@@ -285,7 +278,6 @@ def run(cwd: str) -> dict:
         return result
     compile_dir = project_dir.compile_dir(root, create=True)
     queue_path = qmd_config.ledger(root, ct.DEDUP_NEEDED)
-    skipped_path = qmd_config.ledger(root, ct.DEDUP_SKIPPED)
     if compile_dir is None or queue_path is None:
         log("ABORT: unsafe_compile_path")
         return result
@@ -326,7 +318,7 @@ def run(cwd: str) -> dict:
         max_pairs = 10
     max_pairs = max(1, min(max_pairs, 100))
     threshold = settings_types.DEDUP_AUTO_MERGE_THRESHOLD
-    suppressions = load_skip_suppressions(skipped_path)
+    suppressions = load_skip_suppressions(root)
     # A resolver run holds its rows in `dedup-needed.jsonl.claimed.*` until it
     # requeues the unresolved ones; those pairs are queued too.
     queued_keys = {pair_key(str(row.get("pageA", "")), str(row.get("pageB", "")))

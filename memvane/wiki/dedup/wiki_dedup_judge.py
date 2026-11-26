@@ -24,11 +24,8 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
-from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as qmd_config, types as settings_types
-from memvane.kernel import cooldown as qmd_cooldown
 
 VERDICT_VALUES = {"duplicate", "distinct", "unclear"}
 
@@ -125,45 +122,21 @@ def diagnostics(info: dict) -> dict:
     return {key: info[key] for key in DIAGNOSTIC_KEYS if info.get(key)}
 
 
-def cooldown_path(root: Path) -> Path:
-    # Separate from the compile and verify cooldowns: an extractor outage must not
-    # silence dedup judging, and vice versa.
-    return cp.under(root, ct.DEDUP_JUDGE_COOLDOWN)
-
-
-def engine_cooldown_path(root: Path) -> Path:
-    """엔진 단위 식힘. **전역 `dedup-judge-cooldown`과 역할이 다르다**: 전역은 "judge 전체를
-    잠시 쉰다"이고 이것은 "이 후보로는 다음 run에 degrade한다"다. 교차 엔진 우선을 켜면
-    선호 후보가 계속 유료 실패하는 상태(인증 안 된 두 번째 CLI)가 생길 수 있고, 전역 식힘만
-    있으면 만료마다 같은 후보를 다시 불러 **판정이 영구 정지**한다 — verify가 0.x 전역 식힘에서
-    겪은 것과 같은 클래스라 같은 처방(엔진 단위 기록)을 쓴다. 파일은 verify와 분리한다.
-    """
-    return cp.under(root, ct.DEDUP_JUDGE_ENGINE_COOLDOWN)
-
-
+# The judge's global (``dedup_judge``) and per-engine (``dedup_judge_engine``)
+# cooldowns are separate from compile and verify: an extractor outage must not
+# silence dedup judging, and vice versa. The global pause is "rest the judge";
+# a per-engine row is "degrade past this candidate next run", so a preferred
+# candidate that keeps failing never stops judging at every expiry.
 def cooldown_active(root: Path) -> bool:
-    """판정은 `cooldown.expiry_active`가 SSOT다(compile cooldown과 같은 규칙).
-    `now < float(파일내용)`만 보면 오염된 만료값 하나로 **판정이 영구 정지**한다 —
-    전역 식힘이 후보 소진의 종점이므로 그 정지에는 복구 경로가 없다."""
-    try:
-        raw = cooldown_path(root).read_text(encoding="utf-8").strip()
-    except OSError:
-        return False
-    return qmd_cooldown.expiry_active(raw, datetime.now(timezone.utc).timestamp())
+    from memvane.wiki.pipeline import api as pipeline
+    return pipeline.cooldown_active(root, 'dedup_judge')
 
 
 def set_cooldown(root: Path, seconds: int) -> bool:
     """전역 식힘 기록. 반환값은 "기록이 남았는가"다 — 이것이 마지막 종점이므로 실패는
     호출자가 표면화한다(기록이 없으면 다음 run이 같은 후보를 다시 유료로 부른다)."""
-    path = cooldown_path(root)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # 쓰기도 읽기와 같은 상한으로 클램프한다(`cooldown.expiry_value`).
-        expiry = qmd_cooldown.expiry_value(datetime.now(timezone.utc).timestamp(), seconds)
-        path.write_text(f"{expiry}\n", encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    from memvane.wiki.pipeline import api as pipeline
+    return pipeline.set_cooldown(root, 'dedup_judge', seconds)
 
 
 def plan_judge_attempts(
@@ -239,7 +212,8 @@ def judge_pair(
 
     jcfg = judge_cfg_of(compile_cfg)
     producing = engine if isinstance(engine, str) else ""
-    cooled = wcw.cooling_engines(engine_cooldown_path(root))
+    from memvane.wiki.pipeline import api as pipeline
+    cooled = pipeline.cooling_keys(root, 'dedup_judge_engine')
     attempts, mode, empty_reason = plan_judge_attempts(compile_cfg, producing, cooled)
     provenance = {
         "engine": "", "mode": settings_types.VERIFIED_MODE_UNKNOWN, "producedBy": producing,
@@ -375,8 +349,8 @@ def _back_off(root: Path, jcfg: dict, key: str, has_more: bool) -> dict:
     from memvane.wiki.engines import api as wcw
 
     seconds = _int(jcfg.get("cooldownSeconds"), DEFAULT_COOLDOWN_SECONDS)
-    if has_more and wcw.set_engine_cooldown(engine_cooldown_path(root), key, seconds,
-            _queue_lock_path=cp.queue_lock_path, write_text_atomic=cp.write_text_atomic):
+    from memvane.wiki.pipeline import api as pipeline
+    if has_more and pipeline.set_cooldown(root, 'dedup_judge_engine', seconds, key):
         return {"engineCooldown": key}
     return {} if set_cooldown(root, seconds) else {"cooldownWriteFailed": True}
 

@@ -66,8 +66,8 @@ def load_entries(claimed: Path) -> list[tuple[str, dict | None]]:
 
 
 def record_skip(root: Path, wiki_root: Path, compile_dir: Path, entry: dict) -> bool:
-    """Append the skip judgment to dedup-skipped.jsonl so the scanner can
-    suppress re-queueing this pair while both bodies are unchanged.
+    """Record the skip judgment as a ``dedup`` suppression so the scanner does
+    not re-queue this pair while both bodies are unchanged.
 
     Returns False -- recording NOTHING -- for stale skips: either page
     missing, path-unsafe, or unreadable. A stale skip is not a content
@@ -77,10 +77,9 @@ def record_skip(root: Path, wiki_root: Path, compile_dir: Path, entry: dict) -> 
     The hashes are computed HERE, by the CLI, at skip time -- never supplied
     by the resolver agent (an agent-supplied hash would be nondeterministic).
 
-    An unwritable ledger returns False instead of propagating OSError. Same class as
-    the verify workers' ledgers: without the row the scanner re-queues this pair and
-    the judge re-bills it, so the failure must be visible (`recorded: false` in the
-    CLI's JSON) rather than a traceback that loses the rest of the resolve.
+    An unwritable ledger returns False (working-rules 1): without the row the scanner
+    re-queues this pair and the judge re-bills it, so the failure is visible
+    (`recorded: false` in the CLI's JSON) rather than a traceback.
     """
     page_a = entry.get("pageA")
     page_b = entry.get("pageB")
@@ -99,21 +98,17 @@ def record_skip(root: Path, wiki_root: Path, compile_dir: Path, entry: dict) -> 
             texts[rel] = target.read_text(encoding="utf-8")
         except OSError:
             return False
-    skipped_path = qmd_config.ledger(root, ct.DEDUP_SKIPPED)
-    if skipped_path is None:
-        return False
+    from memvane.wiki.pipeline import api as pipeline
     first, second = sorted((page_a, page_b))  # order-independent pair key
-    try:
-        cp.append_jsonl(skipped_path, {
-            "pageA": first,
-            "pageB": second,
-            "pageAHash": dedup_scan.body_hash(texts[first]),
-            "pageBHash": dedup_scan.body_hash(texts[second]),
-            "skippedAt": now_iso(),
-        })
-    except OSError:
-        return False
-    return True
+    row = {
+        "pageA": first,
+        "pageB": second,
+        "pageAHash": dedup_scan.body_hash(texts[first]),
+        "pageBHash": dedup_scan.body_hash(texts[second]),
+        "skippedAt": now_iso(),
+    }
+    return pipeline.set_suppression(root, 'dedup', first + '\n' + second,
+                                    row['pageAHash'] + ':' + row['pageBHash'], row)
 
 
 def record_recovery(compile_dir: Path, delete_rel: str, paired_with: str, content: str) -> Path:

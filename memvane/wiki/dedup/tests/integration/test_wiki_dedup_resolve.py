@@ -25,6 +25,16 @@ from tests.support.project import make_project
 REPO = Path(__file__).resolve().parents[5]
 
 
+def skipped_rows(root):
+    """Payloads of the ledger's ``dedup`` suppressions."""
+    try:
+        with pipeline.open_pipeline(root, readonly=True) as store:
+            return [json.loads(row[0]) for row in store._conn.execute(
+                "SELECT payload_json FROM suppressions WHERE kind = 'dedup' ORDER BY key")]
+    except FileNotFoundError:
+        return []
+
+
 def jsonl(path):
     if not path.exists():
         return []
@@ -147,7 +157,7 @@ class Merge(ResolveCase):
         self.assertEqual(self.merge(0, 'entities/already-gone.md'),
                          (0, {'action': 'skipped', 'reason': 'stale_target'}))
         self.assertEqual(jsonl(self.queue), [])
-        self.assertEqual(jsonl(self.compile / 'dedup-skipped.jsonl'), [])
+        self.assertEqual(skipped_rows(self.root), [])
 
     def test_a_crash_mid_resolve_leaves_the_queue_exactly_as_it_was(self):
         self.page('entities/loser.md', 'loser')
@@ -193,7 +203,7 @@ class Skip(ResolveCase):
         b = self.page('entities/b.md', '---\ntitle: B\n---\n\nB content.\n')
         self.enqueue({'pageA': 'entities/b.md', 'pageB': 'entities/a.md', 'score': 0.91})
         self.assertEqual(self.skip(0)[1]['recorded'], True)
-        skipped = jsonl(self.compile / 'dedup-skipped.jsonl')
+        skipped = skipped_rows(self.root)
         self.assertEqual(len(skipped), 1)
         row = skipped[0]
         self.assertEqual((row['pageA'], row['pageB']), ('entities/a.md', 'entities/b.md'))
@@ -202,7 +212,7 @@ class Skip(ResolveCase):
                          (scan.body_hash(a.read_text(encoding='utf-8')),
                           scan.body_hash(b.read_text(encoding='utf-8'))))
         self.assertTrue(row['skippedAt'])
-        self.assertEqual(scan.load_skip_suppressions(self.compile / 'dedup-skipped.jsonl'),
+        self.assertEqual(scan.load_skip_suppressions(self.root),
                          {('entities/a.md', 'entities/b.md'): (row['pageAHash'], row['pageBHash'])})
 
     def test_a_stale_skip_records_nothing(self):
@@ -215,12 +225,14 @@ class Skip(ResolveCase):
                 self.enqueue(entry)
                 self.assertEqual(self.skip(0), (0, {'action': 'skipped', 'recorded': False}))
                 self.assertEqual(jsonl(self.queue), [])
-        self.assertEqual(jsonl(self.compile / 'dedup-skipped.jsonl'), [])
+        self.assertEqual(skipped_rows(self.root), [])
 
     def test_an_unwritable_skip_ledger_is_reported_not_raised(self):
         self.page('entities/a.md', 'a')
         self.page('entities/b.md', 'b')
-        (self.compile / 'dedup-skipped.jsonl').mkdir()
+        with pipeline.open_pipeline(self.root) as store:
+            store._conn.execute("CREATE TRIGGER refuse_skip BEFORE INSERT ON suppressions "
+                                "BEGIN SELECT RAISE(ABORT, 'synthetic suppression refusal'); END")
         self.enqueue({'pageA': 'entities/a.md', 'pageB': 'entities/b.md'})
         self.assertEqual(self.skip(0), (0, {'action': 'skipped', 'recorded': False}))
 
@@ -260,7 +272,7 @@ class KeeperBudget(ResolveCase):
                                'keeper': 'entities/winner.md', 'kept': 'entities/loser.md',
                                'recorded': True, 'size': 900, 'budget': 512, 'method': 'tokenizer'})
         self.assertTrue(self.loser.exists())
-        self.assertEqual(len(jsonl(self.compile / 'dedup-skipped.jsonl')), 1)
+        self.assertEqual(len(skipped_rows(self.root)), 1)
         self.assertEqual(pipeline.log_rows(self.root, 'dedup_deleted'), [])
         self.assertFalse((self.compile / 'dedup-recovery').exists())
         events = [e for e in jsonl(state / 'events.jsonl') if e.get('event') == 'wiki.card']

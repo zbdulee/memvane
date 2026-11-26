@@ -47,7 +47,7 @@ from pathlib import Path
 import uuid
 
 from memvane.kernel.atomic_rename import fsync_dir, canonical_json_bytes
-from memvane.kernel.paths import now_iso, read_jsonl
+from memvane.kernel.paths import now_iso
 from memvane.wiki.verify.api import supersede_compile_intent as _supersede_compile_intent, compile_intent_id as _compile_intent_id
 from memvane.wiki.workspace import api as workspace_files
 from memvane.wiki.card import types as wiki_markers
@@ -114,75 +114,27 @@ def verify_cfg_of(compile_cfg: dict) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
-def engine_cooldown_path(root: Path) -> Path:
-    # compile cooldown과 분리(extractor 실패가 verify를 막지 않게) + **엔진 단위**로 분리.
-    # 0.x의 전역 `verify-cooldown`을 대체한다: 전역이면 한 엔진의 non-127 실패가 그 프로젝트의
-    # 모든 카드 검수를 막았고, 선호 엔진이 계속 같은 실패를 반복하는 상태(인증 안 된 CLI 등)에서
-    # 다음 후보로 degrade하지 못해 **검수가 영구 정지**했다 — `recallVerifiedOnly` 기본값
-    # 아래에서 그것은 wiki가 recall에서 사라지는 것과 같다.
-    return cp.under(root, ct.VERIFY_ENGINE_COOLDOWN)
-
-
-# 엔진 단위 식힘 저장소의 구현은 `engines`가 SSOT다(dedup judge가 자기 파일로 같은 헬퍼를
-# 쓴다 — flock read-modify-write·만료 클램프·원자 쓰기 반환값 확인을 두 벌 두지 않는다).
-# 여기 남는 것은 **경로**뿐이고, 그것이 verify와 dedup을 분리하는 유일한 차이다.
-
-
-def load_engine_cooldowns(root: Path) -> dict:
-    return engines.load_engine_cooldowns(engine_cooldown_path(root))
-
-
+# Verify cooldowns are per engine (``verify_engine`` rows), separate from compile:
+# a preferred engine that keeps failing (an unauthenticated CLI) degrades to the
+# next candidate instead of stopping every review of the project.
 def cooling_engines(root: Path) -> set:
-    return engines.cooling_engines(engine_cooldown_path(root))
+    from memvane.wiki.pipeline import api as pipeline
+    return pipeline.cooling_keys(root, 'verify_engine')
 
 
 def set_engine_cooldown(root: Path, key: str, seconds: int) -> bool:
     """이 후보를 seconds 동안 후보에서 제외한다. 반환값은 "기록이 남았는가"다.
 
-    **호출자는 False를 반드시 표면화해야 한다.** 이 파일이 MAJOR 1(영구 정지) 수정의 복구
-    메커니즘이다 — 기록이 없으면 다음 run이 같은 엔진을 다시 부르고 degrade가 일어나지 않아
-    정지가 그대로 돌아온다. 조용히 실패하면 그 사실을 알 방법이 없다.
+    **호출자는 False를 반드시 표면화해야 한다**(working-rules 1) — 기록이 없으면 다음 run이
+    같은 엔진을 다시 부르고 degrade가 일어나지 않는다.
     """
-    return engines.set_engine_cooldown(engine_cooldown_path(root), key, seconds,
-        _queue_lock_path=cp.queue_lock_path, write_text_atomic=cp.write_text_atomic)
+    from memvane.wiki.pipeline import api as pipeline
+    return pipeline.set_cooldown(root, 'verify_engine', seconds, key)
 
 
 def log_verdict(log, payload: dict) -> None:
     # Log rows only (working-rules 3): no decision reads the verify log.
     log.append(payload)
-
-
-def verify_skipped_path(root: Path, vcfg: dict) -> Path:
-    """inconclusive 삭제의 억제 마커 경로. **`verify_deleted_path`와 같이 폴백한다.**
-
-    예전에는 `None`을 돌려줄 수 있었고 그것이 `verify_deleted_path`가 이미 닫은 것과 **같은
-    과금 루프의 입구**였다: 원장이 **한 줄도 기록되지 않으면** unchanged source가
-    재컴파일→재검수→재삭제를 반복하고 매 반복이 유료 호출이다. 그 입구를 만들던 설정 키
-    (`compile.verify.skippedPath` — 오타 한 번이면 compile 디렉터리 밖을 가리켰다)는
-    제거됐지만, 파일 자체가 밖을 가리키는 symlink면 `cp.ledger`가 여전히 None을 낸다.
-    그때도 기본 경로로 떨어져 흔적을 남긴다(마커 없는 삭제보다 나은 실패다).
-    """
-    return qmd_config.ledger(root, ct.VERIFY_SKIPPED) or cp.under(root, ct.VERIFY_SKIPPED)
-
-
-def load_verify_suppressions(path: Path | None) -> dict[str, str]:
-    """sourcePath -> bounded body hash that produced an unadjudicable card.
-
-    Append-only file read in order, so LAST record per source path wins (same
-    semantics as wiki_dedup_scan.load_skip_suppressions). Malformed rows are
-    ignored — fail-open means "compile it", i.e. spend tokens rather than lose
-    a card, which is the safe direction for a cost guard that can't read itself.
-    """
-    suppressions: dict[str, str] = {}
-    if path is None:
-        return suppressions
-    for row in read_jsonl(path):
-        source_path = row.get("sourcePath")
-        body_hash = row.get("sourceBodyHash")
-        if not (isinstance(source_path, str) and source_path and isinstance(body_hash, str) and body_hash):
-            continue
-        suppressions[source_path] = body_hash
-    return suppressions
 
 
 def reindex_wiki(root: Path, config: dict) -> None:
@@ -786,8 +738,6 @@ def run(
     from memvane.wiki.workspace import api as wiki_selected_laya
     selected_route = wiki_selected_laya.selected(root)
     log_path = pipeline.audit_log(root, 'verify_log')
-    # 0.x 전역 cooldown 파일의 고아 정리 — 후보 단위 파일로 대체됐다(engine_cooldown_path).
-    cp.under(root, ct.LEGACY_VERIFY_COOLDOWN).unlink(missing_ok=True)
     max_per_run = max(1, min(
         int(engines.budget_of(compile_cfg).get("verifyPerRun", 3) or 3), settings_types.MAX_VERIFY_PER_RUN
     ))

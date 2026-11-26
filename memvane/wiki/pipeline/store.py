@@ -488,6 +488,15 @@ class PipelineStore(DecisionLedgerMixin, JobQueueMixin, VerifyQueueMixin):
         item['meta'] = _loads(item.pop('meta_json'), None)
         return item
 
+    def cooldowns(self, scope: str) -> dict[str, float]:
+        rows = self._conn.execute('SELECT key, until_ts FROM cooldowns WHERE scope = ?', (scope,)).fetchall()
+        return {r['key']: float(r['until_ts']) for r in rows}
+
+    def prune_cooldowns(self, scope: str, now: float) -> int:
+        with self._write_tx() as cur:
+            cur.execute('DELETE FROM cooldowns WHERE scope = ? AND until_ts <= ?', (scope, float(now)))
+            return cur.rowcount
+
     def clear_cooldown(self, scope: str, key: str) -> bool:
         with self._write_tx() as cur:
             cur.execute('DELETE FROM cooldowns WHERE scope = ? AND key = ?', (scope, key))

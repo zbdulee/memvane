@@ -6,12 +6,10 @@
 가장 조용한 종류다 — 잘못 판정하면 아무 로그도 남기지 않고 **그 파이프라인이 영구
 정지**한다. 그래서 판정 규칙 두 개를 여기 한 곳에 둔다.
 
-규칙 1 — 만료 시각을 파일에 적는 형태(`expiry_active`). `float(파일내용)` 뒤 `now <
+규칙 1 — 만료 시각을 기록하는 형태(`expiry_active`, 위키 원장 `cooldowns` 행). `float(파일내용)` 뒤 `now <
 expiry`만 보면 오염된 값(`1e300`) 하나가 **영구 활성**이 되어 그 게이트가 다시 열리지
 않는다(compile cooldown = compile 영구 정지, dedup judge cooldown = 판정 영구 정지).
-그래서 상한(`MAX_COOLDOWN_SECS`)을 넘는 만료값은 식힘으로 보지 않는다 —
-`wiki_compile_worker.load_engine_cooldowns`가 4단계에서 받은 처방과 **같은 규칙**이고,
-그 상수도 여기서 가져간다(리터럴을 흩지 않는다).
+그래서 상한(`MAX_COOLDOWN_SECS`)을 넘는 만료값은 식힘으로 보지 않는다.
 
 규칙 2 — 파일 mtime의 나이를 보는 형태(`window_elapsed`). `now - mtime`을 그대로 쓰면
 **미래 mtime**(시계 되돌림·백업 복원·파일시스템 이관으로 실제로 생긴다)에서 나이가
@@ -29,7 +27,6 @@ from __future__ import annotations
 
 # 만료 시각 상한. 이 값을 넘어선 만료값은 오염된 것으로 보고 무시한다. 쓰기 쪽도 같은
 # 값으로 클램프하므로(`clamp_seconds`) 정상 경로는 절대 상한을 넘지 않는다.
-# `wiki_compile_worker.MAX_ENGINE_COOLDOWN_SECS`가 이 상수의 별칭이다.
 MAX_COOLDOWN_SECS = 86400
 
 # 미래 mtime 관용 범위(초). 이보다 더 앞선 타임스탬프는 쓸 수 없는 값으로 본다.

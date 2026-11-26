@@ -147,15 +147,14 @@ class NegativeVerdicts(VerifyCase):
         for name in ('verify-deleted.jsonl', 'verify-skipped.jsonl', 'tombstones.jsonl',
                      'generated-manifest.jsonl'):
             self.assertEqual(self.ledger(name), [], name)
+        self.assertEqual(self.suppressed(), {})
 
-    def test_suppressions_ignore_malformed_rows_and_a_missing_ledger(self):
-        path = self.compile_dir / 'verify-skipped.jsonl'
-        path.write_text('\n'.join(['not json', '{"sourcePath":"a.md"}', '{"sourcePath":"","sourceBodyHash":"x"}',
-                                   '{"sourcePath":"a.md","sourceBodyHash":"h1"}',
-                                   '{"sourcePath":"a.md","sourceBodyHash":"h2"}']) + '\n', encoding='utf-8')
-        self.assertEqual(verify.load_verify_suppressions(path), {'a.md': 'h2'})
-        self.assertEqual(verify.load_verify_suppressions(None), {})
-        self.assertEqual(verify.load_verify_suppressions(self.compile_dir / 'absent.jsonl'), {})
+    def test_suppressions_keep_the_last_hash_and_a_missing_ledger_is_empty(self):
+        from memvane.wiki.pipeline import api as pipeline
+        self.assertEqual(self.suppressed(), {})
+        for body in ('h1', 'h2'):
+            self.assertTrue(pipeline.set_suppression(self.root, 'verify', 'a.md', body, {'sourcePath': 'a.md'}))
+        self.assertEqual(self.suppressed(), {'a.md': 'h2'})
 
     def test_a_selected_route_keeps_every_card_and_wakes_sync_after_a_pass(self):
         from memvane.wiki.card import api as cards
@@ -181,7 +180,7 @@ class NegativeVerdicts(VerifyCase):
                 self.assertGreater(recheck.call_count, 0)
                 self.assertEqual(wake.call_count, 1 if expected == 'verified' else 0)
         self.assertEqual(self.ledger('verify-deleted.jsonl'), [])
-        self.assertEqual(self.ledger('verify-skipped.jsonl'), [])
+        self.assertEqual(self.suppressed(), {})
 
 
 class RecordedVerdict(VerifyCase):
@@ -242,25 +241,25 @@ class Transient(VerifyCase):
         self.assertEqual((row['result'], row['reason'], row['enginesAttempted']),
                          ('deferred', 'extractor_unavailable', ['claude']))
         self.assertEqual(self.engine_cooldown(), {})
-        self.assertEqual(self.ledger('verify-skipped.jsonl'), [])
+        self.assertEqual(self.suppressed(), {})
 
     def test_a_paid_failure_cools_only_its_engine_and_is_never_a_verdict(self):
         for kwargs, reason in (({'timeout': True}, 'extractor_timeout'), ({'returncode': 1}, 'extractor_failed')):
             with self.subTest(reason=reason):
-                (self.compile_dir / 'verify-engine-cooldown.json').unlink(missing_ok=True)
                 self.setup()
+                self.clear_engine_cooldown()
                 fake = self.fake(**kwargs)
                 self.assertEqual(self.run_verify()['processed'], 0)
                 self.assertEqual(len(fake.calls), 1)
                 self.assertTrue(self.card.exists())
                 self.assertIn('test-card.md', self.queued())
                 self.assertEqual(list(self.engine_cooldown()), ['claude'])
-                self.assertFalse((self.compile_dir / 'cooldown').exists(), 'the compile cooldown is separate')
+                self.assertEqual(self.engine_cooldown('compile'), {}, 'the compile cooldown is separate')
                 row = self.log()[-1]
                 self.assertEqual((row['result'], row['reason'], row['cooledKey'], row['attemptedMode']),
                                  ('deferred', reason, 'claude', 'self'))
                 self.assertNotIn('verifiedMode', row, 'a failed attempt achieved no mode')
-                self.assertEqual(self.ledger('verify-skipped.jsonl'), [])
+                self.assertEqual(self.suppressed(), {})
                 self.assertEqual(self.ledger('verify-deleted.jsonl'), [])
 
     def test_a_cooled_producer_spends_nothing_until_its_cooldown_ends(self):
@@ -277,7 +276,9 @@ class Transient(VerifyCase):
 
     def test_an_unbounded_cooldown_value_does_not_exclude_the_engine(self):
         self.setup()
-        (self.compile_dir / 'verify-engine-cooldown.json').write_text(json.dumps({'claude': 9e18}), encoding='utf-8')
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.root) as store:
+            store.set_cooldown('verify_engine', 'claude', 9e18)
         fake = self.fake()
         self.assertEqual(self.run_verify()['processed'], 1)
         self.assertEqual(len(fake.calls), 1)
@@ -285,7 +286,10 @@ class Transient(VerifyCase):
 
     def test_a_failed_cooldown_write_is_surfaced(self):
         self.setup()
-        (self.compile_dir / 'verify-engine-cooldown.json').mkdir()
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.root) as store:
+            store._conn.execute("CREATE TRIGGER refuse_cooldown BEFORE INSERT ON cooldowns "
+                                "BEGIN SELECT RAISE(ABORT, 'synthetic cooldown refusal'); END")
         self.fake(timeout=True)
         self.run_verify()
         row = self.log()[0]
@@ -320,15 +324,6 @@ class Transient(VerifyCase):
         self.assertEqual((self.log()[0]['result'], self.log()[0]['reason']), ('deferred', 'resource_deferred'))
         self.assertEqual(self.engine_cooldown(), {})
         self.assertIn('test-card.md', self.queued())
-
-    def test_the_retired_global_cooldown_file_is_removed(self):
-        self.setup()
-        stale = self.compile_dir / 'verify-cooldown'
-        stale.write_text('99999999999\n', encoding='utf-8')
-        self.fake(returncode=127)
-        self.run_verify()
-        self.assertFalse(stale.exists())
-
 
 class Budget(VerifyCase):
     def cards(self, names):
