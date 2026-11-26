@@ -172,7 +172,6 @@ class PosttoolEnqueue(FixtureCase):
 
     def test_pending_only_multi_file_shares_single_lock_budget_and_reports_busy(self):
         import fcntl
-        import time
         extra_a = self.root / 'docs/a.md'
         extra_b = self.root / 'docs/b.md'
         extra_a.write_text('# a\n')
@@ -184,10 +183,20 @@ class PosttoolEnqueue(FixtureCase):
             'tool_name': 'apply_patch',
             'tool_input': {'patch': '*** Begin Patch\n*** Update File: docs/source.md\n*** Update File: docs/a.md\n*** Update File: docs/b.md\n*** End Patch'},
         }
-        with lock_path.open('a', encoding='utf-8') as lock:
+        timeouts = []
+        real_record = card.record_pending_refresh
+
+        def spy_record(*args, **kwargs):
+            timeouts.append(kwargs.get('lock_timeout'))
+            return real_record(*args, **kwargs)
+
+        with lock_path.open('a', encoding='utf-8') as lock, \
+             patch.object(card, 'record_pending_refresh', side_effect=spy_record):
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            started = time.monotonic()
             outcome = enqueue.enqueue_payload(payload, pending_only=True, selected_route=None)
-            elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 0.35)
+        self.assertEqual(len(timeouts), 3)
+        self.assertGreater(timeouts[0], 0.0)
+        self.assertLessEqual(timeouts[0], enqueue.HOOK_PENDING_LOCK_SECONDS)
+        self.assertLess(timeouts[1], timeouts[0])
+        self.assertLessEqual(timeouts[2], timeouts[1])
         self.assertEqual(outcome, {'queued': 0, 'failed': 3, 'failedReason': 'busy', 'reason': 'pending_busy'})

@@ -480,6 +480,7 @@ _HANDLE_SOURCES = {
     'memvane.runtime.api.supervisor': 'memvane.runtime.types.SupervisorHandle',
     'memvane.runtime.api.training_guard': 'memvane.runtime.types.TrainingGuardHandle',
     'memvane.provider.api.reviewed_provider': 'memvane.provider.types.ReviewedProviderHandle',
+    'memvane.wiki.pipeline.api.open_pipeline': 'memvane.wiki.pipeline.types.PipelineHandle',
 }
 _HANDLE_CLASSES = {
     'memvane.store.types.ViewStoreHandle': 'memvane.store.view.view_store.ViewStore',
@@ -490,6 +491,7 @@ _HANDLE_CLASSES = {
     'memvane.runtime.types.TrainingGuardHandle': 'memvane.runtime.resource_coordination.TrainingGuard',
     'memvane.provider.types.ReviewedProviderHandle':
         'memvane.provider.adapters.local_embed_provider.ReviewedLocalQmdProvider',
+    'memvane.wiki.pipeline.types.PipelineHandle': 'memvane.wiki.pipeline.store.PipelineStore',
 }
 # Value objects other domains read from an api result: the dataclass or
 # __slots__ class in the owner's types.py declares their fields, and only those
@@ -498,6 +500,7 @@ _VALUE_SOURCES = {
     'memvane.journal.api.resolve_endpoint': 'memvane.journal.types.VerifiedEndpoint',
     'memvane.journal.api.reader_selection': 'memvane.journal.types.ReaderSelection',
     'memvane.recall.api.query_endpoint': 'memvane.recall.types.ReaderResult',
+    'memvane.wiki.pipeline.api.publish_card': 'memvane.wiki.pipeline.types.PublishOutcome',
 }
 # Runtime surface (rereview 3.1): other domains call 58 runtime names, the 41
 # api names plus the 17 methods of its four handles (coordinator 9, wake queue 3,

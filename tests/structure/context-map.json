@@ -3,6 +3,7 @@
     "kernel": 0,
     "settings": 1,
     "diagnostics": 1,
+    "wiki/pipeline": 1,
     "runtime": 2,
     "route": 2,
     "wiki/card": 2,
@@ -1988,6 +1989,41 @@
     "memvane/learning/runtime_activation.py": {
       "context": "learning",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/pipeline/__init__.py": {
+      "context": "wiki/pipeline",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/pipeline/types.py": {
+      "context": "wiki/pipeline",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/pipeline/schema.py": {
+      "context": "wiki/pipeline",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/pipeline/store.py": {
+      "context": "wiki/pipeline",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/pipeline/publish.py": {
+      "context": "wiki/pipeline",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/pipeline/migrate.py": {
+      "context": "wiki/pipeline",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/pipeline/api.py": {
+      "context": "wiki/pipeline",
+      "layer": "application",
       "pinned": false
     }
   },
