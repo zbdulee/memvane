@@ -27,14 +27,17 @@ class SingleRenamePublishTests(FixtureCase):
     def test_new_create_replace_cas_conflict_and_fence_abort(self):
         res1 = pipeline.publish_card(
             self.project.root, self.wiki, 'concepts/alpha.md', '# Alpha v1\n',
-            audit_kind='manifest', audit_payload={'action': 'created'},
+            audit_kind='verify_log', audit_payload={'action': 'created'},
+            generation={'targetPath': 'concepts/alpha.md', 'action': 'created'},
         )
         self.assertEqual(res1.state, 'published')
         self.assertEqual((self.wiki / 'concepts/alpha.md').read_text(encoding='utf-8'), '# Alpha v1\n')
         self.assertEqual(self._publish_temps(), [])
 
         with pipeline.open_pipeline(self.project.root, readonly=True) as store:
-            self.assertEqual(len(store.query_audit('manifest', target_path='concepts/alpha.md')), 1)
+            self.assertEqual(len(store.query_audit('verify_log', target_path='concepts/alpha.md')), 1)
+            self.assertEqual(store.generations(target_path='concepts/alpha.md'),
+                             [{'targetPath': 'concepts/alpha.md', 'action': 'created'}])
 
         # User edits card; stale expected_target_sha triggers CAS conflict and preserves user edit.
         (self.wiki / 'concepts/alpha.md').write_text('# User Edited\n', encoding='utf-8')
@@ -240,3 +243,20 @@ class SingleRenamePublishTests(FixtureCase):
         self.assertEqual(res.state, 'conflict_user_edited')
         self.assertEqual((self.wiki / 'concepts/race.md').read_text(encoding='utf-8'), '# Person\n')
         self.assertEqual(self._publish_temps(), [])
+
+    def test_generation_row_lands_only_with_the_card_including_recovery(self):
+        row = {'targetPath': 'concepts/g.md', 'action': 'created', 'sourceHash': 'h'}
+        stop, crash = self._stop_after('_create_into_place')
+        with stop, self.assertRaises(crash):
+            pipeline.publish_card(self.project.root, self.wiki, 'concepts/g.md', '# G\n', generation=row)
+        with pipeline.open_pipeline(self.project.root, readonly=True) as store:
+            self.assertEqual(store.generations(target_path='concepts/g.md'), [])
+        pipeline.recover_publishes(self.project.root, self.wiki)
+        pipeline.recover_publishes(self.project.root, self.wiki)
+        self._card('concepts/taken.md', '# Person\n')
+        lost = pipeline.publish_card(self.project.root, self.wiki, 'concepts/taken.md', '# M\n',
+                                     generation={'targetPath': 'concepts/taken.md', 'action': 'created'})
+        self.assertEqual(lost.state, 'conflict_user_edited')
+        with pipeline.open_pipeline(self.project.root, readonly=True) as store:
+            self.assertEqual(store.generations(target_path='concepts/g.md'), [row])
+            self.assertEqual(store.generations(target_path='concepts/taken.md'), [])

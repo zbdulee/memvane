@@ -18,12 +18,14 @@ def open_pipeline_dir(compile_dir, *, readonly=False, timeout_ms=None):
 
 
 def publish_card(project_root, wiki_root, target_path, content, *, expected_target_sha=None,
-                 stage_id=None, audit_kind=None, audit_payload=None, tx_id=None, lock_context=None):
+                 stage_id=None, audit_kind=None, audit_payload=None, tx_id=None, lock_context=None,
+                 generation=None):
     from memvane.wiki.pipeline.publish import publish_card as implementation
     return implementation(
         project_root, wiki_root, target_path, content,
         expected_target_sha=expected_target_sha, stage_id=stage_id,
         audit_kind=audit_kind, audit_payload=audit_payload, tx_id=tx_id, lock_context=lock_context,
+        generation=generation,
     )
 
 
@@ -37,6 +39,6 @@ def needs_v1_migration(project_root, *, wiki_root=None):
     return implementation(project_root, wiki_root=wiki_root)
 
 
-def migrate_from_v1(project_root, *, wiki_root=None, remove_legacy=True):
+def migrate_from_v1(project_root, *, wiki_root=None):
     from memvane.wiki.pipeline.migrate import migrate_from_v1 as implementation
-    return implementation(project_root, wiki_root=wiki_root, remove_legacy=remove_legacy)
+    return implementation(project_root, wiki_root=wiki_root)

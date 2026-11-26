@@ -1,89 +1,132 @@
-"""Integration tests for one-time 1.x -> 2.0 migration into ``wiki-pipeline.sqlite3``."""
+"""1.x -> 2.0 cutover: decision ledgers imported once from release writers, the rest discarded."""
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
+import sqlite3
+import subprocess
+import sys
+from unittest.mock import patch
 
 from memvane.wiki.pipeline import api as pipeline
+from memvane.wiki.pipeline.types import DB_NAME
 from tests.support.case import FixtureCase
-from tests.support.project import make_project
+
+TAGS = ('v1.1.0', 'v1.1.1', 'v1.1.2')
+REPO = Path(__file__).resolve().parents[5]
+
+
+def archived(tag, directory):
+    bundle = directory / tag
+    if not bundle.exists():
+        bundle.mkdir()
+        archive = subprocess.run(['git', '-C', str(REPO), 'archive', tag, 'memvane', 'package.json'],
+                                 check=True, capture_output=True)
+        subprocess.run(['tar', '-x', '-C', str(bundle)], input=archive.stdout, check=True)
+    return bundle
 
 
 class V1MigrationTests(FixtureCase):
-    def setUp(self):
-        super().setUp()
-        self.project = make_project(self.home, git=False)
-        self.compile_dir = self.project.root / '.memvane/compile'
-        self.wiki = self.project.root / '.memvane/wiki'
-        self.compile_dir.mkdir(parents=True, exist_ok=True)
-        self.wiki.mkdir(parents=True, exist_ok=True)
+    def written_by(self, tag):
+        bundle = archived(tag, self.tmp)
+        scratch = self.tmp / f'{tag}-scratch'
+        scratch.mkdir()
+        env = {**os.environ, 'PYTHONPATH': os.pathsep.join((str(bundle), str(REPO)))}
+        child = subprocess.run(
+            [sys.executable, '-B', str(REPO / 'memvane/wiki/pipeline/tests/tagged_v1_ledgers.py'),
+             str(bundle), str(scratch)], cwd=bundle, env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        data = json.loads(child.stdout)
+        self.assertEqual(data['actions'], ['created', 'created', 'created'])
+        return Path(data['root']), data['files']
 
-    def test_full_v1_migration_preserves_retired_wiki_recomputes_quota_and_is_idempotent(self):
-        (self.compile_dir / 'source-queue.jsonl').write_text(
-            json.dumps({'source': {'collection': 'docs', 'path': 'docs/a.md'}, 'trigger': 'post_tool_source', 'engine': 'claude'}) + '\n'
-        )
-        (self.compile_dir / 'source-queue.jsonl.claimed.99.tok').write_text(
-            json.dumps({'source': {'collection': 'docs', 'path': 'docs/b.md'}, 'trigger': 'post_sync_source', 'engine': 'codex'}) + '\n'
-        )
-        (self.compile_dir / 'verify-queue.jsonl').write_text(
-            json.dumps({'targetPath': 'concepts/a.md', 'sourceHash': 'h1'}) + '\n'
-        )
-        (self.compile_dir / 'source-refresh-pending.jsonl').write_text(
-            json.dumps({'eventId': 'ev-pub', 'sourcePath': 'docs/a.md', 'ts': '2026-11-26T00:00:00Z', 'engine': 'claude'}) + '\n'
-        )
-        priv_refresh = self.compile_dir / '.handoff/v1/refresh/events.jsonl'
-        priv_refresh.parent.mkdir(parents=True, exist_ok=True)
-        priv_refresh.write_text(
-            json.dumps({'eventId': 'ev-priv', 'sourcePath': 'docs/b.md', 'ts': '2026-11-26T00:00:01Z', 'engine': 'codex'}) + '\n'
-        )
-        (self.compile_dir / 'source-refresh-settled.json').write_text(
-            json.dumps({'version': 1, 'sources': {'docs/b.md': {'eventId': 'ev-priv', 'sha256': 's2', 'reason': 'settled'}}})
-        )
-        for name in ('generated-manifest.jsonl', 'tombstones.jsonl', 'verify-deleted.jsonl', 'verify-skipped.jsonl', 'dedup-skipped.jsonl'):
-            (self.compile_dir / name).write_text(json.dumps({'targetPath': 'concepts/a.md', 'sourceBodyHash': 'bh'}) + '\n')
-        (self.compile_dir / 'generated-manifest.jsonl.compact-stamp').write_text('1')
-        (self.compile_dir / 'cooldown').write_text('1234.5')
-        (self.compile_dir / 'verify-engine-cooldown.json').write_text(json.dumps({'claude': 2345.0}))
+    def in_progress(self, root):
+        compile_dir, wiki = root / '.memvane/compile', root / '.memvane/wiki'
+        for name in ('source-queue.jsonl', 'verify-queue.jsonl', 'source-refresh-pending.jsonl',
+                     'tombstones.jsonl', 'verify-log.jsonl', 'dedup-deleted.jsonl', 'cooldown',
+                     'source-queue.jsonl.claimed.1.abc'):
+            (compile_dir / name).write_text('{}\n')
+        (compile_dir / '.handoff/v1/hold/' / ('a' * 32)).mkdir(parents=True)
+        (compile_dir / '.handoff/v1/copy-quota').mkdir(parents=True)
+        (compile_dir / '.handoff/v1/copy-quota/allocated-x').write_text('1')
+        (compile_dir / 'retired-wiki').mkdir(exist_ok=True)
+        (compile_dir / 'retired-wiki/keep.md').write_text('# kept\n')
+        (compile_dir / 'wiki-retrieval').mkdir(exist_ok=True)
+        (compile_dir / 'wiki-retrieval/cards.sqlite').write_bytes(b'cache')
+        for name in ('.first-' + 'b' * 32, '.alpha.md.pending-' + 'c' * 16, '.pending-ownership.json',
+                     '.verify-swap-1', '.pc-' + 'd' * 32):
+            (wiki / 'concepts' / name).write_text('hidden')
 
-        hold_entry = self.compile_dir / '.handoff/v1/hold' / ('a' * 32)
-        hold_entry.mkdir(parents=True, exist_ok=True)
-        (hold_entry / 'raw').write_text(json.dumps({'targetPath': 'concepts/a.md', 'expectedTargetHash': 'oldsha'}))
-        (hold_entry / 'image').write_bytes(b'hello-card')
+    def generations(self, root):
+        with sqlite3.connect(str(root / '.memvane/compile' / DB_NAME)) as db:
+            return [json.loads(r[0]) for r in db.execute('SELECT row_json FROM card_generations ORDER BY id')]
 
-        quota_dir = self.compile_dir / '.handoff/v1/copy-quota'
-        quota_dir.mkdir(parents=True, exist_ok=True)
-        (quota_dir / 'allocated-deadbeef').write_text('99999999')
+    def test_release_writer_ledgers_import_once_and_everything_else_is_discarded(self):
+        for tag in TAGS:
+            with self.subTest(tag=tag):
+                root, files = self.written_by(tag)
+                manifest = [json.loads(line) for line in files['generated-manifest.jsonl'].splitlines()]
+                self.in_progress(root)
+                self.assertTrue(pipeline.needs_v1_migration(root))
+                counts = pipeline.migrate_from_v1(root)
+                self.assertEqual((counts['generations'], counts['verifySuppressions'],
+                                  counts['dedupSuppressions']), (3, 1, 1))
+                self.assertEqual(self.generations(root), manifest)
+                with pipeline.open_pipeline(root, readonly=True) as store:
+                    self.assertEqual([r['action'] for r in store.generations(
+                        target_path='.memvane/wiki/concepts/alpha.md')], ['created'])
+                    verify_row = json.loads(files['verify-skipped.jsonl'])
+                    self.assertEqual(store.suppressions('verify'), {'docs/beta.md': verify_row['sourceBodyHash']})
+                    dedup_row = json.loads(files['dedup-skipped.jsonl'])
+                    self.assertEqual(store.suppressions('dedup'), {
+                        'concepts/alpha.md\nconcepts/beta.md': dedup_row['pageAHash'] + ':' + dedup_row['pageBHash']})
+                compile_dir = root / '.memvane/compile'
+                self.assertEqual(sorted(p.name for p in compile_dir.iterdir()),
+                                 sorted(['retired-wiki', 'wiki-retrieval', DB_NAME,
+                                         *(p.name for p in compile_dir.glob(DB_NAME + '-*')),
+                                         *(p.name for p in compile_dir.glob('.*.lock'))]))
+                self.assertEqual((compile_dir / 'retired-wiki/keep.md').read_text(), '# kept\n')
+                hidden = [p.name for p in (root / '.memvane/wiki').rglob('.*') if p.name != '.memvane-root']
+                self.assertEqual(hidden, [])
+                self.assertFalse(pipeline.needs_v1_migration(root))
+                again = pipeline.migrate_from_v1(root)
+                self.assertTrue(again['alreadyMigrated'])
+                self.assertEqual(len(self.generations(root)), 3)
 
-        hidden = self.wiki / 'concepts/.first-1234'
-        hidden.parent.mkdir(parents=True, exist_ok=True)
-        hidden.write_text('stale temp')
-        (self.wiki / '.pending-ownership.json').write_text('{}')
-
-        retired = self.compile_dir / 'retired-wiki/keep.md'
-        retired.parent.mkdir(parents=True, exist_ok=True)
-        retired.write_text('# Retired Archive\n', encoding='utf-8')
-
-        self.assertTrue(pipeline.needs_v1_migration(self.project.root, wiki_root=self.wiki))
-        summary = pipeline.migrate_from_v1(self.project.root, wiki_root=self.wiki)
-        self.assertFalse(summary['alreadyMigrated'])
-        self.assertEqual(summary['compileJobs'], 2)
-        self.assertEqual(summary['verifyJobs'], 1)
-        self.assertEqual(summary['refreshes'], 2)
-        self.assertEqual(summary['staged'], 0)
-        self.assertGreater(summary['removed'], 0)
-        self.assertFalse(pipeline.needs_v1_migration(self.project.root, wiki_root=self.wiki))
-
-        # Retired archive preserved verbatim; legacy files removed.
-        self.assertEqual(retired.read_text(encoding='utf-8'), '# Retired Archive\n')
-        self.assertFalse((self.compile_dir / '.handoff').exists())
-        self.assertFalse(hidden.exists())
-        self.assertFalse((self.compile_dir / 'source-queue.jsonl').exists())
-
-        with pipeline.open_pipeline(self.project.root, readonly=True) as store:
-            self.assertEqual(store.staged_quota_bytes(), 0)
-            self.assertIsNone(store.get_fence('global_publish'))
-            self.assertEqual(store.get_cooldown('verify_engine', 'claude')['until_ts'], 2345.0)
-            self.assertEqual(len(store.unresolved_refreshes()), 2)
-
-        again = pipeline.migrate_from_v1(self.project.root, wiki_root=self.wiki)
+    def test_crash_before_commit_reimports_exactly_once_and_after_marker_only_removes(self):
+        root, _ = self.written_by('v1.1.2')
+        from memvane.wiki.pipeline import migrate, store
+        # The marker row is the last write inside the import transaction.
+        with patch.object(store.time, 'time', side_effect=RuntimeError('crash before commit')), \
+                self.assertRaises(RuntimeError):
+            pipeline.migrate_from_v1(root)
+        self.assertEqual(self.generations(root), [])
+        self.assertTrue((root / '.memvane/compile/generated-manifest.jsonl').exists())
+        self.assertTrue(pipeline.needs_v1_migration(root))
+        with patch.object(migrate, '_remove_legacy', side_effect=RuntimeError('crash after marker')), \
+                self.assertRaises(RuntimeError):
+            pipeline.migrate_from_v1(root)
+        self.assertEqual(len(self.generations(root)), 3)
+        self.assertTrue((root / '.memvane/compile/generated-manifest.jsonl').exists())
+        self.assertFalse(pipeline.needs_v1_migration(root))
+        again = pipeline.migrate_from_v1(root)
         self.assertTrue(again['alreadyMigrated'])
-        self.assertEqual(again['compileJobs'], 0)
+        self.assertEqual(len(self.generations(root)), 3)
+        self.assertFalse((root / '.memvane/compile/generated-manifest.jsonl').exists())
+
+    def test_same_second_same_bytes_rows_are_both_kept(self):
+        root, files = self.written_by('v1.1.2')
+        manifest = root / '.memvane/compile/generated-manifest.jsonl'
+        first = files['generated-manifest.jsonl'].splitlines()[0]
+        manifest.write_text(files['generated-manifest.jsonl'] + first + '\n', encoding='utf-8')
+        counts = pipeline.migrate_from_v1(root)
+        self.assertEqual(counts['generations'], 4)
+
+    def test_project_without_1x_files_gets_the_marker(self):
+        root = self.tmp / 'fresh'
+        (root / '.memvane/compile').mkdir(parents=True)
+        self.assertTrue(pipeline.needs_v1_migration(root))
+        counts = pipeline.migrate_from_v1(root)
+        self.assertEqual((counts['generations'], counts['removed']), (0, 0))
+        self.assertFalse(pipeline.needs_v1_migration(root))

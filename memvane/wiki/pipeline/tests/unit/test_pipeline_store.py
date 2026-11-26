@@ -106,11 +106,52 @@ class PipelineStoreTests(FixtureCase):
             )
             self.assertEqual([v['job_id'] for v in vclaimed], ['v-p1', 'v-old'])
 
-            store.append_audit('manifest', {'action': 'created'}, target_path='topics/p1.md')
-            self.assertEqual(len(store.query_audit('manifest', target_path='topics/p1.md')), 1)
+            store.append_audit('verify_log', {'action': 'created'}, target_path='topics/p1.md')
+            self.assertEqual(len(store.query_audit('verify_log', target_path='topics/p1.md')), 1)
             store.set_cooldown('compile', 'claude', 999.0, {'reason': 'limit'})
             self.assertEqual(store.get_cooldown('compile', 'claude')['until_ts'], 999.0)
             self.assertTrue(store.clear_cooldown('compile', 'claude'))
             store.set_fence('global_publish', 'opaque', {'n': 1})
             self.assertEqual(store.get_fence('global_publish')['reason'], 'opaque')
             self.assertTrue(store.clear_fence('global_publish'))
+
+
+class DecisionLedgerTests(FixtureCase):
+    def setUp(self):
+        super().setUp()
+        self.project = make_project(self.home, git=False)
+
+    def test_generations_match_by_any_identity_in_append_order(self):
+        rows = [{'targetPath': 'concepts/a.md', 'sourceHash': 'h1', 'canonicalKey': 'k1', 'action': 'created'},
+                {'targetPath': 'concepts/b.md', 'sourceHash': 'h1', 'action': 'created'},
+                {'targetPath': 'concepts/a.md', 'sourceHash': 'h2', 'action': 'verify-deleted'}]
+        with pipeline.open_pipeline(self.project.root) as store:
+            for row in rows:
+                store.append_generation(row)
+            self.assertIsNone(store.append_generation(rows[0], origin_key='o1') and None)
+            self.assertIsNone(store.append_generation(rows[0], origin_key='o1'))
+            self.assertEqual(store.generations(target_path='concepts/a.md'), [rows[0], rows[2], rows[0]])
+            self.assertEqual(store.generations(source_hash='h1'), [rows[0], rows[1], rows[0]])
+            self.assertEqual(store.latest_generation('concepts/a.md'), rows[0])
+            self.assertEqual(store.generations(), [])
+
+    def test_suppressions_keep_the_last_body_hash_per_key(self):
+        with pipeline.open_pipeline(self.project.root) as store:
+            store.set_suppression('verify', 'docs/a.md', 'b1', {'n': 1})
+            store.set_suppression('verify', 'docs/a.md', 'b2', {'n': 2})
+            store.set_suppression('dedup', 'a\nb', 'x:y', {})
+            self.assertEqual(store.suppressions('verify'), {'docs/a.md': 'b2'})
+            self.assertEqual(store.get_suppression('verify', 'docs/a.md'), {'bodyHash': 'b2', 'payload': {'n': 2}})
+            with self.assertRaises(PipelineError):
+                store.set_suppression('tombstone', 'docs/a.md', 'b', {})
+
+    def test_dedup_pairs_queue_once_until_done(self):
+        with pipeline.open_pipeline(self.project.root) as store:
+            self.assertTrue(store.enqueue_dedup_pair('b.md', 'a.md', 0.95))
+            self.assertFalse(store.enqueue_dedup_pair('a.md', 'b.md', 0.97))
+            pair, = store.dedup_pairs()
+            self.assertEqual((pair['pageA'], pair['pageB']), ('b.md', 'a.md'))
+            self.assertTrue(store.set_dedup_pair_state(pair['pairKey'], 'done'))
+            self.assertEqual(store.dedup_pairs(), [])
+            self.assertTrue(store.enqueue_dedup_pair('a.md', 'b.md', 0.91))
+            self.assertEqual(len(store.dedup_pairs()), 1)

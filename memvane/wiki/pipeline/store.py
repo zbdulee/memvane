@@ -10,6 +10,7 @@ import time
 import uuid
 
 from memvane.kernel.errors import _query_only_uri
+from memvane.wiki.pipeline.decisions import DecisionLedgerMixin, insert_generation
 from memvane.wiki.pipeline.schema import DDL_STATEMENTS
 from memvane.wiki.pipeline.types import (
     AUDIT_KINDS,
@@ -90,7 +91,7 @@ def _loads(raw: str | None, default: object = None) -> object:
     return json.loads(raw)
 
 
-class PipelineStore:
+class PipelineStore(DecisionLedgerMixin):
     """Transactional handle over ``wiki-pipeline.sqlite3``."""
 
     def __init__(self, db_path: Path, *, readonly: bool = False,
@@ -583,15 +584,19 @@ class PipelineStore:
 
     def begin_publish_txn(self, target_path: str, temp_name: str, temp_ino: int, temp_sha: str, *,
                           stage_id: str | None = None, expected_target_sha: str | None = None,
-                          tx_id: str | None = None) -> str:
+                          tx_id: str | None = None, generation: dict | None = None) -> str:
+        """Record an intended publish; ``generation`` is appended to ``card_generations``
+        only when the card actually lands (``published`` or ``published_user_edited``)."""
         resolved_id = tx_id or uuid.uuid4().hex
         now = time.time_ns()
         with self._write_tx() as cur:
             cur.execute(
                 'INSERT INTO publish_txns(tx_id, target_path, stage_id, temp_name, temp_ino, temp_sha, '
-                'expected_target_sha, state, created_ns, updated_ns) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                'expected_target_sha, generation_json, state, created_ns, updated_ns) '
+                'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (resolved_id, target_path, stage_id, temp_name, int(temp_ino), temp_sha,
-                 expected_target_sha, 'publishing', now, now),
+                 expected_target_sha, _dumps(generation) if generation is not None else None,
+                 'publishing', now, now),
             )
         return resolved_id
 
@@ -604,6 +609,11 @@ class PipelineStore:
                 (state, now, tx_id),
             )
             changed = cur.rowcount > 0
+            if changed and state in ('published', 'published_user_edited'):
+                row = cur.execute('SELECT generation_json FROM publish_txns WHERE tx_id = ?', (tx_id,)).fetchone()
+                generation = _loads(row['generation_json'], None) if row else None
+                if isinstance(generation, dict):
+                    insert_generation(cur, generation, 'publish:' + tx_id, now)
             if changed and audit_kind is not None:
                 if audit_kind not in AUDIT_KINDS:
                     raise PipelineError(f'invalid_audit_kind:{audit_kind}')

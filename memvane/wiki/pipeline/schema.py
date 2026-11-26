@@ -31,6 +31,7 @@ DDL_STATEMENTS: tuple[str, ...] = (
         engine TEXT NOT NULL,
         payload_json TEXT NOT NULL,
         state TEXT NOT NULL,
+        reason TEXT,
         claim_pid INTEGER,
         claim_token TEXT,
         attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -45,6 +46,7 @@ DDL_STATEMENTS: tuple[str, ...] = (
         target_path TEXT NOT NULL,
         source_hash TEXT,
         payload_json TEXT NOT NULL,
+        pending_blob BLOB,
         state TEXT NOT NULL,
         claim_pid INTEGER,
         claim_token TEXT,
@@ -111,10 +113,50 @@ DDL_STATEMENTS: tuple[str, ...] = (
         temp_ino INTEGER NOT NULL,
         temp_sha TEXT NOT NULL,
         expected_target_sha TEXT,
+        generation_json TEXT,
         state TEXT NOT NULL,
         created_ns INTEGER NOT NULL,
         updated_ns INTEGER NOT NULL
     )
     """,
     'CREATE INDEX IF NOT EXISTS idx_publish_state_target ON publish_txns(state, target_path)',
+    """
+    CREATE TABLE IF NOT EXISTS card_generations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target_path TEXT,
+        source_hash TEXT,
+        canonical_key TEXT,
+        explicit INTEGER NOT NULL DEFAULT 0,
+        action TEXT,
+        row_json TEXT NOT NULL,
+        origin_key TEXT UNIQUE,
+        created_ns INTEGER NOT NULL
+    )
+    """,
+    'CREATE INDEX IF NOT EXISTS idx_generation_target ON card_generations(target_path, id)',
+    'CREATE INDEX IF NOT EXISTS idx_generation_hash ON card_generations(source_hash, id)',
+    'CREATE INDEX IF NOT EXISTS idx_generation_key ON card_generations(canonical_key, id)',
+    """
+    CREATE TABLE IF NOT EXISTS suppressions (
+        kind TEXT NOT NULL,
+        key TEXT NOT NULL,
+        body_hash TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        updated_ns INTEGER NOT NULL,
+        PRIMARY KEY (kind, key)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS dedup_pairs (
+        pair_key TEXT PRIMARY KEY,
+        page_a TEXT NOT NULL,
+        page_b TEXT NOT NULL,
+        score REAL,
+        state TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_ns INTEGER NOT NULL,
+        updated_ns INTEGER NOT NULL
+    )
+    """,
+    'CREATE INDEX IF NOT EXISTS idx_dedup_state ON dedup_pairs(state, created_ns)',
 )

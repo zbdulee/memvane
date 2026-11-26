@@ -250,6 +250,10 @@ _TEST_G1_EXCEPTIONS = {
     ('tests/e2e/checkout_cache_e2e.py', 'memvane.store.checkout.checkout_view'): 'records sealed under another boot device number',
     ('tests/e2e/sync_profile_scale.py', 'memvane.store.tests.support'): 'synthetic row store fixture',
     ('tests/e2e/sync_profile_scale.py', 'memvane.sync.product_sync_worker'): 'measured sync fill path',
+    # The 1.x -> 2.0 migration test feeds rows that a release tag's own writers produced.
+    ('memvane/wiki/pipeline/tests/tagged_v1_ledgers.py', 'memvane.wiki.compile.wiki_compile'): 'release-tag manifest writer',
+    ('memvane/wiki/pipeline/tests/tagged_v1_ledgers.py', 'memvane.wiki.dedup.wiki_dedup_resolve'): 'release-tag dedup-skipped writer',
+    ('memvane/wiki/pipeline/tests/tagged_v1_ledgers.py', 'memvane.wiki.verify.wiki_verify_worker'): 'release-tag verify-skipped writer',
     # The learning wake's transition table drives the queue and the dispatcher that own the row.
     ('memvane/learning/tests/statemachine/test_m09_wake.py', 'memvane.runtime.runtime_work'): 'the wake row writers of the learning kind',
     ('memvane/learning/tests/statemachine/test_m09_wake.py', 'memvane.runtime.runtime_wake_policy'): 'the retry cap of the learning kind',

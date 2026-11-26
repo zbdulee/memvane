@@ -5,7 +5,7 @@
 - 브랜치: `claude/1.1.4` (출시 태그 `v1.1.2`)
 - 완료 단계: Stage 0+1 `3a3f7001`(stateFormat 2, `~/.local/state/memvane/v2`, 설계서 r4), Stage 2 `41fc37b9`(`memvane/wiki/pipeline/` 신설)
 - 기준 문서: [공통 개발 규칙](contexts/working-rules.md), [릴리스 체크리스트](contexts/release.md), [설계서 §4.2·§5](../design-wiki-pipeline-v2.md), [pipeline README](../../memvane/wiki/pipeline/README.md)
-- 현재 단계: **A안 재계획 게이트 — 코디네이터 검토 대기.** ①(게시·hold·복구 공통분)은 커밋을 마쳤다. 이 문서 §3~§8의 A안 추가 범위는 승인 전에는 제품 코드를 고치지 않는다.
+- 현재 단계: **A안 구현 중.** A2~A7은 사용자 승인(msg_c81bed7e80ef, 전부 §4 추천안). C4부터 §5 커밋 단위대로 진행한다.
 
 ## 1. 확정된 결정 (사용자·코디네이터)
 
@@ -233,6 +233,8 @@ C4~C11은 서로 의존한다(C7은 C5·C6, C8은 C7, C9는 C7·C8). 각 커밋 
 | 진행 기록 | `8f9be8fc`, `a448a9c4` | 코디네이터 1차 결정, Work 진입점 전수 |
 | ① pipeline | `af5c9c3d` | `staged_cards` Work 행, `publish_card` 교환·대조·멱등, `recover_publishes` 교환 복구·고아 temp 정리, migrate는 hold 버림·fence 없음 |
 | ① verify Work | `a0fad489` | `Work` SQLite backend, `HOLD_SCAN_LIMIT`·`copy_quota.py` 삭제 |
+| A안 재계획 | `5737bdbb` | §1~§8, A2~A7 승인 |
+| C4 원장 확장 | (C4) | `card_generations`·`suppressions`·`dedup_pairs`·`publish_txns.generation_json`·`verify_jobs.pending_blob`·`compile_jobs.reason`, `decisions.py` mixin(store 800줄 상한), `migrate_from_v1` 재작성(가져오기 3종 + 마커 한 트랜잭션 → 삭제), 출시 태그 writer 드라이버 `tagged_v1_ledgers.py`(`v1.1.0`·`v1.1.1`·`v1.1.2`). pipeline 3/3·Python 18, structure 28/28, v1_guard 0, py3.9 import 통과. teeth: 가져오기 전 삭제(M2)·줄 번호 없는 origin key(M4)·충돌 시 generation 기록·`.first-*` 미삭제(M5) 각각 FAIL 확인. 연결(worker 시작·양보)은 C12 |
 
 ①의 검사 결과(커밋 `a0fad489` 워킹트리):
 
@@ -260,4 +262,4 @@ teeth(제품 줄을 깨서 FAIL 확인, 확인 후 원복):
 
 ## 10. 다음 재개 지점
 
-**A안 재계획(§3~§8) 승인을 기다린다.** 결정 필요 A2~A7의 답을 받은 뒤 C4부터 진행한다. 워킹트리에 미커밋 변경은 없다(`.memvane/**` 제외).
+C5(inbox)부터 진행한다. C4의 `migrate_from_v1`은 아직 진입 경로에 연결하지 않았다(C12).

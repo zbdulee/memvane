@@ -1,251 +1,151 @@
-"""One-time migration from 1.x JSONL/handoff artifacts into ``wiki-pipeline.sqlite3``."""
+"""One-time 1.x -> 2.0 cutover of a project's wiki compile state.
+
+Only the decision ledgers come across: ``generated-manifest.jsonl`` (machine
+retirement of generated cards when their source is deleted) and the paid-call
+suppressions ``verify-skipped.jsonl`` / ``dedup-skipped.jsonl``. Every 1.x
+in-progress artifact is discarded: a source change or a full-scan sync
+recreates the work. The import and its marker commit in one transaction; the
+1.x files are removed only after that commit, so a crash at any point either
+leaves everything to import again or leaves only removal to repeat.
+"""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import shutil
-import time
-import uuid
 
 from memvane.wiki.pipeline.store import open_pipeline, pipeline_db_path
 
-_AUDIT_FILE_MAP = (
-    ('generated-manifest.jsonl', 'manifest'),
-    ('tombstones.jsonl', 'tombstone'),
-    ('candidates.jsonl', 'candidate'),
-    ('merge-needed.jsonl', 'merge_needed'),
-    ('discard-ledger.jsonl', 'discard'),
-    ('verify-log.jsonl', 'verify_log'),
-    ('verify-deleted.jsonl', 'verify_deleted'),
-    ('verify-skipped.jsonl', 'verify_skipped'),
-    ('dedup-needed.jsonl', 'dedup_needed'),
-    ('dedup-skipped.jsonl', 'dedup_skipped'),
-    ('dedup-deleted.jsonl', 'dedup_deleted'),
+MARKER = 'migrated_from_v1_at'
+
+_IMPORTED = ('generated-manifest.jsonl', 'verify-skipped.jsonl', 'dedup-skipped.jsonl')
+_DISCARDED = (
+    'source-queue.jsonl', 'verify-queue.jsonl', 'source-refresh-pending.jsonl',
+    'source-refresh-pending.jsonl.lock', 'source-refresh-settled.json', 'source-refresh-settled.json.lock',
+    'generated-manifest.jsonl.compact-stamp', 'tombstones.jsonl', 'candidates.jsonl', 'merge-needed.jsonl',
+    'verify-log.jsonl', 'verify-deleted.jsonl', 'dedup-needed.jsonl', 'dedup-deleted.jsonl',
+    'discard-ledger.jsonl', 'cooldown', 'verify-cooldown', 'verify-engine-cooldown.json',
+    'dedup-judge-cooldown', 'dedup-judge-engine-cooldown.json',
 )
-
-_COOLDOWN_FILES = (
-    ('cooldown', 'compile'),
-    ('verify-cooldown', 'verify'),
-    ('verify-engine-cooldown.json', 'verify_engine'),
-)
+_DISCARDED_GLOBS = ('*.claimed.*', '*.jsonl.lock', 'dedup-judge-*')
+# 1.1.4 files that share a discarded pattern.
+_KEPT = ('edit-inbox.jsonl.lock',)
 
 
-def _read_jsonl(path: Path) -> list[dict]:
-    if not path.is_file():
+def _lines(path: Path) -> list[tuple[int, bytes]]:
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
         return []
+    return [(number, line) for number, line in enumerate(data.splitlines(), 1) if line.strip()]
+
+
+def _rows(path: Path) -> list[tuple[int, bytes, dict]]:
     rows = []
-    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
-        text = line.strip()
-        if not text:
-            continue
+    for number, line in _lines(path):
         try:
-            obj = json.loads(text)
+            row = json.loads(line)
         except ValueError:
-            continue
-        if isinstance(obj, dict):
-            rows.append(obj)
+            continue  # A torn or foreign line carries no decision.
+        if isinstance(row, dict):
+            rows.append((number, line, row))
     return rows
 
 
-def _legacy_files(compile_dir: Path) -> list[Path]:
-    found: list[Path] = []
-    if not compile_dir.is_dir():
-        return found
-    fixed = (
-        'source-queue.jsonl',
-        'verify-queue.jsonl',
-        'source-refresh-pending.jsonl',
-        'source-refresh-settled.json',
-        'generated-manifest.jsonl.compact-stamp',
-        *(name for name, _ in _AUDIT_FILE_MAP),
-        *(name for name, _ in _COOLDOWN_FILES),
-    )
-    for name in fixed:
-        candidate = compile_dir / name
-        if candidate.exists():
-            found.append(candidate)
-    for pattern in ('*.claimed.*', 'dedup-judge-*'):
-        found.extend(p for p in compile_dir.glob(pattern) if p.is_file())
-    handoff = compile_dir / '.handoff' / 'v1'
-    if handoff.exists():
-        found.append(handoff)
-    return found
+def _manifest(compile_dir: Path) -> list[tuple[str, dict]]:
+    return [(f'v1-manifest:{number}:{hashlib.sha256(line).hexdigest()}', row)
+            for number, line, row in _rows(compile_dir / 'generated-manifest.jsonl')]
+
+
+def _verify_skips(compile_dir: Path) -> list[dict]:
+    items = []
+    for _, _, row in _rows(compile_dir / 'verify-skipped.jsonl'):
+        source, body = row.get('sourcePath'), row.get('sourceBodyHash')
+        if isinstance(source, str) and source and isinstance(body, str) and body:
+            items.append({'key': source, 'bodyHash': body, 'row': row})
+    return items
+
+
+def _dedup_skips(compile_dir: Path) -> list[dict]:
+    items = []
+    for _, _, row in _rows(compile_dir / 'dedup-skipped.jsonl'):
+        values = [row.get(name) for name in ('pageA', 'pageB', 'pageAHash', 'pageBHash')]
+        if not all(isinstance(v, str) and v for v in values):
+            continue
+        page_a, page_b, hash_a, hash_b = values
+        if page_b < page_a:
+            page_a, page_b, hash_a, hash_b = page_b, page_a, hash_b, hash_a
+        items.append({'key': page_a + '\n' + page_b, 'bodyHash': hash_a + ':' + hash_b, 'row': row})
+    return items
 
 
 def _hidden_wiki_files(wiki_root: Path | None) -> list[Path]:
-    if wiki_root is None or not Path(wiki_root).is_dir():
+    if wiki_root is None or not Path(wiki_root).is_dir() or Path(wiki_root).is_symlink():
         return []
-    found: list[Path] = []
-    for path in Path(wiki_root).rglob('*'):
-        if not path.is_file():
+    found = []
+    for path in Path(wiki_root).rglob('.*'):
+        if path.is_symlink() or not path.is_file():
             continue
         name = path.name
-        if (name.startswith('.first-') or '.pending-' in name
-                or name == '.pending-ownership.json' or name.startswith('.verify-swap-')):
+        if (name.startswith('.first-') or name.startswith('.pc-') or name.startswith('.verify-swap-')
+                or name == '.pending-ownership.json' or '.pending-' in name):
             found.append(path)
     return found
 
 
+def _legacy_paths(compile_dir: Path) -> list[Path]:
+    if not compile_dir.is_dir():
+        return []
+    found = [compile_dir / name for name in (*_IMPORTED, *_DISCARDED) if (compile_dir / name).exists()]
+    for pattern in _DISCARDED_GLOBS:
+        found.extend(p for p in compile_dir.glob(pattern)
+                     if p.is_file() and p not in found and p.name not in _KEPT)
+    handoff = compile_dir / '.handoff'
+    if handoff.exists() or handoff.is_symlink():
+        found.append(handoff)
+    return found
+
+
+def _wiki_root(root: Path, wiki_root: Path | str | None) -> Path:
+    return Path(wiki_root) if wiki_root is not None else root / '.memvane/wiki'
+
+
 def needs_v1_migration(project_root: Path | str, *, wiki_root: Path | str | None = None) -> bool:
-    """Return True when 1.x compile/handoff artifacts exist and migration has not completed."""
+    """True until the marker exists; a project without 1.x files gets the marker on first run."""
     root = Path(project_root)
     db_path = pipeline_db_path(root)
     if db_path.exists():
-        try:
-            with open_pipeline(root, readonly=True) as store:
-                if store.meta_get('migrated_from_v1_at') is not None:
-                    return False
-        except Exception:
-            pass
-    compile_dir = root / '.memvane/compile'
-    if _legacy_files(compile_dir):
-        return True
-    wiki = Path(wiki_root) if wiki_root is not None else (root / '.memvane/wiki')
-    return bool(_hidden_wiki_files(wiki))
+        with open_pipeline(root, readonly=True) as store:
+            if store.meta_get(MARKER) is not None:
+                return False
+    return True
 
 
-def migrate_from_v1(project_root: Path | str, *, wiki_root: Path | str | None = None,
-                    remove_legacy: bool = True) -> dict:
-    """Idempotently migrate 1.x compile/verify/refresh/handoff state into ``wiki-pipeline.sqlite3``."""
+def migrate_from_v1(project_root: Path | str, *, wiki_root: Path | str | None = None) -> dict:
+    """Import the decision ledgers, commit the marker, then remove every 1.x artifact.
+
+    Callers hold ``.compile-run.lock`` and the card/wiki locks, so no 1.1.4 writer runs
+    concurrently and an in-flight 1.x worker has already released the run lock.
+    """
     root = Path(project_root)
     compile_dir = root / '.memvane/compile'
-    wiki = Path(wiki_root) if wiki_root is not None else (root / '.memvane/wiki')
-    counts = {'compileJobs': 0, 'verifyJobs': 0, 'refreshes': 0,
-              'audits': 0, 'cooldowns': 0, 'staged': 0, 'removed': 0}
-
+    wiki = _wiki_root(root, wiki_root)
     with open_pipeline(root) as store:
-        if store.meta_get('migrated_from_v1_at') is not None:
-            if remove_legacy:
-                counts['removed'] = _cleanup_legacy(compile_dir, wiki)
-            return {'alreadyMigrated': True, **counts}
-
-        _migrate_queues(store, compile_dir, counts)
-        _migrate_refreshes(store, compile_dir, counts)
-        _migrate_audits(store, compile_dir, counts)
-        _migrate_cooldowns(store, compile_dir, counts)
-        _migrate_handoffs_and_hidden(store, compile_dir, wiki, counts)
-        store.meta_set('migrated_from_v1_at', str(time.time()))
-
-    if remove_legacy:
-        counts['removed'] = _cleanup_legacy(compile_dir, wiki)
-    return {'alreadyMigrated': False, **counts}
+        counts = store.import_v1_ledgers(
+            _manifest(compile_dir), _verify_skips(compile_dir), _dedup_skips(compile_dir), MARKER)
+    counts['removed'] = _remove_legacy(compile_dir, wiki)
+    return counts
 
 
-def _migrate_queues(store, compile_dir: Path, counts: dict) -> None:
-    src_files = [compile_dir / 'source-queue.jsonl', *sorted(compile_dir.glob('source-queue.jsonl.claimed.*'))]
-    for path in src_files:
-        for row in _read_jsonl(path):
-            source = row.get('source') if isinstance(row.get('source'), dict) else {}
-            col = str(source.get('collection') or '')
-            rel = str(source.get('path') or '')
-            if not rel:
-                continue
-            store.enqueue_compile_job(
-                uuid.uuid4().hex, col, rel,
-                str(row.get('trigger') or 'post_tool_source'),
-                str(row.get('engine') or 'unknown'), row, replace_queued=False,
-            )
-            counts['compileJobs'] += 1
-    ver_files = [compile_dir / 'verify-queue.jsonl', *sorted(compile_dir.glob('verify-queue.jsonl.claimed.*'))]
-    for path in ver_files:
-        for row in _read_jsonl(path):
-            target = str(row.get('targetPath') or '')
-            if not target:
-                continue
-            store.enqueue_verify_job(uuid.uuid4().hex, target, row.get('sourceHash'), row)
-            counts['verifyJobs'] += 1
-
-
-def _migrate_refreshes(store, compile_dir: Path, counts: dict) -> None:
-    settled_path = compile_dir / 'source-refresh-settled.json'
-    settled_map = {}
-    if settled_path.is_file():
-        try:
-            doc = json.loads(settled_path.read_text(encoding='utf-8'))
-            if isinstance(doc, dict) and isinstance(doc.get('sources'), dict):
-                settled_map = doc['sources']
-        except ValueError:
-            settled_map = {}
-    for path in (compile_dir / 'source-refresh-pending.jsonl', compile_dir / '.handoff/v1/refresh/events.jsonl'):
-        for row in _read_jsonl(path):
-            eid = row.get('eventId')
-            src = row.get('sourcePath')
-            if not isinstance(eid, str) or not isinstance(src, str):
-                continue
-            store.record_refresh(eid, src, str(row.get('ts') or ''), str(row.get('engine') or 'unknown'))
-            counts['refreshes'] += 1
-            settled = settled_map.get(src)
-            if isinstance(settled, dict) and settled.get('eventId') == eid and settled.get('sha256'):
-                store.settle_refresh(eid, str(settled['sha256']), str(settled.get('reason') or 'settled'), time.time())
-
-
-def _migrate_audits(store, compile_dir: Path, counts: dict) -> None:
-    for filename, kind in _AUDIT_FILE_MAP:
-        for row in _read_jsonl(compile_dir / filename):
-            store.append_audit(
-                kind, row,
-                target_path=row.get('targetPath'),
-                source_path=row.get('sourcePath'),
-                body_hash=row.get('bodyHash') or row.get('sourceBodyHash'),
-            )
-            counts['audits'] += 1
-
-
-def _migrate_cooldowns(store, compile_dir: Path, counts: dict) -> None:
-    for filename, scope in _COOLDOWN_FILES:
-        path = compile_dir / filename
-        if not path.is_file():
-            continue
-        try:
-            raw = path.read_text(encoding='utf-8').strip()
-            data = json.loads(raw) if raw.startswith('{') else {'until': float(raw)}
-        except (OSError, ValueError):
-            continue
-        if isinstance(data, dict) and 'until' in data:
-            store.set_cooldown(scope, 'default', float(data['until']), data)
-            counts['cooldowns'] += 1
-        elif isinstance(data, dict):
-            for key, val in data.items():
-                if isinstance(val, (int, float)):
-                    store.set_cooldown(scope, str(key), float(val), {'until': float(val)})
-                    counts['cooldowns'] += 1
-    for path in sorted(compile_dir.glob('dedup-judge-*')):
-        if not path.is_file():
-            continue
-        try:
-            data = json.loads(path.read_text(encoding='utf-8'))
-            if isinstance(data, dict):
-                store.set_cooldown('dedup_judge', path.name, float(data.get('until', 0.0)), data)
-                counts['cooldowns'] += 1
-        except (OSError, ValueError):
-            continue
-
-
-def _migrate_handoffs_and_hidden(store, compile_dir: Path, wiki: Path, counts: dict) -> None:
-    # 1.x in-progress handoffs are discarded, never staged: a source change or a full-scan
-    # sync recreates the work. No publish fence is raised, so nothing stays held.
-    for hidden in _hidden_wiki_files(wiki):
-        rel = hidden.relative_to(wiki).as_posix()
-        store.append_audit('discard', {'migratedHiddenFile': rel}, target_path=rel)
-        counts['audits'] += 1
-
-
-def _cleanup_legacy(compile_dir: Path, wiki: Path) -> int:
+def _remove_legacy(compile_dir: Path, wiki: Path) -> int:
     removed = 0
-    for path in _legacy_files(compile_dir):
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-            removed += 1
-        elif path.is_file():
+    for path in _legacy_paths(compile_dir):
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
             path.unlink(missing_ok=True)
-            removed += 1
-    handoff_root = compile_dir / '.handoff'
-    if handoff_root.is_dir():
-        try:
-            if not any(handoff_root.iterdir()):
-                handoff_root.rmdir()
-        except OSError:
-            pass
+        removed += 1
     for hidden in _hidden_wiki_files(wiki):
         hidden.unlink(missing_ok=True)
         removed += 1
