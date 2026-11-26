@@ -418,29 +418,6 @@ def source_hash(candidate: dict) -> str:
     return hashlib.sha256(json.dumps(stable, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 
-def replacement_image(root, queue, target, base, old, candidate, summary, redactions):
-    """Choose a fresh, unreserved name; identical bytes alone cannot identify a writer."""
-    from memvane.wiki.verify.api import pending_name_reserved
-    marker = base
-    for slot in range(3):
-        if slot == 2:
-            marker = os.urandom(8).hex()
-        page = compose_generated_card(old, markdown_page(candidate, summary, 'generated', redactions, marker))
-        if page is None:
-            break
-        path = target.with_name('.' + target.name + '.pending-' + marker)
-        produced = page.encode('utf-8')
-        if not pending_name_reserved(queue, path.relative_to(root).as_posix(), fresh=slot == 2):
-            try:
-                path.lstat()
-            except FileNotFoundError:
-                return marker, path, page
-        # Includes the full rendered revision (mtime too), manual sections and
-        # this slot's marker. A preserved older image cannot block an A/B/A edit.
-        marker = hashlib.sha256(produced).hexdigest()[:16]
-    return None
-
-
 def lint_candidate(candidate: dict, target: Path | None, max_lines: int) -> dict:
     findings = []
     title = str(candidate.get("title") or "").strip()
@@ -735,12 +712,6 @@ def compose_generated_card(old_text: str, generated_page: str) -> str | None:
     return rewritten
 
 
-def write_pending_card(path: Path, text: str) -> bool:
-    """Durably stage private candidate bytes without replacing the live card."""
-    from memvane.wiki.verify.api import stage_candidate
-    return stage_candidate(path, text.encode('utf-8'))
-
-
 
 @workspace_files.guard_path
 @workspace_files.guard_path
@@ -1030,7 +1001,7 @@ def main() -> int:
         return 1
 
 
-def _verify_job(root, selected, candidate, record, pending_path=None, expected_target_hash=None):
+def _verify_job(root, selected, candidate, record, *, kind, expected_target_hash):
     # 실제 소스를 별도 필드로 넘긴다 — verifier가 `MAX_SOURCES` 상한과 무관하게
     # 반드시 읽어야 하는 근거다(모델이 준 `sources` 항목이 밀어낼 수 없다).
     authoritative = authoritative_sources(candidate)
@@ -1048,10 +1019,9 @@ def _verify_job(root, selected, candidate, record, pending_path=None, expected_t
                                 'observedNs': first['observed_ns']}
     return {
         "ts": now_iso(),
+        "kind": kind,
         "targetPath": record["targetPath"],
-        **({'pendingPath': pending_path.relative_to(root).as_posix(),
-            'expectedTargetHash': expected_target_hash}
-           if pending_path is not None else {}),
+        "expectedTargetHash": expected_target_hash,
         "sources": record["sources"],
         "sourceRevisions": record["sourceRevisions"],
         **({"sourceFingerprints": fingerprints} if fingerprints is not None else {}),
@@ -1334,17 +1304,17 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                           composed if composed is not None else page, floor,
                           final_reason=final_reason):
             return 0
-    # The first card is exposed only after its review and manifest row are reserved.
-    # Existing cards stay visible until the native verifier promotes the replacement.
-    pending_path = None
-    expected_target_hash = None
+    # A first card is published as generated at once, after its review row is
+    # queued. An existing card stays visible until the verifier publishes the
+    # reviewed replacement carried by its replace row.
+    replacing = False
     verify_cfg = compile_cfg.get("verify") if isinstance(compile_cfg.get("verify"), dict) else {}
     wiki_selected_laya.recheck(selected)
-    verify_queue = qmd_config.ledger(root, ct.VERIFY_QUEUE)
     manifest = public_history(record, action=action, status=status)
     if manifest is None:
         print(json.dumps({'action': 'write-failed', 'reason': 'history_row_incompatible'}))
         return 1
+    from memvane.wiki.verify import api as verify_api
     if action == "updated":
         wiki_name = None if selected is None else next((item['name'] for item in selected[0]['collections']
                           if item['role'] == 'wiki' and
@@ -1355,32 +1325,27 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                               'findings': ['selected_wiki_unresolved']}
             append_jsonl(candidate_path, record)
             return 0
-        if not verify_cfg.get("enabled", True) or verify_queue is None:
+        if not verify_cfg.get("enabled", True):
             record['action'] = 'merge-needed'
             record['lint'] = {'verdict': 'needs_review',
                               'findings': ['verified_replacement_requires_review']}
             append_jsonl(candidate_path, record)
             return 0
-        image = replacement_image(root, verify_queue, target, h, old, candidate, summary, redactions)
-        if image is None:
-            # A collision on the random final slot gets a fresh name on retry.
-            print(json.dumps({"action": "write-failed", "reason": "pending_replacement_conflict"}))
+        pending_page = compose_generated_card(old, markdown_page(candidate, summary, 'generated', redactions, h))
+        if pending_page is None:
+            print(json.dumps({"action": "write-failed", "reason": "replacement_render_failed"}))
             return 1
-        h, pending_path, pending_page = image
-        record["sourceHash"] = h
-        manifest["sourceHash"] = h
-        expected_target_hash = hashlib.sha256(original).hexdigest()
-        from memvane.wiki.verify.api import enqueue_replacement
-        job = _verify_job(root, selected, candidate, record, pending_path, expected_target_hash)
-        write_ok = enqueue_replacement(root, config, wiki_root, verify_queue,
-                                       job, selected, lambda: write_pending_card(pending_path, pending_page),
-                                       produced_bytes=pending_page.encode("utf-8"))
+        replacing = True
+        job = _verify_job(root, selected, candidate, record, kind='replace',
+                          expected_target_hash=hashlib.sha256(original).hexdigest())
+        write_ok = verify_api.enqueue_review(root, job, pending_page.encode("utf-8"))
     else:
-        from memvane.wiki.verify.api import create_first_card
-        job = _verify_job(root, selected, candidate, record)
-        write_ok = create_first_card(root, wiki_root, verify_queue, job, page.encode("utf-8"), selected,
-                                     review=bool(verify_cfg.get("enabled", True) and status == "generated"),
-                                     manifest=manifest)
+        image = page.encode("utf-8")
+        job = _verify_job(root, selected, candidate, record, kind='review',
+                          expected_target_hash=hashlib.sha256(image).hexdigest())
+        write_ok = verify_api.publish_first_card(
+            root, wiki_root, job, image,
+            review=bool(verify_cfg.get("enabled", True) and status == "generated"), manifest=manifest)
     if not write_ok:
         record["action"] = "write-failed"
         append_jsonl(candidate_path, record)
@@ -1389,24 +1354,23 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
 
     record["action"] = action
     append_jsonl(candidate_path, record)
-    if pending_path is not None:
-        append_jsonl(manifest_path, manifest)
+    append_jsonl(manifest_path, manifest)
     # manifest is read for delete-detection (previous lookup); compact by folding
     # same-identity duplicates rather than size-trimming (which would drop a card's
     # entry and break tombstoning). Threshold-gated + atomic inside.
     compact_manifest(manifest_path)
     # 활동 로그는 프로젝트 밖(설치 state root)에 남는다. 실패해도 카드 쓰기는 끝난 것이다.
-    if pending_path is None:
+    if not replacing:
         workspace_files.append_activity(root, action, target.relative_to(wiki_root).as_posix(),
                                  title, bound=selected, reason='compile')
 
     collection, collection_path = find_wiki_collection(config)
-    if pending_path is None and collection and collection_path and selected is not None:
+    if not replacing and collection and collection_path and selected is not None:
         wiki_selected_laya.request_sync(root, selected)
 
     # 기계 검수(auto-verify) enqueue: generated로 쓰인 카드만 대상. verify worker가
     # 카드 주장 vs 원문을 대조해 verified 승격 또는 (onFail) 삭제한다.
-    verify_queued = pending_path is not None or (verify_cfg.get("enabled", True) and status == "generated")
+    verify_queued = replacing or (verify_cfg.get("enabled", True) and status == "generated")
 
     result = {
         "action": action,

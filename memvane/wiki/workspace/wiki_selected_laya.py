@@ -200,7 +200,7 @@ def _queue_busy(queue: Path, *, receipt_writer=None):
     if not queue.parent.is_dir():
         return False
     from memvane.wiki.workspace import ledger_queue
-    if ledger_queue.kind(queue) == 'source':
+    if ledger_queue.kind(queue) is not None:
         # Queued rows and live claims both count; a dead claim is returned by the next claim.
         return bool(ledger_queue.live(queue))
     import fcntl

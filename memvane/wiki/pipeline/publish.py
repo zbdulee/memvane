@@ -84,12 +84,14 @@ def _card_locks(project_root: Path):
             os.close(card_fd)
 
 
-def _write_temp(target: Path, temp_name: str, payload: bytes) -> tuple[Path, int, str]:
+def _write_temp(target: Path, temp_name: str, payload: bytes, mode: int = 0o600) -> tuple[Path, int, str]:
     target.parent.mkdir(parents=True, exist_ok=True)
     temp_path = target.with_name(temp_name)
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0)
     fd = os.open(temp_path, flags, 0o600)
     try:
+        if mode != 0o600:
+            os.fchmod(fd, mode)
         with os.fdopen(fd, 'wb', closefd=False) as out:
             out.write(payload)
             out.flush()
@@ -208,7 +210,14 @@ def publish_card(project_root: Path | str, wiki_root: Path | str, target_path: P
     payload = content.encode('utf-8') if isinstance(content, str) else bytes(content)
     resolved_tx = tx_id or uuid.uuid4().hex
     temp_name = f'{TEMP_PREFIX}{resolved_tx}{TEMP_SUFFIX}'
-    temp_path, temp_ino, temp_sha = _write_temp(target, temp_name, payload)
+    mode = 0o600
+    if expected_target_sha is not None:
+        # A replacement keeps the permission bits of the card it replaces.
+        try:
+            mode = stat.S_IMODE(target.lstat().st_mode)
+        except FileNotFoundError:
+            pass
+    temp_path, temp_ino, temp_sha = _write_temp(target, temp_name, payload, mode)
 
     with open_pipeline(root) as store:
         store.begin_publish_txn(

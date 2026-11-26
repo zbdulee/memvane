@@ -11,10 +11,8 @@ from unittest.mock import patch
 from memvane.wiki.card import api as wiki_freshness
 from memvane.wiki.compile import wiki_compile as writer
 from memvane.wiki.compile.tests import legacy_created
-from memvane.wiki.compile.tests.integration import test_pending_handoff as handoff_cases
-from memvane.wiki.engines import api as engines
+from memvane.wiki.compile.tests import release_tags
 from memvane.wiki.intake import api as intake
-from memvane.wiki.verify import api as verifier
 from memvane.wiki.workspace import api as manifest_ledger
 from memvane.wiki.workspace import types as workspace_types
 from tests.support.queue_files import pending_text
@@ -22,7 +20,8 @@ from tests.support.case import FixtureCase
 
 
 class ManifestScan(FixtureCase):
-    prepare = handoff_cases.PendingHandoff.prepare
+    def prepare(self, name):
+        release_tags.prepare_selected_card(self, name)
 
     def released_manifest(self, name):
         self.prepare(name)
@@ -68,24 +67,6 @@ class ManifestScan(FixtureCase):
                     rc = writer._compile_locked(self.root, self.config, self.config['compile'],
                                                 self.project.wiki, candidate, False)
         return rc, json.loads(output.getvalue())['action']
-
-    def test_verifier_compacts_after_appending_machine_deletion(self):
-        path, row = self.released_manifest('verify-compaction')
-        self.assertEqual(self.compile('Current source for deletion.', 'decision'), (0, 'created'))
-        created = path.read_bytes()[len(row):]
-        path.write_bytes(row * 4096 + created)
-        # Complete the first (bounded) pass to leave the actual verifier ready to proceed.
-        self.assertIsNone(wiki_freshness.unresolved_pending_refreshes_strict(self.root, before_ledger_write=True))
-        fail = {'verdict': 'fail', 'claims': [{'claim': 'Decision', 'supported': False, 'quote': ''}],
-                'reasons': ['source contradicts claim']}
-        with patch.object(manifest_ledger, 'selected', return_value=None), \
-             patch.object(manifest_ledger, 'request_sync'), \
-             patch.object(engines, 'run_extractor', return_value=(fail, None, 0)) as called:
-            result = verifier.run(self.root, self.config, self.config['compile'])
-        self.assertEqual((called.call_count, result['remaining']), (1, 0))
-        self.assertFalse(self.target.exists())
-        self.assertEqual([json.loads(r)['action'] for r in path.read_bytes().splitlines()],
-                         ['created', 'verify-deleted'])
 
     def test_first_post_tool_use_at_8193_rows_durably_queues_the_edit(self):
         path, row = self.released_manifest('large-hook')

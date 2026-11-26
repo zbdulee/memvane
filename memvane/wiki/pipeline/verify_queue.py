@@ -96,9 +96,14 @@ class VerifyQueueMixin:
                 (time.time_ns(), claim_token)).rowcount
 
     def open_verify_jobs(self) -> list[dict]:
-        """Queued and claimed rows in queue order (compile reads them before extracting)."""
-        return [_row(r) for r in self._conn.execute(
-            "SELECT * FROM verify_jobs WHERE state IN ('queued', 'claimed') ORDER BY created_ns, job_id")]
+        """Queued and claimed rows in queue order (compile reads them before extracting).
+
+        ``claimLive`` says whether a claimed row's owner process is alive.
+        """
+        from memvane.wiki.pipeline.store import _is_pid_alive
+        return [{**_row(r), 'claimLive': r['state'] == 'claimed' and _is_pid_alive(r['claim_pid'])}
+                for r in self._conn.execute(
+                    "SELECT * FROM verify_jobs WHERE state IN ('queued', 'claimed') ORDER BY created_ns, job_id")]
 
     def verify_job(self, job_id: str) -> dict | None:
         row = self._conn.execute('SELECT * FROM verify_jobs WHERE job_id = ?', (job_id,)).fetchone()

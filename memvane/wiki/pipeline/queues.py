@@ -131,13 +131,15 @@ class JobQueueMixin:
                 self._insert_job(cur, queue, payload, base + index, pending_blob=blob)
         return len(remaining)
 
-    def recover_dead_claims(self, queue: str, is_alive, *, max_attempts: int = MAX_ATTEMPTS) -> dict:
+    def recover_dead_claims(self, queue: str, is_alive=None, *, max_attempts: int = MAX_ATTEMPTS) -> dict:
         """Return a dead worker's rows to the queue.
 
         A row already claimed more than ``max_attempts`` times is not returned: it is
         listed in ``exhausted`` and stays claimed until the caller records its discard
         evidence and calls ``drop_jobs``. A failed record therefore keeps the row.
         """
+        if is_alive is None:
+            from memvane.wiki.pipeline.store import _is_pid_alive as is_alive
         table = _table(queue)
         now = time.time_ns()
         requeued, exhausted = 0, []

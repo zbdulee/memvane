@@ -320,8 +320,6 @@ const PERSISTED = [
     /'seal': seal, 'database': node\}\s*return/],
   ['memvane/wiki/compile/wiki_compile_retrieval.py', /_stored_equal\(previous\[0\], identity, IDENTITY_DEVICE_INDEX\)/,
     /previous\[0\] != identity|stored\.get\(rel\) != stamp/],
-  ['memvane/wiki/verify/wiki_verify_worker.py', /persistent_identity_equal\(fingerprint, live, device_index=0\)/,
-    /fingerprint = tuple\(marker\['fingerprint'\]\)\n\s+else:/],
 ];
 const WHOLE = ['store/view/view_rows.py', 'view_store.py', 'view_reader.py'];
 

@@ -20,20 +20,23 @@ class ExcludedSelectedSources(FixtureCase):
                     'size': len(path), 'mtimeNs': 1}
         included = revision('docs/keep/a.md')
         excluded = revision('docs/build/b.md')
-        mixed = ('---\r\nsourceRevisions:\r\n  - ' + json.dumps(included)
-                 + '\r\n  - ' + json.dumps(excluded) + '\r\n---\r\n# Card\r\n')
-        cases = [({'targetPath': '.memvane/wiki/mixed.md', 'sourceRevisions': [excluded]},
-                  '---\n---\n# Card\n'),
+        mixed = ('---\r\ntitle: Card\r\nstatus: generated\r\ncreatedBy: memvane\r\nsourceRevisions:\r\n  - '
+                 + json.dumps(included) + '\r\n  - ' + json.dumps(excluded) + '\r\n---\r\n# Card\r\n')
+        plain = '---\ntitle: Card\nstatus: generated\ncreatedBy: memvane\n---\n# Card\n'
+        cases = [({'targetPath': '.memvane/wiki/mixed.md', 'sourceRevisions': [excluded]}, plain),
                  ({'targetPath': '.memvane/wiki/mixed.md', 'sourceRevisions': [included],
                    'sources': [{'kind': 'file', 'path': included['path']}]}, mixed)]
+        card = project.root / '.memvane/wiki/mixed.md'
+        card.parent.mkdir(parents=True, exist_ok=True)
         for job, text in cases:
-            with self.subTest(job=job), patch.object(workspace, 'selected', return_value=bound), \
-                 patch.object(worker, 'card_state', return_value=(text, {'createdBy': 'qmd-auto-context'},
-                                                                  'generated', '')), \
+            card.write_bytes(text.encode('utf-8'))
+            with self.subTest(job=job), patch.object(worker, 'card_fields', return_value=(
+                    {'createdBy': 'qmd-auto-context'}, 'generated', '')), \
                  patch.object(worker, 'snapshot_revision_evidence') as snapshot, \
                  patch.object(worker, 'log_verdict') as log:
-                result = worker.process_verify_job(project.root, {}, {}, {}, job, self.home / 'verify.log')
-            self.assertEqual(result, (True, False))
+                result = worker.process_row(project.root, {}, {}, {}, None, 'tok', {'jobId': 'j', 'payload': job},
+                                            self.home / 'verify.log', bound)
+            self.assertEqual(result, ('done', 'source_folder_excluded', True))
             self.assertEqual(log.call_args.args[1]['reason'], 'source_folder_excluded')
             snapshot.assert_not_called()
 

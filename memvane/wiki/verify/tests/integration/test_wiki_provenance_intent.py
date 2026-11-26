@@ -1,13 +1,13 @@
 """Compile intents written by the verify worker on a selected install (store format 4).
 
-A pass on a job with observed source fingerprints writes one compile intent
-naming the exact stamped card bytes, unless the checkout changed or cannot be
-read (the stamp still happens); a failed stamp supersedes its intent. Consuming
+A pass on a row with observed source fingerprints writes one compile intent
+naming the exact stamped card bytes before they are published, unless the
+checkout changed or cannot be read (the stamp still happens); a publish that
+does not land supersedes its intent. Consuming
 intents is the sync domain's (``tests/e2e/wiki_db_provenance.py`` runs both).
 """
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import os
@@ -71,31 +71,6 @@ class IntentAck(FixtureCase):
         self.assertEqual(path.read_text(encoding='utf-8'), 'replacement')
         self.assertFalse((self.tmp / 'compile-a.superseded.json').exists())
 
-    def test_a_symlinked_card_is_refused_before_its_intent_is_acknowledged(self):
-        from memvane.journal import api as journal
-        root = self.tmp / 'root'
-        wiki = root / 'wiki'
-        wiki.mkdir(parents=True)
-        state = self.tmp / 'state'
-        state.mkdir()
-        intents = state / 'provenance-intents'
-        intents.mkdir(mode=0o700)
-        foreign = self.tmp / 'foreign'
-        foreign.write_text('foreign card', encoding='utf-8')
-        pending = wiki / '.pending'
-        pending.symlink_to(foreign)
-        spec = {'viewId': 'a' * 64, 'scanId': 'b' * 32}
-        result = {'viewId': spec['viewId'], 'targetPath': 'live.md', 'cardSha': sha(foreign.read_bytes()),
-                  'sourceFingerprints': spec}
-        path = intents / ('compile-' + verify_api.compile_intent_id(result) + '.json')
-        journal.ledger_write(path, {'kind': 'compile', **result}, replace=False)
-        with mock.patch('memvane.journal.api.reader_state', return_value=state), \
-                self.assertRaises((OSError, ValueError, RuntimeError)):
-            worker._supersede_job_intent(root, {'wikiPath': 'wiki'},
-                                         {'targetPath': 'wiki/live.md', 'sourceFingerprints': spec},
-                                         pending, {'journalPath': str(state / 'journal.sqlite')})
-        self.assertTrue(path.exists())
-        self.assertFalse(path.with_name(path.stem + '.superseded.json').exists())
 
 
 class SelectedCase(FixtureCase):
@@ -225,12 +200,25 @@ class VerifyIntent(SelectedCase):
         return target, raw, job
 
     def apply_locked(self, target, raw, job, *, claims=CLAIMS, checkout=None):
-        """The locked apply step with the checkout issued before the verifier call."""
+        """Publish a recorded pass with the checkout issued before the verifier call."""
         checkout = checkout or self.checkout()
-        with workspace.card_write_lock(self.root), workspace.mutation_lock(self.root):
-            return worker.apply_verify_verdict_locked(
-                self.root, self.config(), {}, {}, job, target, '', raw, 'claude', 'self', {},
-                'pass', claims, [], [], self.log, spans=[], checkout=checkout)
+        recorded = {'verdict': 'pass', 'claims': claims, 'reasons': [], 'spans': [], 'engine': 'claude',
+                    'mode': 'self', 'provenance': {}}
+        wiki_root = worker._wiki_root(self.root, self.config())
+        state = worker._publish_pass(self.root, self.config(), job, target, wiki_root, raw, sha(raw.encode()),
+                                     recorded, worker.base_record(job), self.log, checkout)
+        return state[2], state[0] == 'queued'
+
+    def process(self, job, config=None):
+        """Claim ``job`` as a verify row and settle it through the worker's own call."""
+        from memvane.wiki.pipeline import api as pipeline
+        config = config or self.config()
+        with pipeline.open_pipeline(self.root) as store:
+            store.append_jobs('verify', [job])
+            row = store.claim_verify_batch(os.getpid(), 'tok', budget=1)['claimed'][0]
+            state = worker.process_row(self.root, config, config['compile'], {}, store, 'tok', row, self.log,
+                                       workspace.selected(self.root))
+        return state[2], state[0] == 'queued'
 
     def assert_stamped_without_intent(self, target, reason=None):
         self.assertEqual(self.intent_files(), [])
@@ -254,8 +242,7 @@ class VerifyIntent(SelectedCase):
         target, _, job = self.card()
         fake = FakeEngines({'verify': {'verdict': 'pass', 'claims': CLAIMS, 'reasons': []}}).install(self)
         config = self.config()
-        self.assertEqual(worker.process_verify_job(self.root, config, config['compile'], {}, job, self.log),
-                         (True, False))
+        self.assertEqual(self.process(job, config), (True, False))
         self.assertEqual(len(fake.calls), 1)
         files = self.intent_files()
         self.assertEqual(len(files), 1)
@@ -290,8 +277,7 @@ class VerifyIntent(SelectedCase):
         config = self.config()
         with mock.patch('memvane.wiki.workspace.api.schema3_checkout',
                         side_effect=sqlite3.OperationalError('fixture reader busy')):
-            self.assertEqual(worker.process_verify_job(self.root, config, config['compile'], {}, job, self.log),
-                             (True, False))
+            self.assertEqual(self.process(job, config), (True, False))
         self.assert_stamped_without_intent(target, 'provenance_checkout_unavailable')
 
     def test_invalid_digest_input_keeps_the_stamp_and_writes_no_intent(self):
@@ -299,19 +285,21 @@ class VerifyIntent(SelectedCase):
         self.assertEqual(self.apply_locked(target, raw, job, claims=[{'claim': float('nan')}]), (True, False))
         self.assert_stamped_without_intent(target, 'provenance_value_invalid')
 
-    def test_a_failed_stamp_supersedes_its_intent(self):
+    def test_a_failed_publish_supersedes_its_intent(self):
+        from memvane.wiki.pipeline import api as pipeline
         target, raw, job = self.card()
-        with mock.patch.object(worker, 'write_rendered_verification', return_value=False):
+        with mock.patch.object(pipeline, 'publish_card', side_effect=OSError('disk full')):
             self.assertEqual(self.apply_locked(target, raw, job), (False, True))
         files = self.intent_files()
         self.assertEqual(len(files), 1)
         self.assertTrue(files[0].name.endswith('.superseded.json'))
         self.assertIn('status: generated', target.read_text(encoding='utf-8'))
-        self.assertEqual(jsonl(self.log)[-1]['result'], 'stamp_failed')
+        self.assertEqual(jsonl(self.log)[-1]['result'], 'publish_pending')
 
-    def test_a_crash_before_the_stamp_leaves_only_a_waiting_intent(self):
+    def test_a_crash_before_the_publish_leaves_only_a_waiting_intent(self):
+        from memvane.wiki.pipeline import api as pipeline
         target, raw, job = self.card()
-        with mock.patch.object(worker, 'write_rendered_verification', side_effect=_Crash):
+        with mock.patch.object(pipeline, 'publish_card', side_effect=_Crash):
             with self.assertRaises(_Crash):
                 self.apply_locked(target, raw, job)
         files = self.intent_files()
@@ -321,7 +309,7 @@ class VerifyIntent(SelectedCase):
         self.assertIn('status: generated', target.read_text(encoding='utf-8'))
 
 
-class PendingReplay(SelectedCase):
+class ReplaceIntent(SelectedCase):
     SOURCE_HASH = 'a' * 16
 
     def stage(self):
@@ -331,82 +319,49 @@ class PendingReplay(SelectedCase):
         self.live = self.project.wiki / 'concepts' / 'replay.md'
         self.live.parent.mkdir(parents=True, exist_ok=True)
         self.live.write_text('previous live card\n', encoding='utf-8')
-        self.pending = self.live.with_name('.replay.md.pending-' + self.SOURCE_HASH)
-        raw = ('---\ntitle: Replay\nstatus: generated\ncreatedBy: memvane\nsourceRevisions:\n  - '
-               + card.dump_source_revisions([revision])[0] + '\n---\n'
-               '<!-- qmd:auto:start id="main" sourceHash="' + self.SOURCE_HASH + '" -->\n'
-               'Synthetic claim.\n<!-- qmd:auto:end -->\n')
-        self.pending.write_text(raw, encoding='utf-8')
-        job = {'targetPath': self.live.relative_to(self.root).as_posix(),
-               'pendingPath': self.pending.relative_to(self.root).as_posix(),
+        image = ('---\ntitle: Replay\nstatus: generated\ncreatedBy: memvane\nsourceRevisions:\n  - '
+                 + card.dump_source_revisions([revision])[0] + '\n---\n'
+                 '<!-- qmd:auto:start id="main" sourceHash="' + self.SOURCE_HASH + '" -->\n'
+                 'Synthetic claim.\n<!-- qmd:auto:end -->\n')
+        job = {'kind': 'replace', 'targetPath': self.live.relative_to(self.root).as_posix(),
                'expectedTargetHash': sha(self.live.read_bytes()), 'sourceHash': self.SOURCE_HASH,
                'engine': 'claude', 'sourceRevisions': [revision],
+               'sources': [{'kind': 'file', 'path': revision['path'], 'collection': revision['collection']}],
                'sourceFingerprints': self.fingerprints([revision])}
-        return raw, job
+        return image, job
 
-    def interrupted(self, raw, job, crash=False):
-        """Stamp the pending candidate and its intent; the publish step does not finish."""
-        checkout = self.checkout()
+    def settle(self, image, job, verdict):
+        from memvane.wiki.pipeline import api as pipeline
+        config = self.config()
+        with pipeline.open_pipeline(self.root) as store:
+            store.append_jobs('verify', [job], pending_blobs=[image.encode()])
+            row = store.claim_verify_batch(os.getpid(), 'tok', budget=1)['claimed'][0]
+            return worker.process_row(self.root, config, config['compile'], {}, store, 'tok', row, self.log,
+                                      workspace.selected(self.root))
 
-        def publish(*_args, **_kwargs):
-            if crash:
-                raise _Crash()
-            return 'retry'
-        with workspace.card_write_lock(self.root), workspace.mutation_lock(self.root), \
-                mock.patch.object(worker, 'publish_pending_replacement', side_effect=publish):
-            return worker.apply_verify_verdict_locked(
-                self.root, self.config(), {}, {}, job, self.pending, self.SOURCE_HASH, raw, 'claude', 'self', {},
-                'pass', CLAIMS, [], [], self.log, spans=[], checkout=checkout)
-
-    def replay(self, mode):
-        raw, job = self.stage()
-        with mock.patch('memvane.wiki.card.api.archive_card', return_value=True):
-            self.assertEqual(self.interrupted(raw, job), (False, True))
-            if mode in ('live', 'same-live'):
-                os.replace(self.pending, self.live)
-            elif mode == 'stale':
-                self.live.write_text('new live card\n', encoding='utf-8')
-            if mode in ('pending', 'live'):
-                self.git('checkout', '-q', '-b', 'replay-next')
-            self.assertEqual(worker.process_verify_job(self.root, self.config(), {}, {}, job, self.log),
-                             (True, False))
+    def test_a_replace_row_publishes_its_stamped_image_with_one_matching_intent(self):
+        image, job = self.stage()
+        FakeEngines({'verify': {'verdict': 'pass', 'claims': CLAIMS, 'reasons': []}}).install(self)
+        self.assertEqual(self.settle(image, job, 'pass'), ('done', 'verified', True))
         files = self.intent_files()
         self.assertEqual(len(files), 1)
-        return files[0]
-
-    def assert_superseded(self, mode):
-        self.assertTrue(self.replay(mode).name.endswith('.superseded.json'))
-
-    def test_a_stamped_pending_replay_after_a_branch_change_supersedes_the_intent(self):
-        self.assert_superseded('pending')
+        intent = json.loads(files[0].read_text(encoding='utf-8'))
+        self.assertEqual((intent['cardSha'], intent['expectedTargetHash']),
+                         (sha(self.live.read_bytes()), job['expectedTargetHash']))
         self.assertIn('status: verified', self.live.read_text(encoding='utf-8'))
 
-    def test_a_live_replay_after_a_branch_change_supersedes_the_intent(self):
-        self.assert_superseded('live')
-        self.assertIn('status: verified', self.live.read_text(encoding='utf-8'))
+    def test_a_human_edit_during_the_call_keeps_the_edit_and_supersedes_the_intent(self):
+        image, job = self.stage()
 
-    def test_a_stale_pending_replay_supersedes_the_intent_and_keeps_the_newer_card(self):
-        self.assert_superseded('stale')
-        self.assertEqual(self.live.read_text(encoding='utf-8'), 'new live card\n')
-
-    def test_a_same_view_replay_keeps_the_intent(self):
-        for mode in ('same-pending', 'same-live'):
-            with self.subTest(mode=mode):
-                intent = self.replay(mode)
-                self.assertFalse(intent.name.endswith('.superseded.json'))
-                self.assertIn('status: verified', self.live.read_text(encoding='utf-8'))
-                intent.unlink()
-
-    def test_a_crash_after_the_pending_stamp_leaves_the_live_card_and_a_matching_intent(self):
-        raw, job = self.stage()
-        with self.assertRaises(_Crash):
-            self.interrupted(raw, job, crash=True)
+        def edit_then_pass(payload, argv):
+            self.live.write_text('human edit\n', encoding='utf-8')
+            return {'verdict': 'pass', 'claims': CLAIMS, 'reasons': []}
+        FakeEngines({'verify': edit_then_pass}).install(self)
+        self.assertEqual(self.settle(image, job, 'pass'), ('done', 'changed_during_verify', True))
+        self.assertEqual(self.live.read_text(encoding='utf-8'), 'human edit\n')
         files = self.intent_files()
         self.assertEqual(len(files), 1)
-        stamped = self.pending.read_bytes()
-        self.assertEqual(json.loads(files[0].read_text(encoding='utf-8'))['cardSha'], sha(stamped))
-        self.assertIn(b'status: verified', stamped)
-        self.assertEqual(self.live.read_text(encoding='utf-8'), 'previous live card\n')
+        self.assertTrue(files[0].name.endswith('.superseded.json'))
 
 
 if __name__ == '__main__':

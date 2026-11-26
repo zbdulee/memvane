@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from memvane.wiki.compile.tests.integration.test_pending_handoff import archived_tag
+from memvane.wiki.compile.tests.release_tags import archived_tag
 from tests.support.case import FixtureCase
 
 

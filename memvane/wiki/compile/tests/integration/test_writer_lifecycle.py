@@ -105,14 +105,12 @@ class WriterLifecycle(WriterFixture):
             result = self.compile(summary='Replacement fact for review.')
         self.assertEqual(result['action'], 'updated')
         self.assertEqual(target.read_bytes(), original)
-        from tests.support.wiki_handoff import waiting_reviews as waiting
-        queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
-        job, = [json.loads(work.read('raw')) for work in waiting(queue)
-                if work.state['binding']['job'].get('pendingPath')]
-        self.assertFalse(queue.exists() and queue.read_bytes())
+        from tests.support.wiki_handoff import verify_rows
+        row, = [row for row in verify_rows(self.project.root) if row['payload']['kind'] == 'replace']
+        job = row['payload']
         self.assertEqual(job['expectedTargetHash'], hashlib.sha256(original).hexdigest())
-        self.assertTrue(job['pendingPath'].endswith('.pending-' + job['sourceHash']))
-        self.assertIn('Replacement fact for review.', (self.project.root / job['pendingPath']).read_text())
+        self.assertIn('sourceHash="' + job['sourceHash'] + '"', row['image'].decode())
+        self.assertIn('Replacement fact for review.', row['image'].decode())
 
     def test_selected_replacement_refuses_unmatched_wiki_collection(self):
         first = self.compile()

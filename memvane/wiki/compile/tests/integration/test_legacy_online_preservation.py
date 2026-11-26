@@ -10,7 +10,7 @@ import sys
 from unittest.mock import patch
 
 from memvane.wiki.compile import wiki_compile as writer
-from memvane.wiki.compile.tests.integration.test_pending_handoff import archived_tag
+from memvane.wiki.compile.tests.release_tags import archived_tag
 from memvane.wiki.workspace import api as workspace
 from tests.support.case import FixtureCase
 from tests.support.project import make_project

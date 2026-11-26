@@ -32,5 +32,4 @@ class VerificationRender(FixtureCase):
             (directory / name).symlink_to(outside)
             self.assertIsNone(settings.ledger(project.root, name))
         self.assertEqual(worker.verify_skipped_path(project.root, {}), directory / workspace_types.VERIFY_SKIPPED)
-        self.assertEqual(worker.verify_deleted_path(project.root, {}), directory / workspace_types.VERIFY_DELETED)
         self.assertEqual(outside.read_text(), 'unchanged')

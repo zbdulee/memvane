@@ -15,7 +15,7 @@ from memvane.wiki.engines import api as engines
 from memvane.wiki.intake import api as intake
 from memvane.wiki.verify import api as verify
 from memvane.wiki.workspace import api as workspace
-from tests.support.queue_files import pending_files, pending_text, replace_queue
+from tests.support.queue_files import pending_text, replace_queue
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
@@ -167,11 +167,10 @@ class CheckoutFingerprints(FixtureCase):
             self.assertEqual(compiler._compile_locked(self.project.root, self.config,
                              self.config['compile'], self.project.wiki, candidate, False), 0)
         request_sync.assert_called_once_with(self.project.root, self.bound)
-        queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
-        from tests.support.wiki_handoff import waiting_reviews as waiting
-        work, = waiting(queue)
-        job = json.loads(work.read('raw'))
-        self.assertFalse(pending_text(queue))
+        from tests.support.wiki_handoff import verify_rows
+        row, = verify_rows(self.project.root)
+        job = row['payload']
+        self.assertEqual((job['kind'], row['image']), ('review', None))
         observed, stored = candidate['sourceFingerprints'], job['sourceFingerprints']
         self.assertEqual(job['engine'], 'claude')
         self.assertRegex(job['sourceHash'], r'^[a-f0-9]{16}$')

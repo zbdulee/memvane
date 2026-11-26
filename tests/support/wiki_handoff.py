@@ -1,28 +1,7 @@
-"""Cross-domain fixtures for a compiler driving the verifier's durable work.
+"""Cross-domain fixtures for a compiler driving the pipeline ledger.
 
-Use the verifier's own owner, quota and snapshot operations so assertions see
-the same identities and bytes as a verifier stopped during an actual claim.
+They read and fail the ledger the way a worker stopped mid-claim leaves it.
 """
-from memvane.wiki.verify.tests import support as verifier
-
-waiting_reviews = verifier.waiting_reviews
-deferred_replacements = verifier.deferred_replacements
-retained_batches = verifier.retained_batches
-full_copy_quota = verifier.full_copy_quota
-
-
-def held_replacement(queue, sha):
-    matching = [work for work in waiting_reviews(queue)
-                if work.state['binding']['job'].get('pendingPath') and
-                any(row['sha256'] == sha for row in work.state['binding']['job']['sourceRevisions'])]
-    work, = matching
-    return work
-
-
-def during_native_review(queue, bound, work, callback):
-    return verifier.during_native_review(queue, bound, work, callback)
-
-
 def work_rows(queue, kind, *, closed=False):
     """(state, raw bytes or None, stage id) of each stored work, oldest first, read as stored."""
     import json
@@ -125,3 +104,20 @@ def _plan(queue, planner):
     kind = 'verify' if queue.name == 'verify-queue.jsonl' else 'source'
     with pipeline.open_pipeline_dir(queue.parent) as store:
         return store.plan_jobs(kind, planner)
+
+
+def verify_rows(root, *, states=('queued', 'claimed')):
+    """Verify rows of a project as ``{'jobId','state','reason','payload','image'}``, oldest first."""
+    import json
+    import sqlite3
+    from pathlib import Path
+    from memvane.wiki.pipeline.types import DB_NAME
+    path = Path(root) / '.memvane/compile' / DB_NAME
+    if not path.exists():
+        return []
+    marks = ','.join('?' for _ in states)
+    with sqlite3.connect(str(path)) as db:
+        rows = db.execute(f'SELECT job_id, state, reason, payload_json, pending_blob FROM verify_jobs '
+                          f'WHERE state IN ({marks}) ORDER BY created_ns, job_id', tuple(states)).fetchall()
+    return [{'jobId': job_id, 'state': state, 'reason': reason, 'payload': json.loads(payload),
+             'image': None if blob is None else bytes(blob)} for job_id, state, reason, payload, blob in rows]

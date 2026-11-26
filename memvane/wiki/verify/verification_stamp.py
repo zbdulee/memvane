@@ -8,7 +8,6 @@ from memvane.settings import types as settings_types
 from memvane.wiki.card import api as yaml_scalars
 from memvane.wiki.card.api import render_frontmatter_fields as _render_frontmatter_fields
 from memvane.wiki.card.types import SOURCE_SPANS_KEY
-from memvane.wiki.verify import promotion
 from memvane.wiki.workspace import api as workspace_files
 from memvane.wiki.workspace.api import write_text_atomic
 
@@ -60,6 +59,12 @@ def render_verification(path: Path, status: str, engine: str, mode: str,
         if source_spans:
             return None
         raise
+    return render_verification_text(expected_text, status, engine, mode, body_hash, source_spans, now)
+
+
+def render_verification_text(expected_text: str, status: str, engine: str, mode: str,
+                             body_hash: str | None, source_spans: list | None, now: datetime) -> str | None:
+    """Render the stamp onto card text (a replacement image has no file yet)."""
     emitted = None
     if source_spans:
         emitted = yaml_scalars.dump_source_spans(source_spans)
@@ -97,4 +102,6 @@ def write_rendered_verification(path: Path, rendered: str, expected_text: str, *
             return False
     except (OSError, UnicodeError):
         return False
-    return promotion.write_stamp(path, rendered, expected_text, owner, write_text_atomic)
+    # The verify worker publishes through ``pipeline.publish_card``; this direct
+    # writer serves manual stamps under the card's mutation lock.
+    return write_text_atomic(path, rendered)

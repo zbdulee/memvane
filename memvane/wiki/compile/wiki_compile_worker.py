@@ -1689,7 +1689,10 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
     recover_pending_refreshes(root, config, queue)
 
     from memvane.wiki.intake import api as laya_wiki_backfill
-    claimed = wiki_verify.claim_source_queue(queue, selected_route, laya_wiki_backfill.write_discard_receipt, claim=claim_queue)
+    try:
+        claimed = claim_queue(queue, private=True, receipt_writer=laya_wiki_backfill.write_discard_receipt)
+    except BlockingIOError:
+        claimed = None
     # Reaping holds the source-queue lock. ACK outside it to preserve discovery
     # -> enqueue lock order, including the empty-queue/crash-recovery path.
     rows = read_queue(claimed) if claimed is not None else None
@@ -1698,7 +1701,7 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
         if selected_route is not None:
             _run_verify_pass(root, config, compile_cfg)
         if args.json:
-            print(json.dumps({"processed": 0, "remaining": int(wiki_verify.queue_batch_pending(queue))}, ensure_ascii=False))
+            print(json.dumps({"processed": 0, "remaining": 0}, ensure_ascii=False))
         return 0
     if not rows:
         if not hasattr(rows, 'finish'):

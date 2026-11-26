@@ -8,7 +8,7 @@ from unittest.mock import patch
 from memvane.wiki.compile import wiki_compile as compiler
 from memvane.wiki.card import api as card
 from memvane.wiki.workspace import api as workspace
-from tests.support.wiki_handoff import waiting_reviews
+from tests.support.wiki_handoff import verify_rows
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
@@ -46,8 +46,7 @@ class WriteIdentity(FixtureCase):
         if revisions is None:
             revisions = [self.project.revision(self.project.root / source)]
         candidate['sourceRevisions'] = revisions
-        queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
-        before = {w.state['id'] for w in waiting_reviews(queue)}
+        before = {row['jobId'] for row in verify_rows(self.project.root)}
         visible = self.card.read_bytes()
         output = io.StringIO()
         with workspace.card_write_lock(self.project.root), workspace.mutation_lock(self.project.root), \
@@ -59,16 +58,13 @@ class WriteIdentity(FixtureCase):
         result = json.loads(output.getvalue()) if output.getvalue().strip() else {}
         self.assertEqual(self.card.read_bytes(), visible)
         if result.get('action') == 'updated':
-            work, = (w for w in waiting_reviews(queue) if w.state['id'] not in before)
-            job = json.loads(work.read('raw'))
-            self.assertEqual(job, work.state['binding']['job'])
-            self.assertEqual(job['targetPath'], candidate['targetPath'])
+            row, = (r for r in verify_rows(self.project.root) if r['jobId'] not in before)
+            job = row['payload']
+            self.assertEqual((job['kind'], job['targetPath']), ('replace', candidate['targetPath']))
             self.assertEqual(job['sourceRevisions'], candidate['sourceRevisions'])
-            self.assertFalse(queue.exists() and queue.read_bytes())
             self.assertEqual(job['expectedTargetHash'], hashlib.sha256(visible).hexdigest())
-            pending = (self.project.root / job['pendingPath']).read_bytes()
-            self.assertEqual(work.read('image'), pending)
-            self.staged = pending.decode()
+            self.assertEqual([p.name for p in self.card.parent.iterdir() if p.name.startswith('.')], [])
+            self.staged = row['image'].decode()
             self.assertIn('sourceHash="' + job['sourceHash'] + '"', self.staged)
         return result
 
@@ -127,7 +123,7 @@ class WriteIdentity(FixtureCase):
         row, = [json.loads(raw) for raw in (folder / 'candidates.jsonl').read_bytes().splitlines()]
         self.assertEqual(row['targetPath'], self.card.relative_to(self.project.root).as_posix())
         self.assertEqual((row['action'], row['lint']['findings']), ('merge-needed', ['verified_replacement_requires_review']))
-        self.assertEqual(waiting_reviews(folder / 'verify-queue.jsonl'), [])
+        self.assertEqual(verify_rows(self.project.root), [])
 
     def test_old_manual_status_is_refreshed_as_generated(self):
         self.card.write_text(self.card.read_text().replace('status: generated', 'status: manual\nreviewed: true'))

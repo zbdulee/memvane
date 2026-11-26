@@ -56,12 +56,10 @@ class ManualExtract(FixtureCase):
         self.assertIn('API alias', text)
         self.assertIn(hashlib.sha256(source.read_bytes()).hexdigest(), text)
         self.assertNotIn('decoy.md', text)
-        queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
-        self.assertFalse(queue.exists() and queue.read_bytes())
-        from tests.support.wiki_handoff import work_rows
-        (state, raw, _), = work_rows(queue, 'hold')
-        job = json.loads(raw)
-        self.assertEqual((state['phase'], state['binding']['job']), ('held', job))
+        from tests.support.wiki_handoff import verify_rows
+        row, = verify_rows(self.project.root)
+        job = row['payload']
+        self.assertEqual((job['kind'], row['image']), ('review', None))
         self.assertEqual([x['path'] for x in job['authoritativeSources']], ['docs/api.md'])
         self.assertEqual(job['sourceRevisions'][0]['sha256'], hashlib.sha256(source.read_bytes()).hexdigest())
         bad = {'durable': {'title': 'Transcript', 'summary': 'User: private\nAssistant: reply',

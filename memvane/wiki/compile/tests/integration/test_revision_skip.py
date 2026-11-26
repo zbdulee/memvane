@@ -12,10 +12,10 @@ import tracemalloc
 from memvane.settings import api as settings
 from memvane.wiki.compile import wiki_compile as wc, wiki_compile_worker as worker
 from memvane.wiki.verify import api as verification_stamp
-from memvane.wiki.card import api as wiki_freshness, api as ys, types as card_types
+from memvane.wiki.card import api as wiki_freshness, api as ys
 from memvane.wiki.workspace import api as wiki_selected_laya
 from memvane.wiki.intake import api as wiki_compile_enqueue
-from tests.support.wiki_handoff import held_replacement, during_native_review, waiting_reviews
+from tests.support.wiki_handoff import verify_rows
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
 from tests.support.settings_fake import use_config
@@ -157,8 +157,6 @@ class RevisionSkipChecks(FixtureCase):
 
         self.config['compile']['semanticDedup'] = {'enabled': False}
         queue = wiki_selected_laya.safe_queue_path(self.root)
-        verify_queue = self.root / '.memvane/compile/verify-queue.jsonl'
-        cfg = self.config['compile']
         live = self.wiki / 'concepts/source-decision.md'
         with patch.object(worker, 'compile_candidate', side_effect=write), \
              patch.object(wiki_selected_laya, 'request_sync'), \
@@ -177,45 +175,36 @@ class RevisionSkipChecks(FixtureCase):
                 self.assertEqual(self.run_main()['completed'], 1)
             self.assertFalse(pending_text(queue))
             self.assertEqual(self.extractor_calls, ['post_tool_source'])
-            before = held_replacement(verify_queue, self.project.revision(self.source)['sha256'])
-            first = json.loads(before.read('raw'))
-            old_pending = self.root / first['pendingPath']
-            original_row, original_image = before.read('raw'), before.read('image')
-            self.assertEqual(old_pending.read_bytes(), original_image)
+            from memvane.wiki.pipeline import api as pipeline
+            first_row, = verify_rows(self.root)
+            first = first_row['payload']
+            self.assertEqual(first['kind'], 'replace')
             event = wiki_freshness.record_pending_refresh(self.root, 'docs/source.md', 'claude')
-            def recheck(raw):
-                self.assertEqual(json.loads(raw), first)
-                retry = dict(rows[0], pendingRefresh={k: event[k] for k in ('eventId', 'ts', 'engine')})
-                self.assertNotEqual(retry['pendingRefresh']['eventId'], rows[0]['pendingRefresh']['eventId'])
-                wiki_compile_enqueue.append_source_jobs(queue, [retry])
-                with patch.object(worker, '_run_verify_pass'):
-                    self.assertEqual(self.run_main()['completed'], 1)
-                self.assertEqual(self.extractor_calls, ['post_tool_source'])
-                self.assertEqual(refresh_settlement.unsettled(self.root, [event]), [])
-            during_native_review(verify_queue, self.bound, before, recheck)
+            # A live verifier holds the row while the same revision is queued again.
+            with pipeline.open_pipeline(self.root) as store:
+                store.claim_verify_batch(os.getpid(), 'live-review', budget=1)
+            retry = dict(rows[0], pendingRefresh={k: event[k] for k in ('eventId', 'ts', 'engine')})
+            self.assertNotEqual(retry['pendingRefresh']['eventId'], rows[0]['pendingRefresh']['eventId'])
+            wiki_compile_enqueue.append_source_jobs(queue, [retry])
+            with patch.object(worker, '_run_verify_pass'):
+                self.assertEqual(self.run_main()['completed'], 1)
+            self.assertEqual(self.extractor_calls, ['post_tool_source'])
+            self.assertEqual(refresh_settlement.unsettled(self.root, [event]), [])
+            with pipeline.open_pipeline(self.root) as store:
+                self.assertEqual(store.release_verify_claim('live-review'), 1)
             self.assertEqual(wiki_freshness.latest_unresolved_pending(self.root, 'docs/source.md'), event)
             self.source.write_text('Synthetic source after review was queued\n')
             self.process('post_tool_source')
-            self.assertFalse(verify_queue.exists() and verify_queue.read_bytes())
-            second = json.loads(held_replacement(verify_queue, self.project.revision(self.source)['sha256']).read('raw'))
-            newest = self.root / second['pendingPath']
-            self.assertNotEqual(newest, old_pending)
+            second = verify_rows(self.root)[-1]['payload']
             self.assertEqual(len(self.extractor_calls), 2)
-            self.assertIn(second['sourceHash'], newest.read_text())
-            self.assertEqual(old_pending.read_bytes(), original_image)
-            self.assertCountEqual(live.parent.glob('.*.pending-*'), [old_pending, newest])
+            self.assertNotEqual(second['sourceRevisions'], first['sourceRevisions'])
+            self.assertEqual(list(live.parent.glob('.*')), [])
             result, calls = self.review('Synthetic source')
-            self.assertEqual((result['processed'], result['remaining'], calls), (2, 0, ['verify']))
+            self.assertEqual((result['processed'], result['superseded'], result['remaining'], calls),
+                             (1, 1, 0, ['verify']))
             self.assertIn(second['sourceRevisions'][0]['sha256'], live.read_text())
             self.assertNotIn(first['sourceRevisions'][0]['sha256'], live.read_text())
-            self.assertFalse(old_pending.exists())
-            self.assertFalse(newest.exists())
-            audit = [json.loads(line) for line in (verify_queue.parent / 'verify-deleted.jsonl').read_bytes().splitlines()]
-            self.assertEqual([(row['targetPath'], row['reasons']) for row in audit if row['verdict'] == 'stale_replacement'],
-                             [(first['pendingPath'], ['pending_source_changed'])])
-            archived = before.lookup(verify_queue, 'hold', before.state['id'])
-            self.assertEqual((archived.state['phase'], archived.read('raw'), archived.read('image')),
-                             ('finished', original_row, original_image))
+            self.assertEqual(verify_rows(self.root), [])
             self.assertEqual(self.review('Synthetic source')[1], [])
 
     def test_nested_meta_named_card_is_compile_proof(self):
@@ -357,37 +346,39 @@ class RevisionSkipChecks(FixtureCase):
             verify.write_text('')
             self.source.write_text('Intermediate content.')
             self.process('post_tool_source')
-            work = held_replacement(verify, self.project.revision(self.source)['sha256'])
-            def edit_while_owned(raw):
-                unrelated = self.project.write_note('docs/another.md', 'A different source.')
-                job = self.job('post_tool_source')
-                job['source']['path'] = unrelated.relative_to(self.root).as_posix()
-                with patch.object(worker, 'run_extractor', return_value=({'candidates': []}, None, 0)) as other:
-                    worker.process_job(self.root, self.config, cfg, job)
-                self.assertEqual(other.call_count, 1)
-                self.extractor_calls.clear()
-                for text in ('Latest content.', 'Latest content.', 'Another revision during verification.'):
-                    self.source.write_text(text)
-                    wiki_compile_enqueue.enqueue_payload({'hook_event_name': 'PostToolUse', 'cwd': str(self.root),
-                        'engine': 'claude', 'tool_input': {'file_path': str(self.source)}})
-                    result = self.run_main()
-                    self.assertEqual((result['remaining'], result['completed']), (1, 0))
-                    self.assertFalse(source_queue.exists() and source_queue.stat().st_size)
-                self.assertEqual(work.read('raw'), raw)
-                self.assertEqual(self.extractor_calls, [])
-            during_native_review(verify, self.bound, work, edit_while_owned)
+            from memvane.wiki.pipeline import api as pipeline
+            held = [row for row in verify_rows(self.root) if row['payload']['kind'] == 'replace'][-1]
+            with pipeline.open_pipeline(self.root) as store:  # a live verifier owns the rows
+                store.claim_verify_batch(os.getpid(), 'live-review', budget=10)
+            unrelated = self.project.write_note('docs/another.md', 'A different source.')
+            job = self.job('post_tool_source')
+            job['source']['path'] = unrelated.relative_to(self.root).as_posix()
+            with patch.object(worker, 'run_extractor', return_value=({'candidates': []}, None, 0)) as other:
+                worker.process_job(self.root, self.config, cfg, job)
+            self.assertEqual(other.call_count, 1)
+            self.extractor_calls.clear()
+            for text in ('Latest content.', 'Latest content.', 'Another revision during verification.'):
+                self.source.write_text(text)
+                wiki_compile_enqueue.enqueue_payload({'hook_event_name': 'PostToolUse', 'cwd': str(self.root),
+                    'engine': 'claude', 'tool_input': {'file_path': str(self.source)}})
+                result = self.run_main()
+                self.assertEqual((result['remaining'], result['completed']), (1, 0))
+                self.assertFalse(source_queue.exists() and source_queue.stat().st_size)
+            self.assertIn(held['payload'], [row['payload'] for row in verify_rows(self.root)])
+            self.assertEqual(self.extractor_calls, [])
+            with pipeline.open_pipeline(self.root) as store:
+                self.assertGreaterEqual(store.release_verify_claim('live-review'), 1)
             result = self.run_main()
             self.assertEqual((result['remaining'], result['completed']), (0, 1))
             self.assertEqual(self.extractor_calls, ['post_tool_source'])
             digest = self.project.revision(self.source)['sha256']
-            active = json.loads(held_replacement(verify, digest).read('raw'))
+            active = verify_rows(self.root)[-1]['payload']
             self.assertEqual([rev['sha256'] for rev in active['sourceRevisions']], [digest])
 
     def test_partial_retry_survives_resave_and_recovered_claim(self):
         cfg = self.config['compile']
         cfg['semanticDedup'] = {'enabled': False}
         queue = self.root / '.memvane/compile/source-queue.jsonl'
-        verify = queue.with_name('verify-queue.jsonl')
         target = self.wiki / 'concepts/source-decision.md'
         siblings = []
 
@@ -422,10 +413,8 @@ class RevisionSkipChecks(FixtureCase):
                 old, = [job for _, job in wiki_selected_laya.read_queue(queue)]
                 revision = self.project.revision(self.source)['sha256']
                 self.assertEqual((old['partialCompile'], old['_processedContentRevision']), (True, revision))
-                work = held_replacement(verify, revision)
-                candidate_raw = work.read('raw')
-                candidate = self.root / json.loads(candidate_raw)['pendingPath']
-                self.assertEqual(candidate.read_bytes(), work.read('image'))
+                held, = verify_rows(self.root)
+                self.assertEqual(held['payload']['kind'], 'replace')
 
                 # A real consumer exits after claiming the partial row and before acknowledging it.
                 command = ('import sys; from pathlib import Path; from memvane.wiki.workspace import api; '
@@ -449,27 +438,21 @@ class RevisionSkipChecks(FixtureCase):
                         break
                     self.run_main()
                 self.assertEqual(wiki_selected_laya.read_queue(queue), [])
-                self.assertEqual(work.read('raw'), candidate_raw)
-                self.assertEqual(candidate.read_bytes(), work.read('image'))
+                self.assertEqual(verify_rows(self.root)[0], held)
                 sibling = target.parent / 'sibling.md'
                 self.assertIn(revision, sibling.read_text())
                 self.assertEqual(extract.call_count, 2)
-            pending = {w.state['id']: (w.read('raw'), w.read('image')) for w in waiting_reviews(verify)
-                       if w.state['binding']['job'].get('pendingPath')}
-            self.assertEqual(len(pending), 2)
+            # The resumed pass queued the target again; the older row is superseded at the claim.
+            self.assertEqual([row['payload']['kind'] for row in verify_rows(self.root)], ['replace', 'replace', 'review'])
             verified, calls = self.review('changed source')
-            self.assertEqual((verified['processed'], verified['remaining'], calls), (2, 1, ['verify', 'verify']))
+            self.assertEqual((verified['processed'], verified['superseded'], verified['remaining'], calls),
+                             (2, 1, 0, ['verify', 'verify']))
             for card in (target, sibling):
                 self.assertIn(revision, card.read_text())
                 self.assertEqual(ys.parse_frontmatter(card.read_text())[0]['status'], 'verified')
-            blocked, = waiting_reviews(verify)
-            raw, image = pending.pop(blocked.state['id'])
-            self.assertEqual((blocked.read('raw'), blocked.read('image')), (raw, image))
-            self.assertEqual((self.root / json.loads(raw)['pendingPath']).read_bytes(), image)
-            (published_raw, _image), = pending.values()
-            self.assertIn(json.loads(published_raw)['sourceHash'], target.read_text())
+            self.assertIn(verify_rows(self.root, states=('done',))[-2]['payload']['sourceHash'], target.read_text())
             replay, calls = self.review('changed source')
-            self.assertEqual((replay['processed'], replay['remaining'], calls), (0, 1, []))
+            self.assertEqual((replay['processed'], replay['remaining'], calls), (0, 0, []))
 
     def test_old_partial_retry_does_not_force_a_different_verified_revision(self):
         self.compile_verified_once()

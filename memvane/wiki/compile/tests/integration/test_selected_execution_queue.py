@@ -72,11 +72,14 @@ class SelectedExecutionQueue(FixtureCase):
         self.assertFalse(workspace.queue_busy(self.source))
 
     def test_live_verify_claim_prevents_idle(self):
-        claim = self.verify.with_name(self.verify.name + '.claimed.%s.%s' % (os.getppid(), 'f' * 32))
-        claim.write_text('{"targetPath":"card.md"}\n')
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.root) as store:
+            store.append_jobs('verify', [{'targetPath': 'card.md'}])
+            store.claim_verify_batch(os.getppid(), 'live', budget=1)
         with patch.object(card, 'unresolved_pending_refreshes_strict', return_value=[]):
             self.assertIs(execution._compile_idle(self.root, self.source, self.verify, self.bound), False)
-        self.assertTrue(claim.exists())
+        with pipeline.open_pipeline(self.root) as store:
+            self.assertEqual([row['state'] for row in store.open_verify_jobs()], ['claimed'])
 
     def test_claim_racing_idle_check_keeps_work_pending(self):
         from tests.support.queue_files import replace_queue

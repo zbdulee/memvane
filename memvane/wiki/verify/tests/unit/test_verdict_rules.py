@@ -5,7 +5,7 @@ import unittest
 
 from memvane.settings import types as settings_types
 from memvane.wiki.verify import wiki_verify_worker as worker
-from memvane.wiki.verify.tests.support import CARD_REL, CLAIM, VerifyCase
+from memvane.wiki.verify.tests.support import CLAIM, VerifyCase
 
 ALL_HOSTS = {'extractor': {'builtins': ['claude', 'codex', 'hermes']}}
 
@@ -50,37 +50,6 @@ class VerifyAttempts(unittest.TestCase):
                          'producing_engine_unavailable')
 
 
-class ChangedDuringVerify(unittest.TestCase):
-    def changed(self, job_hash, fresh_hash, status='generated', created_by='memvane',
-                payload='card-text', fresh='card-text'):
-        return worker.card_changed_during_verify(job_hash, {'createdBy': created_by}, status, fresh_hash,
-                                                 payload, fresh)
-
-    def test_the_marker_status_and_owner_axes(self):
-        self.assertFalse(self.changed('aaaa1111', 'aaaa1111'))
-        self.assertTrue(self.changed('aaaa1111', 'bbbb2222'))
-        self.assertTrue(self.changed('aaaa1111', ''), 'a removed auto block is a change')
-        self.assertTrue(self.changed('aaaa1111', 'aaaa1111', status='verified'))
-        self.assertTrue(self.changed('aaaa1111', 'aaaa1111', created_by='human'))
-        self.assertFalse(self.changed('aaaa1111', 'aaaa1111', created_by='qmd-auto-context'),
-                         'the 0.x plugin owner name still owns its cards')
-
-    def test_full_text_equality_catches_body_and_provenance_edits(self):
-        self.assertTrue(self.changed('aaaa1111', 'aaaa1111', payload='---\nstatus: generated\n---\nport 8080\n',
-                                     fresh='---\nstatus: generated\n---\nport 9999\n'))
-        self.assertTrue(self.changed('aaaa1111', 'aaaa1111',
-                                     payload='---\nsourceRevisions:\n  - {path: "a.md"}\n---\nbody\n',
-                                     fresh='---\nsourceRevisions:\n  - {path: "b.md"}\n---\nbody\n'))
-        self.assertTrue(self.changed('aaaa1111', 'aaaa1111', payload=None))
-        self.assertTrue(self.changed('aaaa1111', 'aaaa1111', fresh=None))
-        self.assertTrue(self.changed('', '', payload='a', fresh='b'))
-
-    def test_a_legacy_job_without_a_hash_skips_only_the_marker_axis(self):
-        self.assertFalse(self.changed('', ''))
-        self.assertFalse(self.changed('', 'anything'))
-        self.assertTrue(self.changed('', '', status='verified'))
-
-
 class VerdictTable(VerifyCase):
     """What a verifier answer does to the card (one paid call each)."""
 
@@ -118,20 +87,15 @@ class VerdictTable(VerifyCase):
                 self.assertEqual((row['result'], row['reason']), ('skipped', 'invalid_verdict'))
                 self.assert_status('generated')
 
-    def test_fail_and_inconclusive_delete_without_a_route_and_keep_with_none(self):
-        for verdict, action, card_left in (('fail', 'delete', False), ('inconclusive', 'delete', False),
-                                           ('fail', 'none', True), ('inconclusive', 'none', True)):
-            with self.subTest(verdict=verdict, action=action):
-                self.setup()
-                self.fake({'verdict': verdict, 'claims': [], 'reasons': ['r']})
-                self.run_verify(verify={'onFail': action, 'onInconclusive': action})
-                self.assertEqual(self.card.exists(), card_left)
-                expected = 'deleted' if action == 'delete' else ('inconclusive' if verdict == 'inconclusive'
-                                                                 else 'kept')
-                self.assertEqual(self.log()[-1]['result'], expected)
-                if card_left:
+    def test_fail_and_inconclusive_keep_the_card_whatever_the_delete_setting(self):
+        for verdict in ('fail', 'inconclusive'):
+            for action in ('delete', 'none'):
+                with self.subTest(verdict=verdict, action=action):
+                    self.setup()
+                    self.fake({'verdict': verdict, 'claims': [], 'reasons': ['r']})
+                    self.run_verify(verify={'onFail': action, 'onInconclusive': action})
                     self.assert_status('generated')
-
+                    self.assertEqual(self.log()[-1]['result'], 'inconclusive' if verdict == 'inconclusive' else 'kept')
 
 if __name__ == '__main__':
     unittest.main()

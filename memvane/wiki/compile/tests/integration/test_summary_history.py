@@ -10,18 +10,19 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from memvane.wiki.compile import wiki_compile as writer, wiki_compile_worker as worker
-from memvane.wiki.compile.tests.integration import test_pending_handoff as fixtures
+from memvane.wiki.compile.tests import release_tags
 from memvane.wiki.workspace import api as workspace
 from tests.support.case import FixtureCase
 
 
 class SummaryHistory(FixtureCase):
-    prepare = fixtures.PendingHandoff.prepare
+    def prepare(self, name):
+        release_tags.prepare_selected_card(self, name)
 
     def test_summary_survives_two_released_compactions_and_human_deletion(self):
         repo = Path(__file__).resolve().parents[5]
         for tag in ('v1.0.22', 'v1.0.23', 'v1.0.24', 'v1.1.0'):
-            bundle = fixtures.archived_tag(repo, self.tmp, tag)
+            bundle = release_tags.archived_tag(repo, self.tmp, tag)
             for separator in ('\u0085', '\u2028', '\u2029'):
                 with self.subTest(tag=tag, codepoint=ord(separator)):
                     self.prepare(tag + str(ord(separator)))
