@@ -1,7 +1,7 @@
 """S4: settings a user cannot write, given to a use case as a config dict.
 
 The only settings file a user writes is ``{"name", "skipPaths"}``. A test of
-a knob outside it (``compile.verify.onFail``, ``semanticDedup`` caps, ...)
+a knob outside it (``compile.verify.timeout``, ``semanticDedup`` caps, ...)
 builds the effective config with ``expanded(project, compile={...})`` and
 passes it to a use case that takes a config argument; a use case that reads
 the project settings itself gets it through ``use_config``, which answers

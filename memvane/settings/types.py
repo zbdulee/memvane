@@ -247,10 +247,7 @@ DEFAULT_CONFIG = {
         "verify": {
             "enabled": True,
             "timeout": 120,
-            "onFail": "delete",
-            "onInconclusive": "delete",
-            # 같은 host CLI의 독립 호출로 검수한다(다른 값은 없다). 선택된 route는
-            # onFail·onInconclusive를 `none`으로 바꿔 카드를 지우지 않는다.
+            # 같은 host CLI의 독립 호출로 검수한다(다른 값은 없다). 부정 판정은 카드를 지우지 않는다.
             "crossEngine": "off",
             "builtins": [],
             "cooldownSeconds": 600,

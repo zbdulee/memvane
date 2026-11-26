@@ -1295,7 +1295,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         wiki_selected_laya.request_sync(root, selected)
 
     # 기계 검수(auto-verify) enqueue: generated로 쓰인 카드만 대상. verify worker가
-    # 카드 주장 vs 원문을 대조해 verified 승격 또는 (onFail) 삭제한다.
+    # 카드 주장 vs 원문을 대조해 verified로 승격한다. 부정 판정은 카드를 지우지 않는다.
     verify_queued = replacing or (verify_cfg.get("enabled", True) and status == "generated")
 
     result = {

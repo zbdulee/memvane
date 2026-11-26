@@ -201,10 +201,10 @@ def bounded_failure(action: str, job: dict, reason: str) -> dict:
 
 
 def verify_suppression_hash(root: Path, compile_cfg: dict, rel: str) -> str | None:
-    """Bounded-body hash recorded when this source last produced a card the
-    verifier could not adjudicate (deleted under verify.onInconclusive: delete).
+    """Bounded-body hash of a ``verify`` suppression for this source.
 
-    A match means re-extracting would almost certainly repeat that verdict, so the
+    The rows come from the 1.x ``verify-skipped.jsonl`` the cutover imports; the
+    current verifier keeps a negative verdict's card and records none. A match means re-extracting would almost certainly repeat that verdict, so the
     caller skips before spawning any host CLI — every retry bills the user's own
     account. Any failure returns None: a broken cost guard must fail OPEN and let
     the compile run rather than silently starve the wiki.
