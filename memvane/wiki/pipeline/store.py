@@ -11,13 +11,12 @@ import uuid
 
 from memvane.kernel.errors import _query_only_uri
 from memvane.wiki.pipeline.decisions import DecisionLedgerMixin, insert_generation
+from memvane.wiki.pipeline.retention import RetentionMixin
 from memvane.wiki.pipeline.queues import JobQueueMixin
 from memvane.wiki.pipeline.verify_queue import VerifyQueueMixin
 from memvane.wiki.pipeline.schema import DDL_STATEMENTS
 from memvane.wiki.pipeline.types import (
-    AUDIT_KEEP_ROWS,
     AUDIT_KINDS,
-    AUDIT_PRUNE_EVERY,
     COMPILE_SUBDIR,
     DB_NAME,
     PIPELINE_APP_ID,
@@ -92,7 +91,7 @@ def _loads(raw: str | None, default: object = None) -> object:
     return json.loads(raw)
 
 
-class PipelineStore(DecisionLedgerMixin, JobQueueMixin, VerifyQueueMixin):
+class PipelineStore(DecisionLedgerMixin, JobQueueMixin, VerifyQueueMixin, RetentionMixin):
     """Transactional handle over ``wiki-pipeline.sqlite3``."""
 
     def __init__(self, db_path: Path, *, readonly: bool = False,
@@ -118,6 +117,8 @@ class PipelineStore(DecisionLedgerMixin, JobQueueMixin, VerifyQueueMixin):
             )
             self._conn.row_factory = sqlite3.Row
             self._conn.execute(f'PRAGMA busy_timeout={self.timeout_ms}')
+            # Takes effect only on a database without tables: it must precede WAL.
+            self._conn.execute('PRAGMA auto_vacuum=INCREMENTAL')
             self._conn.execute('PRAGMA journal_mode=WAL')
             self._conn.execute('PRAGMA synchronous=FULL')
             self._init_or_validate()
@@ -438,13 +439,8 @@ class PipelineStore(DecisionLedgerMixin, JobQueueMixin, VerifyQueueMixin):
                 'VALUES(?, ?, ?, ?, ?, ?)',
                 (kind, target_path, source_path, body_hash, _dumps(payload), now),
             )
-            row_id = int(cur.lastrowid)
-            if row_id % AUDIT_PRUNE_EVERY == 0:
-                # Logs are bounded per kind; no decision reads them.
-                cur.execute(
-                    'DELETE FROM audit_events WHERE kind = ? AND id <= (SELECT id FROM audit_events '
-                    'WHERE kind = ? ORDER BY id DESC LIMIT 1 OFFSET ?)', (kind, kind, AUDIT_KEEP_ROWS))
-            return row_id
+            # The compile worker's retention pass bounds each kind (pipeline/retention.py).
+            return int(cur.lastrowid)
 
     def query_audit(self, kind: str, *, target_path: str | None = None,
                     source_path: str | None = None, body_hash: str | None = None,

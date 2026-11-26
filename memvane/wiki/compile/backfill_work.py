@@ -1,80 +1,28 @@
-"""Private source and sibling checkpoints for a frozen, native-owned backfill."""
+"""Ledger checkpoints of a frozen backfill item: its source bytes, paid answer and sibling writes.
+
+One ``backfill_checkpoints`` row per binding (source job + cohort item). Each stage
+change rewrites the row in one transaction, so a crash leaves either the previous
+stage or the next one; the paid answer is never stored without its stage.
+"""
 from __future__ import annotations
 
 import hashlib
 import json
-import os
-import stat
-import tempfile
+import sqlite3
 
-from memvane.kernel.atomic_rename import canonical_json_bytes, fsync_dir, write_new_file
+from memvane.kernel.atomic_rename import canonical_json_bytes
 
 LIMIT = 8 * 1024 * 1024
+STAGES = ('claimed', 'siblings')
 
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def _read(path):
-    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as source:
-        info = os.fstat(source.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077
-                or info.st_nlink != 1 or info.st_size > LIMIT):
-            raise OSError('unsafe backfill checkpoint')
-        blocks = []
-        total = 0
-        while total < info.st_size:
-            block = source.read(min(65536, info.st_size - total))
-            if not block:
-                break
-            blocks.append(block)
-            total += len(block)
-        data = b''.join(blocks)
-        if len(data) != info.st_size or not os.path.samestat(info, path.lstat()):
-            raise OSError('backfill checkpoint changed')
-        return data
-
-
-def _write(path, state):
-    data = canonical_json_bytes(state)
-    if len(data) > LIMIT:
-        raise OSError('backfill checkpoint exceeds pass budget')
-    fd, name = tempfile.mkstemp(prefix='.w-', dir=path.parent)
-    tmp = path.with_name(os.path.basename(name))
-    try:
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        if _read(tmp) != data:
-            raise OSError('incomplete backfill checkpoint')
-        os.replace(tmp, path)
-        fsync_dir(path.parent)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
-def _directory(base, identity, *, create):
-    for name in ('.handoff', 'v1', 'backfill', identity):
-        child = base / name
-        if create:
-            try:
-                child.mkdir(mode=0o700)
-            except FileExistsError:
-                pass
-            else:
-                fsync_dir(base)
-        try:
-            info = child.lstat()
-        except FileNotFoundError:
-            if create:
-                raise
-            return None
-        if not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
-            raise OSError('unsafe private backfill directory')
-        base = child
-    return base
+def _store(queue):
+    from memvane.wiki.pipeline import api as pipeline
+    return pipeline.open_pipeline_dir(queue.parent)
 
 
 class FrozenWork:
@@ -85,55 +33,52 @@ class FrozenWork:
         source_job = {key: value for key, value in job.items() if key not in (
             'partialCompile', '_processedContentRevision', '_fallbackAttempts', '_requeue_count', '_backfillSkipped')}
         binding = {'sourceJob': source_job, 'cohort': list(frozen_item)}
-        folder = _directory(queue.parent, digest(canonical_json_bytes(binding)), create=not resume_only)
-        if folder is None:
-            return None
+        key = digest(canonical_json_bytes(binding))
         try:
-            state = json.loads(_read(folder / 'work'))
-            if not isinstance(state, dict):
-                raise OSError('unrecognized frozen backfill work')
-        except FileNotFoundError:
-            if resume_only:
-                return None
-            state = None
-        work = cls(folder, text, binding, state)
-        return None if resume_only and work.state['stage'] == 'settled' else work
+            with _store(queue) as store:
+                row = store.backfill_checkpoint(key)
+                if row is None and resume_only:
+                    return None
+                return cls(queue, key, text, binding, row, store)
+        except (ValueError, sqlite3.Error) as exc:
+            raise OSError('backfill checkpoint unavailable') from exc
 
-    def __init__(self, folder, text, binding, state):
+    def __init__(self, queue, key, text, binding, row, store):
+        self.queue = queue
+        self.key = key
         self.binding = binding
         self.source = (text + '\n').encode()
         self.revision = binding['cohort'][2]
-        self.folder = folder
-        self.path = folder / 'work'
-        self.state = state
-        if state is not None:
-            raw = _read(self.folder / 'raw')
-            if (self.state.get('version') != 1
-                    or self.state.get('binding') != self.binding
-                    or self.state.get('rawDigest') != digest(raw)
-                    or self.state.get('rawLength') != len(raw)
-                    or self.state.get('stage') not in ('claimed', 'saving', 'siblings', 'settled')
-                    or not isinstance(self.state.get('results'), dict)
-                    or not isinstance(self.state.get('engine'), str)):
+        self.image = None
+        if row is not None:
+            state, raw, self.image = row['state'], row['raw'], row['image']
+            if (state.get('version') != 1
+                    or state.get('binding') != binding
+                    or state.get('rawDigest') != digest(raw)
+                    or state.get('rawLength') != len(raw)
+                    or state.get('stage') not in STAGES
+                    or not isinstance(state.get('results'), dict)
+                    or not isinstance(state.get('engine'), str)
+                    or (state['stage'] == 'siblings' and self.image is None)):
                 raise OSError('unrecognized frozen backfill work')
+            self.raw = raw
+            self.state = state
         else:
-            raw = self.folder / 'raw'
-            if not os.path.lexists(raw):
-                write_new_file(raw, self.source)
-            if _read(raw) != self.source:
-                raise OSError('frozen backfill occurrence changed')
-            self.state = {'version': 1, 'binding': binding, 'stage': 'claimed', 'engine': binding['sourceJob'].get('engine'),
+            self.raw = self.source
+            self.state = {'version': 1, 'binding': binding, 'stage': 'claimed',
+                          'engine': binding['sourceJob'].get('engine'),
                           'rawLength': len(self.source), 'rawDigest': digest(self.source),
                           'results': {}, 'next': 'native_extractor'}
-            _write(self.path, self.state)
-        if json.loads(_read(self.path)) != self.state:
-            raise OSError('incomplete frozen backfill record')
-        if self.state['stage'] == 'saving' and os.path.lexists(self.folder / 'image'):
-            self.answer()
-            self.state.update(stage='siblings', next='native_writer')
-            _write(self.path, self.state)
+            store.put_backfill_checkpoint(self.key, self.state, self.raw)
         if self.has_answer:
             self.answer()
+
+    def _save(self):
+        try:
+            with _store(self.queue) as store:
+                store.put_backfill_checkpoint(self.key, self.state, self.raw, self.image)
+        except (ValueError, sqlite3.Error) as exc:
+            raise OSError('backfill checkpoint write failed') from exc
 
     @property
     def has_answer(self):
@@ -144,28 +89,24 @@ class FrozenWork:
             image = canonical_json_bytes(extracted)
             if len(image) > LIMIT:
                 raise OSError('frozen answer exceeds pass budget')
-            image_path = self.folder / 'image'
-            self.state.update(stage='saving', engine=engine, next='save_image', imageDigest=digest(image))
-            _write(self.path, self.state)
-            if not os.path.lexists(image_path):
-                write_new_file(image_path, image)
-            if _read(image_path) != image:
-                raise OSError('frozen answer changed')
-            self.state.update(stage='siblings', next='native_writer')
-            _write(self.path, self.state)
-        if json.loads(_read(self.path)) != self.state:
-            raise OSError('incomplete frozen backfill work')
+            self.image = image
+            self.state.update(stage='siblings', engine=engine, next='native_writer', imageDigest=digest(image))
+            self._save()
         return self.answer()
 
     def answer(self):
-        data = _read(self.folder / 'image')
-        if digest(data) != self.state['imageDigest']:
+        if self.image is None or digest(self.image) != self.state.get('imageDigest'):
             raise OSError('frozen answer checksum mismatch')
-        return json.loads(data)
+        return json.loads(self.image)
 
     def settled(self):
-        self.state.update(stage='settled', next=None)
-        _write(self.path, self.state)
+        # A settled item and a missing checkpoint open alike (resume_only: None; otherwise a
+        # fresh claim), so the row goes at once.
+        try:
+            with _store(self.queue) as store:
+                store.delete_backfill_checkpoint(self.key)
+        except (ValueError, sqlite3.Error) as exc:
+            raise OSError('backfill checkpoint delete failed') from exc
 
     def write_sibling(self, key, writer):
         if key in self.state['results']:
@@ -174,5 +115,5 @@ class FrozenWork:
         if isinstance(result, dict) and result.get('action') in ('created', 'updated', 'candidate',
                                                                  'merge-needed'):
             self.state['results'][key] = result
-            _write(self.path, self.state)
+            self._save()
         return result

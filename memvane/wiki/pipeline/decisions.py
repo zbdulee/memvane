@@ -170,3 +170,30 @@ class DecisionLedgerMixin:
             cur.execute('UPDATE dedup_pairs SET state = ?, updated_ns = ? WHERE pair_key = ?',
                         (state, time.time_ns(), pair_key))
             return cur.rowcount == 1
+
+    # Backfill checkpoints: the paid extraction answer of one frozen backfill item.
+    def backfill_checkpoint(self, binding_digest: str) -> dict | None:
+        row = self._conn.execute(
+            'SELECT state_json, raw_blob, image_blob FROM backfill_checkpoints WHERE binding_digest = ?',
+            (binding_digest,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {'state': _loads(row['state_json'], {}), 'raw': bytes(row['raw_blob']),
+                'image': bytes(row['image_blob']) if row['image_blob'] is not None else None}
+
+    def put_backfill_checkpoint(self, binding_digest: str, state: dict, raw: bytes,
+                                image: bytes | None = None) -> None:
+        """Insert or replace one checkpoint; state and answer change in one transaction."""
+        with self._write_tx() as cur:
+            cur.execute(
+                'INSERT INTO backfill_checkpoints(binding_digest, state_json, raw_blob, image_blob, updated_ns) '
+                'VALUES(?, ?, ?, ?, ?) ON CONFLICT(binding_digest) DO UPDATE SET state_json = excluded.state_json, '
+                'raw_blob = excluded.raw_blob, image_blob = excluded.image_blob, updated_ns = excluded.updated_ns',
+                (binding_digest, _dumps(state), raw, image, time.time_ns()),
+            )
+
+    def delete_backfill_checkpoint(self, binding_digest: str) -> bool:
+        with self._write_tx() as cur:
+            cur.execute('DELETE FROM backfill_checkpoints WHERE binding_digest = ?', (binding_digest,))
+            return cur.rowcount == 1

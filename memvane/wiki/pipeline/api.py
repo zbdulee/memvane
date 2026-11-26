@@ -98,3 +98,11 @@ def dedup_queue(project_root):
 def finish_dedup_pair(project_root, pair_key):
     from memvane.wiki.pipeline.records import finish_dedup_pair as implementation
     return implementation(project_root, pair_key)
+
+
+def maintain(project_root, *, wiki_root, source_roots):
+    """One bounded retention pass; the caller holds ``.compile-run.lock``."""
+    from memvane.wiki.pipeline.retention import maintain as implementation
+    from memvane.wiki.pipeline.store import open_pipeline
+    with open_pipeline(project_root) as store:
+        return implementation(store, wiki_root=wiki_root, source_roots=source_roots)

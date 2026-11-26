@@ -141,4 +141,16 @@ DDL_STATEMENTS: tuple[str, ...] = (
     )
     """,
     'CREATE INDEX IF NOT EXISTS idx_dedup_state ON dedup_pairs(state, created_ns)',
+    """
+    CREATE TABLE IF NOT EXISTS backfill_checkpoints (
+        binding_digest TEXT PRIMARY KEY,
+        state_json TEXT NOT NULL,
+        raw_blob BLOB NOT NULL,
+        image_blob BLOB,
+        updated_ns INTEGER NOT NULL
+    )
+    """,
+    'CREATE INDEX IF NOT EXISTS idx_audit_kind_created ON audit_events(kind, created_ns)',
+    'CREATE INDEX IF NOT EXISTS idx_compile_state_updated ON compile_jobs(state, updated_ns)',
+    'CREATE INDEX IF NOT EXISTS idx_verify_state_updated ON verify_jobs(state, updated_ns)',
 )

@@ -1654,6 +1654,24 @@ def _main():
         os.close(run_lock)
 
 
+def _retention_pass(root: Path, config: dict, selected_route) -> dict:
+    """Bounded ledger retention under the run lock (pipeline/retention.py).
+
+    The report is deliberately not checked (working-rules 3): every step deletes in its own
+    transaction, so a failure leaves the rows for the next pass and costs nothing else.
+    """
+    from memvane.wiki.pipeline import api as pipeline
+    wiki_root = (root / config.get('wikiPath', settings_types.WIKI_REL)).resolve()
+    collections = selected_route[0].get('collections', []) if selected_route is not None else []
+    source_roots = [Path(item['sourceRoot']) for item in collections
+                    if isinstance(item, dict) and item.get('role') != 'wiki'
+                    and isinstance(item.get('sourceRoot'), str)]
+    try:
+        return pipeline.maintain(root, wiki_root=wiki_root, source_roots=source_roots)
+    except (OSError, ValueError, sqlite3.Error):
+        return {}
+
+
 def _claim_frozen_work(queue, claimed, rows, frozen_items):
     jobs = {}
     for text, job in rows:
@@ -1671,6 +1689,7 @@ def _claim_frozen_work(queue, claimed, rows, frozen_items):
 def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                  selected_route) -> int:
     recover_pending_refreshes(root, config, queue)
+    _retention_pass(root, config, selected_route)
 
     from memvane.wiki.intake import api as laya_wiki_backfill
     try:
