@@ -58,24 +58,6 @@ DDL_STATEMENTS: tuple[str, ...] = (
     """,
     'CREATE INDEX IF NOT EXISTS idx_verify_state_target ON verify_jobs(state, target_path)',
     """
-    CREATE TABLE IF NOT EXISTS staged_cards (
-        stage_id TEXT PRIMARY KEY,
-        queue TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        phase TEXT NOT NULL,
-        closed INTEGER NOT NULL DEFAULT 0,
-        target_path TEXT,
-        control_json TEXT NOT NULL,
-        raw_blob BLOB,
-        image_blob BLOB,
-        charged_bytes INTEGER NOT NULL DEFAULT 0,
-        created_ns INTEGER NOT NULL,
-        updated_ns INTEGER NOT NULL
-    )
-    """,
-    'CREATE INDEX IF NOT EXISTS idx_staged_scan ON staged_cards(queue, kind, closed, created_ns)',
-    'CREATE INDEX IF NOT EXISTS idx_staged_target ON staged_cards(target_path, closed)',
-    """
     CREATE TABLE IF NOT EXISTS audit_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         kind TEXT NOT NULL,
@@ -109,7 +91,6 @@ DDL_STATEMENTS: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS publish_txns (
         tx_id TEXT PRIMARY KEY,
         target_path TEXT NOT NULL,
-        stage_id TEXT,
         temp_name TEXT NOT NULL,
         temp_ino INTEGER NOT NULL,
         temp_sha TEXT NOT NULL,

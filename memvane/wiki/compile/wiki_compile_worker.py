@@ -24,7 +24,6 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from memvane.wiki.workspace.handoff import api as queue_pass
 from memvane.kernel.paths import now_iso
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.wiki.workspace import api as cp, types as ct
@@ -526,7 +525,6 @@ def compile_candidate(root: Path, candidate: dict, *, final_reason: str | None =
         input=json.dumps(candidate, ensure_ascii=False),
         text=True,
         capture_output=True,
-        **queue_pass.child_options(),
         shell=False,
     )
     if proc.returncode != 0:
@@ -1677,24 +1675,18 @@ def _claim_frozen_work(queue, claimed, rows, frozen_items):
         work = backfill_work.FrozenWork.open(queue, text, job, item, resume_only=resume_only)
         if work is not None:
             jobs[text] = work
-    if jobs:
-        # The snapshot covers all occurrences before any writer changes a card.
-        claimed = rows.privatize(queue, claimed)
     return claimed, jobs
 
 
-@queue_pass.bounded
 def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                  selected_route) -> int:
     recover_pending_refreshes(root, config, queue)
 
     from memvane.wiki.intake import api as laya_wiki_backfill
     try:
-        claimed = claim_queue(queue, private=True, receipt_writer=laya_wiki_backfill.write_discard_receipt)
+        claimed = claim_queue(queue, receipt_writer=laya_wiki_backfill.write_discard_receipt)
     except BlockingIOError:
         claimed = None
-    # Reaping holds the source-queue lock. ACK outside it to preserve discovery
-    # -> enqueue lock order, including the empty-queue/crash-recovery path.
     rows = read_queue(claimed) if claimed is not None else None
     frozen_items = laya_wiki_backfill.reconcile_discards(selected_route, claimed_rows=rows) or {}
     if claimed is None:
@@ -1704,9 +1696,6 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
             print(json.dumps({"processed": 0, "remaining": 0}, ensure_ascii=False))
         return 0
     if not rows:
-        if not hasattr(rows, 'finish'):
-            queue_pass.defer_unread(queue, claimed)
-            raise OSError('source claim unreadable')
         rows.finish(queue, claimed, [])
         _run_verify_pass(root, config, compile_cfg)
         if args.json:

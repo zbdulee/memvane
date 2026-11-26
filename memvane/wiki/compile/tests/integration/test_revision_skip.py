@@ -418,7 +418,7 @@ class RevisionSkipChecks(FixtureCase):
 
                 # A real consumer exits after claiming the partial row and before acknowledging it.
                 command = ('import sys; from pathlib import Path; from memvane.wiki.workspace import api; '
-                           'print(api.claim_queue(Path(sys.argv[1]), private=True).token)')
+                           'print(api.claim_queue(Path(sys.argv[1])).token)')
                 subprocess.check_output([sys.executable, '-B', '-c', command, str(queue)],
                                         cwd=Path(__file__).resolve().parents[5], text=True)
                 self.assertEqual(claimed_jobs(queue), [old])

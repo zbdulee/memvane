@@ -7,7 +7,6 @@ from pathlib import Path
 import re
 import subprocess
 
-from memvane.wiki.workspace.handoff import api as queue_pass
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.wiki.workspace.api import selected, recheck, queue_busy as _queue_busy, deferred_result
 from memvane.wiki.workspace.types import DEFERRED_REASONS as _DEFERRED_REASONS
@@ -44,7 +43,6 @@ def _worker_failure_code(stderr):
             'ResourceDeferred': 'worker_resource_deferred'}.get(match.group(1), 'worker_error') if match else 'worker_error'
 
 
-@queue_pass.bounded
 def run(project: Path):
     try:
         return _run(project)
@@ -90,7 +88,7 @@ def _run(project: Path):
     proc = subprocess.run(
         entry_argv('wiki-compile-worker', '--cwd', str(project), '--json', '--flush-all'),
         stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
-        **queue_pass.child_options({**os.environ, 'QMD_RUNTIME_DISPATCH': '1'}))
+        env={**os.environ, 'QMD_RUNTIME_DISPATCH': '1'})
     recheck(bound)
     if proc.returncode:
         return {'state': 'deferred', 'reason': 'compile_worker_failed',
@@ -180,5 +178,4 @@ def _idle_locked(project: Path, source: Path, verify: Path, bound):
     from memvane.wiki.compile import refresh_settlement
     if refresh_settlement.unsettled(project, active_unresolved):
         return False
-    from memvane.wiki.intake.api import write_discard_receipt
-    return not (_queue_busy(source, receipt_writer=write_discard_receipt) | _queue_busy(verify))
+    return not (_queue_busy(source) | _queue_busy(verify))

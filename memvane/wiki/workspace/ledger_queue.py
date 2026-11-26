@@ -57,7 +57,7 @@ class LedgerClaim:
 
 
 class LedgerRows(list):
-    """``(raw, job)`` rows of a claim with the file-claim return methods."""
+    """``(raw, job)`` rows of a claim; ``finish`` returns the unfinished lines."""
 
     def __init__(self, claim: LedgerClaim):
         super().__init__((raw(item['payload']), item['payload']) for item in claim.jobs)
@@ -74,9 +74,6 @@ class LedgerRows(list):
                 jobs.append(job)
         with _store(queue) as store:
             store.finish_claim(kind(queue), claim.token, jobs)
-
-    def privatize(self, queue, claim):
-        return claim  # The claim is already private to this worker.
 
 
 def claim(queue: Path, *, receipt_writer=None) -> LedgerClaim | None:

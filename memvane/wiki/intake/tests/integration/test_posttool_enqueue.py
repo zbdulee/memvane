@@ -23,7 +23,7 @@ class PosttoolEnqueue(FixtureCase):
         self.addCleanup(selected.stop)
         self.public_queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
         self.public_pending = self.root / workspace.rel(card_types.SOURCE_REFRESH_PENDING)
-        self.queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
+        self.queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE))
         self.pending = self.public_pending.with_name('edit-inbox.jsonl')
 
 

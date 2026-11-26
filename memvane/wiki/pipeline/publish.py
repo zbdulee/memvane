@@ -196,7 +196,7 @@ def _apply(store, tx_id: str, rel: str, temp_path: Path, target: Path, temp_sha:
 
 def publish_card(project_root: Path | str, wiki_root: Path | str, target_path: Path | str,
                  content: str | bytes, *, expected_target_sha: str | None = None,
-                 stage_id: str | None = None, audit_kind: str | None = None,
+                 audit_kind: str | None = None,
                  audit_payload: dict | None = None, tx_id: str | None = None,
                  lock_context=None, generation: dict | None = None) -> PublishOutcome:
     """Publish a card via same-dir temp, SQLite txn, CAS, and one atomic rename or exchange.
@@ -222,7 +222,7 @@ def publish_card(project_root: Path | str, wiki_root: Path | str, target_path: P
     with open_pipeline(root) as store:
         store.begin_publish_txn(
             rel, temp_name, temp_ino, temp_sha,
-            stage_id=stage_id, expected_target_sha=expected_target_sha, tx_id=resolved_tx,
+            expected_target_sha=expected_target_sha, tx_id=resolved_tx,
             generation=generation,
         )
         locks = lock_context() if lock_context is not None else _card_locks(root)

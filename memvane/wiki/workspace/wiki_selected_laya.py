@@ -190,37 +190,14 @@ def deferred_result(exc):
 
 
 
-def _queue_busy(queue: Path, *, receipt_writer=None):
-    """True if ``queue`` holds rows or a live claim, decided under its lock.
+def _queue_busy(queue: Path):
+    """True if the ledger queue ``queue`` holds queued rows or a claim.
 
-    The native consumer recovers dead owners on source and verify queues. Claim presence and
-    queue content are read under the same lock ``claim_queue`` moves rows
-    under, so a concurrent claim is seen as either the queue or its claim.
+    A dead claim counts until the next claim returns it to the queue.
     """
     if not queue.parent.is_dir():
         return False
     from memvane.wiki.workspace import ledger_queue
-    if ledger_queue.kind(queue) is not None:
-        # Queued rows and live claims both count; a dead claim is returned by the next claim.
-        return bool(ledger_queue.live(queue))
-    import fcntl
-    from memvane.wiki.workspace.queue_paths import _queue_lock_path
-    from memvane.wiki.workspace.queue import reclaim_orphaned_claimed
-    from memvane.wiki.workspace.queue_return import queue_recovery_pending, legacy_card_lock
-    from memvane.wiki.workspace import types as ct
-    prefix = queue.name + '.claimed.'
-    with legacy_card_lock(queue), open(_queue_lock_path(queue), 'a', encoding='utf-8') as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            if queue.name in (ct.SOURCE_QUEUE, ct.VERIFY_QUEUE):
-                if next(queue.parent.glob(prefix + '*'), None) is not None:
-                    return True  # The bounded native claimant owns orphan recovery.
-            else:
-                reclaim_orphaned_claimed(queue, receipt_writer=receipt_writer)
-            if queue_recovery_pending(queue):
-                return True
-            if any(child.name.startswith(prefix) for child in queue.parent.iterdir()):
-                return True
-            return bool(queue.exists() and queue.stat().st_size)
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    if ledger_queue.kind(queue) is None:
+        raise ValueError('not_a_ledger_queue')
+    return bool(ledger_queue.live(queue))

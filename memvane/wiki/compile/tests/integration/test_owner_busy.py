@@ -14,7 +14,8 @@ from memvane.wiki.compile import selected_execution as execution, wiki_compile_w
 from memvane.wiki.intake import api as intake
 from memvane.wiki.workspace import api as workspace
 from tests.support.case import FixtureCase
-from tests.support.queue_files import pending_text
+from tests.support.queue_files import pending_text, replace_queue
+from tests.support.wiki_handoff import claimed_jobs
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
 
@@ -79,9 +80,9 @@ class OwnerBusy(FixtureCase):
             self.assertEqual(execution.run(self.root), {'state': 'deferred', 'reason': 'resource_deferred'})
 
     def test_claimed_job_is_requeued_when_owner_becomes_busy(self):
-        queue = self.root / 'queue.jsonl'
+        queue = workspace.safe_queue_path(self.root)
         raw = json.dumps({'sourcePath': 'synthetic.md'})
-        queue.write_text(raw + '\n')
+        replace_queue(queue, [{'sourcePath': 'synthetic.md'}])
         with patch.object(worker, 'recover_pending_refreshes'), patch.object(intake, 'reconcile_discards'), \
              patch.object(worker, 'dedup_jobs', side_effect=lambda rows: (rows, [])), \
              patch.object(worker, 'batch_ready', return_value=True), \
@@ -89,4 +90,4 @@ class OwnerBusy(FixtureCase):
             with self.assertRaisesRegex(ResourceDeferred, '^owner_busy$'):
                 worker._main_locked(SimpleNamespace(json=True, flush_all=True), self.root, {}, {}, queue, None)
         self.assertEqual(pending_text(queue).splitlines(), [raw])
-        self.assertFalse(list(self.root.glob('queue.jsonl.claimed.*')))
+        self.assertEqual(claimed_jobs(queue), [])

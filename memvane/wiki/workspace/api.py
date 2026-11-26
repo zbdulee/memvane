@@ -37,15 +37,9 @@ def validate_compile_run_lock(root, fd):
     return implementation(root, fd)
 
 
-def safe_queue_path(project_root, configured_path=None, *, native=False):
+def safe_queue_path(project_root, configured_path=None):
     from memvane.wiki.workspace.queue_paths import _safe_queue_path
-    path = _safe_queue_path(project_root, configured_path)
-    from memvane.wiki.workspace.ledger_queue import kind
-    # A ledger queue has no private file copy; its public path is its handle.
-    if native and path is not None and kind(path) is None:
-        from memvane.wiki.workspace.handoff.api import native_live
-        return native_live(path, create=True)
-    return path
+    return _safe_queue_path(project_root, configured_path)
 
 
 def queue_lock_path(path):
@@ -68,9 +62,9 @@ def read_queue(path):
     return implementation(path)
 
 
-def claim_queue(path, *, receipt_writer=None, before_claim=None, private=False):
+def claim_queue(path, *, receipt_writer=None):
     from memvane.wiki.workspace.queue import claim_queue as implementation
-    return implementation(path, receipt_writer=receipt_writer, before_claim=before_claim, private=private)
+    return implementation(path, receipt_writer=receipt_writer)
 
 
 def request_lifecycle(decision, trigger):
@@ -113,9 +107,9 @@ def schema3_checkout(bound):
     return implementation(bound)
 
 
-def queue_busy(queue, *, receipt_writer=None):
+def queue_busy(queue):
     from memvane.wiki.workspace.wiki_selected_laya import _queue_busy as implementation
-    return implementation(queue, receipt_writer=receipt_writer)
+    return implementation(queue)
 
 
 def deferred_result(exc):

@@ -70,7 +70,7 @@ class DiscoveryCursor(FixtureCase):
         self.accept()
         result = self.drain('g2', {self.key: changed})
         self.assertEqual((result['state'], result['queued'], result['pending']), ('drained', 1, 0))
-        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
+        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE))
         self.assertIn('docs/note.md', pending_text(queue))
         self.assertIn(changed, pending_text(queue))
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])
@@ -155,7 +155,7 @@ class DiscoveryCursor(FixtureCase):
         with patch.object(discovery, '_write', side_effect=fail_ack):
             with self.assertRaisesRegex(OSError, 'ACK failure'):
                 self.drain('g2', {self.key: changed})
-        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
+        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE))
         before = pending_text(queue)
         self.assertEqual(len(before.splitlines()), 1)
         result = self.drain('g2', {self.key: changed})
@@ -175,7 +175,7 @@ class DiscoveryCursor(FixtureCase):
         state = discovery._read(discovery._paths(self.decision)[0])
         self.assertEqual((state['baseGen'], state['pending']), ('g2', {self.key: changed}))
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [grant])
-        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
+        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE))
         self.assertEqual(pending_text(queue), '')
         self.assertEqual(self.drain('g2', {self.key: changed})['queued'], 1)
         self.assertEqual(len(pending_text(queue).splitlines()), 1)
@@ -343,7 +343,7 @@ class DiscoveryCursor(FixtureCase):
                 with self.assertRaises(OSError):
                     discovery.drain_after_sync(self.decision, observed, recheck=lambda: None,
                                                view_generation='g2', raw_snapshot=snapshot)
-            queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
+            queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE))
             self.assertEqual(len(pending_text(queue).splitlines()), 1)
             state = discovery._read(discovery._paths(self.decision)[0])
             self.assertEqual(list(state['pending']), [self.project.raw_name + '/docs/second.md'])
@@ -364,7 +364,7 @@ class DiscoveryCursor(FixtureCase):
         snapshot = {self.key: hashlib.sha256(self.source.read_bytes()).hexdigest(),
                     self.project.raw_name + '/docs/second.md': hashlib.sha256(second.read_bytes()).hexdigest()}
         self.accept()
-        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
+        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE))
         with patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': '1'}):
             first = self.drain('g2', snapshot)
             self.assertEqual((first['queued'], first['pending']), (1, 1))

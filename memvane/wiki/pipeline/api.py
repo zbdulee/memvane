@@ -24,12 +24,12 @@ def open_pipeline_dir(compile_dir, *, readonly=False, timeout_ms=None):
 
 
 def publish_card(project_root, wiki_root, target_path, content, *, expected_target_sha=None,
-                 stage_id=None, audit_kind=None, audit_payload=None, tx_id=None, lock_context=None,
+                 audit_kind=None, audit_payload=None, tx_id=None, lock_context=None,
                  generation=None):
     from memvane.wiki.pipeline.publish import publish_card as implementation
     return implementation(
         project_root, wiki_root, target_path, content,
-        expected_target_sha=expected_target_sha, stage_id=stage_id,
+        expected_target_sha=expected_target_sha,
         audit_kind=audit_kind, audit_payload=audit_payload, tx_id=tx_id, lock_context=lock_context,
         generation=generation,
     )

@@ -65,7 +65,7 @@ class SelectedExecutionQueue(FixtureCase):
         self.assertEqual(claimed_jobs(self.source), [{'source': 'orphan'}])
         self.assertFalse(self.source.exists())
         with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(pid)}):
-            recovered = workspace.claim_queue(self.source, private=True)
+            recovered = workspace.claim_queue(self.source)
         rows = workspace.read_queue(recovered)
         self.assertEqual([job for _, job in rows], [{'source': 'orphan'}])
         rows.finish(self.source, recovered, [])

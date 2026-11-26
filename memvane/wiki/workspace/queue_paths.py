@@ -1,9 +1,8 @@
 """Safe compile queue and lock paths."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import fcntl
-import uuid
-from memvane.kernel.atomic_rename import fsync_dir, write_new_file
 from pathlib import Path
 from memvane.settings import types as project_types
 from memvane.wiki.workspace import compile_paths as cp
@@ -38,40 +37,26 @@ def _safe_queue_path(project_root, configured_path=None):
 
 
 def _queue_lock_path(path):
-    from memvane.wiki.workspace.handoff.api import public_name
-    public = public_name(path)
-    return public.with_name(f"{public.name}.lock")
+    path = Path(path)
+    return path.with_name(f"{path.name}.lock")
+
+
+@contextmanager
+def queue_locked(path):
+    with open(_queue_lock_path(path), 'a', encoding='utf-8') as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
 
 
 def requeue_lines(path: Path, raw_lines: list[str]):
+    """Append rows back to a text queue (dedup pairs) under its lock."""
     if not raw_lines:
         return
+    from memvane.wiki.workspace import ledger_queue
+    if ledger_queue.kind(path) is not None:
+        raise ValueError('ledger_queue_has_no_text_requeue')
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(_queue_lock_path(path), "a", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            if path.name not in (cp.SOURCE_QUEUE, cp.VERIFY_QUEUE):
-                with path.open('a', encoding='utf-8') as handle:
-                    for line in raw_lines:
-                        handle.write(line if line.endswith('\n') else line + '\n')
-                return
-            from memvane.wiki.workspace import queue_return
-            from memvane.wiki.workspace.handoff.api import destinations
-            material = queue_return.lines_bytes(raw_lines)
-            public, native, opaque = destinations(material)
-            if native or opaque:
-                folder = queue_return._dir(path, create=True)
-                queue_return._exact_file(folder / ('ready-' + uuid.uuid4().hex), material)
-                return  # One durable name owns the entire submitted group.
-            try:
-                live = path.read_bytes()
-            except FileNotFoundError:
-                live = b''
-            if live and not live.endswith(b'\n'):
-                raise OSError('incomplete queue tail')
-            swap = path.parent / ('.qr-' + uuid.uuid4().hex)
-            write_new_file(swap, live + public)
-            swap.replace(path)
-            fsync_dir(path.parent)
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    with queue_locked(path):
+        with path.open('a', encoding='utf-8') as handle:
+            for line in raw_lines:
+                handle.write(line if line.endswith('\n') else line + '\n')

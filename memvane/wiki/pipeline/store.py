@@ -20,9 +20,6 @@ from memvane.wiki.pipeline.types import (
     DB_NAME,
     PIPELINE_APP_ID,
     PIPELINE_USER_VERSION,
-    STAGE_KINDS,
-    STAGE_QUOTA_BYTES,
-    StageQuotaExceeded,
     WORKER_BUSY_TIMEOUT_MS,
     PipelineError,
 )
@@ -428,92 +425,6 @@ class PipelineStore(DecisionLedgerMixin, JobQueueMixin, VerifyQueueMixin):
     def count_verify_jobs(self, *, state: str | None = None) -> int:
         return self._count_jobs('verify_jobs', state=state)
 
-    def insert_work(self, stage_id: str, queue: str, kind: str, phase: str, control_json: str, *,
-                    raw_blob: bytes | None, image_blob: bytes | None, charged_bytes: int = 0,
-                    target_path: str | None = None, quota_bytes: int | None = STAGE_QUOTA_BYTES) -> None:
-        """Insert one handoff work; ``quota_bytes=None`` admits migrated rows past the quota."""
-        if kind not in STAGE_KINDS:
-            raise PipelineError('invalid_stage_kind')
-        now = time.time_ns()
-        with self._write_tx() as cur:
-            if cur.execute('SELECT 1 FROM staged_cards WHERE stage_id = ?', (stage_id,)).fetchone():
-                raise PipelineError('stage_id_collision')
-            if charged_bytes and quota_bytes is not None:
-                used = cur.execute('SELECT COALESCE(SUM(charged_bytes), 0) FROM staged_cards').fetchone()[0]
-                if used + charged_bytes > quota_bytes:
-                    raise StageQuotaExceeded('handoff_copy_quota')
-            cur.execute(
-                'INSERT INTO staged_cards(stage_id, queue, kind, phase, closed, target_path, control_json, '
-                'raw_blob, image_blob, charged_bytes, created_ns, updated_ns) '
-                'VALUES(?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)',
-                (stage_id, queue, kind, phase, target_path, control_json,
-                 None if raw_blob is None else sqlite3.Binary(raw_blob),
-                 None if image_blob is None else sqlite3.Binary(image_blob),
-                 int(charged_bytes), now, now),
-            )
-
-    _WORK_COLUMNS = ('stage_id, queue, kind, phase, closed, target_path, control_json, '
-                     'charged_bytes, created_ns, updated_ns')
-
-    def get_work(self, stage_id: str) -> dict | None:
-        row = self._conn.execute(
-            f'SELECT {self._WORK_COLUMNS} FROM staged_cards WHERE stage_id = ?', (stage_id,),
-        ).fetchone()
-        return dict(row) if row is not None else None
-
-    def list_works(self, queue: str, kind: str, *, closed: bool = False) -> list[dict]:
-        rows = self._conn.execute(
-            f'SELECT {self._WORK_COLUMNS} FROM staged_cards WHERE queue = ? AND kind = ? AND closed = ? '
-            'ORDER BY created_ns, stage_id',
-            (queue, kind, 1 if closed else 0),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def works_for_target(self, target_path: str, *, closed: bool = False) -> list[dict]:
-        rows = self._conn.execute(
-            f'SELECT {self._WORK_COLUMNS} FROM staged_cards WHERE target_path = ? AND closed = ? '
-            'ORDER BY created_ns, stage_id',
-            (target_path, 1 if closed else 0),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def work_blob(self, stage_id: str, name: str) -> bytes | None:
-        if name not in ('raw', 'image'):
-            raise PipelineError('invalid_stage_blob')
-        row = self._conn.execute(
-            f'SELECT {name}_blob FROM staged_cards WHERE stage_id = ?', (stage_id,),
-        ).fetchone()
-        if row is None or row[0] is None:
-            return None
-        return bytes(row[0])
-
-    def cas_work(self, stage_id: str, expected_control_json: str, control_json: str, phase: str, *,
-                 closed: bool | None = None) -> bool:
-        now = time.time_ns()
-        with self._write_tx() as cur:
-            if closed is None:
-                cur.execute(
-                    'UPDATE staged_cards SET control_json = ?, phase = ?, updated_ns = ? '
-                    'WHERE stage_id = ? AND control_json = ?',
-                    (control_json, phase, now, stage_id, expected_control_json),
-                )
-            else:
-                cur.execute(
-                    'UPDATE staged_cards SET control_json = ?, phase = ?, closed = ?, updated_ns = ? '
-                    'WHERE stage_id = ? AND control_json = ?',
-                    (control_json, phase, 1 if closed else 0, now, stage_id, expected_control_json),
-                )
-            return cur.rowcount == 1
-
-    def delete_work(self, stage_id: str, expected_control_json: str) -> bool:
-        with self._write_tx() as cur:
-            cur.execute('DELETE FROM staged_cards WHERE stage_id = ? AND control_json = ?',
-                        (stage_id, expected_control_json))
-            return cur.rowcount == 1
-
-    def staged_quota_bytes(self) -> int:
-        return self._conn.execute('SELECT COALESCE(SUM(charged_bytes), 0) FROM staged_cards').fetchone()[0]
-
     def append_audit(self, kind: str, payload: dict, *, target_path: str | None = None,
                      source_path: str | None = None, body_hash: str | None = None) -> int:
         if kind not in AUDIT_KINDS:
@@ -598,7 +509,7 @@ class PipelineStore(DecisionLedgerMixin, JobQueueMixin, VerifyQueueMixin):
             return cur.rowcount > 0
 
     def begin_publish_txn(self, target_path: str, temp_name: str, temp_ino: int, temp_sha: str, *,
-                          stage_id: str | None = None, expected_target_sha: str | None = None,
+                          expected_target_sha: str | None = None,
                           tx_id: str | None = None, generation: dict | None = None) -> str:
         """Record an intended publish; ``generation`` is appended to ``card_generations``
         only when the card actually lands (``published`` or ``published_user_edited``)."""
@@ -606,10 +517,10 @@ class PipelineStore(DecisionLedgerMixin, JobQueueMixin, VerifyQueueMixin):
         now = time.time_ns()
         with self._write_tx() as cur:
             cur.execute(
-                'INSERT INTO publish_txns(tx_id, target_path, stage_id, temp_name, temp_ino, temp_sha, '
+                'INSERT INTO publish_txns(tx_id, target_path, temp_name, temp_ino, temp_sha, '
                 'expected_target_sha, generation_json, state, created_ns, updated_ns) '
-                'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                (resolved_id, target_path, stage_id, temp_name, int(temp_ino), temp_sha,
+                'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                (resolved_id, target_path, temp_name, int(temp_ino), temp_sha,
                  expected_target_sha, _dumps(generation) if generation is not None else None,
                  'publishing', now, now),
             )
