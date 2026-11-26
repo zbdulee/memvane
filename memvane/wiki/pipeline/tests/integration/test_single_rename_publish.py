@@ -118,3 +118,125 @@ class SingleRenamePublishTests(FixtureCase):
         r4 = pipeline.recover_publishes(self.project.root, self.wiki)
         self.assertEqual([(o.tx_id, o.state) for o in r4], [('tx4', 'published_user_edited')])
         self.assertEqual(live4.read_text(encoding='utf-8'), '# User Re-Edited\n')
+
+    def _stop_after(self, name):
+        """Raise inside publish right after the named step, as a crash would."""
+        from unittest.mock import patch
+        from memvane.wiki.pipeline import publish
+        real = getattr(publish, name)
+
+        class Crash(Exception):
+            pass
+
+        def wrapped(*args, **kwargs):
+            real(*args, **kwargs)
+            raise Crash
+        return patch.object(publish, name, wrapped), Crash
+
+    def _card(self, rel, text):
+        path = self.wiki / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8')
+        return path
+
+    def test_exchange_crash_recovers_clean_and_restores_an_editor_save(self):
+        # P7: stopped after the exchange; the displaced file equals the expected base.
+        live = self._card('concepts/p7.md', '# Base\n')
+        stop, crash = self._stop_after('_exchange')
+        with stop, self.assertRaises(crash):
+            pipeline.publish_card(self.project.root, self.wiki, 'concepts/p7.md', '# New\n',
+                                  expected_target_sha=_sha('# Base\n'))
+        self.assertEqual(live.read_text(encoding='utf-8'), '# New\n')
+        self.assertEqual(len(self._publish_temps()), 1)
+        out = pipeline.recover_publishes(self.project.root, self.wiki)
+        self.assertEqual([o.state for o in out], ['published'])
+        self.assertEqual(live.read_text(encoding='utf-8'), '# New\n')
+        self.assertEqual(self._publish_temps(), [])
+
+        # P8: an editor saves between the CAS read and the exchange.
+        from unittest.mock import patch
+        from memvane.wiki.pipeline import publish
+        live8 = self._card('concepts/p8.md', '# Base\n')
+        real = publish._exchange
+        def editor_then_exchange(temp_path, target):
+            if target == live8 and live8.read_text(encoding='utf-8') == '# Base\n':
+                live8.write_text('# Editor Save\n', encoding='utf-8')
+            real(temp_path, target)
+        with patch.object(publish, '_exchange', editor_then_exchange):
+            res = pipeline.publish_card(self.project.root, self.wiki, 'concepts/p8.md', '# New\n',
+                                        expected_target_sha=_sha('# Base\n'))
+        self.assertEqual(res.state, 'conflict_user_edited')
+        self.assertEqual(live8.read_text(encoding='utf-8'), '# Editor Save\n')
+        self.assertEqual(self._publish_temps(), [])
+
+    def test_occupied_new_target_same_bytes_and_human_delete_are_never_overwritten(self):
+        # P9: a person created the new card's path first.
+        mine = self._card('concepts/p9.md', '# Person\n')
+        res = pipeline.publish_card(self.project.root, self.wiki, 'concepts/p9.md', '# Machine\n')
+        self.assertEqual(res.state, 'conflict_user_edited')
+        self.assertEqual(mine.read_text(encoding='utf-8'), '# Person\n')
+        # P10: the same bytes published twice in the same second.
+        first = pipeline.publish_card(self.project.root, self.wiki, 'concepts/p10.md', '# Same\n')
+        again = pipeline.publish_card(self.project.root, self.wiki, 'concepts/p10.md', '# Same\n')
+        self.assertEqual((first.state, again.state), ('published', 'published'))
+        self.assertEqual(self._publish_temps(), [])
+        # P11: a replacement for a card the person deleted is not resurrected.
+        gone = self._card('concepts/p11.md', '# Base\n')
+        gone.unlink()
+        res = pipeline.publish_card(self.project.root, self.wiki, 'concepts/p11.md', '# New\n',
+                                    expected_target_sha=_sha('# Base\n'))
+        self.assertEqual(res.state, 'conflict_user_edited')
+        self.assertFalse(gone.exists())
+        # P12: renamed, then deleted by the person before the txn commit.
+        stop, crash = self._stop_after('_create_into_place')
+        with stop, self.assertRaises(crash):
+            pipeline.publish_card(self.project.root, self.wiki, 'concepts/p12.md', '# Made\n')
+        (self.wiki / 'concepts/p12.md').unlink()
+        out = pipeline.recover_publishes(self.project.root, self.wiki)
+        self.assertEqual([o.state for o in out], ['published_user_edited'])
+        self.assertFalse((self.wiki / 'concepts/p12.md').exists())
+
+    def test_orphan_temp_without_txn_is_swept_and_recovery_ignores_st_dev(self):
+        # P2: a temp written before its txn commit.
+        from unittest.mock import patch
+        from memvane.wiki.pipeline import publish
+        from memvane.wiki.pipeline.store import PipelineStore
+        class Crash(Exception):
+            pass
+        with patch.object(PipelineStore, 'begin_publish_txn', side_effect=Crash), self.assertRaises(Crash):
+            pipeline.publish_card(self.project.root, self.wiki, 'concepts/p2.md', '# Orphan\n')
+        orphan, = self._publish_temps()
+        self.assertEqual(pipeline.recover_publishes(self.project.root, self.wiki), [])
+        self.assertTrue(orphan.exists())  # Too young: a concurrent writer may still own it.
+        old = orphan.stat().st_mtime - 120
+        os.utime(orphan, (old, old))
+        pipeline.recover_publishes(self.project.root, self.wiki)
+        self.assertEqual(self._publish_temps(), [])
+        self.assertFalse((self.wiki / 'concepts/p2.md').exists())
+        # P13: stopped between the txn commit and the rename, recovered after a reboot that
+        # changed every st_dev: the decision uses (st_ino, sha256) only.
+        with patch.object(publish, '_apply', side_effect=Crash), self.assertRaises(Crash):
+            pipeline.publish_card(self.project.root, self.wiki, 'concepts/p13.md', '# Boot\n')
+        real_fstat = os.fstat
+        def rebooted(fd):
+            info = real_fstat(fd)
+            values = list(info)
+            values[2] = info.st_dev + 1  # st_dev
+            return os.stat_result(values)
+        with patch.object(os, 'fstat', rebooted):
+            out = pipeline.recover_publishes(self.project.root, self.wiki)
+        self.assertEqual([o.state for o in out], ['published'])
+        self.assertEqual((self.wiki / 'concepts/p13.md').read_text(encoding='utf-8'), '# Boot\n')
+
+    def test_person_creating_the_path_after_the_cas_read_keeps_their_file(self):
+        from unittest.mock import patch
+        from memvane.wiki.pipeline import publish
+        real = publish._create_into_place
+        def person_first(temp_path, target):
+            target.write_text('# Person\n', encoding='utf-8')
+            real(temp_path, target)
+        with patch.object(publish, '_create_into_place', person_first):
+            res = pipeline.publish_card(self.project.root, self.wiki, 'concepts/race.md', '# Machine\n')
+        self.assertEqual(res.state, 'conflict_user_edited')
+        self.assertEqual((self.wiki / 'concepts/race.md').read_text(encoding='utf-8'), '# Person\n')
+        self.assertEqual(self._publish_temps(), [])

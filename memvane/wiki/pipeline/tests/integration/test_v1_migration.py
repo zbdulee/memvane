@@ -68,7 +68,7 @@ class V1MigrationTests(FixtureCase):
         self.assertEqual(summary['compileJobs'], 2)
         self.assertEqual(summary['verifyJobs'], 1)
         self.assertEqual(summary['refreshes'], 2)
-        self.assertEqual(summary['staged'], 1)
+        self.assertEqual(summary['staged'], 0)
         self.assertGreater(summary['removed'], 0)
         self.assertFalse(pipeline.needs_v1_migration(self.project.root, wiki_root=self.wiki))
 
@@ -79,7 +79,8 @@ class V1MigrationTests(FixtureCase):
         self.assertFalse((self.compile_dir / 'source-queue.jsonl').exists())
 
         with pipeline.open_pipeline(self.project.root, readonly=True) as store:
-            self.assertEqual(store.staged_quota_bytes(), len(b'hello-card'))
+            self.assertEqual(store.staged_quota_bytes(), 0)
+            self.assertIsNone(store.get_fence('global_publish'))
             self.assertEqual(store.get_cooldown('verify_engine', 'claude')['until_ts'], 2345.0)
             self.assertEqual(len(store.unresolved_refreshes()), 2)
 

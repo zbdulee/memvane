@@ -39,34 +39,37 @@ class PipelineStoreTests(FixtureCase):
     def test_staged_holds_exceeding_1024_stay_target_isolated_without_limit(self):
         with pipeline.open_pipeline(self.project.root) as store:
             for i in range(1100):
-                res = store.stage_card(
-                    f'stage-{i:04d}', f'topics/card-{i:04d}.md', 'hold', 'held',
-                    b'blob', f'sha-{i:04d}', {'targetPath': f'topics/card-{i:04d}.md'}, {'i': i},
-                )
-                self.assertIsNotNone(res)
-            self.assertEqual(len(store.list_staged()), 1100)
-            hit = store.staged_for_target('topics/card-1099.md')
-            self.assertEqual([h['stage_id'] for h in hit], ['stage-1099'])
-            self.assertEqual(store.staged_quota_bytes(), 1100 * 4)
+                store.insert_work(f'{i:032x}', 'verify-queue.jsonl', 'hold', 'held', '{"i":%d}' % i,
+                                  raw_blob=b'raw', image_blob=b'blob', charged_bytes=7,
+                                  target_path=f'topics/card-{i:04d}.md')
+            self.assertEqual(len(store.list_works('verify-queue.jsonl', 'hold')), 1100)
+            hit = store.works_for_target('topics/card-1099.md')
+            self.assertEqual([h['stage_id'] for h in hit], [f'{1099:032x}'])
+            self.assertEqual(store.staged_quota_bytes(), 1100 * 7)
+            with self.assertRaisesRegex(PipelineError, 'stage_id_collision'):
+                store.insert_work(f'{0:032x}', 'verify-queue.jsonl', 'hold', 'held', '{}',
+                                  raw_blob=b'', image_blob=None)
 
     def test_staged_64mib_quota_enforced_and_reclaimed_on_delete(self):
-        big = b'x' * (1024 * 1024)
+        from memvane.wiki.pipeline.types import StageQuotaExceeded
+        mib = 1024 * 1024
         with pipeline.open_pipeline(self.project.root) as store:
-            small_quota = 2 * 1024 * 1024
-            self.assertEqual(STAGE_QUOTA_BYTES, 64 * 1024 * 1024)
-            self.assertIsNotNone(store.stage_card(
-                's1', 'topics/a.md', 'hold', 'held', big, 'sha1', {}, {}, quota_bytes=small_quota,
-            ))
-            self.assertIsNotNone(store.stage_card(
-                's2', 'topics/b.md', 'hold', 'held', big, 'sha2', {}, {}, quota_bytes=small_quota,
-            ))
-            self.assertIsNone(store.stage_card(
-                's3', 'topics/c.md', 'hold', 'held', b'1', 'sha3', {}, {}, quota_bytes=small_quota,
-            ))
-            self.assertTrue(store.delete_staged('s1'))
-            self.assertIsNotNone(store.stage_card(
-                's3', 'topics/c.md', 'hold', 'held', big, 'sha3', {}, {}, quota_bytes=small_quota,
-            ))
+            small_quota = 2 * mib
+            self.assertEqual(STAGE_QUOTA_BYTES, 64 * mib)
+            for name in ('s1', 's2'):
+                store.insert_work(name, 'q', 'hold', 'held', '{}', raw_blob=b'x', image_blob=None,
+                                  charged_bytes=mib, quota_bytes=small_quota)
+            with self.assertRaises(StageQuotaExceeded):
+                store.insert_work('s3', 'q', 'hold', 'held', '{}', raw_blob=b'x', image_blob=None,
+                                  charged_bytes=1, quota_bytes=small_quota)
+            store.insert_work('own', 'q', 'hold', 'held', '{}', raw_blob=b'x', image_blob=None,
+                              charged_bytes=0, quota_bytes=small_quota)
+            self.assertTrue(store.delete_work('s1', '{}'))
+            store.insert_work('s3', 'q', 'hold', 'held', '{}', raw_blob=b'x', image_blob=None,
+                              charged_bytes=mib, quota_bytes=small_quota)
+            self.assertFalse(store.cas_work('s3', '{"stale":1}', '{"x":1}', 'held'))
+            self.assertTrue(store.cas_work('s3', '{}', '{"x":1}', 'finished', closed=True))
+            self.assertEqual(store.get_work('s3')['closed'], 1)
 
     def test_refresh_compile_verify_dead_pid_recovery_audit_cooldown_and_fence(self):
         with pipeline.open_pipeline(self.project.root) as store:

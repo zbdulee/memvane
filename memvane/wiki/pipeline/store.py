@@ -17,7 +17,9 @@ from memvane.wiki.pipeline.types import (
     DB_NAME,
     PIPELINE_APP_ID,
     PIPELINE_USER_VERSION,
+    STAGE_KINDS,
     STAGE_QUOTA_BYTES,
+    StageQuotaExceeded,
     WORKER_BUSY_TIMEOUT_MS,
     PipelineError,
 )
@@ -410,77 +412,91 @@ class PipelineStore:
     def count_verify_jobs(self, *, state: str | None = None) -> int:
         return self._count_jobs('verify_jobs', state=state)
 
-    def stage_card(self, stage_id: str, target_path: str, kind: str, state: str,
-                   image_blob: bytes, image_sha: str, raw_meta: dict, binding: dict, *,
-                   expected_target_sha: str | None = None, proof: dict | None = None,
-                   quota_bytes: int = STAGE_QUOTA_BYTES) -> dict | None:
+    def insert_work(self, stage_id: str, queue: str, kind: str, phase: str, control_json: str, *,
+                    raw_blob: bytes | None, image_blob: bytes | None, charged_bytes: int = 0,
+                    target_path: str | None = None, quota_bytes: int | None = STAGE_QUOTA_BYTES) -> None:
+        """Insert one handoff work; ``quota_bytes=None`` admits migrated rows past the quota."""
+        if kind not in STAGE_KINDS:
+            raise PipelineError('invalid_stage_kind')
         now = time.time_ns()
         with self._write_tx() as cur:
-            used = cur.execute(
-                "SELECT COALESCE(SUM(LENGTH(image_blob)), 0) FROM staged_cards "
-                "WHERE state IN ('reserved', 'held', 'manual')"
-            ).fetchone()[0]
-            if used + len(image_blob) > quota_bytes:
-                return None
+            if cur.execute('SELECT 1 FROM staged_cards WHERE stage_id = ?', (stage_id,)).fetchone():
+                raise PipelineError('stage_id_collision')
+            if charged_bytes and quota_bytes is not None:
+                used = cur.execute('SELECT COALESCE(SUM(charged_bytes), 0) FROM staged_cards').fetchone()[0]
+                if used + charged_bytes > quota_bytes:
+                    raise StageQuotaExceeded('handoff_copy_quota')
             cur.execute(
-                'INSERT INTO staged_cards(stage_id, target_path, kind, state, image_blob, image_sha, '
-                'raw_json, expected_target_sha, binding_json, proof_json, created_ns, updated_ns) '
-                'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                (stage_id, target_path, kind, state, sqlite3.Binary(image_blob), image_sha,
-                 _dumps(raw_meta), expected_target_sha, _dumps(binding),
-                 _dumps(proof) if proof is not None else None, now, now),
+                'INSERT INTO staged_cards(stage_id, queue, kind, phase, closed, target_path, control_json, '
+                'raw_blob, image_blob, charged_bytes, created_ns, updated_ns) '
+                'VALUES(?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)',
+                (stage_id, queue, kind, phase, target_path, control_json,
+                 None if raw_blob is None else sqlite3.Binary(raw_blob),
+                 None if image_blob is None else sqlite3.Binary(image_blob),
+                 int(charged_bytes), now, now),
             )
-            row = cur.execute('SELECT * FROM staged_cards WHERE stage_id = ?', (stage_id,)).fetchone()
-        return self._staged_row(row)
 
-    def _staged_row(self, row: sqlite3.Row) -> dict:
-        item = dict(row)
-        item['image_blob'] = bytes(item['image_blob'])
-        item['raw_meta'] = _loads(item.pop('raw_json'), {})
-        item['binding'] = _loads(item.pop('binding_json'), {})
-        item['proof'] = _loads(item.pop('proof_json'), None)
-        return item
+    _WORK_COLUMNS = ('stage_id, queue, kind, phase, closed, target_path, control_json, '
+                     'charged_bytes, created_ns, updated_ns')
 
-    def staged_for_target(self, target_path: str, *,
-                          states: tuple[str, ...] = ('reserved', 'held', 'manual')) -> list[dict]:
-        marks = ','.join('?' for _ in states)
+    def get_work(self, stage_id: str) -> dict | None:
+        row = self._conn.execute(
+            f'SELECT {self._WORK_COLUMNS} FROM staged_cards WHERE stage_id = ?', (stage_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_works(self, queue: str, kind: str, *, closed: bool = False) -> list[dict]:
         rows = self._conn.execute(
-            f'SELECT * FROM staged_cards WHERE state IN ({marks}) AND target_path = ? ORDER BY created_ns, stage_id',
-            (*states, target_path),
+            f'SELECT {self._WORK_COLUMNS} FROM staged_cards WHERE queue = ? AND kind = ? AND closed = ? '
+            'ORDER BY created_ns, stage_id',
+            (queue, kind, 1 if closed else 0),
         ).fetchall()
-        return [self._staged_row(r) for r in rows]
+        return [dict(row) for row in rows]
 
-    def list_staged(self, *, states: tuple[str, ...] = ('reserved', 'held', 'manual')) -> list[dict]:
-        marks = ','.join('?' for _ in states)
+    def works_for_target(self, target_path: str, *, closed: bool = False) -> list[dict]:
         rows = self._conn.execute(
-            f'SELECT * FROM staged_cards WHERE state IN ({marks}) ORDER BY created_ns, stage_id',
-            states,
+            f'SELECT {self._WORK_COLUMNS} FROM staged_cards WHERE target_path = ? AND closed = ? '
+            'ORDER BY created_ns, stage_id',
+            (target_path, 1 if closed else 0),
         ).fetchall()
-        return [self._staged_row(r) for r in rows]
+        return [dict(row) for row in rows]
 
-    def update_staged(self, stage_id: str, state: str, *, proof: dict | None = None) -> bool:
+    def work_blob(self, stage_id: str, name: str) -> bytes | None:
+        if name not in ('raw', 'image'):
+            raise PipelineError('invalid_stage_blob')
+        row = self._conn.execute(
+            f'SELECT {name}_blob FROM staged_cards WHERE stage_id = ?', (stage_id,),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return bytes(row[0])
+
+    def cas_work(self, stage_id: str, expected_control_json: str, control_json: str, phase: str, *,
+                 closed: bool | None = None) -> bool:
         now = time.time_ns()
         with self._write_tx() as cur:
-            if proof is None:
-                cur.execute('UPDATE staged_cards SET state = ?, updated_ns = ? WHERE stage_id = ?',
-                            (state, now, stage_id))
+            if closed is None:
+                cur.execute(
+                    'UPDATE staged_cards SET control_json = ?, phase = ?, updated_ns = ? '
+                    'WHERE stage_id = ? AND control_json = ?',
+                    (control_json, phase, now, stage_id, expected_control_json),
+                )
             else:
                 cur.execute(
-                    'UPDATE staged_cards SET state = ?, proof_json = ?, updated_ns = ? WHERE stage_id = ?',
-                    (state, _dumps(proof), now, stage_id),
+                    'UPDATE staged_cards SET control_json = ?, phase = ?, closed = ?, updated_ns = ? '
+                    'WHERE stage_id = ? AND control_json = ?',
+                    (control_json, phase, 1 if closed else 0, now, stage_id, expected_control_json),
                 )
-            return cur.rowcount > 0
+            return cur.rowcount == 1
 
-    def delete_staged(self, stage_id: str) -> bool:
+    def delete_work(self, stage_id: str, expected_control_json: str) -> bool:
         with self._write_tx() as cur:
-            cur.execute('DELETE FROM staged_cards WHERE stage_id = ?', (stage_id,))
-            return cur.rowcount > 0
+            cur.execute('DELETE FROM staged_cards WHERE stage_id = ? AND control_json = ?',
+                        (stage_id, expected_control_json))
+            return cur.rowcount == 1
 
     def staged_quota_bytes(self) -> int:
-        return self._conn.execute(
-            "SELECT COALESCE(SUM(LENGTH(image_blob)), 0) FROM staged_cards "
-            "WHERE state IN ('reserved', 'held', 'manual')"
-        ).fetchone()[0]
+        return self._conn.execute('SELECT COALESCE(SUM(charged_bytes), 0) FROM staged_cards').fetchone()[0]
 
     def append_audit(self, kind: str, payload: dict, *, target_path: str | None = None,
                      source_path: str | None = None, body_hash: str | None = None) -> int:
@@ -616,3 +632,20 @@ def open_pipeline(project_root: Path | str, *, readonly: bool = False,
         return PipelineStore(db_path, readonly=True, timeout_ms=effective_timeout)
     db_path = _ensure_compile_dir(project_root)
     return PipelineStore(db_path, readonly=False, timeout_ms=effective_timeout)
+
+
+def open_pipeline_dir(compile_dir: Path | str, *, readonly: bool = False,
+                      timeout_ms: int | None = None) -> PipelineStore:
+    """Open ``<compile_dir>/wiki-pipeline.sqlite3`` beside an existing compile queue directory.
+
+    Production compile directories are ``<project>/.memvane/compile``, so this is the same
+    file as :func:`open_pipeline`; handoff callers know only their queue path.
+    """
+    directory = Path(compile_dir).absolute()
+    if directory.is_symlink() or not directory.is_dir() or directory.resolve() != directory:
+        raise PipelineError('unsafe_pipeline_path')
+    db_path = directory / DB_NAME
+    if db_path.is_symlink():
+        raise PipelineError('unsafe_pipeline_path')
+    effective_timeout = WORKER_BUSY_TIMEOUT_MS if timeout_ms is None else int(timeout_ms)
+    return PipelineStore(db_path, readonly=readonly, timeout_ms=effective_timeout)

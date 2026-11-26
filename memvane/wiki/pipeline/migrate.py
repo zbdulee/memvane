@@ -1,7 +1,6 @@
 """One-time migration from 1.x JSONL/handoff artifacts into ``wiki-pipeline.sqlite3``."""
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -9,7 +8,6 @@ import time
 import uuid
 
 from memvane.wiki.pipeline.store import open_pipeline, pipeline_db_path
-from memvane.wiki.pipeline.types import FENCE_GLOBAL_PUBLISH
 
 _AUDIT_FILE_MAP = (
     ('generated-manifest.jsonl', 'manifest'),
@@ -224,33 +222,8 @@ def _migrate_cooldowns(store, compile_dir: Path, counts: dict) -> None:
 
 
 def _migrate_handoffs_and_hidden(store, compile_dir: Path, wiki: Path, counts: dict) -> None:
-    hold_dir = compile_dir / '.handoff/v1/hold'
-    if hold_dir.is_dir():
-        for entry in sorted(hold_dir.iterdir()):
-            if not entry.is_dir():
-                continue
-            raw_file = entry / 'raw'
-            img_file = entry / 'image'
-            if not raw_file.is_file():
-                store.set_fence(FENCE_GLOBAL_PUBLISH, 'opaque_handoff_migrated', {'id': entry.name})
-                continue
-            try:
-                raw_meta = json.loads(raw_file.read_text(encoding='utf-8'))
-            except (OSError, ValueError):
-                store.set_fence(FENCE_GLOBAL_PUBLISH, 'opaque_handoff_migrated', {'id': entry.name})
-                continue
-            target = str(raw_meta.get('targetPath') or '')
-            if not target:
-                store.set_fence(FENCE_GLOBAL_PUBLISH, 'opaque_handoff_migrated', {'id': entry.name})
-                continue
-            blob = img_file.read_bytes() if img_file.is_file() else b''
-            img_sha = hashlib.sha256(blob).hexdigest()
-            if store.stage_card(
-                entry.name, target, 'hold', 'held', blob, img_sha,
-                raw_meta, {'migrated': True}, expected_target_sha=raw_meta.get('expectedTargetHash'),
-            ) is not None:
-                counts['staged'] += 1
-
+    # 1.x in-progress handoffs are discarded, never staged: a source change or a full-scan
+    # sync recreates the work. No publish fence is raised, so nothing stays held.
     for hidden in _hidden_wiki_files(wiki):
         rel = hidden.relative_to(wiki).as_posix()
         store.append_audit('discard', {'migratedHiddenFile': rel}, target_path=rel)
