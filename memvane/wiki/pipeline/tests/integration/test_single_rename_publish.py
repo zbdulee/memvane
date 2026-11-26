@@ -401,3 +401,26 @@ class SingleRenamePublishTests(FixtureCase):
         pipeline.recover_publishes(self.project.root, self.wiki)
         self.assertFalse(own.exists(), 'its own candidate bytes come back with the next publish')
         self.assertEqual(foreign.read_text(encoding='utf-8'), '# Someone else\n')
+
+    def test_a_temp_the_sweep_cannot_remove_does_not_stop_recovery(self):
+        from unittest.mock import patch
+        from memvane.wiki.pipeline import publish
+        from memvane.wiki.pipeline.store import PipelineStore
+
+        class Crash(Exception):
+            pass
+        with patch.object(PipelineStore, 'begin_publish_txn', side_effect=Crash), self.assertRaises(Crash):
+            pipeline.publish_card(self.project.root, self.wiki, 'concepts/stuck.md', '# Orphan\n')
+        orphan, = self._publish_temps()
+        old = orphan.stat().st_mtime - 120
+        os.utime(orphan, (old, old))
+        good = self._interrupt('other/fine.md', '# Fine\n')
+
+        def refuse(_path):
+            raise PermissionError(13, 'denied')
+        with patch.object(publish, '_unlink_if_present', refuse):
+            out = pipeline.recover_publishes(self.project.root, self.wiki)
+        self.assertEqual([(o.tx_id, o.state) for o in out], [(good['tx_id'], 'published')])
+        self.assertTrue(orphan.exists())
+        pipeline.recover_publishes(self.project.root, self.wiki)
+        self.assertFalse(orphan.exists(), 'the next pass removes it')

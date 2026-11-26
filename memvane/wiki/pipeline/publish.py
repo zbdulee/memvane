@@ -321,7 +321,7 @@ def _sweep_orphan_temps(store, wiki: Path) -> int:
             path = Path(directory) / name
             try:
                 info = os.lstat(path)
-            except FileNotFoundError:
+            except OSError:
                 continue
             if stat.S_ISREG(info.st_mode) and now - info.st_mtime >= ORPHAN_TEMP_MIN_AGE_SECONDS:
                 leftovers.append(path)
@@ -334,7 +334,11 @@ def _sweep_orphan_temps(store, wiki: Path) -> int:
         row = closed.get(path.name)
         if row is not None and not _replaceable_leftover(path, row):
             continue
-        _unlink_if_present(path)
+        try:
+            _unlink_if_present(path)
+        except OSError:
+            # 3번 기준: 남은 temp는 해가 없고 다음 회차가 다시 지운다. 실패로 검수를 막지 않는다.
+            continue
         removed += 1
     return removed
 

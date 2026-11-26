@@ -14,7 +14,7 @@
 
 `run`은 compile worker가 끝날 때 한 번 돈다.
 
-1. `recover_publishes`로 중단된 게시를 복구하고, `recover_dead_claims('verify')`로 죽은 worker의 claim을 되돌린다. 네 번째 claim에 이른 행은 `dropped/requeue_exhausted`로 닫는다.
+1. `recover_publishes`로 중단된 게시를 복구하고(복구할 수 없는 txn 하나는 `aborted`로 닫고 나머지와 이 pass는 계속한다. 원장이나 lock 파일을 열 수 없을 때만 `publish_recovery_unavailable`로 pass를 끝낸다), `recover_dead_claims('verify')`로 죽은 worker의 claim을 되돌린다. 네 번째 claim에 이른 행은 `dropped/requeue_exhausted`로 닫는다.
 2. `claim_verify_batch`로 예산만큼 claim한다. 같은 대상에 더 새 행이 있으면(상태 무관) 옛 행은 `done/superseded`다. 그 run이 만든 카드를 먼저 처리하고, backlog가 있으면 1건을 예약한다.
 3. 행마다 `process_row`가 재확인 → 유료 검수 1회 → 판정 기록 → 게시를 한다. 결과를 `finish_verify_job`으로 남기고, 끝에 `release_verify_claim`이 남은 claim을 `queued`로 돌린다.
 
