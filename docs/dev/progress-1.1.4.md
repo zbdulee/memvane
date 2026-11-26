@@ -265,7 +265,7 @@ teeth(제품 줄을 깨서 FAIL 확인, 확인 후 원복):
 
 ## 10. 다음 재개 지점
 
-**§10.2 verify 재설계 제안에 대한 코디네이터 답을 기다린다.** 답을 받으면 C7c(verify 큐)부터 진행한다(§5의 C6 refresh는 C5에 포함됐다). C4의 `migrate_from_v1`은 아직 진입 경로에 연결하지 않았다(C12).
+**이 dispatch(task_4eea2e2522db)는 C7b까지 하고 미완으로 종료했다.** 코디네이터가 §10.2 질문(msg_dd37abb859e8)에 답하지 않고 멈춰, 재설계 방향은 승인된 원칙(D1=A·원칙 3·A4) 안에 있다고 보되 규모(제품 약 4,000줄 삭제, 시험 약 30파일 재작성)를 고려해 새 worker가 이어받도록 정했다. 다음 worker는 §10.2를 C7c로 시작하고, 이어서 C10(tombstone 제거·dedup 이름표 이전)→C11(로그·억제·쿨다운·dedup 큐)→C12(마이그레이션 연결: worker 시작·`selected_execution` 양보·wiki-compile skill 거절)→C13(조회 CLI)→C14(E2E)→C15(문서·release.md 개정·working-rules 77·79행·ROADMAP Python 3.11)를 진행한다. §5의 C6 refresh는 C5에 포함됐다. C4의 `migrate_from_v1`은 아직 진입 경로에 연결하지 않았다(C12).
 
 ### 10.1 C7(큐)+C9(혼재 장치) 설계 메모
 
