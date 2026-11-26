@@ -45,6 +45,11 @@ def needs_v1_migration(project_root, *, wiki_root=None):
     return implementation(project_root, wiki_root=wiki_root)
 
 
+def v1_migration_marked(project_root):
+    from memvane.wiki.pipeline.migrate import v1_migration_marked as implementation
+    return implementation(project_root)
+
+
 def migrate_from_v1(project_root, *, wiki_root=None):
     from memvane.wiki.pipeline.migrate import migrate_from_v1 as implementation
     return implementation(project_root, wiki_root=wiki_root)

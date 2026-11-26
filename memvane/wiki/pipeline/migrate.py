@@ -112,14 +112,29 @@ def _wiki_root(root: Path, wiki_root: Path | str | None) -> Path:
 
 
 def needs_v1_migration(project_root: Path | str, *, wiki_root: Path | str | None = None) -> bool:
-    """True until the marker exists; a project without 1.x files gets the marker on first run."""
+    """True while any 1.x artifact remains; a project without one never waits.
+
+    After the marker, the 1.x compile files are removed last (``_remove_legacy``), so their
+    absence proves the hidden wiki files are gone too and the wiki walk is skipped.
+    """
     root = Path(project_root)
-    db_path = pipeline_db_path(root)
-    if db_path.exists():
-        with open_pipeline(root, readonly=True) as store:
-            if store.meta_get(MARKER) is not None:
-                return False
-    return True
+    compile_dir = root / '.memvane/compile'
+    if _legacy_paths(compile_dir):
+        return True
+    if _marked(root):
+        return False
+    return bool(_hidden_wiki_files(_wiki_root(root, wiki_root)))
+
+
+def v1_migration_marked(project_root: Path | str) -> bool:
+    return _marked(Path(project_root))
+
+
+def _marked(root: Path) -> bool:
+    if not pipeline_db_path(root).exists():
+        return False
+    with open_pipeline(root, readonly=True) as store:
+        return store.meta_get(MARKER) is not None
 
 
 def migrate_from_v1(project_root: Path | str, *, wiki_root: Path | str | None = None) -> dict:
@@ -139,14 +154,15 @@ def migrate_from_v1(project_root: Path | str, *, wiki_root: Path | str | None = 
 
 
 def _remove_legacy(compile_dir: Path, wiki: Path) -> int:
+    # Hidden wiki files first: a remaining 1.x compile file then marks unfinished removal.
     removed = 0
+    for hidden in _hidden_wiki_files(wiki):
+        hidden.unlink(missing_ok=True)
+        removed += 1
     for path in _legacy_paths(compile_dir):
         if path.is_dir() and not path.is_symlink():
             shutil.rmtree(path)
         else:
             path.unlink(missing_ok=True)
-        removed += 1
-    for hidden in _hidden_wiki_files(wiki):
-        hidden.unlink(missing_ok=True)
         removed += 1
     return removed

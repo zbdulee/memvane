@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from pathlib import Path
 import re
 import subprocess
@@ -164,6 +165,13 @@ def _compile_idle(project: Path, source: Path, verify: Path, bound):
 
 def _idle_locked(project: Path, source: Path, verify: Path, bound):
     from memvane.wiki.card import api as wiki_freshness
+    from memvane.wiki.pipeline import api as pipeline
+    try:
+        # Before the 1.x cutover marker the next worker pass still has the migration to run.
+        if pipeline.needs_v1_migration(project):
+            return False
+    except (OSError, ValueError, sqlite3.Error):
+        return None
     unresolved = wiki_freshness.unresolved_pending_refreshes_strict(project)
     if unresolved is None:
         return None

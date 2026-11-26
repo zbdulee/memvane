@@ -1649,9 +1649,39 @@ def _main():
         if selected_route is not None:
             from memvane.diagnostics import api as event_log
             event_log.bind(decision=selected_route[0], host='worker')
+        migrated = migrate_v1_state(root, config)
+        if migrated is not True:
+            # 1.x state stays until a pass can import it; nothing is claimed before. The
+            # selected wake reads the backlog and keeps the project pending while 1.x files remain.
+            if args.json:
+                print(json.dumps({'processed': 0, 'remaining': 0, 'migration': migrated}, ensure_ascii=False))
+            return 0
         return _main_locked(args, root, config, compile_cfg, queue, selected_route)
     finally:
         os.close(run_lock)
+
+
+def migrate_v1_state(root: Path, config: dict):
+    """Run the one-time 1.x cutover under the run lock; True once it is complete, else the failure name.
+
+    The first pass of every project writes the marker, with or without 1.x files.
+
+    The card and mutation locks keep every 1.1.4 writer out while the 1.x files and
+    hidden wiki files are removed. A failure leaves the marker unset, so the next
+    wake retries and no job is claimed from a half-migrated project.
+    """
+    from memvane.wiki.pipeline import api as pipeline
+    wiki_root = (root / config.get('wikiPath', settings_types.WIKI_REL)).resolve()
+    try:
+        if pipeline.v1_migration_marked(root) and not pipeline.needs_v1_migration(root, wiki_root=wiki_root):
+            return True
+        with cp.card_write_lock(root), cp.mutation_lock(root):
+            counts = pipeline.migrate_from_v1(root, wiki_root=wiki_root)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        return 'failed:' + type(exc).__name__
+    # Log row only (working-rules 3): the marker, not this line, records the cutover.
+    pipeline.audit_log(root, 'migration').append(counts)
+    return True
 
 
 def _retention_pass(root: Path, config: dict, selected_route) -> dict:

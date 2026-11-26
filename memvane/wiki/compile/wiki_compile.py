@@ -944,6 +944,9 @@ def main() -> int:
         print(json.dumps({"action": "rejected", "reason": "unsafe_managed_path"}, ensure_ascii=False))
         return 1
 
+    if _migration_pending(root, wiki_root):
+        print(json.dumps({"action": "deferred", "reason": "pipeline_migration_pending"}, ensure_ascii=False))
+        return 0
     try:
         with cp.card_write_lock(root), workspace_files.mutation_lock(root):
             return _compile_locked(
@@ -952,6 +955,25 @@ def main() -> int:
     except OSError:
         print(json.dumps({"action": "rejected", "reason": "card_write_lock_unavailable"}, ensure_ascii=False))
         return 1
+
+
+def _migration_pending(root: Path, wiki_root: Path) -> bool:
+    """Refuse writes until the compile worker has run the 1.x cutover, and wake it.
+
+    An unreadable ledger counts as pending: no card is written beside unmigrated state.
+    """
+    try:
+        if not pipeline.needs_v1_migration(root, wiki_root=wiki_root):
+            return False
+    except (OSError, ValueError, sqlite3.Error):
+        pass
+    try:
+        selected = workspace_files.selected(root)
+        if selected is not None:
+            workspace_files.request_compile(root, selected)
+    except Exception:
+        pass  # Best effort: a lost wake leaves the next SessionStart or edit to start the worker.
+    return True
 
 
 def _verify_job(root, selected, candidate, record, *, kind, expected_target_hash):

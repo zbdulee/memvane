@@ -109,11 +109,14 @@ class V1MigrationTests(FixtureCase):
             pipeline.migrate_from_v1(root)
         self.assertEqual(len(self.generations(root)), 3)
         self.assertTrue((root / '.memvane/compile/generated-manifest.jsonl').exists())
-        self.assertFalse(pipeline.needs_v1_migration(root))
+        # Imported, but the removal is still pending.
+        self.assertTrue(pipeline.v1_migration_marked(root))
+        self.assertTrue(pipeline.needs_v1_migration(root))
         again = pipeline.migrate_from_v1(root)
         self.assertTrue(again['alreadyMigrated'])
         self.assertEqual(len(self.generations(root)), 3)
         self.assertFalse((root / '.memvane/compile/generated-manifest.jsonl').exists())
+        self.assertFalse(pipeline.needs_v1_migration(root))
 
     def test_same_second_same_bytes_rows_are_both_kept(self):
         root, files = self.written_by('v1.1.2')
@@ -126,7 +129,10 @@ class V1MigrationTests(FixtureCase):
     def test_project_without_1x_files_gets_the_marker(self):
         root = self.tmp / 'fresh'
         (root / '.memvane/compile').mkdir(parents=True)
-        self.assertTrue(pipeline.needs_v1_migration(root))
+        # Nothing to import or remove: writers never wait for it.
+        self.assertFalse(pipeline.needs_v1_migration(root))
+        self.assertFalse(pipeline.v1_migration_marked(root))
         counts = pipeline.migrate_from_v1(root)
         self.assertEqual((counts['generations'], counts['removed']), (0, 0))
+        self.assertTrue(pipeline.v1_migration_marked(root))
         self.assertFalse(pipeline.needs_v1_migration(root))
