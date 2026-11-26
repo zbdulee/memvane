@@ -12,7 +12,7 @@ class RuntimeRootGuard(FixtureCase):
         from memvane.kernel import memvane_execution_guard
         account = self.tmp / 'account'
         account.mkdir(mode=0o700)
-        (account / '.local/state/memvane/v1').mkdir(mode=0o755, parents=True)
+        (account / '.local/state/memvane/v2').mkdir(mode=0o755, parents=True)
         plugin = account / '.claude/plugins/cache/mkt/memvane/1.0.0'
         env = {key: value for key, value in os.environ.items()
                if key not in ('MEMVANE_TEST_RUNTIME_ROOT', 'QMD_SETUP_GUARD_FIXTURE', 'QMD_SANDBOX',
@@ -25,7 +25,7 @@ class RuntimeRootGuard(FixtureCase):
             for home in (str(self.home), '/nonexistent-host-home'):
                 with patch.dict(os.environ, {'HOME': home}):
                     roots.append(runtime_work.WakeQueue().root)
-        self.assertEqual(roots, [account / '.local/state/memvane/v1/wake'] * 2)
+        self.assertEqual(roots, [account / '.local/state/memvane/v2/wake'] * 2)
 
     def test_unsandboxed_request_uses_only_fixture_runtime_root(self):
         project = self.tmp / 'project'

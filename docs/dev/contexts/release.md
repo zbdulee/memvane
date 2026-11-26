@@ -19,7 +19,7 @@
 - journal reader record의 필수 키 집합과 `store_format: schema3`·`schema3-ro-v1`·`selected-main-schema3-v1`.
 - 프로젝트 포인터 `.memvane/route.json`·`.memvane/selection.json`, marker schema `memvane-selection-v1`.
 - 프로젝트·설치 lock `.topical-publish.lock`·`laya-install.lock`·`.install-update.lock`·`initial-build.lock`, `reader-locks/<install>/reader-lifetime.lock`.
-- state base의 `layout.json` 바이트 `{"stateFormat":1}\n`과 state major·단조 증가하는 `writer_floor`·최고 plugin 버전의 비교 규칙.
+- state base(`~/.local/state/memvane/v2`)의 `layout.json` 바이트 `{"stateFormat":2}\n`과 `STATE_FORMAT` 기반 `same_major`·단조 증가하는 `writer_floor`·최고 plugin 버전의 비교 규칙.
 - 카드 frontmatter 필드와 `.memvane/compile/*.jsonl` 행 모양.
 - attestation `providerRelativePath`와 onboarding artifact sha map에 기록되는 provider 파일 상대 경로(`memvane/provider/adapters/local_embed_provider.py`·`laya_local_embed_worker.mjs`)와 접두사 `memvane/provider/adapters/`. 정의는 `memvane/kernel/bundle_paths.py` 한 곳이다.
 - 재봉인 호환 기록 `provider-reattest.json`: schema `memvane-provider-reattest-v1`, 키 `schema`·`attested`·`current`·`attestedIdentity`·`currentIdentity`·`outcome`·`timeNs`. 정체성 키는 `modelSha256`·`tokenizer`·`chunkerSha256`·`chunkRules`·`dimension`·`metric`·`pooling`·`normalization`·`maxTokens`다. 쌍별 기록 `provider-reattest-pairs.json`: schema `memvane-provider-reattest-pairs-v1`, 최상위 키 `schema`·`records`, 각 행 키 `attested`·`current`·`attestedIdentity`·`currentIdentity`·`outcome`·`timeNs`. 쌍별 정체성은 v1 키에 `queryTemplate`·`documentTemplate`·`contextMargin`을 더한다. 각 쌍은 `worker`·`provider` SHA를 담고 최대 16행이다.

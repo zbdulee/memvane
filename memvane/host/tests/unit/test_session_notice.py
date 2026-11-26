@@ -64,7 +64,7 @@ class SessionNotice(unittest.TestCase):
         from memvane.journal import api as journal
         main = {'state': 'candidate', 'projectRoot': '/synthetic'}
         decision = {'state': 'worktree', 'mainRoute': main}
-        proof = {'productRouteAllowed': True, 'stateFormat': 1, 'writerFloor': '1.0.0'}
+        proof = {'productRouteAllowed': True, 'stateFormat': 2, 'writerFloor': '1.0.0'}
         with mock.patch.object(host_response, '_timed_route_proof', return_value=proof), \
                 mock.patch.object(host_response, '_provider_recovery', return_value=None), \
                 mock.patch.object(host_response, '_request_worktree_sync'), \

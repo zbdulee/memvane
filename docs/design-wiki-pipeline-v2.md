@@ -1,6 +1,6 @@
 # 위키 파이프라인 v2 구조 개편 설계
 
-**상태**: 3차 개정 (독립 설계 리뷰 r2 차단 1건 `R1` 및 비차단 7건 반영, 코드 변경 전 설계 단계, 2026-11-25)
+**상태**: 4차 개정 (Phase 1 완료 및 `v1.1.4` + `stateFormat: 2` 통합 결정 반영, 2026-11-26)
 **관련 문서**: [진행 상황](dev/progress-1.1.2.md), [1.x 영속 계약](dev/contexts/release.md), [compile README](../memvane/wiki/compile/README.md), [verify README](../memvane/wiki/verify/README.md), [host README](../memvane/host/README.md)
 
 ---
@@ -103,19 +103,21 @@
   - `source-refresh-settled.json`은 계약 밖 파생 캐시([compile README](../memvane/wiki/compile/README.md#L9), [1.x 영속 계약](dev/contexts/release.md#L28))이므로 그대로 재계산한다.
   - **Phase 1에서는 `writer_floor`를 올리지 않는다**(`1.1.1+` 출시 worker가 `.handoff/v1/refresh/events.jsonl`을 이미 복구 가능).
 
-### 4.2 Phase 2 (MemVane 2.0 메이저 계약 변경)
+### 4.2 Phase 2 (`v1.1.4` 통합 릴리스, `stateFormat: 2`)
 
 - **1.x 호스트 배제 장치 (`stateFormat: 2` 사용자 state base 단위 영향)**:
-  - `layout.json`의 `stateFormat`을 `2`로 올린다([memvane_version.py](../memvane/kernel/memvane_version.py#L35-L42) `same_major`, [host_response.py](../memvane/host/host_response.py#L1124-L1125), [dispatch_target.py](../memvane/journal/dispatch_target.py#L108-L114), `product_sync_worker.py:329-331`).
-  - `layout.json`은 **사용자 state base 단위**([1.x 영속 계약](dev/contexts/release.md#L22))이므로 `stateFormat: 2`로 올리면 위키뿐 아니라 해당 사용자의 모든 프로젝트와 store·journal·route 계약이 2.0 범위로 들어가며, 같은 머신의 미업그레이드 1.x 호스트 CLI는 모든 프로젝트에서 recall이 비고 `_major_mismatch_response` 안내를 받는다. 따라서 Phase 2는 **MemVane 2.0 메이저 릴리스에서만** 배포하며, 기존 1.x 프로젝트는 일회성 state base 마이그레이션 또는 명시적 재온보딩으로 전환한다.
-- **SQLite 원장 위치·규칙·FTS 분리**:
+  - Phase 1+2 묶음 릴리스 버전은 **`v1.1.4`**이며, `memvane_paths.STATE_FORMAT`을 `2`로, `STATE_PARTS`를 `('.local', 'state', 'memvane', 'v2')`(`~/.local/state/memvane/v2/`, `layout.json = {"stateFormat":2}\n`)로 올린다.
+  - `memvane/kernel/memvane_version.py`의 `same_major(state_format)`는 실행 플러그인의 `running[0]` 대신 `memvane_paths.STATE_FORMAT`(2)과 비교하도록 분리한다([memvane_version.py](../memvane/kernel/memvane_version.py#L35-L42), [memvane_paths.py](../memvane/kernel/memvane_paths.py#L28-L30)). 따라서 `1.1.4` 호스트는 `stateFormat=2`를 수용하고 `stateFormat=1`을 거절하며, 이미 출시된 `1.0.x~1.1.2` 호스트는 기존 `running[0] == state_format`(`1 == 2 -> False`)으로 자동 배제된다([host_response.py](../memvane/host/host_response.py#L1418-L1424), [dispatch_target.py](../memvane/journal/dispatch_target.py#L108-L114), `product_sync_worker.py`).
+  - `layout.json`은 **사용자 state base 단위**([영속 계약](dev/contexts/release.md#L22))이므로 `stateFormat: 2`로 올리면 위키뿐 아니라 해당 사용자의 모든 프로젝트와 store·journal·route 계약이 `stateFormat: 2` 범위로 들어가며, 같은 머신의 미업그레이드 `1.0.x~1.1.2` 호스트 CLI는 모든 프로젝트에서 recall이 비고 `_major_mismatch_response` 안내를 받는다. 기존 `stateFormat=1` 프로젝트는 일회성 전환 또는 명시적 재온보딩으로 전환한다.
+- **새 도메인 `memvane/wiki/pipeline/` 및 SQLite 원장 위치·규칙·FTS 분리**:
+  - 도메인 경계: `memvane/wiki/pipeline/`(`context-map.json` rank `1`, `api.py` + `PipelineHandle` Protocol, `types.py` zero-IO, `wiki-pipeline.sqlite3` 전 테이블 G9 단독 소유)을 신설해 트랜잭션 원장을 단독 소유한다.
   - 위치: `.memvane/compile/wiki-pipeline.sqlite3` (`.memvane/wiki/` 아래에 두지 않음).
   - 읽기 전용 열기는 `errors._query_only_uri` + `PRAGMA query_only=ON`을 사용하고, 파일 신원 대조에서 프로세스·재부팅 간 `st_dev`를 제외한다.
   - `.memvane/compile/wiki-retrieval/cards.sqlite`([wiki_compile_retrieval.py](../memvane/wiki/compile/wiki_compile_retrieval.py))는 일회성 FTS 오버레이 캐시이므로 내구 트랜잭션 원장(`wiki-pipeline.sqlite3`)과 분리 유지한다.
 - **원장 스키마 및 `copy_quota`·게시·intent 처리**:
   - 주요 테이블: `compile_jobs`, `verify_jobs`, `staged_cards`(이미지 블롭 포함, `SUM(LENGTH(image_blob)) <= 64 MiB` 쿼리로 기존 `copy_quota` / `allocated-*` 대체), `refresh_events`, `audit_events`(manifest/tombstones/verify-deleted/verify-skipped/dedup-skipped), `cooldowns`, `pipeline_fences`(`scope='global_publish'` 등), `publish_txns`(`temp_name`, `temp_ino`, `expected_target_sha`, `state`).
   - **게시 순서**: `.publish-<txid>.tmp`(`O_CREAT|O_EXCL|O_NOFOLLOW`, `fsync`) → `publish_txns(state='publishing')` 커밋 → `.card-write.lock` → `.topical-publish.lock` → live 카드 CAS(`expectedTargetHash`) 확인 → `os.replace`/`rename_noreplace` + `fsync(parent)` → `publish_txns(state='published')` 커밋.
-  - **compile intent 경계**: `stateFormat=1` 전환기에는 파일 기반 `provenance-intents/compile-<id>.json`을 그대로 쓰고, `stateFormat=2`로 1.x sync를 완전 배제한 뒤 내부 브리지(또는 동일 파일 포맷 유지)로 정리한다.
+  - **compile intent 경계**: `provenance-intents/compile-<id>.json` 파일 포맷·키 집합·접미사 계약은 그대로 유지한다([영속 계약](dev/contexts/release.md#L26)).
 - **1회성 1.x → 2.0 마이그레이션 범위**:
   - 공용 큐 + `*.claimed.*`, `.memvane/compile/*.jsonl` 전체 + `compact-stamp` + `source-refresh-settled.json`, 쿨다운 파일, `.handoff/v1/*` 전체(`hold`/`work`/`closed`/`returns`+`fragment-*`/`refresh`/`manifest-scan`/`backfill`/`copy-quota`+`allocated-*`/`publication`/`ownership-*`/`review-turn-*`), 위키 숨김 파일(`.first-*`, `.*.pending-*`, `.pending-ownership.json`, `.verify-swap-*`)을 원장으로 흡수하고 구형 파일을 정리한다.
   - `copy_quota`는 이관된 `staged_cards` 바이트 합계로 재산정해 기존 누수 `allocated-*`를 0으로 정리한다. `.memvane/compile/retired-wiki/`의 사용자 복구용 아카이브 파일은 보존한다.
@@ -128,4 +130,4 @@
 |---|---|---|---|
 | **Phase 0 (현재)** | 설계서 r3 확정 및 독립 재리뷰 승인 | 없음 | 설계 전수·조합표 리뷰 `APPROVE` |
 | **Phase 1 (1.1.x)** | 훅 경량화(단일 `record_pending_refresh` 0.15s lock + `_compact` 오프훅 + `laya-compile`/`laya-sync` wake) 및 `wiki_discovery` 중복 적재 skip | **무저촉** (`stateFormat=1`, `writer_floor` 무변경, `laya-compile` 유지) | 3호스트 편집/세션/Bash·`pendingRefresh` lock 실패·혼합 버전 E2E + `v1_guard --strict` |
-| **Phase 2 (2.0 후보)** | `wiki-pipeline.sqlite3` 단일 원장, 단일 rename 게시, `HOLD_SCAN_LIMIT` 제거, 1회성 마이그레이션 | **메이저** (`stateFormat: 2`, 1.x 배제) | 중단/재개 roll-forward·roll-back·`published(user_edited)`, `hold > 1024`, 1.x→2.0 마이그레이션 E2E |
+| **Phase 2 (`v1.1.4`)** | `memvane/wiki/pipeline/`(`wiki-pipeline.sqlite3`) 단일 원장, 단일 rename 게시, `HOLD_SCAN_LIMIT` 제거, 1회성 마이그레이션 | **`stateFormat: 2`** (`~/.local/state/memvane/v2`, 구 `1.x` 배제) | 중단/재개 roll-forward·roll-back·`published(user_edited)`, `hold > 1024`, 1.x→2.0 마이그레이션 E2E |

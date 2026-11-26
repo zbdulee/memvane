@@ -331,7 +331,7 @@ class SelectedActions(HostInstallCase):
 
 
 def proof(epoch=3, **changes):
-    return {'productRouteAllowed': True, 'selectionEpoch': epoch, 'stateFormat': 1,
+    return {'productRouteAllowed': True, 'selectionEpoch': epoch, 'stateFormat': 2,
             'writerFloor': '1.0.0', **changes}
 
 

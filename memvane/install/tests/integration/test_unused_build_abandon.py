@@ -162,7 +162,7 @@ class OtherMajorRelease(InstallCase):
                 self.assertEqual(install.plan_fresh_wiki_origin(self.project)['status'], 'review_required')
 
     def test_newer_major_pointers_are_never_released(self):
-        saved = {'route.json': self.write_pointer('route.json', self.foreign_route(stateFormat=2)),
+        saved = {'route.json': self.write_pointer('route.json', self.foreign_route(stateFormat=3)),
                  'selection.json': self.write_pointer('selection.json', self.marker())}
         for _ in range(2):
             self.assertIsNone(onboarding_restore._release_other_major(self.project))

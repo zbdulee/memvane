@@ -3,7 +3,7 @@
 Every per-user directory the plugin owns hangs off one of these roots. Each
 helper takes an optional ``home`` so tests run against a temporary HOME::
 
-    state    ~/.local/state/memvane/v1         installs, embed runtime, service
+    state    ~/.local/state/memvane/v2         installs, embed runtime, service
     support  ~/Library/Application Support/memvane   (macOS)
              ~/.local/share/memvane                  (other platforms)
     config   ~/.config/memvane
@@ -25,8 +25,8 @@ PLUGIN_ID = 'memvane'
 MARKETPLACE = 'memvane-marketplace'
 REPOSITORY = 'zbdulee/memvane'
 
-STATE_PARTS = ('.local', 'state', NAME, 'v1')
-STATE_FORMAT = 1
+STATE_PARTS = ('.local', 'state', NAME, 'v2')
+STATE_FORMAT = 2
 
 
 def _home(home=None):
@@ -84,7 +84,7 @@ def install_socket(state_root, *, create=False):
 
 
 def ensure_state_layout(home=None):
-    """Create or validate the private v1 format marker without replacing it."""
+    """Create or validate the private v2 format marker without replacing it."""
     from memvane.kernel.memvane_version import same_major
     if not same_major(STATE_FORMAT):
         raise ValueError('state_format_mismatch')
@@ -94,7 +94,7 @@ def ensure_state_layout(home=None):
             or info.st_mode & 0o077 or base.resolve(strict=True) != base):
         raise ValueError('state_layout_root_invalid')
     target = base / 'layout.json'
-    expected = b'{"stateFormat":1}\n'
+    expected = f'{{"stateFormat":{STATE_FORMAT}}}\n'.encode('ascii')
     if not os.path.lexists(target):
         import tempfile
         fd, temporary = tempfile.mkstemp(prefix='.layout-', dir=base)

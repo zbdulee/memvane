@@ -27,7 +27,7 @@ class UidSharedResources(unittest.TestCase):
                         mock.patch.dict(os.environ, env, clear=True)):
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.state = self.account.joinpath('.local', 'state', 'memvane', 'v1')
+        self.state = self.account.joinpath('.local', 'state', 'memvane', 'v2')
 
     def refused(self, call):
         with self.assertRaises(ValueError) as caught:

@@ -23,7 +23,8 @@ def sync_owner_directory(*, create=False):
             from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
             require_cached_plugin_for_live_write()
         start = Path(pwd.getpwuid(os.getuid()).pw_dir)
-        parts = ('.local', 'state', 'memvane', 'v1', 'sync-owner-locks')
+        from memvane.kernel import memvane_paths
+        parts = (*memvane_paths.STATE_PARTS, 'sync-owner-locks')
         private_at = len(parts)
     else:
         root = Path(raw)

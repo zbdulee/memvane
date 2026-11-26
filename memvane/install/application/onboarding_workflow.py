@@ -518,13 +518,14 @@ def _keep_recorded_devices(route, path):
 def _create_v1_route(plan, state_root, install_id, store, vector_profile):
     """Stage a route bound to a validated local store and project settings."""
     from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
+    from memvane.kernel.memvane_paths import STATE_FORMAT
     from memvane.kernel.memvane_version import same_major
     from memvane.route.types import SCHEMA_V4
     from memvane.route.api import classify_v4 as _classify_v4
     from memvane.journal.api import route_record
     state = _private_parent(state_root)
     require_cached_plugin_for_live_write(state)
-    if not same_major(1):
+    if not same_major(STATE_FORMAT):
         _fail('state_format_mismatch')
     project = _checked_project(plan['projectRoot'])
     settings = project_dir.settings_path(project)
@@ -535,7 +536,7 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
              'stateNode': _live_node(state),
              'storePath': store['storePath'], 'storeNode': store['storeNode'],
              'storeIncarnation': store['storeIncarnation'], 'installId': install_id,
-             'scopeId': plan['scopeId'], 'stateFormat': 1,
+             'scopeId': plan['scopeId'], 'stateFormat': STATE_FORMAT,
              'collections': plan['collections'], 'vectorProfile': vector_profile}
     _keep_recorded_devices(route, state / 'route.json')
     raw = json.dumps(route, sort_keys=True, ensure_ascii=False,

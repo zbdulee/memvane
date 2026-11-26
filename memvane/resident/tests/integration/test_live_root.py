@@ -23,7 +23,7 @@ class LiveServiceRoot(unittest.TestCase):
                         mock.patch.dict(os.environ, {'MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT': ''})):
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.live = self.account.joinpath('.local', 'state', 'memvane', 'v1', 'service')
+        self.live = self.account.joinpath('.local', 'state', 'memvane', 'v2', 'service')
         self.live.mkdir(mode=0o700, parents=True)
         self.project = self.account / 'project'
         self.project.mkdir()

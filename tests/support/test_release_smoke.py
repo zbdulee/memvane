@@ -55,7 +55,7 @@ elif command == 'stuff' and typed.exists():
     text = typed.read_bytes()
     typed.replace(STATE / 'submitted')
     if mode != 'no_row':
-        log = Path.home() / '.local/state/memvane/v1/installs/fake/events.jsonl'
+        log = Path.home() / '.local/state/memvane/v2/installs/fake/events.jsonl'
         log.parent.mkdir(parents=True, exist_ok=True)
         with open(log, 'a') as out:
             out.write(json.dumps({'event': 'recall', 'session': 'fake', 'ts': '2026-11-22T00:00:00Z',
@@ -407,7 +407,7 @@ class RoundTrip(FixtureCase):
         self.assertEqual(len(listed), 2 + 2 * 6)
         self.assertEqual((record / 'prompt-P1.txt').read_text(), plan['prompts']['P1']['text'])
         # The account already holds event rows: the change records the newest one's time.
-        earlier = account / '.local/state/memvane/v1/installs/older'
+        earlier = account / '.local/state/memvane/v2/installs/older'
         earlier.mkdir(parents=True)
         (earlier / 'events.jsonl').write_text(''.join(
             json.dumps({'event': 'recall', 'session': 'older', 'ts': ts}) + '\n'
@@ -425,7 +425,7 @@ class RoundTrip(FixtureCase):
         rows.sync(after)
         for row in rows.rows:
             row.update(install='fixture-install', title='a private title', path='/private/path')
-        log = account / '.local/state/memvane/v1/installs'
+        log = account / '.local/state/memvane/v2/installs'
         for name, content in (('aaaa', [{'event': 'recall', 'session': 'someone-else', 'ts': stamp(0)}]),
                               ('bbbb', rows.rows)):
             (log / name).mkdir(parents=True)
@@ -573,7 +573,7 @@ class RoundTrip(FixtureCase):
         self.assertEqual(len(log), 1)
 
     def seed_events(self, account, *stamps):
-        log = account / '.local/state/memvane/v1/installs/earlier'
+        log = account / '.local/state/memvane/v2/installs/earlier'
         log.mkdir(parents=True, exist_ok=True)
         with open(log / 'events.jsonl', 'a') as out:
             for ts in stamps:
@@ -683,7 +683,7 @@ class RoundTrip(FixtureCase):
                 self.seed_events(account, '2026-11-21T10:00:00Z')
                 if mode == 'elsewhere':
                     # Another install of the account indexes and publishes meanwhile.
-                    other = account / '.local/state/memvane/v1/installs/earlier/events.jsonl'
+                    other = account / '.local/state/memvane/v2/installs/earlier/events.jsonl'
                     with open(other, 'a') as out:
                         for event, outcome in (('wake.sync', 'indexed'), ('index.publish', 'published')):
                             out.write(json.dumps({'event': event, 'outcome': outcome,
