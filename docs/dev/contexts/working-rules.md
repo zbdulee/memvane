@@ -78,6 +78,12 @@ host route의 분류·실패 동작은 `memvane/host/README.md`를 읽는다.
   - 축: 대상 세대의 이력(`created`·`updated`·`verify-deleted`·사람의 삭제·압축 전후), 각 영속 쓰기 사이의 중단 지점, 같은 초에 쓰인 같은 바이트의 행, 재부팅에 따른 `st_dev` 변화, 행을 쓴 버전(현재·출시 태그).
   - 칸마다 기대 결과(생성·tombstone·보류·재개)와 유료 호출 수를 적는다. 같은 입력으로 다음 pass에서도 계속 보류되는 칸은 두지 않는다. 증거가 모호한 칸은 사람이 지운 카드를 되살리지 않는 쪽으로 정한다.
   - 표는 작업 계획이나 진행 기록에 둔다. 각 칸은 개수·상태로 단정하는 회귀 시험이 되고, 시험 입력은 실제 writer(출시 태그 포함)가 쓴 행이다. 판정 경로에 손으로 만든 행을 넣지 않는다.
+- **호출부·영향 범위는 CodeGraphContext로 조회한다(설치된 환경에서).** 추측이나 `rg` 한 번으로 "호출부 없음"을 결론내지 않는다.
+  - 시작 전: `list_indexed_repositories`로 작업 중인 정확한 경로(저장소 또는 worktree)가 인덱싱됐는지 보고, 없으면 `codegraphcontext index <경로>`. 같은 경로의 `codegraphcontext watch`가 이미 도는지 `ps`로 보고 없을 때만 띄운다. 띄운 watcher는 작업이 끝나면 직접 멈춘다.
+  - 함수·클래스·시그니처를 바꿀 때는 기호마다 `find_callers`/`find_all_callers`, 모듈을 바꾸거나 옮길 때는 `find_importers`를 `repo_path`를 지정해 돌린다. 결과는 제품 호출부와 테스트 호출부로 나눠 계획·진행 기록에 적고 각 호출부를 변경과 대조한다.
+  - 영속 데이터(원장·DB 행·큐·카드 frontmatter·intent)는 writer와 reader를 전부 나열한다. 같은 데이터를 쓰는 출시 태그의 writer도 포함한다.
+  - 그래프는 편집보다 늦다. 큰 변경을 커밋한 뒤에는 `codegraphcontext update <경로>`로 갱신하고, 새로 만든 기호는 `rg`로 보완한다.
+  - 리뷰에서도 변경이 영향을 주는 호출부·writer를 이름으로 적는다. 문서만 바꾸는 작업과 외부 호출부 없는 한 함수 안의 사소한 변경은 생략한다.
 ## 운영상 함정 (디버깅 시 참고)
 
 - **python 하한은 3.9다 — 새 Python 모듈에 PEP 604(`X | None`) annotation을 쓰면 `from __future__ import annotations`를 함께 넣어라.** 훅은 `bare python3`을 실행하고(`hooks/run-hook`) macOS는 `/usr/bin/python3`으로 3.9를 탑재한다. annotation은 정의 시점에 평가되므로 future import가 없으면 **모듈 import 자체가 TypeError로 죽어** 훅이 exit 1(host의 "hook failed")이 되고 플러그인이 통째로 무동작한다. 이 클래스는 개발 머신 python이 3.10+면 **전혀 보이지 않는다** — 실측으로 시스템 python 3.9에서 764개 중 365개가 실패하는 동안 3.13에서는 0 실패였다. 이 클래스를 잡는 전용 테스트는 없으므로 리뷰에서 확인하고, `match`/`except*`처럼 future import로 구제되지 않는 3.10+ 전용 구문도 쓰지 않는다. 시스템 python으로 `npm test`를 돌리면 남는 실패는 제품 결함이 아니라 환경 산물이다: PyYAML 대조 테스트(시스템 python에 PyYAML 부재 — 테스트가 가용성을 의도적으로 단정한다).
