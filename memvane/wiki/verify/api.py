@@ -17,9 +17,9 @@ def run(root, config, compile_cfg, produced_targets=None):
     return implementation(root, config, compile_cfg, produced_targets=produced_targets)
 
 
-def enqueue_review(root, job, image=None):
+def enqueue_review(root, job, image=None, *, generation=None):
     from memvane.wiki.verify.review_queue import enqueue_review as implementation
-    return implementation(root, job, image)
+    return implementation(root, job, image, generation=generation)
 
 
 def publish_first_card(root, wiki_root, job, image, *, review, manifest):

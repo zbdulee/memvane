@@ -1,11 +1,7 @@
-"""The released compactor preserves creation and human deletion for every source-text separator."""
+"""The generation history keeps the displayed summary for every source-text separator, and a deleted card regenerates."""
 import hashlib
 import io
 import json
-import os
-from pathlib import Path
-import subprocess
-import sys
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
@@ -19,15 +15,12 @@ class SummaryHistory(FixtureCase):
     def prepare(self, name):
         release_tags.prepare_selected_card(self, name)
 
-    def test_summary_survives_two_released_compactions_and_human_deletion(self):
-        repo = Path(__file__).resolve().parents[5]
-        for tag in ('v1.0.22', 'v1.0.23', 'v1.0.24', 'v1.1.0'):
-            bundle = release_tags.archived_tag(repo, self.tmp, tag)
-            for separator in ('\u0085', '\u2028', '\u2029'):
-                with self.subTest(tag=tag, codepoint=ord(separator)):
-                    self.prepare(tag + str(ord(separator)))
-                    self.target.unlink()
-                    self.check_summary(repo, bundle, separator)
+    def test_summary_survives_in_generations_and_human_deletion_regenerates(self):
+        for separator in ('\u0085', '\u2028', '\u2029'):
+            with self.subTest(codepoint=ord(separator)):
+                self.prepare('summary' + str(ord(separator)))
+                self.target.unlink()
+                self.check_summary(separator)
 
     def test_incompatible_identity_is_held_without_rewriting_the_value(self):
         for separator in ('\u0085', '\u2028', '\u2029'):
@@ -37,7 +30,7 @@ class SummaryHistory(FixtureCase):
             self.assertEqual(record['sources'][0]['path'], identity)
             self.assertIn(separator, record['summary'])
 
-    def check_summary(self, repo, bundle, separator):
+    def check_summary(self, separator):
         summary = 'First sentence.' + separator + 'Second sentence.'
         self.source.write_text(summary)
         source = {'kind': 'file', 'path': 'docs/source.md', 'collection': self.project.raw_name}
@@ -66,18 +59,16 @@ class SummaryHistory(FixtureCase):
             self.assertEqual(result['action'], 'created')
             card = self.root / result['targetPath']
             self.assertIn(summary.encode(), card.read_bytes())
-            ledger = self.queue.parent / 'generated-manifest.jsonl'
-            original, = [json.loads(line) for line in ledger.read_bytes().split(b'\n') if line]
+            from memvane.wiki.pipeline import api as pipeline
+            with pipeline.open_pipeline(self.root, readonly=True) as store:
+                original, = store.all_generations()
             self.assertEqual(original['sourceRevisions'][0]['sha256'], hashlib.sha256(self.source.read_bytes()).hexdigest())
             self.assertEqual(original['summary'], summary.replace(separator, '\n'))
+            self.assertFalse((self.queue.parent / 'generated-manifest.jsonl').exists())
             card.unlink()
-            helper = repo / 'memvane/wiki/workspace/tests/tagged_manifest.py'
-            output = subprocess.check_output([sys.executable, '-B', str(helper), str(bundle), str(ledger),
-                         result['targetPath']], cwd=bundle, env={**os.environ, 'PYTHONPATH': str(bundle)}, text=True)
-            self.assertEqual(json.loads(output), [original])
             self.source.write_text(summary + ' Changed.')
             worker.process_job(self.root, self.config, self.config['compile'], job)
             self.assertEqual(results[-1]['action'], 'created')
             self.assertEqual(results[-1]['targetPath'], original['targetPath'])
             self.assertTrue(card.exists())
-            self.assertFalse((ledger.parent / 'tombstones.jsonl').exists())
+            self.assertFalse((self.queue.parent / 'tombstones.jsonl').exists())

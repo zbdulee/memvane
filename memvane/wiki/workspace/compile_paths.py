@@ -30,12 +30,8 @@ from pathlib import Path
 
 from memvane.settings import api as project_dir, types as project_types
 from memvane.settings.api import compile_dir, ledger
-from memvane.wiki.workspace.types import (COMPILE_DIR, CANDIDATES, SOURCE_QUEUE,
-    MANIFEST, MERGE_NEEDED, VERIFY_QUEUE, VERIFY_LOG, VERIFY_SKIPPED,
-    VERIFY_DELETED, DEDUP_NEEDED, DEDUP_SKIPPED, DEDUP_DELETED, DISCARD_LEDGER,
-    COMPILE_COOLDOWN, LEGACY_VERIFY_COOLDOWN, VERIFY_ENGINE_COOLDOWN,
-    DEDUP_JUDGE_COOLDOWN, DEDUP_JUDGE_ENGINE_COOLDOWN, CARD_WRITE_LOCK, COMPILE_RUN_LOCK)
-from memvane.wiki.card.types import SOURCE_REFRESH_PENDING
+from memvane.wiki.workspace.types import (COMPILE_DIR, SOURCE_QUEUE, VERIFY_QUEUE,
+    CARD_WRITE_LOCK, COMPILE_RUN_LOCK)
 
 
 

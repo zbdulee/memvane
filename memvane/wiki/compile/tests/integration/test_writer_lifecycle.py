@@ -47,6 +47,10 @@ class WriterFixture(FixtureCase):
         if name == 'candidates.jsonl':
             from memvane.wiki.pipeline import api as pipeline
             return pipeline.log_rows(self.project.root, 'candidate')
+        if name == 'card_generations':
+            from memvane.wiki.pipeline import api as pipeline
+            with pipeline.open_pipeline(self.project.root, readonly=True) as store:
+                return store.all_generations()
         path = self.project.root / '.memvane/compile' / name
         return [json.loads(line) for line in path.read_text().splitlines()]
 
@@ -63,7 +67,8 @@ class WriterLifecycle(WriterFixture):
         self.assertEqual((again['action'], again['targetPath']), ('created', first['targetPath']))
         self.assertTrue(target.is_file())
         self.assertFalse((self.project.root / '.memvane/compile/tombstones.jsonl').exists())
-        self.assertEqual([row['action'] for row in self.audit('generated-manifest.jsonl')], ['created', 'created'])
+        self.assertEqual([row['action'] for row in self.audit('card_generations')], ['created', 'created'])
+        self.assertFalse((self.project.root / '.memvane/compile/generated-manifest.jsonl').exists())
 
     def test_a_merged_cards_source_update_goes_to_the_keeper(self):
         # R2: the merge moves the loser's labels, so compiling the loser's identity updates the keeper.
@@ -91,7 +96,7 @@ class WriterLifecycle(WriterFixture):
         self.assertEqual((row['targetPath'], row['targetResolution'], row['action']),
                          (keeper['targetPath'], 'canonicalKey', 'merge-needed'))
         self.assertFalse((self.project.root / loser['targetPath']).exists())
-        self.assertEqual([r['targetPath'] for r in self.audit('generated-manifest.jsonl')],
+        self.assertEqual([r['targetPath'] for r in self.audit('card_generations')],
                          [keeper['targetPath'], loser['targetPath']])
 
     def test_transcript_and_secret_are_rejected_without_persisting_raw_content(self):
@@ -125,8 +130,8 @@ class WriterLifecycle(WriterFixture):
         outside.write_text('unchanged')
         (directory / 'escaping.jsonl').symlink_to(outside)
         self.assertIsNone(settings.ledger(self.project.root, 'escaping.jsonl'))
-        self.assertEqual(settings.ledger(self.project.root, workspace_types.MANIFEST),
-                         directory / workspace_types.MANIFEST)
+        self.assertEqual(settings.ledger(self.project.root, workspace_types.SOURCE_QUEUE),
+                         directory / workspace_types.SOURCE_QUEUE)
         self.assertEqual(outside.read_text(), 'unchanged')
 
     def test_selected_verified_replacement_is_staged_for_review(self):
@@ -144,6 +149,9 @@ class WriterLifecycle(WriterFixture):
         self.assertEqual(job['expectedTargetHash'], hashlib.sha256(original).hexdigest())
         self.assertIn('sourceHash="' + job['sourceHash'] + '"', row['image'].decode())
         self.assertIn('Replacement fact for review.', row['image'].decode())
+        # The replacement's history row is committed with its verify row.
+        self.assertEqual([(r['action'], r['targetPath']) for r in self.audit('card_generations')],
+                         [('created', first['targetPath']), ('updated', first['targetPath'])])
 
     def test_selected_replacement_refuses_unmatched_wiki_collection(self):
         first = self.compile()

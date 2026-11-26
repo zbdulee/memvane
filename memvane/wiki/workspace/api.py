@@ -127,13 +127,6 @@ def write_state_atomic(path, snapshot):
     return implementation(path, snapshot)
 
 
-def trim_jsonl(path, max_bytes=262144):
-    # max_bytes reaches the callee only when it differs from LOG_MAX_BYTES.
-    from memvane.wiki.workspace.atomic_io import trim_jsonl as implementation
-    given = (max_bytes,) if type(max_bytes) is not int or max_bytes != 262144 else ()
-    return implementation(path, *given)
-
-
 def mutation_lock(root, *, blocking=True):
     from memvane.wiki.workspace.wiki_mutation_lock import lock as implementation
     return implementation(root, blocking=blocking)
@@ -160,13 +153,6 @@ def activity_tail(root, bound=object(), limit=8000):
     if type(limit) is not int or limit != 8000:
         given['limit'] = limit
     return implementation(root, **given)
-
-
-def compact_manifest(path, max_bytes=262144):
-    # max_bytes reaches the callee only when it differs from LOG_MAX_BYTES.
-    from memvane.wiki.workspace.manifest_ledger import compact_manifest as implementation
-    given = (max_bytes,) if type(max_bytes) is not int or max_bytes != 262144 else ()
-    return implementation(path, *given)
 
 
 def find_wiki_collection(config):

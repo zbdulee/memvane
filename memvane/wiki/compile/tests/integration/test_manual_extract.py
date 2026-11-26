@@ -51,8 +51,9 @@ class ManualExtract(FixtureCase):
         text = page.read_text()
         for name in ('SCHEMA.md', 'index.md', 'log.md'):
             self.assertFalse((self.project.wiki / name).exists())
-        manifest = self.project.root / '.memvane/compile/generated-manifest.jsonl'
-        row = json.loads(manifest.read_text().splitlines()[-1])
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.project.root, readonly=True) as store:
+            row = store.all_generations()[-1]
         self.assertEqual((row['action'], row['targetPath']), ('created', '.memvane/wiki/concepts/api-port.md'))
         self.assertIn('API alias', text)
         self.assertIn(hashlib.sha256(source.read_bytes()).hexdigest(), text)

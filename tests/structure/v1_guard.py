@@ -449,11 +449,10 @@ _API_PARTS = ('api', 'types')
 # app, sync, wiki, journal and install; the QA ledger trio serves the wiki CLI).
 # The background-bundle handle also serves resident and app handoff. No two
 # names forward to the same callee, so no merge keeps behavior.
-# wiki/workspace excepted at its exact count: 35 functions, each one distinct
+# wiki/workspace excepted at its exact count: 31 functions, each one distinct
 # workspace implementation (card/run/mutation locks, queue paths, claims and job
 # timestamps, lifecycle requests, the selected-route proof and checkout, scan
-# cursors, atomic writes, generated-manifest compaction, the declared wiki
-# collection, the activity log) with a caller in wiki/compile, wiki/verify,
+# cursors, atomic writes, the declared wiki collection, the activity log) with a caller in wiki/compile, wiki/verify,
 # wiki/dedup, wiki/intake, wiki/lifecycle, host, sync or app; no two share a
 # callee.
 # wiki/card excepted at its exact count: 48 functions, each forwarding to a
@@ -463,7 +462,7 @@ _API_PARTS = ('api', 'types')
 # refreshes, source spans) and each called from wiki/compile, wiki/verify,
 # wiki/lifecycle, wiki/dedup, wiki/intake, store, sync, host or learning. Card is the stored
 # card contract every wiki writer and reader shares; no two names share a callee.
-_API_NAME_LIMITS = {'journal': 51, 'runtime': 42, 'wiki/workspace': 33, 'wiki/card': 48}
+_API_NAME_LIMITS = {'journal': 51, 'runtime': 42, 'wiki/workspace': 31, 'wiki/card': 48}
 _CREATE_TABLE = re.compile(r'\bCREATE\s+(?:TEMP(?:ORARY)?\s+|VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
                            r'(?!IF\b)["`\[]?(?:\w+\.)?(\w+)', re.I)
 _TABLE_USE = re.compile(r'\b(DELETE\s+FROM|FROM|INTO|UPDATE|JOIN)\s+["`\[]?(?:main\.)?(\w+)')

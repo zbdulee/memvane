@@ -83,7 +83,9 @@ class DeletedSourceRetirement(RetireFixture):
         self.assertFalse((self.root / '.memvane/compile/retired-wiki').exists())
 
     def test_single_source_is_archived_and_replay_is_safe(self):
+        # R6: retirement reads the card's own frontmatter; no 1.x manifest file exists.
         card = self.card()
+        self.assertFalse((self.root / '.memvane/compile/generated-manifest.jsonl').exists())
         old = card.read_bytes()
         self.assertEqual(self.run_retire(), ('retired', 1))
         self.assertFalse(card.exists())

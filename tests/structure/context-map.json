@@ -1438,8 +1438,6 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/wiki/card/legacy_ledgers.py": {"context": "wiki/card", "layer": "application", "pinned": false},
-    "memvane/wiki/card/manifest_scan.py": {"context": "wiki/card", "layer": "application", "pinned": false},
     "memvane/wiki/card/source_spans.py": {
       "context": "wiki/card",
       "layer": "adapter",
@@ -1831,11 +1829,6 @@
       "pinned": false
     },
     "memvane/wiki/workspace/ledger_queue.py": {
-      "context": "wiki/workspace",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "memvane/wiki/workspace/manifest_ledger.py": {
       "context": "wiki/workspace",
       "layer": "adapter",
       "pinned": false

@@ -15,9 +15,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.paths import safe_managed_dir
-from memvane.wiki.workspace.api import write_text_atomic, compact_manifest, find_wiki_collection
+from memvane.wiki.workspace.api import write_text_atomic, find_wiki_collection
 from memvane.wiki.workspace import api as workspace_files
-from memvane.wiki.workspace import api as cp, types as ct
+from memvane.wiki.workspace import api as cp
 from memvane.settings import api as qmd_config, types as settings_types
 from memvane.settings import api as source_text
 from memvane.wiki.card.types import (  # noqa: F401 - compile module surface
@@ -410,7 +410,7 @@ def lint_candidate(candidate: dict, target: Path | None, max_lines: int) -> dict
 
 
 def public_history(record, **fields):
-    """Project only the displayed summary, then check the complete row as a 1.x compactor reads it."""
+    """Project only the displayed summary, then check the complete row survives one JSON line."""
     public = dict(record, **fields)
     public['summary'] = public['summary'].translate({0x85: '\n', 0x2028: '\n', 0x2029: '\n'})
     try:
@@ -422,30 +422,11 @@ def public_history(record, **fields):
     return None
 
 
-def append_jsonl(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
-
-
 def effort_audit(candidate: dict) -> dict:
     raw = candidate.get("_qmd") if isinstance(candidate.get("_qmd"), dict) else {}
     effort = raw.get("reasoningEffort") if isinstance(raw.get("reasoningEffort"), dict) else {}
     from memvane.wiki.engines import api as engines
     return {"reasoningEffort": engines.reasoning_effort_audit(effort)}
-
-
-def same_generated_identity(row: dict, record: dict) -> bool:
-    if row.get("targetPath") and row.get("targetPath") == record.get("targetPath"):
-        return True
-    if record.get("targetResolution") == "explicit":
-        return False
-    if row.get("sourceHash") and row.get("sourceHash") == record.get("sourceHash"):
-        return True
-    canonical_key = record.get("canonicalKey")
-    if canonical_key and row.get("canonicalKey") == canonical_key:
-        return True
-    return False
 
 
 def yaml_scalar(value) -> str:
@@ -1047,8 +1028,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
     # Log rows only (working-rules 3): a lost line costs a diagnostic, never a decision.
     candidate_log = pipeline.audit_log(root, 'candidate')
     merge_log = pipeline.audit_log(root, 'merge_needed')
-    manifest_path = qmd_config.ledger(root, ct.MANIFEST)
-    if manifest_path is None:
+    if qmd_config.compile_dir(root) is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_compile_path"}, ensure_ascii=False))
         return 1
 
@@ -1073,10 +1053,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         "_qmd": effort_audit(candidate),
     }
 
-    missing = record if target is not None and not target.exists() else None
-    if yaml_scalars.unresolved_pending_refreshes_strict(root, before_ledger_write=True,
-                                                   missing_target=missing, append_for=missing, read_only=check) is None:
-        print(json.dumps({'action': 'deferred', 'reason': 'legacy_ledger_requires_reassessment'}))
+    if yaml_scalars.unresolved_pending_refreshes_strict(root) is None:
+        print(json.dumps({'action': 'deferred', 'reason': 'pending_refresh_unknown'}))
         return 1
 
     if check and target_reason.startswith("ambiguous_"):
@@ -1269,7 +1247,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         replacing = True
         job = _verify_job(root, selected, candidate, record, kind='replace',
                           expected_target_hash=hashlib.sha256(original).hexdigest())
-        write_ok = verify_api.enqueue_review(root, job, pending_page.encode("utf-8"))
+        write_ok = verify_api.enqueue_review(root, job, pending_page.encode("utf-8"), generation=manifest)
     else:
         image = page.encode("utf-8")
         job = _verify_job(root, selected, candidate, record, kind='review',
@@ -1285,11 +1263,6 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
 
     record["action"] = action
     candidate_log.append(record)
-    append_jsonl(manifest_path, manifest)
-    # manifest is read for retirement on source deletion; compact by folding
-    # same-identity duplicates rather than size-trimming (which would drop a card's
-    # entry). Threshold-gated + atomic inside.
-    compact_manifest(manifest_path)
     # 활동 로그는 프로젝트 밖(설치 state root)에 남는다. 실패해도 카드 쓰기는 끝난 것이다.
     if not replacing:
         workspace_files.append_activity(root, action, target.relative_to(wiki_root).as_posix(),

@@ -11,6 +11,7 @@ import json
 import time
 import uuid
 
+from memvane.wiki.pipeline.decisions import insert_generation
 from memvane.wiki.pipeline.types import PipelineError
 
 QUEUES = {'source': 'compile_jobs', 'verify': 'verify_jobs'}
@@ -85,12 +86,16 @@ class JobQueueMixin:
                 self._insert_job(cur, queue, payload, positions.get(anchor, now + index))
         return result
 
-    def append_jobs(self, queue: str, payloads: list[dict], *, pending_blobs: list | None = None) -> int:
+    def append_jobs(self, queue: str, payloads: list[dict], *, pending_blobs: list | None = None,
+                    generation: dict | None = None) -> int:
+        """Queue ``payloads``; ``generation`` joins ``card_generations`` in the same transaction."""
         now = time.time_ns()
         with self._write_tx() as cur:
             for index, payload in enumerate(payloads):
                 blob = pending_blobs[index] if pending_blobs is not None else None
                 self._insert_job(cur, queue, payload, now + index, pending_blob=blob)
+            if generation is not None:
+                insert_generation(cur, generation, None, now)
         return len(payloads)
 
     def claim_jobs(self, queue: str, claim_pid: int, claim_token: str) -> list[dict]:

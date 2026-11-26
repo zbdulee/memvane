@@ -41,10 +41,12 @@ def _open(root):
     return pipeline.open_pipeline(root)
 
 
-def enqueue_review(root: Path, job: dict, image: bytes | None = None) -> bool:
+def enqueue_review(root: Path, job: dict, image: bytes | None = None, *,
+                   generation: dict | None = None) -> bool:
+    """Queue one verify row; ``generation`` is recorded in the same transaction."""
     try:
         with _open(root) as store:
-            store.append_jobs('verify', [job], pending_blobs=[image])
+            store.append_jobs('verify', [job], pending_blobs=[image], generation=generation)
         return True
     except (OSError, ValueError, sqlite3.Error):
         return False
@@ -55,21 +57,21 @@ def publish_first_card(root: Path, wiki_root: Path, job: dict, image: bytes, *, 
     """Queue the review row, then expose the generated card with one no-replace rename.
 
     The caller holds the card and mutation locks. A row left without its card is
-    closed as ``card_missing`` by the verifier; the compile job is retried.
+    closed as ``card_missing`` by the verifier; the compile job is retried. The
+    ``manifest`` history row lands in ``card_generations`` with the publish.
     """
     from memvane.wiki.card.api import unresolved_pending_refreshes_strict
     from memvane.wiki.pipeline import api as pipeline
     target = root / job['targetPath']
-    if unresolved_pending_refreshes_strict(root, before_ledger_write=True,
-                                           missing_target=None if target.exists() else manifest,
-                                           append_for=manifest) is None:
+    if unresolved_pending_refreshes_strict(root) is None:
         return False
     if review and not enqueue_review(root, job):
         return False
     try:
         wiki = Path(wiki_root).resolve()
         outcome = pipeline.publish_card(root, wiki, target.resolve().relative_to(wiki), image,
-                                        expected_target_sha=None, lock_context=nullcontext)
+                                        expected_target_sha=None, lock_context=nullcontext,
+                                        generation=manifest)
     except (OSError, ValueError, sqlite3.Error):
         return False
     return outcome.state == 'published'

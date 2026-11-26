@@ -684,7 +684,7 @@ def process_row(root: Path, config: dict, compile_cfg: dict, vcfg: dict, store, 
     if _excluded(selected_route, text, job):
         log_verdict(log_path, {**base_record(job), 'result': 'skipped', 'reason': 'source_folder_excluded'})
         return "done", "source_folder_excluded", True
-    if wiki_freshness.unresolved_pending_refreshes_strict(root, before_ledger_write=True, append_for=job) is None:
+    if wiki_freshness.unresolved_pending_refreshes_strict(root) is None:
         return "queued", "refresh_unresolved", False
     checkout = None
     if selected_route is not None and isinstance(job.get('sourceFingerprints'), dict):
