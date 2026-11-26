@@ -19,7 +19,7 @@ from memvane.learning.tests.support import invariants
 
 EDITS = 160
 # The three releases before this one (``old_bundle_121.TAGS``).
-PREVIOUS = ('v1.0.24', 'v1.1.0', 'v1.1.1')
+PREVIOUS = ('v1.1.0', 'v1.1.1', 'v1.1.2')
 PER_PASS = 8
 TRAINED_AT, APPLIED_AT = 13, 20
 
@@ -92,30 +92,28 @@ class LearningPath(Lp1Fixture):
         self.old_workers_meet_the_open_job(with_job[0])
 
     def old_workers_meet_the_open_job(self, applied_job):
-        """The three previous releases' workers on this bundle's open job states (design L-5).
+        """The three previous releases' workers on this bundle's open job states.
 
-        The namespace holds 160 real gold cases, so an old worker passes its first gate
-        (enough training cases) and reads the job, the cycle and the evaluation. The second
-        job is put in each state this bundle leaves open; every old worker answers from
-        that row and changes no row of any table, and starts no host CLI.
+        This bundle's install lives in the ``stateFormat`` 2 state base
+        (``memvane_paths.STATE_FORMAT``). A 1.x worker proves its selected route before
+        it reads any job, finds no install it can read and refuses with
+        ``unselected_host_route``. The second job is put in each state this bundle
+        leaves open; in every one the old worker changes no row of any table and
+        starts no host CLI.
         """
         import time
         from memvane.learning.tests.old_bundle_121 import old_bundle
         second, = [job for job in self.jobs() if job != applied_job]
         self.keep()
         later = time.time() + 86400
-        # state -> ((job status, reason, attempts, failures, retry_at, cycle status) or None, the old worker's answer)
-        states = {'staged, its evaluation not run': (None, 'staged_evaluation_deferred'),
-                  'blocked, waiting to be rearmed': (('blocked', 'trainer_failed', 3, 3, later, 'failed'),
-                                                     'learning_job_blocked'),
-                  'blocked for good': (('blocked', 'learning_cursor_changed', 1, 1, 0, 'failed'),
-                                       'learning_job_blocked'),
-                  'blocked for good at the attempt limit': (('blocked', 'trainer_attempts_exhausted', 30, 3, 0, 'failed'),
-                                                            'learning_job_blocked'),
-                  'deferred after progress': (('deferred', 'trainer_progress', 1, 0, later, 'deferred'),
-                                              'deferred_resource')}
+        # state -> (job status, reason, attempts, failures, retry_at, cycle status) or None
+        states = {'staged, its evaluation not run': None,
+                  'blocked, waiting to be rearmed': ('blocked', 'trainer_failed', 3, 3, later, 'failed'),
+                  'blocked for good': ('blocked', 'learning_cursor_changed', 1, 1, 0, 'failed'),
+                  'blocked for good at the attempt limit': ('blocked', 'trainer_attempts_exhausted', 30, 3, 0, 'failed'),
+                  'deferred after progress': ('deferred', 'trainer_progress', 1, 0, later, 'deferred')}
         launches = len(self.launches())
-        for name, (row, answer) in states.items():
+        for name, row in states.items():
             for tag in PREVIOUS:
                 with self.subTest(state=name, tag=tag):
                     self.restore()
@@ -127,17 +125,8 @@ class LearningPath(Lp1Fixture):
                     before = self.rows()
                     code, out, err = self.entry(old_bundle(tag), 'learning-shared', 'run-project', str(self.project),
                                                 patched=True, resource_ready=True)
-                    self.assertEqual(code, 0, err)
-                    result = json.loads(out)
-                    # 1.1.0 excludes permanently blocked jobs from plan() and
-                    # finds the first, already applied cohort in this fixture.
-                    expected_cycle = (answer, second)
-                    if tag in ('v1.1.0', 'v1.1.1') and row and row[1] in (
-                            'learning_cursor_changed', 'trainer_attempts_exhausted'):
-                        expected_cycle = ('already_applied', applied_job)
-                    self.assertEqual(result['teacher']['calls'], 0)
-                    self.assertEqual((result['cycle']['status'], result['cycle']['cycle_id']),
-                                     expected_cycle, result)
+                    self.assertEqual((code, json.loads(out)),
+                                     (1, {'status': 'failed', 'reason': 'unselected_host_route'}), err)
                     self.assertEqual(self.rows(), before)
                     self.assertEqual(len(self.launches()), launches)
         self.restore()

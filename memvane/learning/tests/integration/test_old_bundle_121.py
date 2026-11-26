@@ -1,4 +1,4 @@
-"""1.0.21 G-9: 1.0.18 and 1.0.19 bundles leave a default-teacher namespace untouched.
+"""1.0.21 G-9: old bundles leave a default-teacher namespace untouched.
 
 The namespace is ``old_bundle_121.EnabledInstall``'s (real selected install,
 real enrollment and enable). Each old bundle comes from its git tag and runs
@@ -7,6 +7,12 @@ dispatcher's learning worker step (``shared.learning_worker_step`` with the
 owned child it starts), the ``recall`` and ``posttool`` hooks
 (``hooks/run-hook``) and ``selector-maintenance``. Assertions are bytes, row
 lists, exit codes, launch counts and event lines, never elapsed time.
+
+This bundle's install lives in the ``stateFormat`` 2 state base
+(``memvane_paths.STATE_FORMAT``), which no 1.x bundle reads: its route proof
+finds no selected install (``unselected_host_route``), its hooks answer empty
+and capture nothing, and the only host CLI it starts is the legacy route's
+plugin listing.
 """
 from __future__ import annotations
 
@@ -19,6 +25,10 @@ from tests.support.install_builder import ROOT
 
 # The old dispatcher's own bookkeeping for the training-only step it starts.
 WORKER_RECORDS = {'full-worker.lock', 'training-worker-state.json', 'worker.log'}
+# A 1.x bundle's route proof on this bundle's stateFormat 2 install.
+REFUSED = 'unselected_host_route'
+# The legacy route's host plugin listing: the one CLI start a 1.x hook makes here.
+LISTING = ['plugin', 'list', '--json']
 
 STEP = '''
 import subprocess
@@ -75,9 +85,23 @@ class OldBundles(EnabledInstall):
         self.fixture.write_note(EDIT_FILE, EDIT_TEXT)
         before = len(self.events())
         seen['posttool'] = self.hook(bundle, 'posttool', edit_payload('old-edit-' + tag))
-        seen['capture'] = self.wait_capture(before)
         seen['maintenance'] = self.entry(bundle, 'selector-maintenance', str(self.project), 'force')
+        seen['capture'] = [row for row in self.events()[before:] if row.get('event') == 'learning.capture']
         return seen
+
+    def teacher_launches(self):
+        """Every fake CLI start that is not the legacy route's plugin listing."""
+        return [row for row in self.launches() if row.get('argv') != LISTING]
+
+    def assert_excluded(self, seen):
+        """A 1.x bundle's hooks and maintenance on this install: empty answers, no capture, no teacher."""
+        self.assertEqual(seen['recall'], (0, '', ''))
+        self.assertEqual(seen['posttool'], (0, '', ''))
+        self.assertEqual(seen['capture'], [])
+        code, out, err = seen['maintenance']
+        self.assertEqual((code, out), (0, ''), err)
+        self.assertIn('JournalEvidenceError: ' + REFUSED, err)
+        self.assertEqual(self.teacher_launches(), [])
 
     def log_lines(self):
         log = self.root / 'worker.log'
@@ -99,8 +123,8 @@ class OldBundles(EnabledInstall):
                     self.assertEqual(after.get(name), files[name], name)
                 changed = {name for name in set(files) | set(after) if files.get(name) != after.get(name)}
                 self.assertLessEqual(changed, WORKER_RECORDS, sorted(changed))
-                # (b) no host CLI ran.
-                self.assertEqual(self.launches(), [])
+                # (b) no teacher CLI ran.
+                self.assertEqual(self.teacher_launches(), [])
                 # The old envelope refuses the new grant shape; the old consent check
                 # refuses the widened shared consent. Old selection_enabled does not read
                 # the grant: recall's version gate (older_plugin_version) keeps it off.
@@ -111,44 +135,27 @@ class OldBundles(EnabledInstall):
                                  (1, {'status': 'failed', 'reason': 'project_scope_authorization_invalid'}), err)
                 step = seen['step']
                 self.assertEqual(step['step'], {'status': 'started', 'mode': 'training', 'starts': 1})
-                # The old child reads the machine's real resources before its scope check
-                # (no stand-in reaches an old bundle). Ready, it fails on the grant shape;
-                # under pressure it defers with a durable wake and records no outcome.
-                # Neither touches the rows, files or CLIs asserted above.
+                # The old child's readiness is a verified selected route (``learning.ready``),
+                # checked before it reads resources: it finds none, settles
+                # ``setup_in_progress`` with a durable wake and records no outcome.
+                # It touches none of the rows, files or CLIs asserted above.
                 # The log is shared by the tags: only the lines this tag added count.
                 lines = self.log_lines()[logged:]
-                ended = (step['children'], step['state']['outcome'])
-                self.assertIn(ended, (([1], 'failed'), ([0], None)), (step, lines[-3:]))
-                if ended == ([0], None):
-                    reasons = []
-                    for line in lines:
-                        try:
-                            reasons.append(json.loads(line).get('reason'))
-                        except (ValueError, AttributeError):
-                            pass
-                    self.assertIn('learning_deferred_resource', reasons, lines[-3:])
+                self.assertEqual((step['children'], step['state']['outcome']), ([0], None), (step, lines[-3:]))
+                self.assertTrue(lines, step)
+                self.assertEqual(json.loads(lines[-1]), {'status': 'setup_in_progress',
+                                                         'learning_retry': {'status': 'durable_wake_pending'}},
+                                 lines[-3:])
                 self.assertEqual(step['state']['revision'], int(tag.split('.')[-1]))
-                # (c) hooks exit 0; recall answers by hybrid rank.
-                code, out, err = seen['recall']
-                self.assertEqual(code, 0, err)
-                context = json.loads(out)['hookSpecificOutput']['additionalContext']
-                self.assertIn('zqheronx', context)
-                self.assertIn('hybrid rank score', context)
-                self.assertIn('local selection unavailable (older_plugin_version); serving hybrid rank', err)
-                code, out, err = seen['posttool']
-                self.assertEqual(code, 0, err)
-                self.assertIn('zqheronx', json.loads(out)['hookSpecificOutput']['additionalContext'])
-                # The old capture keeps its sample in the install's private state only.
-                self.assertEqual([(row['outcome'], row['pluginVersion']) for row in seen['capture']],
-                                 [('stored', tag[1:])])
-                self.assertEqual(seen['maintenance'], (0, '', ''))
+                # (c) hooks exit 0 with nothing to say and capture nothing.
+                self.assert_excluded(seen)
         # This bundle's recall still answers on the same install afterwards.
         code, out, err = self.hook(ROOT, 'recall', {'session_id': 'new-after-old',
                                                     'hook_event_name': 'UserPromptSubmit', 'prompt': PROMPT})
         self.assertEqual(code, 0, err)
         self.assertIn('zqheronx', json.loads(out)['hookSpecificOutput']['additionalContext'])
         self.assertEqual(self.rows(), rows)
-        self.assertEqual(self.launches(), [])
+        self.assertEqual(self.teacher_launches(), [])
 
     def test_t1_7_v1_0_21_bundle_leaves_122_rows_and_parked_answers_untouched(self):
         self.assertIn('v1.0.21', TAGS)
@@ -156,33 +163,25 @@ class OldBundles(EnabledInstall):
         files = self.namespace_files()
         bundle = old_bundle('v1.0.21')
 
-        # (a) Unpatched 1.0.21 bundle: hooks exit 0, no DB row or authority file moves, 0 CLI calls.
+        # (a) Unpatched 1.0.21 bundle: hooks exit 0, no DB row or authority file moves, 0 teacher calls.
         seen = self.observe('v1.0.21')
         self.assertEqual(self.rows(), rows)
         for name in self.watched_names():
             self.assertEqual(self.namespace_files().get(name), files[name], name)
-        self.assertEqual(self.launches(), [])
-        self.assertEqual(seen['gates']['selection'], 'returned:True')
+        self.assertEqual(seen['gates'], {'policy': 'JournalEvidenceError:' + REFUSED,
+                                         'local_train': 'JournalEvidenceError:' + REFUSED,
+                                         'selection': 'returned:True', 'consent': 'returned:True'})
         code, out, err = seen['worker']
-        self.assertEqual((code, json.loads(out)['status']), (1, 'failed'), err)
-        code, out, err = seen['recall']
-        self.assertEqual(code, 0, err)
-        self.assertIn('zqheronx', json.loads(out)['hookSpecificOutput']['additionalContext'])
-        code, out, err = seen['posttool']
-        self.assertEqual(code, 0, err)
-        self.assertIn('zqheronx', json.loads(out)['hookSpecificOutput']['additionalContext'])
-        self.assertEqual(seen['maintenance'], (0, '', ''))
+        self.assertEqual((code, json.loads(out)), (1, {'status': 'failed', 'reason': REFUSED}), err)
+        self.assert_excluded(seen)
 
-        # (b) Patched 1.0.21 worker passes scope into default_teacher.process_pending_default
-        # and shared.run_training_pending: 0 CLI calls and every 1.0.22 row stays byte-equal.
+        # (b) Patched 1.0.21 worker (the installed-host stand-ins and a ready resource
+        # report): its route proof still refuses before any teacher pass or training,
+        # 0 CLI calls and every 1.0.22 row stays byte-equal.
         code, out, err = self.entry(bundle, 'learning-shared', 'run-project', str(self.project),
                                     patched=True, resource_ready=True)
-        self.assertEqual(code, 0, (out, err))
-        result = json.loads(out)
-        self.assertEqual(result['teacher']['status'], 'drained', result)
-        self.assertEqual(result['teacher']['calls'], 0, result)
-        self.assertEqual((result['status'], result['cycle']['required']), ('waiting_fresh_train', 5), result)
-        self.assertEqual(self.launches(), [])
+        self.assertEqual((code, json.loads(out)), (1, {'status': 'failed', 'reason': REFUSED}), err)
+        self.assertEqual(self.teacher_launches(), [])
         self.assertEqual(self.rows(), rows)
         for name in self.watched_names():
             self.assertEqual(self.namespace_files().get(name), files[name], name)
@@ -195,20 +194,15 @@ class OldBundles(EnabledInstall):
         self.assertEqual(self.rows(), rows)
         for name in self.watched_names():
             self.assertEqual(self.namespace_files().get(name), files[name], name)
-        self.assertEqual(self.launches(), [])
         code, out, err = seen['worker']
-        self.assertEqual((code, json.loads(out)['status']), (1, 'failed'), err)
-        for name in ('recall', 'posttool'):
-            code, out, err = seen[name]
-            self.assertEqual(code, 0, err)
-            self.assertIn('zqheronx', json.loads(out)['hookSpecificOutput']['additionalContext'])
-        self.assertEqual(seen['maintenance'], (0, '', ''))
+        self.assertEqual((code, json.loads(out)), (1, {'status': 'failed', 'reason': REFUSED}), err)
+        self.assert_excluded(seen)
         # The ten-minute floor and three keys: the 1.0.22 shape, the busy count gone.
         self.assertEqual(self.driver(old_bundle('v1.0.22'), BUSY_ROW),
                          {'failures': 0, 'retry': {'requestedNs': 1000 * 10**9, 'failures': 1,
                                                    'retryAfterNs': 1600 * 10**9}})
 
-    def test_v1_0_23_bundle_leaves_rows_untouched_and_its_hooks_answer(self):
+    def test_v1_0_23_bundle_leaves_rows_untouched_and_its_hooks_answer_empty(self):
         self.assertIn('v1.0.23', TAGS)
         rows = self.seed_122_rows(include_queued=False)
         files = self.namespace_files()
@@ -216,12 +210,9 @@ class OldBundles(EnabledInstall):
         self.assertEqual(self.rows(), rows)
         for name in self.watched_names():
             self.assertEqual(self.namespace_files().get(name), files[name], name)
-        self.assertEqual(self.launches(), [])
-        for name in ('recall', 'posttool'):
-            code, out, err = seen[name]
-            self.assertEqual(code, 0, err)
-            self.assertIn('zqheronx', json.loads(out)['hookSpecificOutput']['additionalContext'])
-        self.assertEqual(seen['maintenance'], (0, '', ''))
+        code, out, err = seen['worker']
+        self.assertEqual((code, json.loads(out)), (1, {'status': 'failed', 'reason': REFUSED}), err)
+        self.assert_excluded(seen)
 
 
 if __name__ == '__main__':
