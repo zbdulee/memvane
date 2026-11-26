@@ -280,10 +280,12 @@ class KeeperBudget(ResolveCase):
                     self.assertEqual(self.resolve_entry()['action'], 'deleted')
                 self.assertFalse(self.loser.exists())
 
-    def test_a_keeper_without_frontmatter_is_not_a_budget_case(self):
+    def test_a_keeper_without_frontmatter_cannot_take_the_losers_labels(self):
         self.keeper.write_text('winner\n', encoding='utf-8')
-        self.assertEqual(self.resolve_entry()['action'], 'deleted')
-        self.assertFalse(self.loser.exists())
+        self.assertEqual(self.resolve_entry(), {'action': 'rejected', 'reason': 'keeper_frontmatter_missing',
+                                                'kept': 'entities/loser.md'})
+        self.assertTrue(self.loser.exists())
+        self.assertEqual(self.keeper.read_text(encoding='utf-8'), 'winner\n')
 
 
 class SelectedRoute(ResolveCase):
@@ -371,6 +373,61 @@ class SelectedRoute(ResolveCase):
                 self.skip(0)
         self.assertEqual(jsonl(self.queue), [entry])
         self.assertEqual(list(self.compile.glob('dedup-needed.jsonl.claimed.*')), [])
+
+
+class LabelTransfer(ResolveCase):
+    """A merge moves the loser's labels and sources into the keeper before it deletes."""
+
+    KEEPER = ('---\ntitle: "Alpha Rule"\ncanonicalKey: alpha-rule\naliases: []\nstatus: generated\n'
+              'sources:\n  - {kind: file, path: docs/a.md}\n---\n\nAlpha.\n')
+    LOSER = ('---\ntitle: "Beta Rule"\ncanonicalKey: beta-rule\naliases:\n  - "beta alias"\n  - "Alpha Rule"\n'
+             'status: generated\nsources:\n  - {kind: file, path: docs/b.md}\n  - {kind: file, path: docs/a.md}\n'
+             '---\n\nBeta.\n')
+
+    def setUp(self):
+        super().setUp()
+        self.keeper = self.page('concepts/alpha.md', self.KEEPER)
+        self.loser = self.page('concepts/beta.md', self.LOSER)
+        self.enqueue({'pageA': 'concepts/alpha.md', 'pageB': 'concepts/beta.md', 'score': 0.9})
+
+    def test_merge_moves_labels_and_sources_once_then_deletes(self):
+        from memvane.wiki.card.api import parse_frontmatter
+        code, out = self.merge(0, 'concepts/beta.md')
+        self.assertEqual((code, out), (0, {'action': 'deleted', 'deletedPath': 'concepts/beta.md'}))
+        self.assertFalse(self.loser.exists())
+        meta, ok = parse_frontmatter(self.keeper.read_text(encoding='utf-8'))
+        self.assertTrue(ok)
+        self.assertEqual((meta['title'], meta['canonicalKey']), ('Alpha Rule', 'alpha-rule'))
+        self.assertEqual(meta['aliases'], ['beta-rule', 'Beta Rule', 'beta alias'])
+        self.assertEqual(meta['sources'], ['{kind: file, path: docs/a.md}', '{kind: file, path: docs/b.md}'])
+        self.assertTrue(self.keeper.read_text(encoding='utf-8').endswith('\n---\n\nAlpha.\n'))
+        self.assertEqual(jsonl(self.queue), [])
+
+    def test_a_label_another_card_already_names_refuses_the_merge(self):
+        # R3: moving "beta alias" would make it name two cards, so nothing moves or is deleted.
+        self.page('concepts/gamma.md', '---\ntitle: Gamma\naliases:\n  - "Beta Alias"\n---\n\nGamma.\n')
+        code, out = self.merge(0, 'concepts/beta.md')
+        self.assertEqual(out, {'action': 'rejected', 'reason': 'alias_conflict', 'kept': 'concepts/beta.md'})
+        self.assertEqual(self.keeper.read_text(encoding='utf-8'), self.KEEPER)
+        self.assertEqual(self.loser.read_text(encoding='utf-8'), self.LOSER)
+        self.assertEqual(len(jsonl(self.queue)), 1)
+        self.assertEqual(jsonl(self.compile / 'dedup-deleted.jsonl'), [])
+
+    def test_a_failed_keeper_write_keeps_the_loser_and_the_entry(self):
+        # R7: the keeper changed after it was read, so the publish refuses and nothing is deleted.
+        from memvane.wiki.pipeline import api as pipeline
+        real = pipeline.publish_card
+
+        def edited_meanwhile(*args, **kwargs):
+            self.keeper.write_text(self.KEEPER + 'Edited.\n', encoding='utf-8')
+            return real(*args, **kwargs)
+
+        with mock.patch.object(pipeline, 'publish_card', side_effect=edited_meanwhile):
+            code, out = self.merge(0, 'concepts/beta.md')
+        self.assertEqual(out, {'action': 'rejected', 'reason': 'label_transfer_failed', 'kept': 'concepts/beta.md'})
+        self.assertEqual(self.keeper.read_text(encoding='utf-8'), self.KEEPER + 'Edited.\n')
+        self.assertTrue(self.loser.exists())
+        self.assertEqual(len(jsonl(self.queue)), 1)
 
 
 class EntryProcess(ResolveCase):

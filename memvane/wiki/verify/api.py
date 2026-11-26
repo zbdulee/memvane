@@ -51,7 +51,3 @@ def stamp_verification(path, status, engine, mode, body_hash, source_spans=None)
     from memvane.wiki.verify.verification_stamp import stamp_verification as implementation
     return implementation(path, status, engine, mode, body_hash, source_spans=source_spans)
 
-
-def missing_retirement(root, config, target, *, check):
-    """The verifier never deletes a card, so a missing card has no machine deletion to recover."""
-    return 'manual'

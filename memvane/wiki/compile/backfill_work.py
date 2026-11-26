@@ -172,7 +172,7 @@ class FrozenWork:
             return self.state['results'][key]
         result = writer()
         if isinstance(result, dict) and result.get('action') in ('created', 'updated', 'candidate',
-                                                                 'merge-needed', 'suppressed', 'tombstoned'):
+                                                                 'merge-needed'):
             self.state['results'][key] = result
             _write(self.path, self.state)
         return result

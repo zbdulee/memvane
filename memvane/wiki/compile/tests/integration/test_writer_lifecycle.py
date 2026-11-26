@@ -1,4 +1,4 @@
-"""Writer decisions are reflected in durable audit and tombstone records."""
+"""Writer decisions are reflected in durable audit records."""
 from contextlib import redirect_stdout
 import io
 import json
@@ -39,7 +39,7 @@ class WriterFixture(FixtureCase):
              patch.object(workspace, 'recheck'), patch.object(workspace, 'request_sync'), \
              patch.object(workspace, 'append_activity'), redirect_stdout(output):
             compiler._compile_locked(self.project.root, self.config, self.config['compile'],
-                                     self.project.wiki, candidate, False)
+                                     self.project.wiki, candidate)
         text = output.getvalue().strip()
         return json.loads(text) if text else {}
 
@@ -49,17 +49,46 @@ class WriterFixture(FixtureCase):
 
 
 class WriterLifecycle(WriterFixture):
-    def test_deleted_generated_identity_is_tombstoned_then_suppressed(self):
+    def test_human_deleted_card_regenerates_on_the_next_compile(self):
+        # R1: a person removes a card by deleting its source; a deleted card alone comes back.
         first = self.compile()
         self.assertEqual(first['action'], 'created')
         self.assertFalse((self.project.root / '.memvane/compile/verify-queue.jsonl').exists())
         target = self.project.root / first['targetPath']
         target.unlink()
-        self.assertEqual(self.compile(title='Renamed rule')['action'], 'tombstoned')
-        self.assertEqual(self.compile(title='Another label')['action'], 'suppressed')
-        self.assertFalse(target.exists())
-        self.assertEqual(self.audit('tombstones.jsonl')[-1]['canonicalKey'], 'signal-rule')
-        self.assertEqual(self.audit('candidates.jsonl')[-1]['action'], 'suppressed')
+        again = self.compile(summary='Changed synthetic decision.')
+        self.assertEqual((again['action'], again['targetPath']), ('created', first['targetPath']))
+        self.assertTrue(target.is_file())
+        self.assertFalse((self.project.root / '.memvane/compile/tombstones.jsonl').exists())
+        self.assertEqual([row['action'] for row in self.audit('generated-manifest.jsonl')], ['created', 'created'])
+
+    def test_a_merged_cards_source_update_goes_to_the_keeper(self):
+        # R2: the merge moves the loser's labels, so compiling the loser's identity updates the keeper.
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+        keeper = self.compile()
+        loser = self.compile(title='Noise Rule', canonicalKey='noise-rule', summary='Another synthetic fact.')
+        self.assertEqual((keeper['action'], loser['action']), ('created', 'created'))
+        wiki = self.project.root / '.memvane/wiki'
+        pair = {'pageA': str((self.project.root / keeper['targetPath']).relative_to(wiki)),
+                'pageB': str((self.project.root / loser['targetPath']).relative_to(wiki))}
+        (self.project.root / '.memvane/compile/dedup-needed.jsonl').write_text(json.dumps(pair) + '\n')
+        repo = Path(__file__).resolve().parents[5]
+        merge = subprocess.run([sys.executable, '-B', str(repo / 'entry/run.py'), 'wiki-dedup-resolve',
+                                '--cwd', str(self.project.root), '--index', '0', '--action', 'merge',
+                                '--delete', pair['pageB']], capture_output=True, text=True, timeout=60,
+                               env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}, cwd=str(self.project.root))
+        self.assertEqual(json.loads(merge.stdout).get('action'), 'deleted', merge.stdout + merge.stderr)
+        self.compile(title='Noise Rule', canonicalKey='noise-rule', summary='Updated synthetic fact.')
+        row = self.audit('candidates.jsonl')[-1]
+        # Verify is off in this fixture, so the keeper's replacement waits for review (V19).
+        self.assertEqual((row['targetPath'], row['targetResolution'], row['action']),
+                         (keeper['targetPath'], 'canonicalKey', 'merge-needed'))
+        self.assertFalse((self.project.root / loser['targetPath']).exists())
+        self.assertEqual([r['targetPath'] for r in self.audit('generated-manifest.jsonl')],
+                         [keeper['targetPath'], loser['targetPath']])
 
     def test_transcript_and_secret_are_rejected_without_persisting_raw_content(self):
         secret = 'sk-' + '1234567890abcdef' * 2

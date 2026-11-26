@@ -61,11 +61,11 @@ class ManifestScan(FixtureCase):
         with patch.object(manifest_ledger, 'selected', return_value=None), redirect_stdout(io.StringIO()) as output:
             if check:
                 rc = writer._compile_locked(self.root, self.config, self.config['compile'],
-                                            self.project.wiki, candidate, False, check=True)
+                                            self.project.wiki, candidate, check=True)
             else:
                 with manifest_ledger.card_write_lock(self.root), manifest_ledger.mutation_lock(self.root):
                     rc = writer._compile_locked(self.root, self.config, self.config['compile'],
-                                                self.project.wiki, candidate, False)
+                                                self.project.wiki, candidate)
         return rc, json.loads(output.getvalue())['action']
 
     def test_first_post_tool_use_at_8193_rows_durably_queues_the_edit(self):

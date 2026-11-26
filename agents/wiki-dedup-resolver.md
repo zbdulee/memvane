@@ -104,6 +104,15 @@ short summary at the end (step 5).
       --delete <wiki-root-relative path of the page being deleted>`
       (or `--action skip` with no `--delete` for non-duplicates).
    e. Record the CLI's JSON stdout for your own tracking.
+      Before deleting, the merge moves the deleted page's `canonicalKey`, `title` and `aliases`
+      into the keeper's `aliases` and its `sources` into the keeper's `sources`, so a later
+      change to the deleted page's source updates the keeper instead of recreating the page.
+      Do not copy those labels yourself. When the move cannot happen the CLI deletes nothing,
+      keeps the pair queued and prints `{"action": "rejected", "reason": ...}`:
+      `alias_conflict` (a moved label already names a third card), `label_transfer_failed`
+      (the keeper changed while the CLI wrote it), `keeper_frontmatter_missing` or
+      `*_frontmatter_invalid`. Report the pair with that reason and leave it for a person; do
+      not retry it in the same run.
       In a journal-selected MemVane project, a successful merge also records a
       private recovery copy under `.memvane/compile/dedup-recovery/` and
       durably requests a project-wide `laya-sync` after the loser is removed.

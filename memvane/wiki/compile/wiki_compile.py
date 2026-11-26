@@ -14,13 +14,15 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from memvane.kernel.paths import safe_managed_dir, read_jsonl
+from memvane.kernel.paths import safe_managed_dir
 from memvane.wiki.workspace.api import write_text_atomic, trim_jsonl, compact_manifest, find_wiki_collection
 from memvane.wiki.workspace import api as workspace_files
 from memvane.wiki.workspace import api as cp, types as ct
-from memvane.wiki.workspace.types import MACHINE_DELETE_ACTION
 from memvane.settings import api as qmd_config, types as settings_types
 from memvane.settings import api as source_text
+from memvane.wiki.card.types import (  # noqa: F401 - compile module surface
+    identity_keys, identity_values_from_meta, normalize_identity, slug_identity,
+)
 from memvane.wiki.dedup import api as wiki_dedup_judge
 from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.card.api import frontmatter_sections as _frontmatter_sections
@@ -142,22 +144,6 @@ def existing_managed_dir(root: Path, rel: str) -> Path | None:
 
 
 
-def normalize_identity(value: object) -> str:
-    if not isinstance(value, str):
-        return ""
-    return re.sub(r"\s+", " ", value.strip().lower())
-
-
-def slug_identity(value: object) -> str:
-    if not isinstance(value, str):
-        return ""
-    return re.sub(r"[^A-Za-z0-9가-힣]+", "-", value.lower()).strip("-")
-
-
-def identity_keys(value: object) -> set[str]:
-    return {key for key in (normalize_identity(value), slug_identity(value)) if key}
-
-
 def clean_aliases(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -197,20 +183,6 @@ def clean_canonical_key(value: object) -> str:
 
 
 
-
-
-def identity_values_from_meta(meta: dict) -> list[str]:
-    values = []
-    for key in ("canonicalKey", "title"):
-        value = meta.get(key)
-        if isinstance(value, str) and value.strip():
-            values.append(value.strip())
-    aliases = meta.get("aliases")
-    if isinstance(aliases, list):
-        values.extend(alias.strip() for alias in aliases if isinstance(alias, str) and alias.strip())
-    elif isinstance(aliases, str) and aliases.strip():
-        values.append(aliases.strip())
-    return values
 
 
 def build_identity_index(wiki_root: Path) -> dict[str, set[Path]]:
@@ -935,8 +907,8 @@ def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: 
 def _checked(outcome: str, findings=()) -> int:
     """``--check`` result: the outcome a real compile would reach, nothing written.
 
-    ``written`` (created or updated), ``candidate``, ``merge-needed``,
-    ``rejected``, ``suppressed`` or ``tombstoned``. The paid duplicate judge and
+    ``written`` (created or updated), ``candidate``, ``merge-needed``
+    or ``rejected``. The paid duplicate judge and
     selected-route pending-replacement checks do not run in a check.
     """
     print(json.dumps({"action": outcome, "findings": list(findings)}, ensure_ascii=False))
@@ -956,6 +928,7 @@ def is_auto_writable_page(path: Path) -> tuple[bool, list[str]]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", default=os.getcwd())
+    # Accepted for older callers; a missing card is always recreated.
     parser.add_argument("--regenerate", action="store_true")
     # The trusted final pass of the card body budget (wiki_card_budget): the
     # caller already made its one split attempt, so an over-budget card is
@@ -982,8 +955,7 @@ def main() -> int:
         wiki_root = existing_managed_dir(root, wiki_rel)
         if wiki_root is None:
             return _checked("rejected", ["unsafe_managed_path"])
-        return _compile_locked(root, config, compile_cfg, wiki_root, candidate,
-                               args.regenerate, check=True)
+        return _compile_locked(root, config, compile_cfg, wiki_root, candidate, check=True)
     wiki_root = safe_managed_dir(root, wiki_rel)
     compile_dir = safe_managed_dir(root, settings_types.COMPILE_REL)
     if wiki_root is None or compile_dir is None:
@@ -993,7 +965,7 @@ def main() -> int:
     try:
         with cp.card_write_lock(root), workspace_files.mutation_lock(root):
             return _compile_locked(
-                root, config, compile_cfg, wiki_root, candidate, args.regenerate,
+                root, config, compile_cfg, wiki_root, candidate,
                 budget_final=args.budget_final)
     except OSError:
         print(json.dumps({"action": "rejected", "reason": "card_write_lock_unavailable"}, ensure_ascii=False))
@@ -1032,7 +1004,7 @@ def _verify_job(root, selected, candidate, record, *, kind, expected_target_hash
 
 
 def _compile_locked(root: Path, config: dict, compile_cfg: dict,
-                    wiki_root: Path, candidate: dict, regenerate: bool, *,
+                    wiki_root: Path, candidate: dict, *,
                     budget_final: str | None = None, check: bool = False) -> int:
     from memvane.wiki.workspace import api as wiki_selected_laya
     selected = wiki_selected_laya.selected(root)
@@ -1072,10 +1044,9 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
     h = source_hash({**candidate, "summary": summary})
 
     candidate_path = qmd_config.ledger(root, ct.CANDIDATES)
-    tombstone_path = qmd_config.ledger(root, ct.TOMBSTONES)
     manifest_path = qmd_config.ledger(root, ct.MANIFEST)
     merge_needed_path = qmd_config.ledger(root, ct.MERGE_NEEDED)
-    if candidate_path is None or tombstone_path is None or manifest_path is None or merge_needed_path is None:
+    if candidate_path is None or manifest_path is None or merge_needed_path is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_compile_path"}, ensure_ascii=False))
         return 1
 
@@ -1133,41 +1104,6 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
     if public_history(record) is None:
         print(json.dumps({'action': 'write-failed', 'reason': 'history_row_incompatible'}))
         return 1
-
-    tombstones = read_jsonl(tombstone_path)
-    if any(same_generated_identity(row, record) for row in tombstones) and not regenerate:
-        if check:
-            return _checked("suppressed")
-        record["action"] = "suppressed"
-        append_jsonl(candidate_path, record)
-        print(json.dumps({"action": "suppressed", "targetPath": record["targetPath"]}, ensure_ascii=False))
-        return 0
-
-    previous = [
-        row for row in read_jsonl(manifest_path)
-        if same_generated_identity(row, record)
-    ]
-    # Recover a proved prior retirement before any new generation. A forced
-    # creation can otherwise equal the predecessor row at the same timestamp.
-    if not target.exists() and (not previous or previous[-1].get("action") != MACHINE_DELETE_ACTION):
-        from memvane.wiki.verify.api import missing_retirement
-        retirement = missing_retirement(root, config, record['targetPath'], check=check)
-        if retirement == 'retry':
-            print(json.dumps({'action': 'deferred', 'reason': 'machine_deletion_unconfirmed'}))
-            return 1
-        if not regenerate and previous and retirement == 'manual':
-            if check:
-                return _checked("tombstoned")
-            tombstone = public_history(record, action='deleted', status='deleted',
-                                       previousStatus=previous[-1].get('status', 'generated'))
-            if tombstone is None:
-                print(json.dumps({'action': 'write-failed', 'reason': 'history_row_incompatible'}))
-                return 1
-            append_jsonl(tombstone_path, tombstone)
-            record["action"] = "tombstoned"
-            append_jsonl(candidate_path, record)
-            print(json.dumps({"action": "tombstoned", "targetPath": record["targetPath"]}, ensure_ascii=False))
-            return 0
 
     # Card body budget before the paid duplicate judge (wiki_card_budget): an
     # over-budget card is held back once for a split; the caller's trusted
@@ -1353,9 +1289,9 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
     record["action"] = action
     append_jsonl(candidate_path, record)
     append_jsonl(manifest_path, manifest)
-    # manifest is read for delete-detection (previous lookup); compact by folding
+    # manifest is read for retirement on source deletion; compact by folding
     # same-identity duplicates rather than size-trimming (which would drop a card's
-    # entry and break tombstoning). Threshold-gated + atomic inside.
+    # entry). Threshold-gated + atomic inside.
     compact_manifest(manifest_path)
     # 활동 로그는 프로젝트 밖(설치 state root)에 남는다. 실패해도 카드 쓰기는 끝난 것이다.
     if not replacing:

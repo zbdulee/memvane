@@ -76,7 +76,7 @@ class OnlinePreservation(FixtureCase):
             def native(path):
                 with redirect_stdout(io.StringIO()) as out:
                     writer._compile_locked(root, config, config['compile'], project.wiki,
-                                           candidate(separate, path), False)
+                                           candidate(separate, path))
                 return json.loads(out.getvalue())['action']
             with patch.object(os, 'replace', wraps=os.replace) as replace, patch.object(os, 'rename', wraps=os.rename) as rename:
                 self.assertEqual(native(target), 'deferred')

@@ -152,7 +152,7 @@ class RevisionSkipChecks(FixtureCase):
             out = io.StringIO()
             with redirect_stdout(out):
                 wc._compile_locked(root, self.config, self.config['compile'], self.wiki,
-                                   candidate, False)
+                                   candidate)
             return json.loads(out.getvalue())
 
         self.config['compile']['semanticDedup'] = {'enabled': False}
@@ -335,7 +335,7 @@ class RevisionSkipChecks(FixtureCase):
         def write(root, card):
             stream = io.StringIO()
             with redirect_stdout(stream):
-                code = wc._compile_locked(root, self.config, cfg, self.wiki, card, False)
+                code = wc._compile_locked(root, self.config, cfg, self.wiki, card)
             return json.loads(stream.getvalue() or '{}') if code == 0 else None
 
         with patch.object(worker, 'compile_candidate', side_effect=write), \
@@ -389,7 +389,7 @@ class RevisionSkipChecks(FixtureCase):
                     return {'action': 'rejected'}
             out = io.StringIO()
             with redirect_stdout(out):
-                wc._compile_locked(root, self.config, cfg, self.wiki, candidate, False)
+                wc._compile_locked(root, self.config, cfg, self.wiki, candidate)
             return json.loads(out.getvalue() or '{}')
 
         def edit():

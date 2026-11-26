@@ -30,7 +30,7 @@ def run(request):
             return {'action': 'rejected'}
         output = io.StringIO()
         with workspace.card_write_lock(project), workspace.mutation_lock(project), redirect_stdout(output):
-            code = writer._compile_locked(project, config, settings, project / config['wikiPath'], candidate, False)
+            code = writer._compile_locked(project, config, settings, project / config['wikiPath'], candidate)
         if code:
             raise AssertionError(output.getvalue())
         return json.loads(output.getvalue())

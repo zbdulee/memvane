@@ -7,7 +7,11 @@ touches entries other than the one resolved this run.
 
 This script's `merge` action DELETES a file. The caller (the
 wiki-dedup-resolver subagent) has already folded any unique content into the
-page it is keeping via its own Edit tool before invoking this CLI.
+page it is keeping via its own Edit tool before invoking this CLI. Before the
+delete, the CLI moves the deleted card's canonicalKey, title and aliases into
+the keeper's aliases and its sources into the keeper's sources, so a later
+compile of the deleted card's source resolves to the keeper. When that move
+fails or a moved label already names a third card, nothing is deleted.
 """
 from __future__ import annotations
 import argparse
@@ -23,7 +27,13 @@ from memvane.settings import api as project_dir, types as project_types
 from memvane.settings import api as qmd_config
 from memvane.wiki.workspace import api as workspace_files
 from memvane.kernel.paths import safe_managed_dir
+from contextlib import nullcontext
+import hashlib
+from memvane.wiki.card import api as cards
+from memvane.settings import api as source_text
 from memvane.wiki.card.api import parse_frontmatter
+from memvane.wiki.card import types as card_types
+from memvane.wiki.card.types import FRONTMATTER_RE
 from memvane.wiki.dedup import wiki_dedup_scan as dedup_scan
 from memvane.wiki.workspace import api as wiki_selected_laya
 from memvane.wiki.workspace.api import claim_queue, requeue_lines
@@ -158,6 +168,107 @@ def keeper_over_budget(root: Path, wiki_root: Path, keeper_rel) -> dict | None:
     return measured if measured["reason"] == "over_budget" else None
 
 
+UNKNOWN_SOURCE = '{kind: unknown}'
+
+
+def _block_entries(text: str, key: str) -> list[str] | None:
+    """Raw ``  - <entry>`` values of one top-level frontmatter block, or None when unreadable."""
+    match = FRONTMATTER_RE.match(text)
+    if match is None:
+        return []
+    sections = cards.frontmatter_sections(match.group(1))
+    if sections is None:
+        return None
+    for name, lines in sections:
+        if name != key:
+            continue
+        if lines[0].rstrip() in (f'{key}:', f'{key}: []') and all(line.startswith('  - ') for line in lines[1:]):
+            return [line[4:] for line in lines[1:]]
+        return None
+    return []
+
+
+def _label_owners(wiki_root: Path, keys: set[str]) -> set[Path]:
+    """Cards whose canonicalKey, title or an alias has one of ``keys`` (compile's identity lookup)."""
+    owners = set()
+    for page in wiki_root.rglob('*.md'):
+        if source_text.is_wiki_meta_page(page, wiki_root):
+            continue
+        try:
+            meta, ok = parse_frontmatter(page.read_text(encoding='utf-8'))
+        except (OSError, UnicodeError):
+            continue
+        if ok and any(card_types.identity_keys(value) & keys
+                      for value in card_types.identity_values_from_meta(meta)):
+            owners.add(page.resolve())
+    return owners
+
+
+def transfer_labels(root: Path, wiki_root: Path, keeper_rel: str, loser: Path, loser_text: str) -> str | None:
+    """Move the loser's identity labels and sources into the keeper; None on success.
+
+    Runs under the card locks the caller holds. The keeper is rewritten through
+    ``publish_card`` against the bytes read here, so an edit made meanwhile keeps
+    the keeper as it is and refuses the merge.
+    """
+    keeper = (wiki_root / keeper_rel).resolve()
+    try:
+        keeper.relative_to(wiki_root)
+        raw = keeper.read_bytes()
+        text = raw.decode('utf-8')
+    except (ValueError, OSError, UnicodeError):
+        return 'keeper_unreadable'
+    # A page without frontmatter has no labels or sources; one whose frontmatter
+    # does not parse cannot be read safely and refuses the merge.
+    meta_a, ok_a = parse_frontmatter(text) if FRONTMATTER_RE.match(text) else ({}, True)
+    meta_b, ok_b = parse_frontmatter(loser_text) if FRONTMATTER_RE.match(loser_text) else ({}, True)
+    if not ok_a:
+        return 'keeper_frontmatter_invalid'
+    if not ok_b:
+        return 'loser_frontmatter_invalid'
+    known = set()
+    for value in card_types.identity_values_from_meta(meta_a):
+        known.add(card_types.normalize_identity(value))
+    moved = []
+    for value in card_types.identity_values_from_meta(meta_b):
+        norm = card_types.normalize_identity(value)
+        if norm and norm not in known:
+            known.add(norm)
+            moved.append(value)
+    moved_keys = set()
+    for value in moved:
+        moved_keys |= card_types.identity_keys(value)
+    if moved_keys and _label_owners(wiki_root, moved_keys) - {keeper, loser.resolve()}:
+        return 'alias_conflict'
+    blocks = {}
+    if moved:
+        aliases = meta_a.get('aliases')
+        current = [a.strip() for a in aliases if isinstance(a, str) and a.strip()] if isinstance(aliases, list) else []
+        blocks['aliases'] = [cards.dump(alias) for alias in current + moved]
+    sources_a, sources_b = _block_entries(text, 'sources'), _block_entries(loser_text, 'sources')
+    if sources_a is None or sources_b is None:
+        return 'sources_unreadable'
+    added = [entry for entry in sources_b if entry != UNKNOWN_SOURCE and entry not in sources_a]
+    if added:
+        kept = [entry for entry in sources_a if entry != UNKNOWN_SOURCE]
+        blocks['sources'] = kept + added
+    if not blocks:
+        return None
+    if not FRONTMATTER_RE.match(text):
+        return 'keeper_frontmatter_missing'
+    rewritten = cards.render_frontmatter_fields(text, {}, blocks)
+    if rewritten is None or not parse_frontmatter(rewritten)[1]:
+        return 'label_transfer_failed'
+    from memvane.wiki.pipeline import api as pipeline
+    try:
+        outcome = pipeline.publish_card(root, wiki_root, keeper.relative_to(wiki_root), rewritten,
+                                        expected_target_sha=hashlib.sha256(raw).hexdigest(),
+                                        lock_context=nullcontext)
+    except (OSError, ValueError):
+        return 'label_transfer_failed'
+    return None if outcome.state == 'published' else 'label_transfer_failed'
+
+
 def pair_missing(wiki_root: Path, entry: dict) -> bool:
     pages = (entry.get('pageA'), entry.get('pageB'))
     if any(not isinstance(page, str) for page in pages):
@@ -228,6 +339,10 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
                     "size": refused["size"], "budget": refused["budget"],
                     "method": refused["method"]}
         content = target.read_text(encoding="utf-8")
+        refusal = transfer_labels(root, wiki_root, paired_with, target, content)
+        if refusal is not None:
+            # 1번 기준: 이름표가 옮겨지지 않으면 지운 카드의 원문이 새 카드를 다시 만든다.
+            return {"action": "rejected", "reason": refusal, "kept": delete_rel}
         if laya_bound is not None:
             record_recovery(compile_dir, delete_rel, paired_with, content)
         deleted_path = qmd_config.ledger(root, ct.DEDUP_DELETED)

@@ -29,24 +29,6 @@ class LegacyLedgerGuard(WriterFixture):
         self.assertEqual(self.audit('generated-manifest.jsonl')[-1]['targetPath'], other['targetPath'])
         self.assertEqual(self.compile(targetPath=first['targetPath'])['action'], 'deferred')
 
-    def test_lf_tombstone_survives_both_literal_and_escaped_rows(self):
-        first = self.compile()
-        target = self.project.root / first['targetPath']
-        target.unlink()
-        folder = self.project.root / '.memvane/compile'
-        self.assertEqual(self.compile()['action'], 'tombstoned')
-        manifest, tombstones = folder / 'generated-manifest.jsonl', folder / 'tombstones.jsonl'
-        manifest.unlink()
-        row = json.loads(tombstones.read_bytes())
-        row['sources'][0]['path'] = 'docs/old\u2028name.md'
-        for escaped in (False, True):
-            with self.subTest(escaped=escaped):
-                raw = (json.dumps(row, ensure_ascii=escaped) + '\n').encode()
-                tombstones.write_bytes(raw)
-                self.assertEqual(self.compile(targetPath=first['targetPath'])['action'], 'deferred')
-                self.assertEqual(tombstones.read_bytes(), raw)
-                self.assertFalse(target.exists())
-
     def test_mixed_manifest_allows_only_unrelated_append_and_preserves_the_locked_source(self):
         first = self.compile()
         target = self.project.root / first['targetPath']

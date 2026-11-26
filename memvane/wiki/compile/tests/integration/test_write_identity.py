@@ -54,7 +54,7 @@ class WriteIdentity(FixtureCase):
              patch.object(workspace, 'recheck'), patch.object(workspace, 'request_sync'), \
              patch.object(workspace, 'append_activity'), redirect_stdout(output):
             compiler._compile_locked(self.project.root, self.config, self.config['compile'],
-                                     self.project.wiki, candidate, False)
+                                     self.project.wiki, candidate)
         result = json.loads(output.getvalue()) if output.getvalue().strip() else {}
         self.assertEqual(self.card.read_bytes(), visible)
         if result.get('action') == 'updated':
