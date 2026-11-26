@@ -159,46 +159,52 @@ C4~C11은 서로 의존한다(C7은 C5·C6, C8은 C7, C9는 C7·C8). 각 커밋 
 
 ### 6.2 inbox 흡수 (C5)
 
-| 칸 | 상황 | 기대 결과 | 유료 호출 | 회귀 시험(예정) |
+시험 파일: card `test_native_refresh_events.py`(`EditInbox`), intake `test_posttool_enqueue.py`, E2E `tests/e2e/wiki_pipeline_e2e.py`.
+
+| 칸 | 상황 | 기대 결과 | 유료 호출 | 회귀 시험 |
 |---|---|---|---|---|
-| I1 | 훅 append 1행 → worker 흡수 | `refresh_events` 1행, inbox·consuming 파일 없음 | 원래 extract 1 + verify 1 | `test_inbox_absorb_once` |
-| I2 | rename 뒤 흡수 트랜잭션 전 중단 | 다음 실행이 `consuming-*`를 흡수, 행 1개 | 0 추가 | `test_inbox_crash_before_commit` |
-| I3 | 커밋 뒤 `consuming-*` 삭제 전 중단 | 재흡수해도 `eventId`로 행 1개 | 0 추가 | `test_inbox_crash_after_commit` |
-| I4 | 훅 동시 append(3 host 병렬, rename과 경합) | 어떤 행도 잃지 않는다(rename 전 쓴 행은 consuming, 뒤 행은 새 inbox) | 행마다 원래 호출 | `test_inbox_concurrent_append`(프로세스 3개) |
-| I5 | 같은 초·같은 바이트 행 2개(다른 `eventId`) | 2행, 같은 원문 revision은 compile job 1개로 접힘 | extract 1 + verify 1 | `test_inbox_same_second_rows` |
-| I6 | 깨진 줄 | 건너뛰고 진단 개수 기록, 나머지 흡수 | 0 | `test_inbox_malformed_line` |
-| I7 | inbox lock 0.15초 경합 | 훅은 `pendingRefresh='busy'`, exit 0, `laya-compile` wake | 0 | 기존 `test_posttool_enqueue` 갱신 |
-| I8 | inbox 8 MiB 초과 | 훅 쓰기 중단 + wake, worker 흡수 뒤 재개 | 0 | `test_inbox_size_cap` |
+| I1 | 훅 append 1행 → worker 흡수 | `refresh_events` 1행, inbox·consuming 파일 없음 | 원래 extract 1 + verify 1 | `test_absorb_once_across_both_crash_windows`, E2E `test_three_hosts_feed_one_inbox_and_one_pass_publishes_one_verified_card` |
+| I2 | rename 뒤 흡수 트랜잭션 전 중단 | 다음 실행이 `consuming-*`를 흡수, 행 1개 | 0 추가 | `test_absorb_once_across_both_crash_windows` |
+| I3 | 커밋 뒤 `consuming-*` 삭제 전 중단 | 재흡수해도 `eventId`로 행 1개 | 0 추가 | 같음 |
+| I4 | 훅 동시 append(rename과 경합) | 어떤 행도 잃지 않는다(rename 전 쓴 행은 consuming, 뒤 행은 새 inbox) | 행마다 원래 호출 | `test_concurrent_hook_appends_during_absorption_lose_nothing` |
+| I5 | 같은 초 같은 원문 이벤트 2개(다른 `eventId`) | 흡수 뒤 최신 이벤트만 미해결로 남고, 그 revision을 증명하는 카드가 해결한다 | extract 1 + verify 1 | `test_same_second_events_keep_only_the_newest_unresolved`, `test_a_resolved_newer_event_stays_newest_over_an_unabsorbed_older_one` |
+| I6 | 깨진 줄 | 건너뛰고 진단 개수 기록, 나머지 흡수 | 0 | `test_malformed_line_is_counted_and_the_rest_absorbed` |
+| I7 | inbox lock 0.15초 경합 | 훅은 `pendingRefresh='busy'`, exit 0, `laya-compile` wake | 0 | `test_pending_only_multi_file_shares_single_lock_budget_and_reports_busy` |
+| I8 | inbox 8 MiB 초과 | 훅 쓰기 중단 + wake, worker 흡수 뒤 재개 | 0 | `test_full_inbox_is_busy_and_short_write_leaves_no_torn_line` |
+| I9 | release.md 계약 모양의 행(필수 키만) | writer 행과 같은 reader 결과, 필수 키 하나가 빠지거나 틀리면 malformed | 0 | `test_the_release_contract_row_reads_the_same_as_the_writer_row` |
 
 ### 6.3 마이그레이션 (C12, 입력은 출시 태그 writer가 쓴 행)
 
-| 칸 | 상황 | 기대 결과 | 유료 호출 | 회귀 시험(예정) |
+시험 파일: pipeline `test_v1_migration.py`(writer 입력 `v1.1.0`·`v1.1.1`·`v1.1.2`), compile·verify의 M8·M10 시험, E2E `tests/e2e/wiki_pipeline_e2e.py`.
+
+| 칸 | 상황 | 기대 결과 | 유료 호출 | 회귀 시험 |
 |---|---|---|---|---|
-| M1 | `v1.1.2` writer가 쓴 `generated-manifest.jsonl` | `card_generations`에 같은 행 수, 옛 파일 삭제 | 0 | `test_migrate_manifest_from_release_tags`(`v1.0.22`·`v1.1.0`·`v1.1.1`·`v1.1.2`) |
-| M2 | 가져오기 트랜잭션 커밋 전 중단 | 원장 변화 없음, 옛 파일 그대로, 재실행 결과 = 1회 실행 | 0 | `test_migrate_crash_before_commit` |
-| M3 | 마커 커밋 뒤 파일 삭제 전 중단 | 1.x 파일이 남아 있으면 `needs_v1_migration`은 계속 참, 재실행은 삭제만, 행 수 불변. 삭제는 숨김 위키 파일 먼저, compile 파일 나중 | 0 | `test_crash_before_commit_reimports_exactly_once_and_after_marker_only_removes` |
-| M4 | 같은 초·같은 바이트 manifest 행 2개 | 두 행 다 가져온다(행 번호를 키에 포함) | 0 | `test_migrate_duplicate_rows_keep_order` |
-| M5 | 큐·claim·refresh·쿨다운·`.handoff/v1/*`·숨김 파일 | 전부 삭제, 원장에 행 없음 | 버린 작업은 원문 변경·full-scan sync가 다시 만든다(원래 호출) | `test_migrate_discards_in_progress_state` |
+| M1 | 출시 태그 writer가 쓴 `generated-manifest.jsonl` | `card_generations`에 같은 행 수, 옛 파일 삭제 | 0 | `test_release_writer_ledgers_import_once_and_everything_else_is_discarded`, E2E `test_a_1x_project_written_by_a_release_writer_migrates_on_the_first_pass` |
+| M2 | 가져오기 트랜잭션 커밋 전 중단 | 원장 변화 없음, 옛 파일 그대로, 재실행 결과 = 1회 실행 | 0 | `test_crash_before_commit_reimports_exactly_once_and_after_marker_only_removes` |
+| M3 | 마커 커밋 뒤 파일 삭제 전 중단 | 1.x 파일이 남아 있으면 `needs_v1_migration`은 계속 참, 재실행은 삭제만, 행 수 불변. 삭제는 숨김 위키 파일 먼저, compile 파일 나중 | 0 | 같음 |
+| M4 | 같은 초·같은 바이트 manifest 행 2개 | 두 행 다 가져온다(행 번호를 키에 포함) | 0 | `test_same_second_same_bytes_rows_are_both_kept` |
+| M5 | 큐·claim·refresh·쿨다운·`.handoff/v1/*`·숨김 파일 | 전부 삭제, 원장에 행 없음 | 버린 작업은 원문 변경·full-scan sync가 다시 만든다(원래 호출) | `test_release_writer_ledgers_import_once_and_everything_else_is_discarded` |
 | M6 | `tombstones.jsonl`·로그성 jsonl | 삭제, 원장 행 없음 | 0 | 같음 |
 | M7 | `retired-wiki/`, `wiki-retrieval/` | 보존 | 0 | 같음 |
 | M8 | 마이그레이션 위치·실패 | worker `_main`이 run lock을 검증한 뒤, claim 전에 card·mutation lock 아래에서 실행. 실패하면 마커 없음·claim 없음, `--json`은 `migration: failed:<예외>`를 내고 다음 wake가 재시도 | 0 | `test_m8_the_cutover_runs_inside_the_run_lock_before_any_claim`, `test_m8_a_failed_cutover_claims_nothing_and_the_next_pass_retries` |
-| M9 | route `stateFormat: 2` 뒤 `v1.1.2` worker | 선택 route 거절로 쓰기 없음 | 0 | `test_v112_worker_refuses_v2_route` |
-| M10 | 1.x 파일이 남은 동안 wiki-compile / wake idle 판정 | `wiki_compile.main`은 쓰지 않고 `deferred`·`pipeline_migration_pending` + `laya-compile` wake, `selected_execution._idle_locked`는 False. 1.x 파일 없는 프로젝트는 기다리지 않고 첫 worker 회차가 마커를 쓴다 | 0 | `test_m10_skill_refuses_and_wakes_and_idle_waits_until_the_worker_migrates`, `test_m10_a_project_without_1x_files_never_waits_and_gets_the_marker` |
-| M11 | (A3 채택 시) `verify-skipped`·`dedup-skipped` | `suppressions`로 가져오고 억제 유지 | 0 | `test_migrate_suppressions` |
-| M12 | `st_dev` 변화 | 파일 정체성 대조에 쓰지 않음 | 0 | `test_migrate_crash_after_marker`(dev 주입) |
+| M9 | route `stateFormat: 2` 뒤 `v1.1.2` 번들 | wiki-compile skill script는 거절, `wiki-extract`·`wiki-compile-worker` 진입과 PostToolUse `compile` 훅은 프로젝트 `.memvane/`와 v2 state base에 아무것도 쓰지 않는다 | 0 | E2E `test_a_release_bundle_writes_nothing_into_a_v2_selected_project` |
+| M10 | 1.x 파일이 남은 동안 wiki-compile / wake idle 판정 | `wiki_compile.main`은 쓰지 않고 `deferred`·`pipeline_migration_pending` + `laya-compile` wake, `selected_execution._idle_locked`는 False. 1.x 파일 없는 프로젝트는 기다리지 않고 첫 worker 회차가 마커를 쓴다 | 0 | `test_m10_skill_refuses_and_wakes_and_idle_waits_until_the_worker_migrates`, `test_m10_a_project_without_1x_files_never_waits_and_gets_the_marker`, `test_project_without_1x_files_gets_the_marker` |
+| M11 | `verify-skipped`·`dedup-skipped` | `suppressions`로 가져오고 억제 유지 | 0 | `test_release_writer_ledgers_import_once_and_everything_else_is_discarded`, E2E M1 시험 |
+| M12 | `st_dev` 변화 | 파일 정체성 대조에 쓰지 않음 | 0 | 전용 시험 없음. 가져오기 키는 `(줄 번호, 줄 SHA-256)`이고 파일 정체성을 대조하지 않는다 |
 
 ### 6.4 재생성·dedup (C10·C11)
 
-| 칸 | 상황 | 기대 결과 | 유료 호출 | 회귀 시험(예정) |
+| 칸 | 상황 | 기대 결과 | 유료 호출 | 회귀 시험 |
 |---|---|---|---|---|
-| R1 | 사람이 카드를 지우고 원문 변경 | 다시 생성 | extract 1 + verify 1 | `test_human_deleted_card_regenerates_on_source_change` (a) |
-| R2 | dedup 병합(B→A, 이름표·sources 이전) 뒤 B 원문 변경 | `resolve_target`이 A로 resolve → B 미생성, A 갱신 | extract 1 + verify 1 | `test_merged_card_source_updates_keeper` (b) |
-| R3 | 이름표 이전이 다른 카드 C의 이름표와 겹침 | merge CLI가 이전 전에 충돌을 검사해 `alias_conflict`로 거절하고 B를 지우지 않는다. 이미 겹친 상태로 compile되면 `resolve_target`의 기존 ambiguous 처리를 따른다 — C10에서 현 동작을 확인해 이 칸을 확정한다 | 0 | `test_merge_alias_conflict_refuses_delete` |
-| R4 | 같은 원문 revision에서 생성 → 검수 inconclusive → 기계 삭제 | `verify-skipped` 억제가 같은 body hash 재추출을 막아 반복 없음 | 1회차만 extract 1 + verify 1, 이후 0 | `test_machine_deleted_same_revision_does_not_loop` |
-| R5 | R4 뒤 원문 변경 | 새 body hash → 다시 생성 | extract 1 + verify 1 | 같음 |
-| R6 | 원문 삭제 | 카드 frontmatter `sourceRevisions`·`createdBy`로 기계 생성 카드 은퇴(`card_generations`는 읽지 않는다) | 0 | `test_source_delete_retires_generated_card` (c) |
-| R7 | merge CLI 이전 쓰기 실패 | B를 지우지 않고 rejected | 0 | `test_merge_transfer_failure_keeps_loser` |
-| R8 | dedup judge 같은 쌍 반복 | `suppressions`(dedup) 억제 | 1회차만 judge 1 | `test_dedup_skip_suppresses_rejudge` |
+| R1 | 사람이 카드를 지우고 원문 변경 | 다시 생성 | extract 1 + verify 1 | compile `test_writer_lifecycle.test_human_deleted_card_regenerates_on_the_next_compile` |
+| R2 | dedup 병합(B→A, 이름표·sources 이전) 뒤 B 원문 변경 | `resolve_target`이 A로 resolve → B 미생성, A 갱신 | extract 1 + verify 1 | `test_writer_lifecycle.test_a_merged_cards_source_update_goes_to_the_keeper` |
+| R3 | 이름표 이전이 다른 카드 C의 이름표와 겹침 | merge CLI가 이전 전에 충돌을 검사해 `alias_conflict`로 거절하고 B를 지우지 않는다 | 0 | dedup `test_wiki_dedup_resolve.test_a_label_another_card_already_names_refuses_the_merge` |
+| R4 | 같은 원문 revision에서 생성 → 검수 `fail`·`inconclusive` | 카드를 지우지 않고 `generated`로 남긴다. 같은 revision의 재추출은 `already_compiled_revision`이 막는다 | 1회차만 extract 1 + verify 1, 이후 0 | verify `test_fail_and_inconclusive_keep_the_card_generated_without_any_deletion_ledger`, compile `test_revision_skip.test_same_revision_across_triggers_and_processed_queue_extracts_once` |
+| R5 | R4 뒤 원문 변경 | 새 revision → 다시 생성 | extract 1 + verify 1 | lifecycle `test_wiki_lifecycle.test_changed_hash_enqueues_regeneration_and_keeps_card` |
+| R6 | 원문 삭제 | 카드 frontmatter `sourceRevisions`·`createdBy`로 기계 생성 카드 은퇴(`card_generations`는 읽지 않는다) | 0 | `test_wiki_lifecycle.test_missing_source_retires_card_and_wakes_laya_sync`, `test_lifecycle_git_boundaries.test_deletion_committed_on_current_branch_retires_committed_card` |
+| R7 | merge CLI 이전 쓰기 실패(CAS 충돌·원장 오류) | B를 지우지 않고 rejected | 0 | `test_wiki_dedup_resolve.test_a_failed_keeper_write_keeps_the_loser_and_the_entry`, `test_a_busy_ledger_during_the_keeper_write_keeps_the_loser_and_the_entry` |
+| R8 | dedup judge 같은 쌍 반복 | `suppressions`(dedup) 억제, 본문이 바뀌면 다시 큐 | 1회차만 judge 1 | `test_wiki_dedup_scan.test_skip_ledger_suppresses_unchanged_bodies_only`, `test_wiki_dedup_resolve.test_skip_on_an_intact_pair_records_one_sorted_hashed_row` |
+| R9 | done 쌍이 다시 큐에 들어옴 | 목록 끝에 붙어 이미 나열된 쌍의 index를 옮기지 않는다 | 0 | pipeline `test_pipeline_store.test_a_done_pair_queued_again_joins_the_end` |
 
 ### 6.5 3 host
 

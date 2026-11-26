@@ -1,5 +1,6 @@
 // Wiki pipeline end to end: 3 host hooks -> edit inbox -> compile worker -> ledger -> published card,
-// a publish killed mid-way, a backlog beyond 1,024 rows and a 1.x project from a release writer.
+// a publish killed mid-way, a backlog beyond 1,024 rows, a 1.x project from a release writer and a
+// release bundle that writes nothing into a v2 project.
 // Each method runs in its own python process with a fresh fixture HOME (tests/support/temp.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,6 +16,7 @@ const METHODS = [
   'test_a_worker_killed_inside_the_publish_resumes_without_paying_again',
   'test_a_backlog_beyond_1024_open_rows_does_not_stall_a_new_edit',
   'test_a_1x_project_written_by_a_release_writer_migrates_on_the_first_pass',
+  'test_a_release_bundle_writes_nothing_into_a_v2_selected_project',
 ];
 
 for (const method of METHODS) {

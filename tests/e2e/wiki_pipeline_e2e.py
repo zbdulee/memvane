@@ -320,6 +320,60 @@ class WikiPipelineE2E(FixtureCase):
         self.assertEqual((self.calls('extract'), self.calls('verify')), (1, 1))
         self.assertEqual(len(pipeline.log_rows(self.root, 'migration')), 1)
 
+    def test_a_release_bundle_writes_nothing_into_a_v2_selected_project(self):
+        """M9: the ``TAG`` wiki writers find no selected route on a state format 2 install."""
+        import hashlib
+        self.onboard({SOURCE: TEXT}, name='project')
+        bundle = self.tmp / (TAG + '-full')
+        bundle.mkdir()
+        archive = subprocess.run(['git', '-C', str(ROOT), 'archive', TAG], check=True, capture_output=True)
+        subprocess.run(['tar', '-x', '-C', str(bundle)], input=archive.stdout, check=True)
+        state = self.home / '.local/state/memvane/v2'
+        self.assertTrue(state.is_dir())
+        # One 1.1.4 pass leaves the compile folder, ledger and locks a selected project has.
+        self.worker_pass()
+        self.assertTrue((self.compile_dir / '.card-write.lock').exists())
+
+        def snapshot():
+            seen = {}
+            for top in (self.root / '.memvane', state):
+                for path in sorted(top.rglob('*')):
+                    if path.is_symlink() or not path.is_file():
+                        seen[str(path)] = 'dir' if path.is_dir() else 'other'
+                    elif path.suffix in ('.sock',) or path.name.endswith(('-wal', '-shm')):
+                        seen[str(path)] = 'present'
+                    else:
+                        seen[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+            return seen
+        env = {**self.hook_env(), 'PYTHONPATH': str(bundle)}
+        candidate = json.dumps({'trigger': 'manual', 'sourceRef': 'session:local',
+                                'durable': {'title': 'Heron rule', 'summary': CLAIM,
+                                            'type': 'decision', 'confidence': 'high'}})
+        payload = json.dumps({'cwd': str(self.root), 'hook_event_name': 'PostToolUse', 'session_id': 'm9',
+                              'tool_name': 'Write', 'tool_input': {'file_path': SOURCE, 'content': EDITED},
+                              'tool_use_id': 'tool-m9'})
+        self.fixture.write_note(SOURCE, EDITED)
+        before = snapshot()
+        runs = {
+            'skill': (['bash', str(bundle / 'skills/wiki-compile/scripts/wiki-compile.sh'), str(self.root)],
+                      candidate),
+            'extract': ([sys.executable, '-B', str(bundle / 'entry/run.py'), 'wiki-extract',
+                         '--cwd', str(self.root)], candidate),
+            'worker': ([sys.executable, '-B', str(bundle / 'entry/run.py'), 'wiki-compile-worker',
+                        '--cwd', str(self.root), '--json', '--flush-all'], ''),
+            'hook': (['bash', str(bundle / 'hooks/run-hook'), 'compile', 'claude'], payload),
+        }
+        codes = {}
+        for name, (argv, stdin) in runs.items():
+            child = subprocess.run(argv, input=stdin, text=True, capture_output=True, timeout=120,
+                                   env=env, cwd=str(self.root))
+            codes[name] = child.returncode
+            after = snapshot()
+            changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+            self.assertEqual(changed, [], '%s wrote: %s %s' % (name, child.stdout, child.stderr))
+        self.assertNotEqual(codes['skill'], 0, codes)
+        self.assertEqual(self.calls('extract') + self.calls('verify'), 0)
+
     def release_state(self):
         """The 1.x compile ledgers and cards the ``TAG`` release's own writers leave in this project."""
         bundle = self.tmp / TAG
