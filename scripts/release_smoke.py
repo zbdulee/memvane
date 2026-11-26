@@ -425,7 +425,7 @@ _COPY_EVENTS = r'''
 import glob, json, os, sys
 fields, sessions, hashes = json.loads(sys.argv[1]), set(json.loads(sys.argv[2])), set(json.loads(sys.argv[3]))
 chosen = None
-logs = sorted(glob.glob(os.path.expanduser('~/.local/state/memvane/v1/installs/*/events.jsonl')))
+logs = sorted(glob.glob(os.path.expanduser('~/.local/state/memvane/v2/installs/*/events.jsonl')))
 for path in logs:
     rows = []
     for line in open(path, errors='replace'):
@@ -552,7 +552,7 @@ def prepare(remote, out, commit, *, learning=False, target=None, build=None):
 _LAST_TS = r'''
 import glob, json, os
 last = ''
-for path in glob.glob(os.path.expanduser('~/.local/state/memvane/v1/installs/*/events.jsonl')):
+for path in glob.glob(os.path.expanduser('~/.local/state/memvane/v2/installs/*/events.jsonl')):
     for line in open(path, errors='replace'):
         try: row = json.loads(line)
         except ValueError: continue
@@ -574,7 +574,7 @@ def last_event_time(remote):
 _SYNCED_AFTER_PROMPT = r'''
 import glob, json, os, sys
 wanted, count = sys.argv[1], 0
-for path in glob.glob(os.path.expanduser('~/.local/state/memvane/v1/installs/*/events.jsonl')):
+for path in glob.glob(os.path.expanduser('~/.local/state/memvane/v2/installs/*/events.jsonl')):
     asked, passes, publishes = [], [], []
     for line in open(path, errors='replace'):
         if wanted not in line and 'wake.sync' not in line and 'index.publish' not in line: continue
@@ -669,7 +669,7 @@ def apply_delta(remote, out, *, host=None, last_ts=None, pause=time.sleep, publi
 _COUNT_PROMPT = r'''
 import glob, json, os, sys
 wanted, count = sys.argv[1], 0
-for path in glob.glob(os.path.expanduser('~/.local/state/memvane/v1/installs/*/events.jsonl')):
+for path in glob.glob(os.path.expanduser('~/.local/state/memvane/v2/installs/*/events.jsonl')):
     for line in open(path, errors='replace'):
         if wanted not in line: continue
         try: row = json.loads(line)
