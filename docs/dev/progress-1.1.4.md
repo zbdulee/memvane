@@ -5,7 +5,7 @@
 - 브랜치: `claude/1.1.4` (출시 태그 `v1.1.2`)
 - 완료 단계: Stage 0+1 `3a3f7001`(stateFormat 2, `~/.local/state/memvane/v2`, 설계서 r4), Stage 2 `41fc37b9`(`memvane/wiki/pipeline/` 신설, 기존 wiki 도메인에서 호출 없음)
 - 기준 문서: [공통 개발 규칙](contexts/working-rules.md), [릴리스 체크리스트](contexts/release.md), [설계서 §4.2·§5](../design-wiki-pipeline-v2.md), [pipeline README](../../memvane/wiki/pipeline/README.md)
-- 현재 단계: **B. 구현.** 코디네이터가 계획 질문(msg_bfef0dcef1ae)에 답하지 않고 종료해 D1~D8은 §3 추천안으로 구현자가 확정했다.
+- 현재 단계: **D1·D2 결정 대기.** 코디네이터 1차 답(msg_8a0b16db2cfe): C1 진행, D3·D4·D5·D6·D7·D8 추천안 승인(D6은 사용자 확인), D1·D2는 사용자 설명 중이라 보류. 그 전 무응답 통지(msg_863159c6325d)를 받고 C3 일부를 미커밋으로 진행했다(§8).
 
 ## 1. 조사로 확인한 사실
 
@@ -59,6 +59,20 @@
 | 감사 원장(`generated-manifest`·`tombstones`·`verify-*`·`dedup-*`·`candidates`·`merge-needed`·`discard-ledger`) | `wiki_compile`, `verify_ledger`, `manifest_ledger`, `wiki_dedup_*` | `wiki_freshness`, `wiki_lifecycle`, `manifest_scan`, dedup skill·resolver agent(`dedup-needed.jsonl`을 직접 읽는다) | release.md 23행 계약 + skill/agent 공개 인터페이스 |
 | 쿨다운 파일 | compile/verify/dedup worker | 같은 worker | 파생 상태, 이관 이득 없음 |
 | `returns/`·`ownership-*`·`review-turn-*`·`publication/`·`.pending-*`·`.pending-ownership.json`·`.verify-swap-*` | 큐 반환·교체 경로 | 같은 경로 | JSONL 큐와 묶인 상태. 큐가 남으면 함께 남아야 한다 |
+
+### 2.4 `Work`/staged 저장소를 여는 진입점 (D5 승인 조건)
+
+`entry/run.py` 등록 진입점과 `memvane.wiki.verify` import를 전수 확인한 결과다(`rg "memvane\.wiki\.verify"`, verify 도메인 밖).
+
+| 진입점 | 경로 | Work를 만들거나 쓰는가 | 현재 lock | 마이그레이션 마커 전 처리 |
+|---|---|---|---|---|
+| `wiki-compile-worker` (`laya-compile` wake가 띄움) | `wiki_compile_worker._main_locked` → `wiki_verify.run`·`claim_source_queue` | 예 | `.compile-run.lock` | 여기서 마이그레이션을 실행한다(D5) |
+| `wake` → `wiki.compile.api.run` | `selected_execution._run` → `verification.prepare_queue`(`upgrade_queue.prepare`: `Work.reclaim_orphans`·hold 판정), `native_review_pending` | 예(`prepare_queue`) | 없음(idle 판정) | 마커가 없으면 `prepare_queue` 전에 "할 일 남음"으로 반환해 wake를 유지하고 worker가 마이그레이션하게 한다 |
+| `wiki-compile` (wiki-compile skill, worker 하위 실행) | `wiki_compile.main` → `create_first_card`·`enqueue_replacement`·`stage_candidate` → `Work.create` | 예 | `card_write_lock` → `mutation_lock`, `.compile-run.lock` 없음 | 마커가 없으면 쓰기 전에 `pipeline_migration_pending`으로 거절하고 `laya-compile` wake를 요청한다(양보). worker 하위 실행은 마이그레이션 뒤에만 일어난다 |
+| `sync` owner (`compile_intents._named`) | `wiki_verify.compile_intent_id` | 아니오(id 계산만) | sync owner | 해당 없음 |
+| `wiki-lifecycle`, `wiki-dedup-resolve`, `setup`(onboarding·doctor류) | verify import 없음 | 아니오 | — | 해당 없음 |
+| standalone verify worker | `wiki_verify_worker.main`은 정의만 있고 `entry/run.py`에 등록되지 않음 | — | — | 해당 없음 |
+| hook(3 host), `hermes_adapter` | verify import 없음 | 아니오 | — | 해당 없음 |
 
 ## 3. 결정 필요
 
@@ -155,8 +169,21 @@
 | 시각 | 단계 | 커밋 | 결과 |
 |---|---|---|---|
 | 2026-11-26 | A. 계획 게이트 | `8fe05f3e` | 코디네이터 무응답 종료 → D1~D8 추천안 확정 |
-| 2026-11-26 | C1 버전 bump | (C1) | manifest 7종·`RELEASE` 1.1.4. `plugin-manifest.test.mjs` 5/5, `static.test.mjs` 통과. worker·provider 쌍 변화 없음(`v1.1.2`=HEAD=`PREVIOUS_PAIR`). tier 표의 각 호스트 모델·가격 문서 대조는 이 환경에서 **미확인** |
+| 2026-11-26 | C1 버전 bump | `8958837c` | manifest 7종·`RELEASE` 1.1.4. `plugin-manifest.test.mjs` 5/5, `static.test.mjs` 통과. worker·provider 쌍 변화 없음(`v1.1.2`=HEAD=`PREVIOUS_PAIR`). tier 표의 각 호스트 모델·가격 문서 대조는 이 환경에서 **미확인** |
+
+| 2026-11-26 | C3 일부(미커밋) | — | 아래 §8 참조. verify unit `test_handoff_work`(10)·`test_batch_handoff`(5) 통과, verify 전체 16/18 파일 통과 |
+
+기준 시험 개수(C3 착수 전, 이 브랜치 `8958837c`): verify 18 node 파일/195 Python 시험, compile 43/270, pipeline 3/7 — 전부 통과.
 
 ## 8. 다음 재개 지점
 
-C2(pipeline 보강)부터 진행한다.
+**D1·D2 답을 기다린다. 답 전에는 제품 코드를 더 고치지 않는다.**
+
+워킹트리에 미커밋 C3 진행분이 있다(패치 사본: 세션 scratchpad `c3-wip.patch`, 재부팅 시 사라질 수 있으니 워킹트리가 원본이다). D1이 어느 쪽이든 hold의 SQLite 이관은 공통이라 유지한다.
+- `pipeline/schema.py`: `staged_cards`를 Work 행(`stage_id, queue, kind, phase, closed, target_path, control_json, raw_blob, image_blob, charged_bytes`)으로 바꿈.
+- `pipeline/store.py`·`types.py`·`api.py`: `insert_work/get_work/list_works/works_for_target/work_blob/cas_work/delete_work/staged_quota_bytes`, `StageQuotaExceeded`, `open_pipeline_dir(compile_dir)`. 기존 `stage_card` 계열 제거.
+- `verify/handoff_work.py`: `Work`를 SQLite backend로 교체(공개 API 유지, `HOLD_SCAN_LIMIT`·스캔 상한·`_ScanLimit` 제거, quota는 `charged_bytes` 합계, inode raw만 `.handoff/v1/staged/<id>/raw`). `copy_quota.py` 삭제(git rm 스테이징됨). 호출부 7개 모듈에서 `max_entries=HOLD_SCAN_LIMIT` 제거.
+- 시험: `test_handoff_work.py` SQLite 의미로 재작성, `test_batch_handoff.py`의 `assertTrue(calls)` 제거(제어 파일 `os.read`가 없어짐), `verify/tests/support.py` quota 상수.
+- 남은 실패: `test_first_card.py`(64건 초과·`.first-*` 등록 temp 시험), `test_pending_cleanup_recovery.py`(`native_review.process`가 `store.private_root(queue)`를 직접 열어 `.handoff` 부재로 `FileNotFoundError`). compile 도메인 결과 미확인.
+- 그다음 순서: 위 두 실패 수정 → pipeline 시험이 옛 `stage_card` API를 쓰는 부분 갱신 → C2(publish 교환·멱등·temp 정리, D2 결정에 맞춘 migrate) → C4 → C5(§2.4 게이트 포함) → C6 → C7.
+
