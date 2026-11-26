@@ -40,7 +40,9 @@ def validate_compile_run_lock(root, fd):
 def safe_queue_path(project_root, configured_path=None, *, native=False):
     from memvane.wiki.workspace.queue_paths import _safe_queue_path
     path = _safe_queue_path(project_root, configured_path)
-    if native and path is not None:
+    from memvane.wiki.workspace.ledger_queue import kind
+    # A ledger queue has no private file copy; its public path is its handle.
+    if native and path is not None and kind(path) is None:
         from memvane.wiki.workspace.handoff.api import native_live
         return native_live(path, create=True)
     return path

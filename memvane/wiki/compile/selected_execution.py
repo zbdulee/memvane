@@ -139,29 +139,10 @@ def _backlog(project: Path, source: Path, bound):
         count = len(refresh_settlement.unsettled(project, [
             item for item in unresolved if not excluded_source(
                 item['sourcePath'], bound[0]['recallSettings']['skipPaths'], wiki_source=True)]))
-        if source.parent.is_dir():
-            from itertools import islice
-            from memvane.wiki.workspace.handoff.api import bounded_rows, MAX_BYTES, MAX_ROWS, native_live
-            inputs = [source, *islice(source.parent.glob(source.name + '.claimed.*'), 65)]
-            if len(inputs) > 65:
-                return None
-            private = native_live(source)
-            if private is not None:
-                inputs.append(private)
-                inputs.extend(islice(private.parent.glob('native.claimed.*'), 65))
-                inputs.extend(islice(private.parent.glob('ready-*'), 65))
-            if len(inputs) > 66:
-                return None
-            size, quantity = MAX_BYTES, MAX_ROWS
-            for child in inputs:
-                if not child.exists():
-                    continue
-                for _, raw in bounded_rows(child, size, quantity):
-                    size -= len(raw)
-                    quantity -= 1
-                    count += bool(raw.strip())
+        from memvane.wiki.workspace import api as workspace
+        count += len(workspace.read_queue(source))
         return count
-    except OSError:
+    except Exception:
         return None
 
 

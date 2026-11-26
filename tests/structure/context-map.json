@@ -1921,6 +1921,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/workspace/ledger_queue.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/workspace/manifest_ledger.py": {
       "context": "wiki/workspace",
       "layer": "adapter",

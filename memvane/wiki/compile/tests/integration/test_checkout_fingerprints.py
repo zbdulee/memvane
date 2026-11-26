@@ -15,7 +15,7 @@ from memvane.wiki.engines import api as engines
 from memvane.wiki.intake import api as intake
 from memvane.wiki.verify import api as verify
 from memvane.wiki.workspace import api as workspace
-from tests.support.queue_files import pending_files, pending_text
+from tests.support.queue_files import pending_files, pending_text, replace_queue
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
@@ -132,7 +132,7 @@ class CheckoutFingerprints(FixtureCase):
     def test_batch_supplies_selected_checkout_to_real_job(self):
         queue = self.project.root / '.memvane/compile/source-queue.jsonl'
         queue.parent.mkdir(parents=True, exist_ok=True)
-        queue.write_text(json.dumps(self.job()) + '\n')
+        replace_queue(queue, json.dumps(self.job()) + '\n')
         with patch.object(workspace, 'schema3_checkout', return_value=self.checkout), \
              patch.object(intake, 'reconcile_discards'), patch.object(intake, 'settle_job'), \
              patch.object(worker, 'recover_pending_refreshes'), patch.object(worker, '_run_verify_pass'):
@@ -145,7 +145,7 @@ class CheckoutFingerprints(FixtureCase):
     def test_batch_reader_error_preserves_queue_without_extraction(self):
         queue = self.project.root / '.memvane/compile/source-queue.jsonl'
         queue.parent.mkdir(parents=True, exist_ok=True)
-        queue.write_text(json.dumps(self.job()) + '\n')
+        replace_queue(queue, json.dumps(self.job()) + '\n')
         with patch.object(workspace, 'schema3_checkout', side_effect=sqlite3.OperationalError('fixture busy')), \
              patch.object(intake, 'reconcile_discards'), patch.object(worker, 'recover_pending_refreshes'), \
              patch.object(worker, '_run_verify_pass'):
@@ -153,7 +153,6 @@ class CheckoutFingerprints(FixtureCase):
                              self.project.root, self.config, self.config['compile'], queue, self.bound), 0)
         self.assertEqual(self.calls, [])
         self.assertTrue(pending_text(queue).strip())
-        self.assertFalse(queue.read_bytes())
         audit = self.project.root / '.memvane/compile/candidates.jsonl'
         self.assertEqual(json.loads(audit.read_text().splitlines()[-1])['reason'], 'checkout_unavailable')
 
@@ -172,7 +171,7 @@ class CheckoutFingerprints(FixtureCase):
         from tests.support.wiki_handoff import waiting_reviews as waiting
         work, = waiting(queue)
         job = json.loads(work.read('raw'))
-        self.assertFalse(queue.exists() and queue.read_bytes())
+        self.assertFalse(pending_text(queue))
         observed, stored = candidate['sourceFingerprints'], job['sourceFingerprints']
         self.assertEqual(job['engine'], 'claude')
         self.assertRegex(job['sourceHash'], r'^[a-f0-9]{16}$')
@@ -358,7 +357,7 @@ class CheckoutFingerprints(FixtureCase):
     def test_worker_exception_restores_the_claimed_job(self):
         queue = self.project.root / '.memvane/compile/source-queue.jsonl'
         queue.parent.mkdir(parents=True, exist_ok=True)
-        queue.write_text(json.dumps(self.job()) + '\n')
+        replace_queue(queue, json.dumps(self.job()) + '\n')
         with patch.object(workspace, 'schema3_checkout', return_value=self.checkout), \
              patch.object(intake, 'reconcile_discards'), patch.object(worker, 'recover_pending_refreshes'), \
              patch.object(worker, 'process_job', side_effect=RuntimeError('synthetic failure')):
@@ -366,12 +365,11 @@ class CheckoutFingerprints(FixtureCase):
                 worker._main_locked(SimpleNamespace(json=False, flush_all=True), self.project.root,
                                     self.config, self.config['compile'], queue, self.bound)
         self.assertEqual(json.loads(pending_text(queue))['source']['path'], 'docs/source.md')
-        self.assertFalse(queue.read_bytes())
 
     def test_failed_requeue_preserves_claim_for_later_recovery(self):
         queue = self.project.root / '.memvane/compile/source-queue.jsonl'
         queue.parent.mkdir(parents=True, exist_ok=True)
-        queue.write_text(json.dumps(self.job()) + '\n')
+        replace_queue(queue, json.dumps(self.job()) + '\n')
         with patch.object(workspace, 'schema3_checkout', return_value=self.checkout), \
              patch.object(intake, 'reconcile_discards'), patch.object(worker, 'recover_pending_refreshes'), \
              patch.object(worker, 'process_job', return_value=(False, True, [])), \
@@ -379,9 +377,9 @@ class CheckoutFingerprints(FixtureCase):
             with self.assertRaisesRegex(OSError, 'synthetic full disk'):
                 worker._main_locked(SimpleNamespace(json=False, flush_all=True), self.project.root,
                                     self.config, self.config['compile'], queue, self.bound)
-        claims = [p for p in pending_files(queue) if p.name.startswith('native.claimed.')]
-        self.assertEqual(len(claims), 1)
-        self.assertEqual(json.loads(claims[0].read_text())['source']['path'], 'docs/source.md')
+        from tests.support.wiki_handoff import claimed_jobs
+        claim, = claimed_jobs(queue)
+        self.assertEqual(claim['source']['path'], 'docs/source.md')
 
     def test_effort_audit_follows_actual_adapter_capability(self):
         self.config['compile']['reasoningEffort']['generation'] = 'high'
@@ -402,7 +400,7 @@ class CheckoutFingerprints(FixtureCase):
         queue.parent.mkdir(parents=True, exist_ok=True)
         job = self.job()
         job['ts'] = datetime.now(timezone.utc).isoformat()
-        queue.write_text(json.dumps(job) + '\n')
+        replace_queue(queue, json.dumps(job) + '\n')
         self.config['compile']['batch'] = {'idleSeconds': 90, 'maxItems': 5}
         with patch.object(workspace, 'schema3_checkout', return_value=self.checkout), \
              patch.object(intake, 'reconcile_discards'), patch.object(intake, 'settle_job'), \

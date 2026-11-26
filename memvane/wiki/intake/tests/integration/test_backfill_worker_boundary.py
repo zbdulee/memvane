@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from memvane.wiki.intake import wiki_backfill as backfill
 from tests.support.case import FixtureCase
-from tests.support.queue_files import pending_text
+from tests.support.queue_files import pending_text, replace_queue
 from memvane.wiki.workspace.api import safe_queue_path
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
@@ -36,10 +36,8 @@ class BackfillWorkerBoundary(FixtureCase):
             backfill.dispatch(decision, row, snapshot, config, recheck=lambda: None)
         queue = project.root / '.memvane/compile/source-queue.jsonl'
         job = json.loads(pending_text(queue).splitlines()[0])
-        job['_requeue_count'] = workspace_types.MAX_REQUEUE_COUNT
-        safe_queue_path(project.root, native=True).write_text('')
-        orphan = queue.with_name(queue.name + '.claimed.99999999.dead')
-        orphan.write_text(json.dumps(job) + '\n')
+        from tests.support.wiki_handoff import claimed_jobs, dead_claim
+        dead_claim(queue, job, workspace_types.MAX_REQUEUE_COUNT + 1)
         marker = self.home / 'extractor-was-called'
         fake = self.home / 'fake-extractor'
         fake.write_text('#!/usr/bin/env python3\nimport os\nopen(os.environ["FIXTURE_MARKER"], "w").write("called")\nprint("{}")\n')
@@ -52,8 +50,9 @@ class BackfillWorkerBoundary(FixtureCase):
                                cwd=str(project.root), env=env, capture_output=True, text=True, timeout=90)
         self.assertEqual(child.returncode, 0, child.stderr)
         self.assertFalse(marker.exists(), 'terminal orphan reached the extractor')
-        self.assertFalse(orphan.exists())
-        ledger = json.loads((queue.parent / 'discard-ledger.jsonl').read_text())
+        self.assertEqual(claimed_jobs(queue), [])
+        from tests.support.queue_files import discard_audits
+        ledger, = discard_audits(queue)
         self.assertEqual(ledger['backfillReceipt']['initialBackfill'], job['initialBackfill'])
         self.assertEqual(ledger['backfillReceipt']['contentRevision'], job['contentRevision'])
         row = backfill._load(decision)
@@ -161,7 +160,7 @@ class BackfillWorkerBoundary(FixtureCase):
             with self.subTest(field=field):
                 changed = copy.deepcopy(job)
                 changed['selectedRoute'][field] = 'f' * 32
-                safe_queue_path(project.root, native=True).write_text(json.dumps(changed) + '\n')
+                replace_queue(queue, json.dumps(changed) + '\n')
                 child = subprocess.run([sys.executable, '-B', str(root / 'entry/run.py'),
                                         'wiki-compile-worker', '--cwd', str(project.root), '--json', '--flush-all'],
                                        cwd=str(project.root), env=env, capture_output=True, text=True, timeout=90)
@@ -398,7 +397,7 @@ class BackfillWorkerBoundary(FixtureCase):
                     job['source']['path'] = source.relative_to(project.root).as_posix()
                     job['contentRevision'] = hashlib.sha256(source.read_bytes()).hexdigest()
                     jobs.append(job)
-                safe_queue_path(project.root, native=True).write_text(''.join(json.dumps(job) + '\n' for job in jobs + [special_job]))
+                replace_queue(queue, ''.join(json.dumps(job) + '\n' for job in jobs + [special_job]))
                 calls = self.home / ('calls-%d.jsonl' % remaining)
                 scripts = {}
                 for engine in ('codex', 'claude', 'hermes'):

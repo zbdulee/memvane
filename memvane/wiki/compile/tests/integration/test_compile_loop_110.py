@@ -25,7 +25,7 @@ from memvane.wiki.compile import wiki_compile_worker as worker
 from memvane.wiki.engines import api as engines
 from memvane.wiki.workspace import api as workspace
 from tests.support.case import FixtureCase
-from tests.support.queue_files import pending_text
+from tests.support.queue_files import pending_text, replace_queue
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
@@ -349,16 +349,14 @@ class Progress(FixtureCase):
                       {'productRouteAllowed': True})
 
     def rows(self, count):
-        self.queue.write_text(''.join(json.dumps({'n': n}) + '\n' for n in range(count)), encoding='utf-8')
+        replace_queue(self.queue, ''.join(json.dumps({'n': n}) + '\n' for n in range(count)))
 
     def result(self, before, after, report, *, claimed=0):
         self.rows(before)
         def child(argv, **_kwargs):
-            self.rows(after)
-            claim = self.queue.with_name(self.queue.name + '.claimed.1.x')
-            claim.unlink(missing_ok=True)
-            if claimed:
-                claim.write_text('{}\n' * claimed, encoding='utf-8')
+            from tests.support.wiki_handoff import hold_claimed
+            replace_queue(self.queue, ''.join(json.dumps({'n': n}) + '\n' for n in range(after + claimed)))
+            hold_claimed(self.queue, claimed)
             return SimpleNamespace(returncode=0, stdout=json.dumps({'processed': 1, **report}), stderr='')
         with patch.object(execution, 'selected', return_value=self.bound), \
                 patch.object(execution, 'recheck'), \

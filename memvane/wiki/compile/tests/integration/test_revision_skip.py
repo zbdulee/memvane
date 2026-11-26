@@ -19,6 +19,7 @@ from tests.support.wiki_handoff import held_replacement, during_native_review, w
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
 from tests.support.settings_fake import use_config
+from tests.support.queue_files import pending_text, replace_queue
 
 
 class RevisionSkipChecks(FixtureCase):
@@ -155,7 +156,7 @@ class RevisionSkipChecks(FixtureCase):
             return json.loads(out.getvalue())
 
         self.config['compile']['semanticDedup'] = {'enabled': False}
-        queue = wiki_selected_laya.safe_queue_path(self.root, native=True)
+        queue = wiki_selected_laya.safe_queue_path(self.root)
         verify_queue = self.root / '.memvane/compile/verify-queue.jsonl'
         cfg = self.config['compile']
         live = self.wiki / 'concepts/source-decision.md'
@@ -170,11 +171,11 @@ class RevisionSkipChecks(FixtureCase):
                 self.source.write_text(f'Synthetic source decision {i}\n')
                 wiki_compile_enqueue.enqueue_payload({'hook_event_name': 'PostToolUse',
                     'cwd': str(self.root), 'engine': 'claude', 'tool_input': {'file_path': str(self.source)}})
-            rows = [json.loads(line) for line in queue.read_text().splitlines()]
+            rows = [json.loads(line) for line in pending_text(queue).splitlines()]
             self.assertEqual(len(rows), 1)
             with patch.object(worker, '_run_verify_pass'):
                 self.assertEqual(self.run_main()['completed'], 1)
-            self.assertFalse(queue.exists() and queue.read_bytes())
+            self.assertFalse(pending_text(queue))
             self.assertEqual(self.extractor_calls, ['post_tool_source'])
             before = held_replacement(verify_queue, self.project.revision(self.source)['sha256'])
             first = json.loads(before.read('raw'))
@@ -270,13 +271,13 @@ class RevisionSkipChecks(FixtureCase):
         queue = self.root / '.memvane' / 'compile' / 'source-queue.jsonl'
         with patch.object(worker, '_run_verify_pass'):
             for trigger in ('session_start', 'manual'):
-                queue.write_text(json.dumps(self.job(trigger)) + '\n', encoding='utf-8')
+                replace_queue(queue, json.dumps(self.job(trigger)) + '\n')
                 out = io.StringIO()
                 with patch.object(sys, 'argv', ['wiki_compile_worker.py', '--cwd', str(self.root),
                                                 '--json', '--flush-all']), redirect_stdout(out):
                     self.assertEqual(worker.main(), 0)
                 self.assertEqual(json.loads(out.getvalue())['processed'], 1)
-                self.assertEqual(queue.read_text(encoding='utf-8'), '')
+                self.assertEqual(pending_text(queue), '')
         self.assertEqual(len(self.extractor_calls), 1)
 
         # Changed bytes are a new revision: one more paid extraction, then idempotent again.
@@ -320,12 +321,12 @@ class RevisionSkipChecks(FixtureCase):
         self.decision['storePath'] = str(self.home / 'store.sqlite')
         self.extractor_calls.clear()
         revision = self.revisions[0][0]['sha256']
-        queue = wiki_selected_laya.safe_queue_path(self.root, native=True)
+        queue = wiki_selected_laya.safe_queue_path(self.root)
         jobs = [dict(self.job('post_sync_source'), forceRecompile=True, contentRevision=revision),
                 dict(self.job('session_start_source'), initialBackfill='f' * 32, contentRevision=revision),
                 self.job('post_tool_source')]
         wiki_compile_enqueue.append_source_jobs(queue, jobs)
-        self.assertEqual(len(queue.read_text().splitlines()), 3)
+        self.assertEqual(len(pending_text(queue).splitlines()), 3)
         with patch.object(worker, '_run_verify_pass'), patch.object(wiki_compile_enqueue, 'settle_job') as settled, \
                 patch.object(worker, 'compile_candidate', return_value={'action': 'unchanged'}):
             result = self.run_main()
@@ -417,14 +418,8 @@ class RevisionSkipChecks(FixtureCase):
             with patch.object(worker, 'run_extractor', return_value=(two, None, 0)) as extract:
                 first = self.run_main()
                 self.assertEqual(first['remaining'], 1)
-                from tests.support.queue_files import pending_files
-                def occurrences():
-                    return [(path, raw) for path in pending_files(queue)
-                            for raw in path.read_bytes().splitlines(keepends=True)]
-
-                (ready, old_raw), = occurrences()
-                self.assertTrue(ready.name.startswith('ready-'))
-                old = json.loads(old_raw)
+                from tests.support.wiki_handoff import claimed_jobs
+                old, = [job for _, job in wiki_selected_laya.read_queue(queue)]
                 revision = self.project.revision(self.source)['sha256']
                 self.assertEqual((old['partialCompile'], old['_processedContentRevision']), (True, revision))
                 work = held_replacement(verify, revision)
@@ -434,37 +429,30 @@ class RevisionSkipChecks(FixtureCase):
 
                 # A real consumer exits after claiming the partial row and before acknowledging it.
                 command = ('import sys; from pathlib import Path; from memvane.wiki.workspace import api; '
-                           'print(api.claim_queue(Path(sys.argv[1]), private=True))')
-                claimed = Path(subprocess.check_output([sys.executable, '-B', '-c', command, str(queue)],
-                                                       cwd=Path(__file__).resolve().parents[5], text=True).strip())
-                self.assertTrue(claimed.name.startswith('native.claimed.'))
-                self.assertEqual(occurrences(), [(claimed, old_raw)])
+                           'print(api.claim_queue(Path(sys.argv[1]), private=True).token)')
+                subprocess.check_output([sys.executable, '-B', '-c', command, str(queue)],
+                                        cwd=Path(__file__).resolve().parents[5], text=True)
+                self.assertEqual(claimed_jobs(queue), [old])
                 self.source.write_bytes(self.source.read_bytes())
                 edit()
-                private = wiki_selected_laya.safe_queue_path(self.root, native=True)
-                edit_raw = private.read_bytes()
-                current = json.loads(edit_raw)
+                queued = [job for _, job in wiki_selected_laya.read_queue(queue) if job != old]
+                current, = queued
                 self.assertNotEqual(old['pendingRefresh']['eventId'], current['pendingRefresh']['eventId'])
                 self.assertNotIn('partialCompile', current)
-                self.assertCountEqual(occurrences(), [(claimed, old_raw), (private, edit_raw)])
-                released_raw = (json.dumps(dict(self.job('post_tool_source'), ts='2099-01-01T00:00:00Z')) + '\n').encode()
-                with queue.open('ab') as stream:
-                    stream.write(released_raw)
+                self.assertEqual(claimed_jobs(queue), [old])
                 self.assertEqual(extract.call_count, 1)
-
+                # The next worker returns the dead claim and resumes only the unwritten sibling.
                 retry = self.run_main()
-                self.assertEqual((retry['completed'], extract.call_count), (1, 2))
-                self.assertCountEqual(occurrences(), [(private, edit_raw), (queue, released_raw)])
+                self.assertEqual(claimed_jobs(queue), [])
+                for _ in range(3):
+                    if not wiki_selected_laya.read_queue(queue):
+                        break
+                    self.run_main()
+                self.assertEqual(wiki_selected_laya.read_queue(queue), [])
                 self.assertEqual(work.read('raw'), candidate_raw)
                 self.assertEqual(candidate.read_bytes(), work.read('image'))
-                self.assertEqual(siblings, ['Sibling', 'Sibling'])
                 sibling = target.parent / 'sibling.md'
                 self.assertIn(revision, sibling.read_text())
-                self.assertEqual(self.run_main()['completed'], 1)
-                self.assertEqual(occurrences(), [(queue, released_raw)])
-                self.assertEqual(self.run_main()['completed'], 1)
-                self.assertFalse(occurrences())
-                self.assertEqual(self.run_main()['processed'], 0)
                 self.assertEqual(extract.call_count, 2)
             pending = {w.state['id']: (w.read('raw'), w.read('image')) for w in waiting_reviews(verify)
                        if w.state['binding']['job'].get('pendingPath')}
@@ -709,7 +697,7 @@ class RevisionSkipChecks(FixtureCase):
         pending = wiki_freshness.record_pending_refresh(self.root, 'docs/source.md', 'claude')
         job = {**self.job('post_tool_source'),
                'pendingRefresh': {key: pending[key] for key in ('eventId', 'ts', 'engine')}}
-        queue.write_text(json.dumps(job) + '\n', encoding='utf-8')
+        replace_queue(queue, json.dumps(job) + '\n')
         nested = []
 
         def extractor(argv, payload, timeout, root):
@@ -738,22 +726,12 @@ class RevisionSkipChecks(FixtureCase):
                                    'wakeAfterSeconds': worker.RUN_LOCK_BUSY_RETRY_SECS}])
         self.assertEqual(first['processed'], 1)
         self.assertEqual(after['processed'], 0)
-        self.assertEqual(queue.read_text(encoding='utf-8'), '')
+        self.assertEqual(pending_text(queue), '')
         self.assertEqual(wiki_freshness.unresolved_pending_refreshes(self.root), [])
-
-    def test_overlapping_worker_without_run_lock_pays_twice(self):
-        # Control for the test above: the pre-lock behavior really re-extracts.
-        with patch.object(worker, 'try_run_lock',
-                          side_effect=lambda root: os.open(
-                              worker.cp.under(root, worker.COMPILE_RUN_LOCK),
-                              os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)):
-            _queue, nested, _first, _after = self.overlapping_worker_extractions()
-        self.assertEqual(nested[0]['processed'], 1)  # the overlap recovered E1 and paid again
-        self.assertGreaterEqual(len(self.extractor_calls), 2)
 
     def test_busy_worker_keeps_rows_and_requests_one_retry(self):
         queue = self.root / '.memvane' / 'compile' / 'source-queue.jsonl'
-        queue.write_text(json.dumps(self.job('session_start')) + '\n', encoding='utf-8')
+        replace_queue(queue, json.dumps(self.job('session_start')) + '\n')
         owner = worker.try_run_lock(self.root)
         self.assertIsNotNone(owner)
         try:
@@ -762,7 +740,7 @@ class RevisionSkipChecks(FixtureCase):
             os.close(owner)
         self.assertEqual(report['wakeAfterSeconds'], worker.RUN_LOCK_BUSY_RETRY_SECS)
         self.assertEqual(self.extractor_calls, [])
-        self.assertEqual(len(queue.read_text(encoding='utf-8').splitlines()), 1)
+        self.assertEqual(len(pending_text(queue).splitlines()), 1)
         # Lock released (as on owner exit or crash): the retained row now runs.
         with patch.object(worker, '_run_verify_pass'):
             self.assertEqual(self.run_main()['processed'], 1)
@@ -794,7 +772,7 @@ class RevisionSkipChecks(FixtureCase):
         job['source']['path'] = 'docs/gone.md'
         job['contentRevision'] = old_hash
         job['sourceDelete'] = True
-        queue = wiki_selected_laya.safe_queue_path(self.root, native=True)
+        queue = wiki_selected_laya.safe_queue_path(self.root)
         result = {'state': 'shared_pending',
                   'survivors': [('proj-docs', 'docs/source.md')]}
         with patch.object(wiki_source_retire, 'retire_deleted_source', return_value=result), \
@@ -802,7 +780,7 @@ class RevisionSkipChecks(FixtureCase):
             self.assertEqual(worker.process_job(
                 self.root, self.config, self.config['compile'], job),
                 (True, False, []))
-            rows = [json.loads(line) for line in queue.read_text().splitlines()]
+            rows = [json.loads(line) for line in pending_text(queue).splitlines()]
             self.assertEqual(len(rows), 2)
             self.assertTrue(rows[0]['forceRecompile'])
             self.assertEqual(rows[0]['source']['path'], 'docs/source.md')

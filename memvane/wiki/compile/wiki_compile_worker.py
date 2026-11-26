@@ -1582,8 +1582,9 @@ def _busy_report(root: Path, queue: Path) -> dict:
     durable `laya-compile` wake already retries from its own queue check.
     """
     try:
-        waiting = queue.exists() and queue.stat().st_size > 0
-    except OSError:
+        from memvane.wiki.workspace import api as workspace
+        waiting = bool(workspace.read_queue(queue))
+    except Exception:
         waiting = True
     if not waiting:
         waiting = bool(_unsettled_refreshes(root))

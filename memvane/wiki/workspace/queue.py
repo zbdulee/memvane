@@ -200,6 +200,11 @@ def _text_rows(content):
 
 
 def read_queue(path: Path):
+    from memvane.wiki.workspace import ledger_queue
+    if isinstance(path, ledger_queue.LedgerClaim):
+        return ledger_queue.LedgerRows(path)
+    if path is not None and ledger_queue.kind(path) == 'source':
+        return ledger_queue.live(path)
     if path is None or not path.exists():
         return []
     try:
@@ -212,6 +217,9 @@ def read_queue(path: Path):
 
 
 def claim_queue(path: Path, *, receipt_writer=None, before_claim=None, private=False) -> Path | None:
+    from memvane.wiki.workspace import ledger_queue
+    if ledger_queue.kind(path) == 'source':
+        return ledger_queue.claim(path, receipt_writer=receipt_writer)
     claimed = path.with_name(f"{path.name}.claimed.{os.getpid()}.{uuid.uuid4().hex}")
     path.parent.mkdir(parents=True, exist_ok=True)
     with queue_return.legacy_card_lock(path, blocking=not private), queue_return.queue_locked(path, blocking=not private):

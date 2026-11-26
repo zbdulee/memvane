@@ -33,6 +33,8 @@ class PosttoolEnqueue(FixtureCase):
         return enqueue.enqueue_payload(payload)
 
     def rows(self, path):
+        if path.name == workspace_types.SOURCE_QUEUE:
+            return [job for _, job in workspace.read_queue(path)]
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def test_direct_append_skips_incompatible_sources_before_the_enqueue_limit(self):
@@ -45,7 +47,7 @@ class PosttoolEnqueue(FixtureCase):
         candidates = [(self.project.raw_name, job['source']['path'], job) for job in jobs]
         enqueue._append_unqueued(self.public_queue, candidates, 1)
         self.assertEqual([r['source']['path'] for r in self.rows(self.queue)], ['docs/source.md'])
-        self.assertEqual(self.rows(self.public_queue), [])
+        self.assertFalse(self.public_queue.exists())  # the ledger is the queue; no file is written
 
     def test_patch_and_edit_array_keep_each_original_path_until_admission(self):
         normal = self.project.write_note('docs/accepted.md', 'body\u2028only\n')

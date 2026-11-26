@@ -63,19 +63,26 @@ class JobQueueMixin:
                 for r in rows]
 
     def plan_jobs(self, queue: str, planner):
-        """Run ``planner(queued_rows) -> (delete_ids, new_payloads, result)`` in one transaction."""
+        """Run ``planner(queued_rows) -> (delete_ids, new_items, result)`` in one transaction.
+
+        A new item is a payload (appended) or ``(payload, anchor_job_id)``: it takes the
+        queue position of that deleted row, as a rewritten line kept its place in the file.
+        """
         table = _table(queue)
         with self._write_tx() as cur:
             rows = cur.execute(
-                f"SELECT job_id, payload_json FROM {table} WHERE state = 'queued' ORDER BY created_ns, job_id"
+                f"SELECT job_id, payload_json, created_ns FROM {table} WHERE state = 'queued' "
+                'ORDER BY created_ns, job_id'
             ).fetchall()
-            delete_ids, payloads, result = planner(
+            positions = {r['job_id']: r['created_ns'] for r in rows}
+            delete_ids, items, result = planner(
                 [{'jobId': r['job_id'], 'payload': json.loads(r['payload_json'])} for r in rows])
             for job_id in delete_ids:
                 cur.execute(f"DELETE FROM {table} WHERE job_id = ? AND state = 'queued'", (job_id,))
             now = time.time_ns()
-            for index, payload in enumerate(payloads):
-                self._insert_job(cur, queue, payload, now + index)
+            for index, item in enumerate(items):
+                payload, anchor = item if isinstance(item, tuple) else (item, None)
+                self._insert_job(cur, queue, payload, positions.get(anchor, now + index))
         return result
 
     def append_jobs(self, queue: str, payloads: list[dict], *, pending_blobs: list | None = None) -> int:
@@ -125,10 +132,15 @@ class JobQueueMixin:
         return len(remaining)
 
     def recover_dead_claims(self, queue: str, is_alive, *, max_attempts: int = MAX_ATTEMPTS) -> dict:
-        """Return a dead worker's rows; a row claimed more than ``max_attempts`` times is dropped."""
+        """Return a dead worker's rows to the queue.
+
+        A row already claimed more than ``max_attempts`` times is not returned: it is
+        listed in ``exhausted`` and stays claimed until the caller records its discard
+        evidence and calls ``drop_jobs``. A failed record therefore keeps the row.
+        """
         table = _table(queue)
         now = time.time_ns()
-        requeued, dropped = 0, []
+        requeued, exhausted = 0, []
         with self._write_tx() as cur:
             rows = cur.execute(
                 f"SELECT job_id, claim_pid, attempt_count, payload_json FROM {table} WHERE state = 'claimed'"
@@ -137,12 +149,21 @@ class JobQueueMixin:
                 if is_alive(row['claim_pid']):
                     continue
                 if row['attempt_count'] > max_attempts:
-                    cur.execute(f"UPDATE {table} SET state = 'dropped', reason = 'requeue_exhausted', "
-                                'claim_pid = NULL, claim_token = NULL, updated_ns = ? WHERE job_id = ?',
-                                (now, row['job_id']))
-                    dropped.append(json.loads(row['payload_json']))
-                else:
-                    cur.execute(f"UPDATE {table} SET state = 'queued', claim_pid = NULL, claim_token = NULL, "
-                                'updated_ns = ? WHERE job_id = ?', (now, row['job_id']))
-                    requeued += 1
-        return {'requeued': requeued, 'dropped': dropped}
+                    exhausted.append({'jobId': row['job_id'], 'payload': json.loads(row['payload_json']),
+                                      'attempts': row['attempt_count']})
+                    continue
+                cur.execute(f"UPDATE {table} SET state = 'queued', claim_pid = NULL, claim_token = NULL, "
+                            'updated_ns = ? WHERE job_id = ?', (now, row['job_id']))
+                requeued += 1
+        return {'requeued': requeued, 'exhausted': exhausted}
+
+    def drop_jobs(self, queue: str, job_ids: list[str], reason: str) -> int:
+        table = _table(queue)
+        now = time.time_ns()
+        with self._write_tx() as cur:
+            dropped = 0
+            for job_id in job_ids:
+                cur.execute(f"UPDATE {table} SET state = 'dropped', reason = ?, claim_pid = NULL, "
+                            'claim_token = NULL, updated_ns = ? WHERE job_id = ?', (reason, now, job_id))
+                dropped += cur.rowcount
+        return dropped
