@@ -136,7 +136,12 @@ class DecisionLedgerMixin:
 
     def enqueue_dedup_pair(self, page_a: str, page_b: str, score: float | None,
                            payload: dict | None = None) -> bool:
-        """Queue a pair once; an already queued or claimed pair is left as is."""
+        """Queue a pair once; an already queued or claimed pair is left as is.
+
+        A ``done`` pair queued again takes a new ``created_ns``: ``wiki-ledger dedup-pairs``
+        indexes follow ``created_ns``, so it joins the end instead of shifting the index
+        of every pair already listed.
+        """
         if not page_a or not page_b or page_a == page_b:
             raise PipelineError('invalid_dedup_pair')
         key = self.dedup_pair_key(page_a, page_b)
@@ -149,7 +154,8 @@ class DecisionLedgerMixin:
                 'INSERT INTO dedup_pairs(pair_key, page_a, page_b, score, state, payload_json, created_ns, '
                 "updated_ns) VALUES(?, ?, ?, ?, 'queued', ?, ?, ?) ON CONFLICT(pair_key) DO UPDATE SET "
                 "page_a = excluded.page_a, page_b = excluded.page_b, score = excluded.score, state = 'queued', "
-                'payload_json = excluded.payload_json, updated_ns = excluded.updated_ns',
+                'payload_json = excluded.payload_json, created_ns = excluded.created_ns, '
+                'updated_ns = excluded.updated_ns',
                 (key, page_a, page_b, score, _dumps(payload or {}), now, now),
             )
             return True

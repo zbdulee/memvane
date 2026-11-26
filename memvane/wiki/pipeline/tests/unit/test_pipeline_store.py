@@ -112,6 +112,17 @@ class DecisionLedgerTests(FixtureCase):
             self.assertTrue(store.enqueue_dedup_pair('a.md', 'b.md', 0.91))
             self.assertEqual(len(store.dedup_pairs()), 1)
 
+    def test_a_done_pair_queued_again_joins_the_end(self):
+        # N5: resolver indexes follow created_ns; a requeued pair must not move listed ones.
+        with pipeline.open_pipeline(self.project.root) as store:
+            store.enqueue_dedup_pair('a.md', 'b.md', 0.95)
+            store.set_dedup_pair_state(store.dedup_pair_key('a.md', 'b.md'), 'done')
+            store.enqueue_dedup_pair('c.md', 'd.md', 0.95)
+            listed = [p['pairKey'] for p in store.dedup_pairs()]
+            self.assertTrue(store.enqueue_dedup_pair('a.md', 'b.md', 0.93))
+            self.assertEqual([p['pairKey'] for p in store.dedup_pairs()],
+                             listed + [store.dedup_pair_key('a.md', 'b.md')])
+
 
 
 class VerifyQueueTests(FixtureCase):
