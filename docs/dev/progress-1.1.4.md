@@ -30,7 +30,7 @@
 
 `.memvane/wiki/concepts/.first-*` 119개, `.handoff/v1/hold/` 647개(그중 `work` 없는 예약 잔재 335), `copy-quota/allocated-*` 약 220개. `first_card` proof의 `(dev, ino)` 대조로 134건이 재부팅 뒤 영구 보류될 수 있었다. A안 마이그레이션은 이것을 전부 버린다.
 
-### 2.2 코드 사실 (CodeGraphContext `execute_cypher_query`/`find_all_callers`, repo `/Users/dulee/work/qmd-auto-context`, 코디네이터 재인덱싱 뒤 조회 + `rg` 보완)
+### 2.2 코드 사실 (CodeGraphContext `execute_cypher_query`/`find_all_callers`, repo = 이 저장소 루트, 코디네이터 재인덱싱 뒤 조회 + `rg` 보완)
 
 - 1.x 배제는 프로젝트 `route.json`의 `stateFormat`으로 한다. 재온보딩 뒤 1.x 호스트는 writer·recall이 모두 거절된다. 1.1.2·1.1.0도 `.compile-run.lock`을 쓴다.
 - 훅이 프로젝트 compile 디렉터리에 쓰는 것은 `_record_edit_compile` → `wiki_compile_enqueue.enqueue_payload(pending_only=True)` → `wiki_freshness.record_pending_refresh`(`.handoff/v1/refresh/events.jsonl`, 0.15초 lock) 하나다. 훅이 읽는 것은 SessionStart의 `_request_selected_sync`(`host_response.py:610-646`)가 보는 `source-queue.jsonl`·`verify-queue.jsonl` 크기와 `unresolved_pending_refreshes_strict`다.
@@ -137,7 +137,7 @@ SessionStart의 `check_compile_queue`는 큐 jsonl과 `unresolved_pending_refres
 | **C14** E2E | 3 host 훅 → inbox → worker → 원장 → 게시, 중단/재개, `hold > 1024`, 마이그레이션 E2E(출시 태그 writer 입력) | `tests/e2e/wiki_pipeline_*.py` + `.test.mjs` | 새 e2e, host, hermes |
 | **C15** 문서 | pipeline·verify·compile·workspace·card·intake·dedup README, 설계서 §4.2(마이그레이션·tombstone 반영), release.md 개정(§7), working-rules 77·79행(tombstone 언급), `docs/ROADMAP.md` Python 3.11 항목 | docs | doc-links |
 
-C4~C11은 서로 의존한다(C7은 C5·C6, C8은 C7, C9는 C7·C8). 각 커밋 뒤 focused 검사 + `v1_guard --strict`·`--tests --rules G1,G8`·`static`·`test-parts`·`doc-links`, `codegraphcontext update /Users/dulee/work/qmd-auto-context`, 이 문서의 진행 기록 갱신.
+C4~C11은 서로 의존한다(C7은 C5·C6, C8은 C7, C9는 C7·C8). 각 커밋 뒤 focused 검사 + `v1_guard --strict`·`--tests --rules G1,G8`·`static`·`test-parts`·`doc-links`, `codegraphcontext update <저장소 루트>`, 이 문서의 진행 기록 갱신.
 
 ## 6. 상태 조합표
 
@@ -274,6 +274,10 @@ C4~C11은 서로 의존한다(C7은 C5·C6, C8은 C7, C9는 C7·C8). 각 커밋 
 | 간헐 실패 조사 `test_unknown_exhaustion_is_skipped_without_rebilling_cycle` | `0280a681`(C14와 함께) | 기록: C12 검사(intake·verify·dedup focused 3중 병렬) 중 한 번, 첫 worker 자식이 exit 0으로 끝났는데 가짜 extractor가 한 번도 실행되지 않아 `calls.txt` 읽기가 `FileNotFoundError`(ERROR)였다. 당시 시험은 worker 출력을 남기지 않아 종료 경로를 알 수 없었다. 재현: 단독 20회 0 실패, 같은 모듈 6회를 verify·dedup 검사와 3중 병렬로 0 실패, 마이그레이션 진입 순서(원장 생성 → `v1_migration_marked` 읽기 전용 열기 → `migrate_from_v1` → migration 로그)를 별도 프로세스로 200회 0 실패. 코드 대조: exit 0이면서 추출 0회인 경로는 run lock 경합, 진입 재검증 실패, `migrate_v1_state` 실패(C12 당시에는 출력 없이 종료), claim 없음, 작업 보류(`checkout_unavailable`·`checkout_changed_during_read`·`resource_deferred`)다. 픽스처에서는 resource admission(`provider()`·`lease`)을 건너뛰고, git 호출은 `GIT_OPTIONAL_LOCKS=0`이라 index를 다시 쓰지 않아 checkout 캡처가 흔들리지 않으며, run lock·sync owner lock은 시험마다 다른 HOME·runtime root에 있다. 시험은 시험마다 HOME이 따로이고 `--flush-all`이라 batch 시각과 무관해 벽시계·순서 의존이 없다. **결론: 원인 미확인.** 제품 결함과 시험 결함 어느 쪽의 증거도 찾지 못했다. 시험에 진단 단정을 더했다: extractor가 한 번도 실행되지 않으면 worker 보고와 candidate 로그를 실패 메시지에 남긴다. 재발하면 그 출력으로 종료 경로를 판정한다 |
 | C14 E2E | `0280a681` | `tests/e2e/wiki_pipeline_e2e.py`(+`wiki-pipeline-e2e.test.mjs`, 메서드마다 별도 프로세스·fixture HOME). 훅은 자식 프로세스로 실제 진입을 탄다: `hooks/run-hook <action> claude|codex`(PostToolUse `index`·`compile`, SessionStart `update-queued`, Bash `file-change-event`), Hermes는 `hermes_adapter.core_bridge.post_edit_sync`·`session_update`. 자식 PYTHONPATH 앞의 `tests/e2e/hook_probe/sitecustomize.py`가 모든 `sqlite3.connect`와 `runtime.api.request`를 기록하고 `.memvane/compile` 안 경로 connect는 기록 뒤 실패시킨다. worker는 이 프로세스에서 `wiki_compile_worker.main`(run lock·1.x cutover·inbox 흡수·보존 정리·claim·verify pass)을 탄다. 유료 호출은 `FakeEngines`가 센다. 메서드 4개: (1) 3 host 편집 → inbox 3행(engine claude·codex·hermes), 훅의 원장 open 0·원장 파일 없음, wake(index·SessionStart·Bash → `laya-sync`, compile·SessionStart → `laya-compile`) → 한 pass에서 extract 1·verify 1, 카드 `verified`, inbox·consuming 파일 없음, refresh 행은 최신 1개, `card_generations` 1, verify 행 done, 위키에 숨김 파일·temp 없음, 두 번째 pass 추가 호출 0, `auto_vacuum=2`, 91일 지난 audit 행은 다음 pass가 지움(RT1). (2) verify 교체 게시의 교환 직후 kill → `publishing` 1 → 다음 pass가 복구, 추가 호출 0(P7·V14). (3) verify 행 1,030개 backlog 위의 새 편집 → 같은 pass에서 새 카드 extract·verify, backlog는 호출 없이 줄어듦(H1). (4) `v1.1.2` 출시 writer(`git archive` + `tagged_v1_ledgers.py`)가 쓴 compile 원장·카드를 선택 프로젝트에 두고 훅 편집 → 훅 원장 open 0 → 첫 pass가 cutover(`card_generations` = manifest 행, 억제 2종 이전, 1.x 파일 삭제, migration 로그 1)와 교체 게시(extract 1·verify 1)를 함께 한다(M1·M5·M11). v1_guard G1 예외 3개(E2E의 worker 진입·`publish._exchange` kill·Hermes adapter). 마지막 part(REST)에서 돈다. 로컬 소요 20초, `REST_SECONDS`(CI 측정값 1,000)는 CI 재측정 전이라 바꾸지 않았다. 검사: e2e 4/4, intake 13/13, structure 28/28, v1_guard strict 0·tests G1/G8 0, 3.9 문법 파싱. teeth(제품 줄을 깨고 해당 메서드 실행 후 원복): 훅이 원장을 엶 → (1) FAIL, verify의 `recover_publishes` 제거 → (2) FAIL, `claim_verify_batch`의 생산 대상 우선 제거 → (3) FAIL, worker 시작의 cutover 생략 → (4) FAIL, `_retention_pass` 제거 → (1) FAIL |
 | C15 문서 | `53c9407b` | pipeline README(`backfill_checkpoints`·application id·`auto_vacuum`, cutover 진입 위치와 양보·skill 거절, 보존 규칙 §6.6, `wiki-ledger` 출력 키), compile README(`merge_needed` 로그, 교체는 `replace` 행의 `pending_blob`, frozen backfill은 `backfill_checkpoints`, 혼합 버전 단락 삭제), verify README(`verify_log` 로그), dedup README(`dedup_pairs`·`suppressions`·`cooldowns`·`dedup_deleted` 보존, 카드 게시는 `publish_card`, 없어진 `ledger_writable`·`judge_stalled`·`trim_jsonl` 서술 삭제), 설계서 §4.2(원장 스키마·inbox·행 모델·게시 순서, tombstone 없음과 dedup 이름표 이전, 원장 보존, 마이그레이션 범위·진입; §4.1의 정산 파일 서술과 release.md 줄 앵커), release.md(§7: compile lock 3종, 원장 DDL·application id·`user_version`·`auto_vacuum`·마커 키, inbox 행 모양·consuming·publish temp 이름, `wiki-ledger` 출력 키, 파생물 목록에서 `source-refresh-settled.json`을 빼고 `wiki-retrieval/cards.sqlite`), working-rules(쓰기 반환값 기준의 예시를 현재 호출부로: `publish_card` 결과·`publish_first_card`·`transfer_labels` / `audit_log().append`·`_retention_pass`·`write_state_atomic`, 상태 조합표 대상·축·기대 결과에서 tombstone·`verify-deleted` 제거, 사람이 지운 카드는 원문 변경으로 다시 생기고 부정 판정은 카드를 지우지 않음), `docs/dev/contexts/skills.md`(merge-needed·dedup 큐·`dedup_deleted` 보존, 삭제 경로), `docs/architecture.md`의 compile 원장 서술, ROADMAP(「1.1 이후」에 Python 3.9 → 3.11 하한 항목, 1.1.4로 장치가 없어진 열린 항목 4개 삭제: 음성 판정 억제 원장·중단된 기계 삭제와 압축·manifest 검사 경계·원장 전환, 「문서」 항목의 `source-refresh-settled.json.lock`). resolver 지침은 C13에서 고쳤고 이번에 낡은 서술이 없음을 확인했다. 범위 밖으로 남긴 것: `docs/design-local-web-ui.md`(미구현 UI 설계의 `.handoff/v1/` 읽기 서술), `docs/architecture.md`의 v1 state 경로 등 위키 원장과 무관한 서술. 검사: structure·doc-links·agent·manual-skills 37/37, docs 1/1, v1_guard strict 0, `git diff --check` |
+| 전체 검사 1차(`4dca1720`) | — | part1 105개 중 1 실패(`learning/tests/integration/test_lp1_e2e.py`), part2~5는 미실행. 원인과 조치는 아래 「전체 검사 실패의 원인」 |
+| 1.x 공존 시험 → 배제 계약 | `d3d74672` | `test_lp1_e2e.old_workers_meet_the_open_job`·`test_old_bundle_121`(4)·`test_old_bundle_110`(1)의 기대값을 stateFormat 2 배제로 바꾼다. 이전 세 릴리스를 `v1.1.0`·`v1.1.1`·`v1.1.2`로 옮겨 M9(`v1.1.2` worker 거절)를 덮는다. teeth: `memvane_paths`를 `STATE_FORMAT = 1`·`v1`로 되돌리면 `test_old_bundle_121` 6건 FAIL(확인 후 원복) |
+| release smoke·naming guard | `49e004bb` | `scripts/release_smoke.py`의 원격 이벤트 로그 glob 4곳을 `v2`로, naming guard에서 지워진 verify README shim 허용을 뺀다. 이 문서의 저장소 절대 경로 4곳은 「이 저장소 루트」로 바꾼다(문서 커밋) |
+| 전체 검사 2차(`49e004bb`) | — | part1 105(pass 102·skip 3), part2 110(107·3), part3 109(106·3), part4 111(108·3), part5 229(224·5), 실패 0. part2~4는 `d3d74672`에서, part1·5는 `49e004bb`에서 돌렸고 두 커밋 사이 변경은 part5 대상 파일뿐이다. Python은 Homebrew 3.13(시스템 3.9 실행은 하지 않음) |
 
 ①의 검사 결과(커밋 `a0fad489` 워킹트리):
 
@@ -299,9 +303,18 @@ teeth(제품 줄을 깨서 FAIL 확인, 확인 후 원복):
 | `list_works`에 `LIMIT 1024` | `test_hold_beyond_1024_has_no_scan_limit`, `test_interrupted_create_and_over_1024_valid_holds_recover_and_publish_first_cards` |
 | `_charge`가 항상 0 | `test_quota_charges_copies_and_release_frees_them` |
 
+#### 전체 검사 실패의 원인 (task_b4dc7f80d1c8)
+
+- **lp1 E2E·옛 번들 시험(15+10건)은 3a3f7001(stateFormat 2)이 원인이다.** `C1`의 `RELEASE` 한 줄과 위키 원장 변경은 무관하다. 같은 시험(진단 하위 클래스가 옛 worker의 stdout을 기록)을 guard로 돌려 HEAD·3a3f7001은 15건 실패, 3a3f7001^(`6bf97f60`, `git archive`로 푼 트리)는 OK를 확인했다. `test_old_bundle_110`·`_121`도 `6bf97f60`에서 6개 OK, HEAD에서 25개(`test_recovery` 포함) 중 10 실패다.
+- err가 비는 이유: 옛 `shared.main`은 예외를 잡아 `{"status":"failed","reason":…}`를 **stdout**에 쓰고 1을 돌려준다. 시험은 stderr만 메시지로 보여 줬다. 실제 값은 `{"reason":"unselected_host_route","status":"failed"}`(15건 동일)이다.
+- 기전: 1.x 번들은 `~/.local/state/memvane/v1`만 읽고 `same_major`가 `running[0] == state_format`이라 v2 설치의 선택 route를 찾지 못한다. 관측(HEAD, `v1.0.18`~`v1.1.1` 9개 태그): worker·gates·selector-maintenance는 `unselected_host_route`(1.0.18~20은 그보다 앞선 `project_scope_authorization_invalid`), recall·posttool은 `(0, '', '')`, capture 0건, 학습 child는 `learning.ready`(검증된 선택 route) 실패로 `setup_in_progress`, DB 행 불변. 가짜 CLI 기동은 posttool의 legacy 분류가 부르는 `codex plugin list --json`뿐이고 teacher 호출은 0이다. 설계서 r4 §4.2와 이 문서 M9의 계약과 같다.
+- release smoke 13건: 3a3f7001이 `test_release_smoke.py`의 경로만 `v2`로 바꾸고 `scripts/release_smoke.py`의 원격 glob은 `v1`에 남겨 「no event time can be read on the account」.
+- naming guard 2건: c195a303이 verify README의 이전 플러그인 이름 shim 문장을 지웠는데 허용 목록이 남았고, 이 문서에 저장소 절대 경로가 들어갔다.
+- **고치지 않은 같은 계열의 문서(실패 시험 없음, 3a3f7001 이후 `v1` 경로가 남음):** `skills/setup/SKILL.md`(새 install의 `--state-root`를 `~/.local/state/memvane/v1/installs/<id>`로 안내 — 제품은 `installs_base()`(v2) 밖 새 경로를 `unsupported_state_root_creation`으로 거절한다, onboarding 답변·embed runtime·state-cleanup 경로), `skills/wiki-dedup/SKILL.md`·`agents/wiki-dedup-resolver.md`(`dedup-resolve-lock`을 `v1` 아래에 만들라는 안내 — 제품 코드에 이 lock reader는 없다), `memvane/wiki/verify/README.md`의 scan-state·로그 경로, `docs/privacy.md`, `docs/runtime-resource-coordination.md`, `docs/architecture/flows/01-install-host-hooks.md`, `memvane/resident/resident_service.py:122` docstring. 코디네이터 결정 대기.
+
 ## 10. 다음 재개 지점
 
-**현재 재개 지점(task_a40cf1ec6076 종료): Stage 3 구현·문서 완료(C14 `0280a681`, C15 `53c9407b`). 남은 것은 코디네이터의 전체 `npm test`(최종 커밋, 마지막 part에 `tests/e2e/wiki-pipeline-e2e.test.mjs`가 포함된다)와 독립 리뷰다.** 열린 항목: (1) `test_unknown_exhaustion_is_skipped_without_rebilling_cycle`의 간헐 실패는 원인 미확인이다(§9). 재발하면 실패 메시지의 worker 보고·candidate 로그로 종료 경로를 판정한다. (2) `REST_SECONDS`(마지막 part의 CI 측정값)는 E2E 추가분(로컬 20초)을 CI에서 재측정한 뒤 조정한다. (3) 기본 설정의 `compile.verify.onFail`·`onInconclusive`(`delete`)는 허용 키로 남아 있으나 동작에 쓰이지 않는다(verify README).
+**현재 재개 지점(task_b4dc7f80d1c8 종료): 최종 코드 커밋 `49e004bb`의 전체 `npm test` 다섯 부분이 실패 0으로 끝났다(§9 「전체 검사 2차」). 남은 것은 독립 리뷰와 위 「고치지 않은 같은 계열의 문서」의 `v1` 경로 정리 여부 결정이다.** 열린 항목: (1) `test_unknown_exhaustion_is_skipped_without_rebilling_cycle`의 간헐 실패는 원인 미확인이다(§9). 재발하면 실패 메시지의 worker 보고·candidate 로그로 종료 경로를 판정한다. (2) `REST_SECONDS`(마지막 part의 CI 측정값)는 E2E 추가분을 CI에서 재측정한 뒤 조정한다. (3) 기본 설정의 `compile.verify.onFail`·`onInconclusive`(`delete`)는 허용 키로 남아 있으나 동작에 쓰이지 않는다(verify README). (4) 시스템 Python 3.9로 전체 검사를 돌리지 않았다.
 
 #### C11d 인계 메모 (HEAD `8afb3024`, CGC 재인덱싱 뒤 조회 + `rg`)
 
@@ -310,7 +323,7 @@ teeth(제품 줄을 깨서 FAIL 확인, 확인 후 원복):
 - 영향 시험(CGC `compact_manifest` 호출부 + `rg`): `compile/tests/integration/{test_legacy_ledger_guard,test_legacy_online_preservation,test_manifest_compaction,test_manifest_scan,test_writer_lifecycle}`, `compile/tests/tagged_legacy_ledgers.py`, `workspace/tests/tagged_manifest.py`, `card/tests/tagged_refresh_manifest.py`, card `test_manifest_checkpoint`·`test_legacy_ledgers`, verify `test_wiki_verify_worker`의 manifest 빈 단정. 1.x 증거 검사 전용 시험은 장치와 함께 지우고 파일별 전후 개수를 §9에 적는다.
 - C13 메모: resolver `--index`는 C11c에서 `dedup_pairs`의 queued 행 순서(`created_ns, pair_key`)로 정했다. 조회 CLI `wiki-ledger dedup-pairs`는 같은 순서로 index를 붙여 출력해야 한다. `tests/wiki-dedup-resolver-agent.test.mjs`가 agent 설명의 `dedup-needed.jsonl`을 단정하므로 문서와 함께 고친다.
 
-#### C11a·b CodeGraphContext 대조 (재인덱싱 뒤 CALLS, repo `/Users/dulee/work/qmd-auto-context`)
+#### C11a·b CodeGraphContext 대조 (재인덱싱 뒤 CALLS, repo = 이 저장소 루트)
 
 | 기호 | 제품 호출부 | 시험 호출부 |
 |---|---|---|
@@ -370,7 +383,7 @@ C12~C15는 §5·§6.3·§7과 작업 지시서 순서 그대로다. C15 문서 �
 - 첫 카드는 지금 검수 전에 `generated`로 노출된다(`first_card._resume` → rename 후 manifest 행, `wiki_compile.py:1337-1338` 주석). 교체는 검수 통과까지 옛 카드가 남는다.
 - `publish_card`는 `generation=`을 `published`·`published_user_edited`일 때만 `card_generations`에 넣는다(`store.finish_publish_txn`). `claim_jobs`는 queued 전부를 claim하고 `finish_claim`은 claim 행을 지운 뒤 남은 것을 다시 넣는다(행별 종결 상태를 남기지 않는다).
 
-#### 호출부 (CodeGraphContext `execute_cypher_query` CALLS, repo `/Users/dulee/work/qmd-auto-context`, + `rg`)
+#### 호출부 (CodeGraphContext `execute_cypher_query` CALLS, repo = 이 저장소 루트, + `rg`)
 
 | 기호 | 제품 호출부 | 시험 호출부 |
 |---|---|---|
