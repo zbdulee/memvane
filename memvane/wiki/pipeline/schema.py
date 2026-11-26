@@ -48,6 +48,7 @@ DDL_STATEMENTS: tuple[str, ...] = (
         payload_json TEXT NOT NULL,
         pending_blob BLOB,
         state TEXT NOT NULL,
+        reason TEXT,
         claim_pid INTEGER,
         claim_token TEXT,
         attempt_count INTEGER NOT NULL DEFAULT 0,

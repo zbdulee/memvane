@@ -11,6 +11,7 @@ import uuid
 
 from memvane.kernel.errors import _query_only_uri
 from memvane.wiki.pipeline.decisions import DecisionLedgerMixin, insert_generation
+from memvane.wiki.pipeline.queues import JobQueueMixin
 from memvane.wiki.pipeline.schema import DDL_STATEMENTS
 from memvane.wiki.pipeline.types import (
     AUDIT_KINDS,
@@ -91,7 +92,7 @@ def _loads(raw: str | None, default: object = None) -> object:
     return json.loads(raw)
 
 
-class PipelineStore(DecisionLedgerMixin):
+class PipelineStore(DecisionLedgerMixin, JobQueueMixin):
     """Transactional handle over ``wiki-pipeline.sqlite3``."""
 
     def __init__(self, db_path: Path, *, readonly: bool = False,

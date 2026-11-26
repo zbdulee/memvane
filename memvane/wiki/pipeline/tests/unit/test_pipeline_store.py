@@ -155,3 +155,54 @@ class DecisionLedgerTests(FixtureCase):
             self.assertEqual(store.dedup_pairs(), [])
             self.assertTrue(store.enqueue_dedup_pair('a.md', 'b.md', 0.91))
             self.assertEqual(len(store.dedup_pairs()), 1)
+
+
+class JobQueueTests(FixtureCase):
+    def setUp(self):
+        super().setUp()
+        self.project = make_project(self.home, git=False)
+
+    def job(self, path, **extra):
+        return {'source': {'collection': 'docs', 'path': path}, 'trigger': 'post_tool_source',
+                'engine': 'claude', **extra}
+
+    def test_claim_all_then_return_the_unfinished_rows_ahead_of_newer_ones(self):
+        with pipeline.open_pipeline(self.project.root) as store:
+            store.append_jobs('source', [self.job('a.md'), self.job('b.md'), self.job('c.md')])
+            claimed = store.claim_jobs('source', os.getpid(), 'tok')
+            self.assertEqual([r['payload']['source']['path'] for r in claimed], ['a.md', 'b.md', 'c.md'])
+            self.assertEqual(store.claim_jobs('source', os.getpid(), 'other'), [])
+            store.append_jobs('source', [self.job('d.md')])
+            store.finish_claim('source', 'tok', [self.job('b.md', partialCompile=True)])
+            queued = store.queued_jobs('source')
+            self.assertEqual([r['payload']['source']['path'] for r in queued], ['b.md', 'd.md'])
+            self.assertTrue(queued[0]['payload']['partialCompile'])
+            self.assertEqual(store.queued_jobs('source', states=('claimed',)), [])
+
+    def test_plan_jobs_replaces_and_appends_in_one_transaction(self):
+        with pipeline.open_pipeline(self.project.root) as store:
+            store.append_jobs('source', [self.job('a.md', rev='1'), self.job('b.md')])
+            def planner(rows):
+                old = [r['jobId'] for r in rows if r['payload']['source']['path'] == 'a.md']
+                return old, [self.job('a.md', rev='2')], {'queued': 1}
+            self.assertEqual(store.plan_jobs('source', planner), {'queued': 1})
+            self.assertEqual([(r['payload']['source']['path'], r['payload'].get('rev'))
+                              for r in store.queued_jobs('source')], [('b.md', None), ('a.md', '2')])
+            with self.assertRaises(RuntimeError):
+                store.plan_jobs('source', lambda rows: (_ for _ in ()).throw(RuntimeError('planner')))
+            self.assertEqual(len(store.queued_jobs('source')), 2)
+
+    def test_a_dead_claimant_returns_rows_and_a_fourth_claim_drops_them(self):
+        with pipeline.open_pipeline(self.project.root) as store:
+            store.append_jobs('verify', [{'targetPath': 'concepts/a.md', 'sourceHash': 'h'}],
+                              pending_blobs=[b'image'])
+            for attempt in range(4):
+                claimed = store.claim_jobs('verify', 999999, f'tok{attempt}')
+                self.assertEqual(store.job_blob('verify', claimed[0]['jobId']), b'image')
+                result = store.recover_dead_claims('verify', lambda pid: False)
+            self.assertEqual(result['requeued'], 0)
+            self.assertEqual([p['targetPath'] for p in result['dropped']], ['concepts/a.md'])
+            self.assertEqual(store.queued_jobs('verify'), [])
+            store.append_jobs('verify', [{'targetPath': 'concepts/b.md'}])
+            store.claim_jobs('verify', os.getpid(), 'live')
+            self.assertEqual(store.recover_dead_claims('verify', lambda pid: True), {'requeued': 0, 'dropped': []})
