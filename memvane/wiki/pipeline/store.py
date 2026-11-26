@@ -15,7 +15,9 @@ from memvane.wiki.pipeline.queues import JobQueueMixin
 from memvane.wiki.pipeline.verify_queue import VerifyQueueMixin
 from memvane.wiki.pipeline.schema import DDL_STATEMENTS
 from memvane.wiki.pipeline.types import (
+    AUDIT_KEEP_ROWS,
     AUDIT_KINDS,
+    AUDIT_PRUNE_EVERY,
     COMPILE_SUBDIR,
     DB_NAME,
     PIPELINE_APP_ID,
@@ -436,7 +438,13 @@ class PipelineStore(DecisionLedgerMixin, JobQueueMixin, VerifyQueueMixin):
                 'VALUES(?, ?, ?, ?, ?, ?)',
                 (kind, target_path, source_path, body_hash, _dumps(payload), now),
             )
-            return int(cur.lastrowid)
+            row_id = int(cur.lastrowid)
+            if row_id % AUDIT_PRUNE_EVERY == 0:
+                # Logs are bounded per kind; no decision reads them.
+                cur.execute(
+                    'DELETE FROM audit_events WHERE kind = ? AND id <= (SELECT id FROM audit_events '
+                    'WHERE kind = ? ORDER BY id DESC LIMIT 1 OFFSET ?)', (kind, kind, AUDIT_KEEP_ROWS))
+            return row_id
 
     def query_audit(self, kind: str, *, target_path: str | None = None,
                     source_path: str | None = None, body_hash: str | None = None,

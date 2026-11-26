@@ -1935,6 +1935,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/pipeline/records.py": {
+      "context": "wiki/pipeline",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/pipeline/migrate.py": {
       "context": "wiki/pipeline",
       "layer": "adapter",

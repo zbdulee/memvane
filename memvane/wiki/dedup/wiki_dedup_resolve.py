@@ -345,18 +345,16 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
             return {"action": "rejected", "reason": refusal, "kept": delete_rel}
         if laya_bound is not None:
             record_recovery(compile_dir, delete_rel, paired_with, content)
-        deleted_path = qmd_config.ledger(root, ct.DEDUP_DELETED)
-        if deleted_path is not None:
-            cp.append_jsonl(deleted_path, {
-                "deletedPath": delete_rel,
-                "content": content,
-                "pairedWith": paired_with,
-                "score": entry.get("score"),
-                "resolvedAt": now_iso(),
-            })
-            # write-only audit log storing full deleted-card bodies (KB each) --
-            # cap it so it can't grow unbounded.
-            cp.trim_jsonl(deleted_path)
+        # Log row only (working-rules 3): no decision reads it.
+        from memvane.wiki.pipeline import api as pipeline
+        pipeline.audit_log(root, 'dedup_deleted').append({
+            "deletedPath": delete_rel,
+            "targetPath": delete_rel,
+            "content": content,
+            "pairedWith": paired_with,
+            "score": entry.get("score"),
+            "resolvedAt": now_iso(),
+        })
         target.unlink()
         meta, _ = parse_frontmatter(content)
         title = str(meta.get("title") or Path(delete_rel).stem)

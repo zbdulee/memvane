@@ -15,7 +15,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.paths import safe_managed_dir
-from memvane.wiki.workspace.api import write_text_atomic, trim_jsonl, compact_manifest, find_wiki_collection
+from memvane.wiki.workspace.api import write_text_atomic, compact_manifest, find_wiki_collection
 from memvane.wiki.workspace import api as workspace_files
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as qmd_config, types as settings_types
@@ -24,6 +24,7 @@ from memvane.wiki.card.types import (  # noqa: F401 - compile module surface
     identity_keys, identity_values_from_meta, normalize_identity, slug_identity,
 )
 from memvane.wiki.dedup import api as wiki_dedup_judge
+from memvane.wiki.pipeline import api as pipeline
 from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.card.api import frontmatter_sections as _frontmatter_sections
 from memvane.wiki.card.api import parse_frontmatter, auto_writable_text
@@ -840,7 +841,7 @@ def judge_new_page_duplicate(
 
 
 def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: Path,
-                   record: dict, candidate_path: Path, card_text: str,
+                   record: dict, candidate_log, card_text: str,
                    floor_text: str | None = None, final_reason: str | None = None) -> bool:
     """Whether to hold back a card whose selector body exceeds ``wiki_card_budget``.
 
@@ -895,7 +896,7 @@ def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: 
         return False
     record["action"] = "split-required"
     record["lint"] = {"verdict": "needs_split", "findings": [reason]}
-    append_jsonl(candidate_path, record)
+    candidate_log.append(record)
     emit_card_budget(root, "over_budget", bound=selected, path=rel, title=record["title"],
                      reason=reason, **fields, **failure)
     print(json.dumps({"action": "split-required", "reason": reason,
@@ -1043,10 +1044,11 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
     summary, redactions = redact(str(candidate.get("summary") or "").strip())
     h = source_hash({**candidate, "summary": summary})
 
-    candidate_path = qmd_config.ledger(root, ct.CANDIDATES)
+    # Log rows only (working-rules 3): a lost line costs a diagnostic, never a decision.
+    candidate_log = pipeline.audit_log(root, 'candidate')
+    merge_log = pipeline.audit_log(root, 'merge_needed')
     manifest_path = qmd_config.ledger(root, ct.MANIFEST)
-    merge_needed_path = qmd_config.ledger(root, ct.MERGE_NEEDED)
-    if candidate_path is None or manifest_path is None or merge_needed_path is None:
+    if manifest_path is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_compile_path"}, ensure_ascii=False))
         return 1
 
@@ -1076,10 +1078,6 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                                                    missing_target=missing, append_for=missing, read_only=check) is None:
         print(json.dumps({'action': 'deferred', 'reason': 'legacy_ledger_requires_reassessment'}))
         return 1
-    if (not check and candidate_path.exists() and candidate_path.stat().st_size > ct.LOG_MAX_BYTES and
-            yaml_scalars.unresolved_pending_refreshes_strict(root, before_ledger_write=True,
-                                                           trimming_candidates=True) is not None):
-        trim_jsonl(candidate_path)
 
     if check and target_reason.startswith("ambiguous_"):
         return _checked("merge-needed", [target_reason])
@@ -1088,7 +1086,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
     if target_reason.startswith("ambiguous_"):
         record["action"] = "merge-needed"
         record["lint"] = {"verdict": "needs_review", "findings": [target_reason]}
-        append_jsonl(candidate_path, record)
+        candidate_log.append(record)
         print(json.dumps({"action": "merge-needed", "reason": target_reason, "targetMatches": record["targetMatches"]}, ensure_ascii=False))
         return 0
 
@@ -1097,7 +1095,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
             record["summary"] = "[REDACTED_TRANSCRIPT]"
             record["redactions"] = sorted(set(record.get("redactions", []) + ["transcript_like"]))
         record["action"] = "rejected"
-        append_jsonl(candidate_path, record)
+        candidate_log.append(record)
         print(json.dumps({"action": "rejected", "findings": lint["findings"]}, ensure_ascii=False))
         return 0
 
@@ -1115,7 +1113,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         # caught after the real write.
         return _checked("written")
     if not target.exists() and budget_refused(
-            root, config, selected, wiki_root, target, record, candidate_path,
+            root, config, selected, wiki_root, target, record, candidate_log,
             markdown_page(candidate, summary, compile_cfg.get("defaultStatus", "generated"),
                           redactions, h), final_reason=final_reason):
         return 0
@@ -1158,9 +1156,9 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                 entry["producedBy"] = judge_info.get("producedBy", "")
                 entry["uniqueToCandidate"] = judge_info.get("uniqueToA", [])
                 entry["uniqueToMatched"] = judge_info.get("uniqueToB", [])
-            append_jsonl(merge_needed_path, entry)
+            merge_log.append(entry)
             record["action"] = "merge-needed"
-            append_jsonl(candidate_path, record)
+            candidate_log.append(record)
             print(json.dumps({
                 "action": "merge-needed",
                 "matchedPath": matched_path.relative_to(root).as_posix(),
@@ -1192,11 +1190,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                 "matchedScore": 0,
                 "reason": mismatch,
             }
-            if merge_needed_path is not None:
-                append_jsonl(merge_needed_path, entry)
+            merge_log.append(entry)
             record["action"] = "merge-needed"
             record["lint"] = {"verdict": "needs_review", "findings": [mismatch]}
-            append_jsonl(candidate_path, record)
+            candidate_log.append(record)
             print(json.dumps({
                 "action": "merge-needed",
                 "reason": mismatch,
@@ -1213,14 +1210,14 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         if not auto_writable:
             record["action"] = "merge-needed"
             record["lint"] = {"verdict": "needs_review", "findings": findings}
-            append_jsonl(candidate_path, record)
+            candidate_log.append(record)
             print(json.dumps({"action": "merge-needed", "targetPath": record["targetPath"], "findings": findings}, ensure_ascii=False))
             return 0
         page_block_match = AUTO_BLOCK_RE.search(page)
         if page_block_match is None:
             record["action"] = "merge-needed"
             record["lint"] = {"verdict": "needs_review", "findings": ["generated_section_missing"]}
-            append_jsonl(candidate_path, record)
+            candidate_log.append(record)
             print(json.dumps({"action": "merge-needed", "targetPath": record["targetPath"], "findings": ["generated_section_missing"]}, ensure_ascii=False))
             return 0
         # Every refreshed card re-enters verification regardless of a custom
@@ -1234,7 +1231,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         # targets the budget like a new card (best effort).
         composed = compose_generated_card(old, page)
         floor = compose_generated_card(old, markdown_page(candidate, "", status, redactions, h))
-        if budget_refused(root, config, selected, wiki_root, target, record, candidate_path,
+        if budget_refused(root, config, selected, wiki_root, target, record, candidate_log,
                           composed if composed is not None else page, floor,
                           final_reason=final_reason):
             return 0
@@ -1257,13 +1254,13 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
             record['action'] = 'merge-needed'
             record['lint'] = {'verdict': 'needs_review',
                               'findings': ['selected_wiki_unresolved']}
-            append_jsonl(candidate_path, record)
+            candidate_log.append(record)
             return 0
         if not verify_cfg.get("enabled", True):
             record['action'] = 'merge-needed'
             record['lint'] = {'verdict': 'needs_review',
                               'findings': ['verified_replacement_requires_review']}
-            append_jsonl(candidate_path, record)
+            candidate_log.append(record)
             return 0
         pending_page = compose_generated_card(old, markdown_page(candidate, summary, 'generated', redactions, h))
         if pending_page is None:
@@ -1282,12 +1279,12 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
             review=bool(verify_cfg.get("enabled", True) and status == "generated"), manifest=manifest)
     if not write_ok:
         record["action"] = "write-failed"
-        append_jsonl(candidate_path, record)
+        candidate_log.append(record)
         print(json.dumps({"action": "write-failed", "targetPath": record["targetPath"]}, ensure_ascii=False))
         return 1
 
     record["action"] = action
-    append_jsonl(candidate_path, record)
+    candidate_log.append(record)
     append_jsonl(manifest_path, manifest)
     # manifest is read for retirement on source deletion; compact by folding
     # same-identity duplicates rather than size-trimming (which would drop a card's

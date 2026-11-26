@@ -130,9 +130,8 @@ class CompileLoop(FixtureCase):
 
     # -- observation ----------------------------------------------------------------
     def audit(self, reason=None):
-        path = self.compile_dir / 'candidates.jsonl'
-        rows = ([json.loads(line) for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
-                if path.exists() else [])
+        from memvane.wiki.pipeline import api as pipeline
+        rows = pipeline.log_rows(self.project.root, 'candidate')
         return [row for row in rows if reason is None or row.get('reason') == reason]
 
     def queued(self):

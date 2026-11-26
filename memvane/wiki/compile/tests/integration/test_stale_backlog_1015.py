@@ -38,7 +38,6 @@ class StaleSourceBacklog(FixtureCase):
         self.identity = workspace.route_identity(self.bound)
         self.queue = self.project.root / '.memvane/compile/source-queue.jsonl'
         self.queue.parent.mkdir(parents=True, exist_ok=True)
-        self.audit = self.queue.parent / 'candidates.jsonl'
 
     def job(self, path, *, stale=False, ts='2026-01-01T00:00:00Z'):
         identity = dict(self.identity)
@@ -81,7 +80,8 @@ class StaleSourceBacklog(FixtureCase):
         self.assertEqual(calls, self.paths[:10])
         self.assertEqual([row['source']['path'] for row in self.remaining_jobs()], self.paths[10:])
         self.assertEqual((report['completed'], report['staleDropped']), (10, 2281))
-        audit = [json.loads(line) for line in self.audit.read_text(encoding='utf-8').splitlines()]
+        from memvane.wiki.pipeline import api as pipeline
+        audit = pipeline.log_rows(self.project.root, 'candidate')
         stale = [row for row in audit if row.get('reason') == 'selected_route_identity_changed']
         self.assertEqual(len(stale), 2281)
         self.assertTrue(all(row['action'] == 'skipped' for row in stale))
@@ -94,27 +94,6 @@ class StaleSourceBacklog(FixtureCase):
         self.assertEqual(calls, self.paths[:1])
         self.assertEqual(report['staleDropped'], 1)
         self.assertEqual(self.remaining_jobs(), [])
-
-    def test_stale_audit_failure_returns_original_rows_to_normal_queue(self):
-        old = self.job('docs/old.md', stale=True)
-        other = self.job('docs/other-old.md', stale=True)
-        jobs = [old, other, self.job(self.paths[0])]
-        self.write_jobs(jobs)
-        original = pending_text(self.queue)
-        append = worker.append_jsonl
-
-        def fail_stale(path, row):
-            if (row.get('reason') == 'selected_route_identity_changed'
-                    and row.get('source', {}).get('path') == 'docs/other-old.md'):
-                raise OSError('synthetic audit unavailable')
-            return append(path, row)
-
-        with patch.object(worker, 'append_jsonl', side_effect=fail_stale):
-            with self.assertRaisesRegex(OSError, 'synthetic audit unavailable'):
-                self.run_pass()
-        self.assertEqual(pending_text(self.queue), original)
-        from tests.support.wiki_handoff import claimed_jobs
-        self.assertEqual(claimed_jobs(self.queue), [])
 
     def test_same_install_scope_drift_is_retained_not_declared_stale_progress(self):
         drift = self.job(self.paths[0])

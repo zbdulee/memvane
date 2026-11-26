@@ -5,6 +5,7 @@ from pathlib import Path
 
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
+from memvane.wiki.pipeline import api as pipeline
 
 
 class CompileSecretBoundaryTests(FixtureCase):
@@ -39,8 +40,8 @@ class CompileSecretBoundaryTests(FixtureCase):
             with self.subTest(number=number):
                 card = compile_card('Leaky Card %d' % number, secret, 'leaky-card-%d' % number)
                 self.assertFalse(card.exists())
-        ledger = (project.root / '.memvane/compile/candidates.jsonl').read_text(encoding='utf-8')
-        records = {row['title']: row for row in map(json.loads, ledger.splitlines())}
+        ledger = json.dumps(pipeline.log_rows(project.root, 'candidate'), ensure_ascii=False)
+        records = {row['title']: row for row in pipeline.log_rows(project.root, 'candidate')}
         self.assertEqual(records['Extractor Auth Config']['summary'], benign)
         self.assertEqual(records['Extractor Auth Config']['redactions'], [])
         for number, secret in enumerate(secrets):

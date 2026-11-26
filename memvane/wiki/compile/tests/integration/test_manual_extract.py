@@ -11,6 +11,7 @@ from memvane.wiki.compile import wiki_extract as extract
 from tests.support.case import FixtureCase
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
+from memvane.wiki.pipeline import api as pipeline
 
 
 class ManualExtract(FixtureCase):
@@ -70,7 +71,7 @@ class ManualExtract(FixtureCase):
         self.assertEqual(rejected.returncode, 0, rejected.stderr)
         self.assertEqual(json.loads(rejected.stdout)['action'], 'rejected')
         self.assertFalse((self.project.wiki / 'concepts/transcript.md').exists())
-        audit = (self.project.root / '.memvane/compile/candidates.jsonl').read_text()
+        audit = json.dumps(pipeline.log_rows(self.project.root, 'candidate'), ensure_ascii=False)
         self.assertNotIn('User: private', audit)
         self.assertIn('Transcript alias', audit)
         noop = subprocess.run([sys.executable, '-B', str(root / 'entry/run.py'), 'wiki-extract',

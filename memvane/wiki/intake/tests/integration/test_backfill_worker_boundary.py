@@ -1,5 +1,6 @@
 """A frozen backfill job cannot authorize changed source bytes."""
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -13,6 +14,7 @@ from memvane.wiki.workspace.api import safe_queue_path
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded
+from memvane.wiki.pipeline import api as pipeline
 
 
 class BackfillWorkerBoundary(FixtureCase):
@@ -166,8 +168,8 @@ class BackfillWorkerBoundary(FixtureCase):
                                        cwd=str(project.root), env=env, capture_output=True, text=True, timeout=90)
                 self.assertEqual(child.returncode, 0, child.stderr)
                 self.assertFalse(marker.exists(), 'mismatched route reached the extractor')
-                candidates = project.root / '.memvane/compile/candidates.jsonl'
-                self.assertIn('selected_route_identity_changed', candidates.read_text())
+                self.assertIn('selected_route_identity_changed',
+                              json.dumps(pipeline.log_rows(project.root, 'candidate')))
         self.assertEqual(backfill.summary(backfill._load(decision))['dispatched'], 1)
 
     def test_known_host_failure_never_tries_a_different_cli(self):
@@ -242,8 +244,7 @@ class BackfillWorkerBoundary(FixtureCase):
         self.assertEqual(called[:2], ['codex', 'claude'])
         self.assertEqual(called.count('codex'), 1)
         self.assertNotIn('hermes', called)
-        candidates = project.root / '.memvane/compile/candidates.jsonl'
-        records = [json.loads(line) for line in candidates.read_text().splitlines()]
+        records = pipeline.log_rows(project.root, 'candidate')
         attempts = [record for record in records if record.get('reason') == 'selected']
         self.assertEqual(len(attempts), 1)
         self.assertEqual(attempts[0]['attemptedEngines'], ['codex', 'claude'])
@@ -360,8 +361,7 @@ class BackfillWorkerBoundary(FixtureCase):
         progress = backfill.summary(backfill._load(decision))
         self.assertEqual((progress['state'], progress['skipped'], progress['settled']),
                          ('complete_with_skips', 1, 0))
-        candidates = project.root / '.memvane/compile/candidates.jsonl'
-        rows = [json.loads(line) for line in candidates.read_text().splitlines()]
+        rows = pipeline.log_rows(project.root, 'candidate')
         self.assertTrue(any(row.get('reason') == 'unknown_host_exhausted' for row in rows))
         retry = subprocess.run(command, cwd=str(project.root), env=env, capture_output=True, text=True, timeout=90)
         self.assertEqual(retry.returncode, 0, retry.stderr)

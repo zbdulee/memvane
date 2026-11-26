@@ -147,9 +147,9 @@ def set_engine_cooldown(root: Path, key: str, seconds: int) -> bool:
         _queue_lock_path=cp.queue_lock_path, write_text_atomic=cp.write_text_atomic)
 
 
-def log_verdict(log_path: Path, payload: dict) -> None:
-    append_jsonl(log_path, payload)
-    cp.trim_jsonl(log_path)
+def log_verdict(log, payload: dict) -> None:
+    # Log rows only (working-rules 3): no decision reads the verify log.
+    log.append(payload)
 
 
 def verify_skipped_path(root: Path, vcfg: dict) -> Path:
@@ -383,7 +383,7 @@ def _write_compile_intent(checkout, result, verdict_digest, result_digest):
 
 def defer_or_drop(
     root: Path, vcfg: dict, job: dict, attempt: dict, has_more: bool,
-    provenance: dict, reason: str, log_path: Path,
+    provenance: dict, reason: str, log_path,
 ) -> tuple[bool, bool]:
     """유료 호출을 소진했지만 판정을 얻지 못한 경우의 유일한 처리 경로.
 
@@ -504,7 +504,7 @@ def _excluded(selected_route, text: str, job: dict) -> bool:
 
 
 def _paid_verdict(root: Path, config: dict, compile_cfg: dict, vcfg: dict, job: dict,
-                  text: str, log_path: Path):
+                  text: str, log_path):
     """One paid verification of ``text``.
 
     Returns ``('verdict', recorded)`` or a closing ``(state, reason, processed)``.
@@ -670,7 +670,7 @@ def _publish_pass(root, config, job, live, wiki_root, text, expected, recorded, 
 
 
 def process_row(root: Path, config: dict, compile_cfg: dict, vcfg: dict, store, token: str,
-                row: dict, log_path: Path, selected_route) -> tuple[str, str, bool]:
+                row: dict, log_path, selected_route) -> tuple[str, str, bool]:
     """Settle one claimed row. Returns ``(state, reason, processed)`` for ``finish_verify_job``."""
     job = row['payload']
     if not card_sources_allowed(job, report=True):
@@ -785,7 +785,7 @@ def run(
     from memvane.wiki.pipeline import api as pipeline
     from memvane.wiki.workspace import api as wiki_selected_laya
     selected_route = wiki_selected_laya.selected(root)
-    log_path = qmd_config.ledger(root, ct.VERIFY_LOG) or cp.under(root, ct.VERIFY_LOG)
+    log_path = pipeline.audit_log(root, 'verify_log')
     # 0.x 전역 cooldown 파일의 고아 정리 — 후보 단위 파일로 대체됐다(engine_cooldown_path).
     cp.under(root, ct.LEGACY_VERIFY_COOLDOWN).unlink(missing_ok=True)
     max_per_run = max(1, min(

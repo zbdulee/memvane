@@ -19,6 +19,7 @@ from tests.support.queue_files import pending_text, replace_queue
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
+from memvane.wiki.pipeline import api as pipeline
 
 
 class CheckoutFingerprints(FixtureCase):
@@ -153,8 +154,7 @@ class CheckoutFingerprints(FixtureCase):
                              self.project.root, self.config, self.config['compile'], queue, self.bound), 0)
         self.assertEqual(self.calls, [])
         self.assertTrue(pending_text(queue).strip())
-        audit = self.project.root / '.memvane/compile/candidates.jsonl'
-        self.assertEqual(json.loads(audit.read_text().splitlines()[-1])['reason'], 'checkout_unavailable')
+        self.assertEqual(pipeline.log_rows(self.project.root, 'candidate')[-1]['reason'], 'checkout_unavailable')
 
     def test_writer_places_observed_fingerprint_in_verify_job(self):
         self.assertEqual(self.process(), (True, False, []))
@@ -244,8 +244,7 @@ class CheckoutFingerprints(FixtureCase):
                 self.assertEqual(result[:2], expected)
                 self.assertEqual(worker.cooldown_active(self.project.root), cooled)
                 self.assertEqual(self.candidates, [])
-        audit = self.project.root / '.memvane/compile/candidates.jsonl'
-        self.assertNotIn('synthetic source\n', audit.read_text())
+        self.assertNotIn('synthetic source\\n', json.dumps(pipeline.log_rows(self.project.root, 'candidate')))
 
     def test_unsafe_or_non_source_paths_are_rejected_before_extractor(self):
         self.project.write_note('.hidden/secret.md', 'secret\n')

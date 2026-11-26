@@ -6,29 +6,6 @@ from memvane.wiki.workspace import api as workspace
 
 
 class LegacyLedgerGuard(WriterFixture):
-    def test_retained_creation_receipt_survives_unrelated_creation_and_trim(self):
-        first = self.compile()
-        target = self.project.root / first['targetPath']
-        target.unlink()
-        folder = self.project.root / '.memvane/compile'
-        audit = folder / 'candidates.jsonl'
-        manifest = folder / 'generated-manifest.jsonl'
-        manifest.unlink()
-        (folder / 'generated-manifest.jsonl.compact-stamp').write_text('123')
-        former = audit.read_bytes()
-        # Rejected candidates are ordinary audit noise; a trim would drop the creation.
-        rejected = json.dumps({'action': 'rejected', 'targetPath': 'wiki/unused.md', 'summary': 'x' * 1024})
-        with audit.open('ab') as stream:
-            stream.write((rejected + '\n').encode() * 260)
-        self.assertEqual(self.compile(targetPath=first['targetPath'])['action'], 'deferred')
-        self.assertFalse(target.exists())
-        other = self.compile(title='Independent', canonicalKey='other',
-                             summary='Independent current fact.')
-        self.assertEqual(other['action'], 'created', other)
-        self.assertTrue(audit.read_bytes().startswith(former))
-        self.assertEqual(self.audit('generated-manifest.jsonl')[-1]['targetPath'], other['targetPath'])
-        self.assertEqual(self.compile(targetPath=first['targetPath'])['action'], 'deferred')
-
     def test_mixed_manifest_allows_only_unrelated_append_and_preserves_the_locked_source(self):
         first = self.compile()
         target = self.project.root / first['targetPath']

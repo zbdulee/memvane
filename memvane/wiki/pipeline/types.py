@@ -24,6 +24,8 @@ AUDIT_KINDS = (
     'dedup_deleted',
     'migration',
 )
+AUDIT_KEEP_ROWS = 20000
+AUDIT_PRUNE_EVERY = 512
 SUPPRESSION_KINDS = ('verify', 'dedup')
 DEDUP_STATES = ('queued', 'claimed', 'done')
 REFRESH_STATES = ('pending', 'settled', 'resolved')

@@ -84,7 +84,7 @@ class SelectedCase(FixtureCase):
         self.root = self.project.root
         self.install = build_install(self, self.project)
         self.intents = self.install.journal.parent / 'provenance-intents'
-        self.log = self.home / 'verify-log.jsonl'
+        self.log = []  # any sink with append(); the worker logs verify rows into it
         for name in ('reindex_wiki', 'wake_pending_retirement'):
             patcher = mock.patch.object(worker, name)
             patcher.start()
@@ -224,13 +224,13 @@ class VerifyIntent(SelectedCase):
         self.assertEqual(self.intent_files(), [])
         self.assertIn('status: verified', target.read_text(encoding='utf-8'))
         if reason:
-            self.assertIn(reason, [row.get('reason') for row in jsonl(self.log)])
+            self.assertIn(reason, [row.get('reason') for row in self.log])
 
     def test_a_verified_card_gets_one_intent_for_its_stamped_bytes(self):
         target, raw, job = self.card()
         self.assertEqual(self.apply_locked(target, raw, job), (True, False))
         files = self.intent_files()
-        self.assertEqual(len(files), 1, self.log.read_text(encoding='utf-8') if self.log.exists() else '')
+        self.assertEqual(len(files), 1, json.dumps(self.log))
         intent = json.loads(files[0].read_text(encoding='utf-8'))
         self.assertEqual(intent['kind'], 'compile')
         self.assertEqual(intent['cardSha'], sha(target.read_bytes()))
@@ -294,7 +294,7 @@ class VerifyIntent(SelectedCase):
         self.assertEqual(len(files), 1)
         self.assertTrue(files[0].name.endswith('.superseded.json'))
         self.assertIn('status: generated', target.read_text(encoding='utf-8'))
-        self.assertEqual(jsonl(self.log)[-1]['result'], 'publish_pending')
+        self.assertEqual(self.log[-1]['result'], 'publish_pending')
 
     def test_a_crash_before_the_publish_leaves_only_a_waiting_intent(self):
         from memvane.wiki.pipeline import api as pipeline

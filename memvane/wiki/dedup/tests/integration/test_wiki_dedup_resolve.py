@@ -15,6 +15,8 @@ import sys
 import unittest
 from unittest import mock
 
+from memvane.wiki.pipeline import api as pipeline
+
 from memvane.wiki.dedup import wiki_dedup_resolve as resolve
 from memvane.wiki.dedup import wiki_dedup_scan as scan
 from tests.support.case import FixtureCase
@@ -92,7 +94,7 @@ class Merge(ResolveCase):
         self.assertEqual((code, out), (0, {'action': 'deleted', 'deletedPath': 'entities/loser.md'}))
         self.assertFalse(loser.exists())
         self.assertTrue(winner.exists())
-        deleted = jsonl(self.compile / 'dedup-deleted.jsonl')
+        deleted = pipeline.log_rows(self.root, 'dedup_deleted')
         self.assertEqual(len(deleted), 1)
         self.assertEqual({key: deleted[0][key] for key in ('deletedPath', 'pairedWith', 'score')},
                          {'deletedPath': 'entities/loser.md', 'pairedWith': 'entities/winner.md',
@@ -120,7 +122,7 @@ class Merge(ResolveCase):
                 self.assertTrue((self.wiki / 'entities/a.md').exists())
                 self.assertTrue((self.wiki / 'entities/b.md').exists())
                 self.assertEqual(jsonl(self.queue), [entry], 'a rejected resolution stays queued')
-        self.assertEqual(jsonl(self.compile / 'dedup-deleted.jsonl'), [])
+        self.assertEqual(pipeline.log_rows(self.root, 'dedup_deleted'), [])
 
     def test_cli_rejections_before_a_claim(self):
         self.page('entities/a.md', 'a')
@@ -173,7 +175,7 @@ class Skip(ResolveCase):
         self.assertEqual((code, out['action'], out['recorded']), (0, 'skipped', True))
         self.assertTrue((self.wiki / 'entities/a.md').exists())
         self.assertTrue((self.wiki / 'entities/b.md').exists())
-        self.assertEqual(jsonl(self.compile / 'dedup-deleted.jsonl'), [])
+        self.assertEqual(pipeline.log_rows(self.root, 'dedup_deleted'), [])
         self.assertEqual(jsonl(self.queue), [])
 
     def test_entries_around_the_resolved_index_keep_their_order(self):
@@ -259,7 +261,7 @@ class KeeperBudget(ResolveCase):
                                'recorded': True, 'size': 900, 'budget': 512, 'method': 'tokenizer'})
         self.assertTrue(self.loser.exists())
         self.assertEqual(len(jsonl(self.compile / 'dedup-skipped.jsonl')), 1)
-        self.assertEqual(jsonl(self.compile / 'dedup-deleted.jsonl'), [])
+        self.assertEqual(pipeline.log_rows(self.root, 'dedup_deleted'), [])
         self.assertFalse((self.compile / 'dedup-recovery').exists())
         events = [e for e in jsonl(state / 'events.jsonl') if e.get('event') == 'wiki.card']
         self.assertEqual([(e['outcome'], e['path'], e['kept']) for e in events],
@@ -355,7 +357,7 @@ class SelectedRoute(ResolveCase):
             self.assertEqual(self.skip(0), (0, {'action': 'skipped', 'recorded': False}))
         self.assertEqual(self.queue.read_text(encoding='utf-8'), '')
         self.assertEqual(wakes, ['wake', 'wake'])
-        self.assertIn('Loser.', (self.compile / 'dedup-deleted.jsonl').read_text(encoding='utf-8'))
+        self.assertIn('Loser.', json.dumps(pipeline.log_rows(self.root, 'dedup_deleted')))
         recovery = list((self.compile / 'dedup-recovery').glob('*.json'))
         self.assertEqual(len(recovery), 1)
         saved = json.loads(recovery[0].read_text(encoding='utf-8'))
@@ -411,7 +413,7 @@ class LabelTransfer(ResolveCase):
         self.assertEqual(self.keeper.read_text(encoding='utf-8'), self.KEEPER)
         self.assertEqual(self.loser.read_text(encoding='utf-8'), self.LOSER)
         self.assertEqual(len(jsonl(self.queue)), 1)
-        self.assertEqual(jsonl(self.compile / 'dedup-deleted.jsonl'), [])
+        self.assertEqual(pipeline.log_rows(self.root, 'dedup_deleted'), [])
 
     def test_a_failed_keeper_write_keeps_the_loser_and_the_entry(self):
         # R7: the keeper changed after it was read, so the publish refuses and nothing is deleted.

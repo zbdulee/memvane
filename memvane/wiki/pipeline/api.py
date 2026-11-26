@@ -48,3 +48,13 @@ def needs_v1_migration(project_root, *, wiki_root=None):
 def migrate_from_v1(project_root, *, wiki_root=None):
     from memvane.wiki.pipeline.migrate import migrate_from_v1 as implementation
     return implementation(project_root, wiki_root=wiki_root)
+
+
+def audit_log(project_root, kind):
+    from memvane.wiki.pipeline.records import AuditLog
+    return AuditLog(project_root, kind)
+
+
+def log_rows(project_root, kind):
+    from memvane.wiki.pipeline.records import log_rows as implementation
+    return implementation(project_root, kind)

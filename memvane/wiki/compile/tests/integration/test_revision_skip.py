@@ -117,10 +117,8 @@ class RevisionSkipChecks(FixtureCase):
         return worker.process_job(self.root, self.config, self.config['compile'], self.job(trigger))
 
     def skip_reasons(self):
-        path = worker.candidate_path(self.root, self.config['compile'])
-        if not path.exists():
-            return []
-        rows = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines() if line]
+        from memvane.wiki.pipeline import api as pipeline
+        rows = pipeline.log_rows(self.root, 'candidate')
         return [row for row in rows if row.get('reason') == 'already_compiled_revision']
 
     def compile_verified_once(self):
@@ -287,9 +285,8 @@ class RevisionSkipChecks(FixtureCase):
         self.assertEqual(worker.process_job(
             self.root, self.config, self.config['compile'], job), (True, False, []))
         self.assertEqual(self.extractor_calls, [])
-        ledger = worker.candidate_path(self.root, self.config['compile'])
-        self.assertEqual(json.loads(ledger.read_text().splitlines()[0])['reason'],
-                         'source_folder_excluded')
+        from memvane.wiki.pipeline import api as pipeline
+        self.assertEqual(pipeline.log_rows(self.root, 'candidate')[0]['reason'], 'source_folder_excluded')
 
     def test_selected_source_enqueue_checks_parent_folder_not_filename(self):
         folder = self.docs / 'build'

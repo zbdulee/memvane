@@ -44,6 +44,9 @@ class WriterFixture(FixtureCase):
         return json.loads(text) if text else {}
 
     def audit(self, name):
+        if name == 'candidates.jsonl':
+            from memvane.wiki.pipeline import api as pipeline
+            return pipeline.log_rows(self.project.root, 'candidate')
         path = self.project.root / '.memvane/compile' / name
         return [json.loads(line) for line in path.read_text().splitlines()]
 

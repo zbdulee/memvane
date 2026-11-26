@@ -6,6 +6,8 @@ from pathlib import Path
 
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
+from tests.support.queue_files import replace_queue
+from memvane.wiki.pipeline import api as pipeline
 
 
 class GenerationWorkerEntryTests(FixtureCase):
@@ -17,7 +19,7 @@ class GenerationWorkerEntryTests(FixtureCase):
         job = {'ts': '2026-08-03T00:00:00Z', 'trigger': 'post_tool_source', 'engine': 'claude',
                'cwd': str(project.root), 'source': {'kind': 'file', 'path': 'docs/source.md',
                                                      'collection': project.raw_name}}
-        queue.write_text(json.dumps(job) + '\n', encoding='utf-8')
+        replace_queue(queue, [job])
         log = self.tmp / 'fake-cli-args.json'
         fake = self.tmp / 'claude-fake'
         fake.write_text('#!/usr/bin/env python3\nimport json,os,sys\n'
@@ -39,5 +41,4 @@ class GenerationWorkerEntryTests(FixtureCase):
         self.assertIn('x' * (12000 - len('Durable source facts.\n')), prompt)
         self.assertNotIn('x' * (12001 - len('Durable source facts.\n')), prompt)
         self.assertTrue((project.wiki / 'decisions/dispatch-guard-decision.md').exists(), result.stdout)
-        candidates = project.root / '.memvane/compile/candidates.jsonl'
-        self.assertNotIn('missing_extractor', candidates.read_text(encoding='utf-8'))
+        self.assertNotIn('missing_extractor', json.dumps(pipeline.log_rows(project.root, 'candidate')))

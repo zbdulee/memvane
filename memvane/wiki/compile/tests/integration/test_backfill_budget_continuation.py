@@ -14,6 +14,7 @@ from tests.support.queue_files import pending_text, replace_queue
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
+from memvane.wiki.pipeline import api as pipeline
 
 
 class BackfillBudgetContinuation(FixtureCase):
@@ -81,8 +82,7 @@ class BackfillBudgetContinuation(FixtureCase):
             worker._main_locked(argparse.Namespace(json=True, flush_all=True), project.root,
                                 config, config['compile'], queue, bound)
         self.assertEqual(compiled, ['Candidate %d' % n for n in range(4)])
-        audit = project.root / '.memvane/compile/candidates.jsonl'
-        rows = [json.loads(line) for line in audit.read_text().splitlines()]
+        rows = pipeline.log_rows(project.root, 'candidate')
         capped = next(row for row in rows if row.get('reason') == 'cards_per_source_cap')
         self.assertEqual((capped['cardsReturned'], capped['cardsCompiled']), (14, 4))
         self.assertEqual(len(capped['skippedTitles']), 10)

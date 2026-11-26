@@ -12,6 +12,7 @@ from tests.support.wiki_handoff import verify_rows
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
+from memvane.wiki.pipeline import api as pipeline
 
 
 class WriteIdentity(FixtureCase):
@@ -73,11 +74,9 @@ class WriteIdentity(FixtureCase):
         result = self.compile('Unrelated B', 'unrelated-b', 'docs/b.md')
         self.assertEqual((result['action'], result['reason']), ('merge-needed', 'identity_mismatch'))
         self.assertEqual(self.card.read_bytes(), before)
-        queue = self.project.root / '.memvane/compile/merge-needed.jsonl'
-        queued = json.loads(queue.read_text().splitlines()[-1])
+        queued = pipeline.log_rows(self.project.root, 'merge_needed')[-1]
         self.assertEqual((queued['reason'], queued['candidate']['title']), ('identity_mismatch', 'Unrelated B'))
-        audit = self.project.root / '.memvane/compile/candidates.jsonl'
-        self.assertEqual(json.loads(audit.read_text().splitlines()[-1])['action'], 'merge-needed')
+        self.assertEqual(pipeline.log_rows(self.project.root, 'candidate')[-1]['action'], 'merge-needed')
 
     def test_same_key_or_shared_source_are_not_identity_mismatches(self):
         for title, key, source in (('Renamed A', 'existing-a', 'docs/b.md'),
@@ -120,7 +119,7 @@ class WriteIdentity(FixtureCase):
         self.config['compile']['verify']['enabled'] = False
         self.assertEqual(self.compile('Renamed A', 'existing-a', 'docs/a.md'), {})
         folder = self.project.root / '.memvane/compile'
-        row, = [json.loads(raw) for raw in (folder / 'candidates.jsonl').read_bytes().splitlines()]
+        row, = pipeline.log_rows(self.project.root, 'candidate')
         self.assertEqual(row['targetPath'], self.card.relative_to(self.project.root).as_posix())
         self.assertEqual((row['action'], row['lint']['findings']), ('merge-needed', ['verified_replacement_requires_review']))
         self.assertEqual(verify_rows(self.project.root), [])

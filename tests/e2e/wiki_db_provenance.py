@@ -86,7 +86,7 @@ class WikiDbProvenance(FixtureCase):
         self.fixture.write_card(ANCHOR_REL, title='Emerald heron', sources=[anchor_note],
                                 body='The emerald heron nests beside the north pond.\n')
         self.card = self.wiki / CARD_REL
-        self.log = self.home / 'verify-log.jsonl'
+        self.log = []  # any sink with append(); the worker logs verify rows into it
         self.engines = FakeEngines({'verify': VERDICT}).install(self)
         # Fixture runs queue no runtime wake (``runtime.api.request`` answers None there);
         # the verify worker's selected sync wake is recorded instead.
@@ -166,7 +166,7 @@ class WikiDbProvenance(FixtureCase):
         return processed, state == 'queued'
 
     def verify_log(self):
-        return self.log.read_text(encoding='utf-8') if self.log.exists() else ''
+        return json.dumps(self.log)
 
     def pending(self):
         if not self.intents.exists():

@@ -97,7 +97,8 @@ class VerifyCase(FixtureCase):
         return jsonl(self.compile_dir / name)
 
     def log(self):
-        return self.ledger('verify-log.jsonl')
+        from memvane.wiki.pipeline import api as pipeline
+        return pipeline.log_rows(self.root, 'verify_log')
 
     def rows(self):
         from memvane.wiki.pipeline import api as pipeline
