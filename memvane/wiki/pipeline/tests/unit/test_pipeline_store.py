@@ -98,14 +98,6 @@ class PipelineStoreTests(FixtureCase):
                     else:
                         os.environ['QMD_FORCE_DEAD_PIDS'] = orig
 
-            store.enqueue_verify_job('v-old', 'topics/old.md', 'h1', {'n': 1})
-            store.enqueue_verify_job('v-p1', 'topics/p1.md', 'h2', {'n': 2})
-            store.enqueue_verify_job('v-p2', 'topics/p2.md', 'h3', {'n': 3})
-            vclaimed = store.claim_verify_jobs(
-                2, os.getpid(), 'vtok', priority_targets=['topics/p1.md', 'topics/p2.md'], reserve_backlog=True,
-            )
-            self.assertEqual([v['job_id'] for v in vclaimed], ['v-p1', 'v-old'])
-
             store.append_audit('verify_log', {'action': 'created'}, target_path='topics/p1.md')
             self.assertEqual(len(store.query_audit('verify_log', target_path='topics/p1.md')), 1)
             store.set_cooldown('compile', 'claude', 999.0, {'reason': 'limit'})
@@ -156,6 +148,70 @@ class DecisionLedgerTests(FixtureCase):
             self.assertTrue(store.enqueue_dedup_pair('a.md', 'b.md', 0.91))
             self.assertEqual(len(store.dedup_pairs()), 1)
 
+
+
+class VerifyQueueTests(FixtureCase):
+    def setUp(self):
+        super().setUp()
+        self.project = make_project(self.home, git=False)
+
+    def test_budget_takes_produced_targets_first_and_reserves_one_backlog_row(self):
+        with pipeline.open_pipeline(self.project.root) as store:
+            store.append_jobs('verify', [{'targetPath': 'old.md'}, {'targetPath': 'p1.md'}, {'targetPath': 'p2.md'}])
+            batch = store.claim_verify_batch(os.getpid(), 'tok', budget=2, produced=['p1.md', 'p2.md'])
+            self.assertEqual([r['payload']['targetPath'] for r in batch['claimed']], ['p1.md', 'p2.md', 'old.md'])
+            self.assertEqual((batch['fresh'], batch['backlog'], batch['remaining']), (2, 1, 0))
+
+    def test_backlog_beyond_1024_rows_has_no_scan_limit(self):
+        with pipeline.open_pipeline(self.project.root) as store:
+            store.append_jobs('verify', [{'targetPath': f'c{i}.md'} for i in range(1030)])
+            store.append_jobs('verify', [{'targetPath': 'new.md'}])
+            batch = store.claim_verify_batch(os.getpid(), 'tok', budget=3, produced=['new.md'])
+            self.assertEqual([r['payload']['targetPath'] for r in batch['claimed']], ['new.md', 'c0.md', 'c1.md'])
+            self.assertEqual(batch['remaining'], 1028)
+
+    def test_a_newer_row_in_any_state_supersedes_an_older_queued_row(self):
+        with pipeline.open_pipeline(self.project.root) as store:
+            store.append_jobs('verify', [{'targetPath': 'a.md', 'rev': 1}], pending_blobs=[b'one'])
+            store.append_jobs('verify', [{'targetPath': 'a.md', 'rev': 2}])
+            first = store.claim_verify_batch(os.getpid(), 'tok', budget=5)
+            self.assertEqual([r['payload']['rev'] for r in first['claimed']], [2])
+            self.assertEqual(first['superseded'], 1)
+            self.assertTrue(store.finish_verify_job(first['claimed'][0]['jobId'], 'tok', 'done', 'verified'))
+            # An older row a dead worker held comes back after the newer one finished.
+            store.append_jobs('verify', [{'targetPath': 'b.md', 'rev': 1}])
+            old = store.claim_verify_batch(999999, 'dead', budget=5)['claimed'][0]
+            store.append_jobs('verify', [{'targetPath': 'b.md', 'rev': 2}])
+            newer = store.claim_verify_batch(os.getpid(), 'tok2', budget=5)['claimed'][0]
+            self.assertTrue(store.finish_verify_job(newer['jobId'], 'tok2', 'done', 'verified'))
+            self.assertEqual(store.recover_dead_claims('verify', lambda pid: False)['requeued'], 1)
+            again = store.claim_verify_batch(os.getpid(), 'tok3', budget=5)
+            self.assertEqual((again['claimed'], again['superseded']), ([], 1))
+            self.assertEqual(store.verify_job(old['jobId'])['reason'], 'superseded')
+            self.assertEqual(store.job_blob('verify', old['jobId']), None)
+
+    def test_recorded_verdict_survives_a_dead_claim_and_terminal_states_drop_the_image(self):
+        with pipeline.open_pipeline(self.project.root) as store:
+            store.append_jobs('verify', [{'targetPath': 'a.md'}], pending_blobs=[b'img'])
+            row = store.claim_verify_batch(999999, 'dead', budget=1)['claimed'][0]
+            self.assertFalse(store.record_verify_verdict(row['jobId'], 'other', {'verdict': 'pass'}))
+            self.assertTrue(store.record_verify_verdict(row['jobId'], 'dead', {'verdict': 'pass'}))
+            self.assertEqual(store.recover_dead_claims('verify', lambda pid: False)['requeued'], 1)
+            row = store.claim_verify_batch(os.getpid(), 'live', budget=1)['claimed'][0]
+            self.assertEqual(row['payload']['_verdict'], {'verdict': 'pass'})
+            self.assertEqual(row['attempts'], 2)
+            self.assertEqual(store.job_blob('verify', row['jobId']), b'img')
+            self.assertTrue(store.finish_verify_job(row['jobId'], 'live', 'done', 'verified'))
+            self.assertFalse(store.finish_verify_job(row['jobId'], 'live', 'done', 'verified'))
+            self.assertEqual(store.job_blob('verify', row['jobId']), None)
+            self.assertEqual(store.open_verify_jobs(), [])
+
+    def test_release_returns_an_interrupted_runs_rows(self):
+        with pipeline.open_pipeline(self.project.root) as store:
+            store.append_jobs('verify', [{'targetPath': 'a.md'}, {'targetPath': 'b.md'}])
+            store.claim_verify_batch(os.getpid(), 'tok', budget=2)
+            self.assertEqual(store.release_verify_claim('tok'), 2)
+            self.assertEqual([r['state'] for r in store.open_verify_jobs()], ['queued', 'queued'])
 
 class JobQueueTests(FixtureCase):
     def setUp(self):

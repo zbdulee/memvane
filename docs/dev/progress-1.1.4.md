@@ -238,7 +238,8 @@ C4~C11은 서로 의존한다(C7은 C5·C6, C8은 C7, C9는 C7·C8). 각 커밋 
 | C5 inbox + refresh 원장 | `ec84ef63` | 훅 `record_pending_refresh` → `.memvane/compile/edit-inbox.jsonl`(`memvane-edit-inbox-v1`, `edit-inbox.jsonl.lock` 0.15초, 한 번의 `O_APPEND`, 짧은 쓰기는 `ftruncate`로 원복, 8 MiB `busy`). worker `absorb_edit_inbox`(rename→`INSERT OR IGNORE eventId`+파일명 기록 한 트랜잭션→삭제→원문별 최신만 남김). 미해결 판정은 원장+미흡수 inbox를 `ts` 순으로 접는다. 정산(`source-refresh-settled.json`) → `refresh_events.settled_*`. SessionStart는 매번 `laya-compile` wake(A2), 훅은 원장을 열지 않는다. `refresh_lanes.py`·`quarantine_corrupt_pending`·`compact_pending_refreshes`·`read_pending_refreshes`·CLI 삭제(제품 호출부 0). 1.x 공용/전용 refresh 혼재 시험 삭제: `test_markerless_backfill_refresh.py`(4), `test_source_path_line_separators.py`(2), `test_wiki_freshness`의 공용 원장·quarantine 시험(Python 52→46). 검사: card 9/9(py46)·intake 13/13(py189)·host 24/24(py219)·compile 41/41(py264)·verify 18/18(py191)·workspace 6/6·lifecycle 10/10·dedup 6/6·diagnostics 9/9·sync 16/16, structure 28/28, v1_guard 0, py3.9 import. teeth: 원복 없는 짧은 쓰기·도착순 정렬·`OR IGNORE` 제거·8 MiB 상한 제거·SessionStart wake 제거 각각 FAIL 확인 |
 | C7a 큐 API | `5dab68fd` | `queues.py` mixin: `claim_jobs`(queued 전부)·`finish_claim`(남은 행을 claim 시점 순서로 앞에 재적재)·`plan_jobs`(planner 한 트랜잭션)·`append_jobs`·`recover_dead_claims`(4번째 claim에서 `dropped`/`requeue_exhausted`)·`job_blob`. `compile_jobs`/`verify_jobs`에 `reason`. pipeline 3/3(py21), structure 26/26, v1_guard 0. worker·enqueue 연결은 C7b |
 | C7b source 큐 → 원장 | `6f253093` | `workspace/ledger_queue.py`: `claim_queue`/`read_queue`가 source 큐에서 원장 claim(`LedgerClaim`)·행(`LedgerRows.finish`)을 돌려준다. 죽은 claim은 다음 claim이 되돌리고, 재시도 한도를 넘은 행은 receipt(`write_discard_receipt`)가 기록된 뒤에만 `dropped`(`requeue_exhausted`, `audit_events` discard 로그)로 바꾸며 기록 실패 시 claim을 남긴다. `intake/source_queue.py`는 `plan_source_batch`를 원장 한 트랜잭션에서 돌리고 교체 행은 원래 자리를 지킨다. reader(`selected_execution._backlog`, `_queue_busy`, worker `_busy_report`, `refresh_settlement.queued_events`)는 원장 행을 센다. `safe_queue_path(native=True)`는 원장 큐에서 공개 경로를 돌려준다. 파일 claim·private 반환 전용 시험 삭제: `test_claim_recovery.py`(15), `test_private_backfill_return.py`(1), `test_stale_backlog_1015`의 batch 3개, `test_revision_skip`의 무잠금 대조 1개(원장 claim이 중복 과금을 막아 전제가 사라짐), `test_source_enqueue`의 파일 이미지 9개, `test_wiki_backfill`의 discard 원장 1개, `test_native_queue_rows`의 source 1개. 검사: compile 39/39(py244), intake 13/13(py179), verify 18/18(py191), lifecycle 10/10(py112), workspace 6/6(py15), host·card·pipeline·dedup·sync·diagnostics·runtime 통과, structure 28/28, v1_guard 0, py3.9 import. teeth: finish 순서·교체 자리·receipt 실패 시 claim 유지·queued_events 원장 읽기 각각 FAIL 확인 |
-| C7c 계획 게이트 | (이 커밋) | §10.3: 제품 verify는 선택된 route 전용이라 기계 삭제가 닿지 않음을 확인, 행 모델·V1~V21·Q1~Q5·커밋 단위 C8a~C9. 문서만 변경 |
+| C7c 계획 게이트 | `37a8a9cb` | §10.3: 제품 verify는 선택된 route 전용이라 기계 삭제가 닿지 않음을 확인, 행 모델·V1~V21·Q1~Q5·커밋 단위 C8a~C9. 문서만 변경 |
+| C8a 원장 verify API | (이 커밋) | `pipeline/verify_queue.py`(`VerifyQueueMixin`): `claim_verify_batch`(더 새 행이 상태 무관하게 있으면 `done/superseded`, 생산 대상 우선·backlog 예약 1건), `record_verify_verdict`(payload `_verdict`), `finish_verify_job`(done/dropped는 blob NULL), `release_verify_claim`, `open_verify_jobs`, `verify_job`. `drop_jobs('verify')`도 blob을 비운다. 시험 전용이던 `store.enqueue_verify_job`·`claim_verify_jobs`·`complete_verify_job`·`requeue_verify_jobs`(제품 호출 0, `rg`) 삭제. `test_pipeline_store` 10→15(옛 verify 단정 1블록 삭제, 새 시험 5: V10·V12·V16·budget·release). pipeline 3/3, structure 28/28, v1_guard 0, py3.9 import. teeth: superseded가 done 행을 무시·backlog 예약 제거·판정 기록 무시·terminal blob 유지 각각 FAIL |
 
 ①의 검사 결과(커밋 `a0fad489` 워킹트리):
 
@@ -266,7 +267,7 @@ teeth(제품 줄을 깨서 FAIL 확인, 확인 후 원복):
 
 ## 10. 다음 재개 지점
 
-**현재 재개 지점(task_004cb80b546e): C7c 계획 게이트(§10.3) 커밋 뒤 코디네이터 검토 대기.** 답을 받기 전에는 verify 제품 코드를 고치지 않는다. 승인 뒤 C8a→C8b→C8c→C9→C10~C15 순서로 진행한다.
+**현재 재개 지점(task_004cb80b546e): C8a 완료, 다음은 C8b+C8c(§10.3).** Q1~Q5는 사용자 승인(msg_7ec3d3939641, 전부 추천안). Q2로 지우는 '검수 실패 시 삭제' 서술은 C15에서 working-rules·README·resolver 지침을 현재 동작에 맞게 고친다.
 
 이전 dispatch(task_4eea2e2522db)는 C7b까지 하고 미완으로 종료했다. 코디네이터가 §10.2 질문(msg_dd37abb859e8)에 답하지 않고 멈춰, 재설계 방향은 승인된 원칙(D1=A·원칙 3·A4) 안에 있다고 보되 규모(제품 약 4,000줄 삭제, 시험 약 30파일 재작성)를 고려해 새 worker가 이어받도록 정했다. 다음 worker는 §10.2를 C7c로 시작하고, 이어서 C10(tombstone 제거·dedup 이름표 이전)→C11(로그·억제·쿨다운·dedup 큐)→C12(마이그레이션 연결: worker 시작·`selected_execution` 양보·wiki-compile skill 거절)→C13(조회 CLI)→C14(E2E)→C15(문서·release.md 개정·working-rules 77·79행·ROADMAP Python 3.11)를 진행한다. §5의 C6 refresh는 C5에 포함됐다. C4의 `migrate_from_v1`은 아직 진입 경로에 연결하지 않았다(C12).
 
@@ -290,7 +291,7 @@ teeth(제품 줄을 깨서 FAIL 확인, 확인 후 원복):
 - 규모: 제품 약 4,000줄 삭제·약 500줄 신규, verify 18개·compile 약 12개 시험 파일 재작성. 상태 조합표는 §6.1 P칸(게시)과 새 V칸(검수 중 사람 편집·원문 변경·같은 대상 중복·claim 중단·검수 실패 삭제 R4/R5)으로 다시 쓴다.
 - 사용자 승인: 이 방향(행 하나, 숨김 파일·`Work` hold를 행 상태로, claim→재확인→유료 검수 1회→`publish_card`→finish, 혼합 버전 장치 삭제). 세부는 §10.3.
 
-### 10.3 C7c 계획 게이트 — verify 행 모델·V칸·커밋 단위 (task_004cb80b546e, 검토 대기)
+### 10.3 C7c 계획 게이트 — verify 행 모델·V칸·커밋 단위 (task_004cb80b546e, Q1~Q5 추천안 승인)
 
 #### 조사로 확인한 사실 (HEAD `fa12f578`)
 

@@ -163,7 +163,8 @@ class JobQueueMixin:
         with self._write_tx() as cur:
             dropped = 0
             for job_id in job_ids:
+                blob = ', pending_blob = NULL' if queue == 'verify' else ''
                 cur.execute(f"UPDATE {table} SET state = 'dropped', reason = ?, claim_pid = NULL, "
-                            'claim_token = NULL, updated_ns = ? WHERE job_id = ?', (reason, now, job_id))
+                            f'claim_token = NULL{blob}, updated_ns = ? WHERE job_id = ?', (reason, now, job_id))
                 dropped += cur.rowcount
         return dropped

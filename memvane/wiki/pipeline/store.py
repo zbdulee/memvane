@@ -12,6 +12,7 @@ import uuid
 from memvane.kernel.errors import _query_only_uri
 from memvane.wiki.pipeline.decisions import DecisionLedgerMixin, insert_generation
 from memvane.wiki.pipeline.queues import JobQueueMixin
+from memvane.wiki.pipeline.verify_queue import VerifyQueueMixin
 from memvane.wiki.pipeline.schema import DDL_STATEMENTS
 from memvane.wiki.pipeline.types import (
     AUDIT_KINDS,
@@ -92,7 +93,7 @@ def _loads(raw: str | None, default: object = None) -> object:
     return json.loads(raw)
 
 
-class PipelineStore(DecisionLedgerMixin, JobQueueMixin):
+class PipelineStore(DecisionLedgerMixin, JobQueueMixin, VerifyQueueMixin):
     """Transactional handle over ``wiki-pipeline.sqlite3``."""
 
     def __init__(self, db_path: Path, *, readonly: bool = False,
@@ -420,70 +421,6 @@ class PipelineStore(DecisionLedgerMixin, JobQueueMixin):
         if state is None:
             return self._conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
         return self._conn.execute(f'SELECT COUNT(*) FROM {table} WHERE state = ?', (state,)).fetchone()[0]
-
-    def enqueue_verify_job(self, job_id: str, target_path: str, source_hash: str | None, payload: dict) -> dict:
-        now = time.time_ns()
-        with self._write_tx() as cur:
-            cur.execute(
-                'INSERT OR REPLACE INTO verify_jobs(job_id, target_path, source_hash, payload_json, '
-                'state, created_ns, updated_ns) VALUES(?, ?, ?, ?, ?, ?, ?)',
-                (job_id, target_path, source_hash, _dumps(payload), 'queued', now, now),
-            )
-            row = cur.execute('SELECT * FROM verify_jobs WHERE job_id = ?', (job_id,)).fetchone()
-        return self._job_row(row)
-
-    def claim_verify_jobs(self, limit: int, claim_pid: int, claim_token: str, *,
-                          priority_targets: list[str] | tuple[str, ...] = (),
-                          reserve_backlog: bool = True) -> list[dict]:
-        if limit <= 0:
-            return []
-        now = time.time_ns()
-        with self._write_tx() as cur:
-            queued = cur.execute(
-                "SELECT * FROM verify_jobs WHERE state = 'queued' ORDER BY created_ns, job_id"
-            ).fetchall()
-            if not queued:
-                return []
-            prio_set = set(priority_targets)
-            priority_rows = [r for r in queued if r['target_path'] in prio_set]
-            backlog_rows = [r for r in queued if r['target_path'] not in prio_set]
-            if reserve_backlog and limit > 1 and backlog_rows and len(priority_rows) >= limit:
-                chosen = [*priority_rows[:limit - 1], backlog_rows[0]]
-            else:
-                chosen = [*priority_rows, *backlog_rows][:limit]
-            ids = [r['job_id'] for r in chosen]
-            marks = ','.join('?' for _ in ids)
-            cur.execute(
-                f"UPDATE verify_jobs SET state = 'claimed', claim_pid = ?, claim_token = ?, "
-                f'attempt_count = attempt_count + 1, updated_ns = ? WHERE job_id IN ({marks})',
-                (int(claim_pid), claim_token, now, *ids),
-            )
-            by_id = {r['job_id']: r for r in cur.execute(
-                f'SELECT * FROM verify_jobs WHERE job_id IN ({marks})', ids).fetchall()}
-        return [self._job_row(by_id[jid]) for jid in ids]
-
-    def complete_verify_job(self, job_id: str, claim_token: str, *, state: str = 'done') -> bool:
-        now = time.time_ns()
-        with self._write_tx() as cur:
-            cur.execute(
-                "UPDATE verify_jobs SET state = ?, claim_pid = NULL, claim_token = NULL, updated_ns = ? "
-                "WHERE job_id = ? AND state = 'claimed' AND claim_token = ?",
-                (state, now, job_id, claim_token),
-            )
-            return cur.rowcount > 0
-
-    def requeue_verify_jobs(self, job_ids: list[str] | tuple[str, ...], claim_token: str) -> int:
-        if not job_ids:
-            return 0
-        now = time.time_ns()
-        marks = ','.join('?' for _ in job_ids)
-        with self._write_tx() as cur:
-            cur.execute(
-                f"UPDATE verify_jobs SET state = 'queued', claim_pid = NULL, claim_token = NULL, "
-                f"updated_ns = ? WHERE job_id IN ({marks}) AND state = 'claimed' AND claim_token = ?",
-                (now, *job_ids, claim_token),
-            )
-            return cur.rowcount
 
     def recover_dead_verify_claims(self, *, max_attempts: int = 3) -> dict:
         return self._recover_dead_claims('verify_jobs', max_attempts=max_attempts)
