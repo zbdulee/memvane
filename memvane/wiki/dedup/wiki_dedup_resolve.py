@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import stat
 import sys
 import uuid
@@ -239,7 +240,8 @@ def transfer_labels(root: Path, wiki_root: Path, keeper_rel: str, loser: Path, l
         outcome = pipeline.publish_card(root, wiki_root, keeper.relative_to(wiki_root), rewritten,
                                         expected_target_sha=hashlib.sha256(raw).hexdigest(),
                                         lock_context=nullcontext)
-    except (OSError, ValueError):
+    except (OSError, ValueError, sqlite3.Error):
+        # 1번 기준: 이름표를 옮기지 못하면 loser를 지우지 않는다(원장 busy 포함).
         return 'label_transfer_failed'
     return None if outcome.state == 'published' else 'label_transfer_failed'
 

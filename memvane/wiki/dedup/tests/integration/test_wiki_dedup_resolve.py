@@ -440,6 +440,18 @@ class LabelTransfer(ResolveCase):
         self.assertEqual(len(self.queued()), 1)
 
 
+    def test_a_busy_ledger_during_the_keeper_write_keeps_the_loser_and_the_entry(self):
+        # N6: a ledger error is a failed transfer, not a traceback, and deletes nothing.
+        import sqlite3
+        from memvane.wiki.pipeline import api as pipeline
+        with mock.patch.object(pipeline, 'publish_card',
+                               side_effect=sqlite3.OperationalError('database is locked')):
+            code, out = self.merge(0, 'concepts/beta.md')
+        self.assertEqual(out, {'action': 'rejected', 'reason': 'label_transfer_failed', 'kept': 'concepts/beta.md'})
+        self.assertEqual(self.keeper.read_text(encoding='utf-8'), self.KEEPER)
+        self.assertEqual(self.loser.read_text(encoding='utf-8'), self.LOSER)
+        self.assertEqual(len(self.queued()), 1)
+
 class EntryProcess(ResolveCase):
     def test_wiki_dedup_resolve_entry_merges_one_pair(self):
         self.page('entities/loser.md', '---\ntitle: Loser\n---\n\nLoser content.\n')
