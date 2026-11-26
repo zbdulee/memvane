@@ -228,6 +228,35 @@ class RecordedVerdict(VerifyCase):
         self.assertEqual(self.log()[-1]['reason'], 'requeue_exhausted')
 
 
+class PublishRecovery(VerifyCase):
+    def test_an_unrecoverable_interrupted_publish_does_not_stop_the_verify_pass(self):
+        """I1: the txn closes ``aborted`` and the queued row is still claimed and verified."""
+        from memvane.wiki.pipeline import api as pipeline
+        self.setup()
+        wiki = self.root / '.memvane/wiki'
+
+        class Crash(Exception):
+            pass
+
+        def crash():
+            raise Crash
+        (wiki / 'poisoned').mkdir()
+        with self.assertRaises(Crash):
+            pipeline.publish_card(self.root, wiki, 'poisoned/a.md', '# A\n', lock_context=crash)
+        os.rename(wiki / 'poisoned', self.root / 'moved')
+        os.symlink(self.root / 'moved', wiki / 'poisoned')
+        fake = self.fake()
+        for _ in range(2):
+            result = self.run_verify()
+            self.assertNotEqual(result.get('reason'), 'publish_recovery_unavailable')
+        self.assertEqual(len(fake.calls), 1)
+        self.assert_status('verified')
+        with pipeline.open_pipeline(self.root, readonly=True) as store:
+            self.assertEqual(store.open_publish_txns(), [])
+            self.assertEqual(len(store.open_publish_txns(state='aborted')), 1)
+        self.assertEqual(len(list((self.root / 'moved').glob('.publish-*.tmp'))), 1)
+
+
 class Transient(VerifyCase):
     def test_an_absent_cli_is_logged_and_neither_cools_nor_deletes(self):
         self.setup()

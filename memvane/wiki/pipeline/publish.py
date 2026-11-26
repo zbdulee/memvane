@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import errno
 import fcntl
 import hashlib
 import os
@@ -15,6 +16,7 @@ from memvane.kernel.atomic_rename import fsync_dir, rename_exchange, rename_nore
 from memvane.wiki.pipeline.store import _ensure_compile_dir, open_pipeline
 from memvane.wiki.pipeline.types import (
     FENCE_GLOBAL_PUBLISH,
+    PUBLISH_STATES,
     TEMP_PREFIX,
     TEMP_SUFFIX,
     PipelineError,
@@ -24,7 +26,8 @@ from memvane.wiki.pipeline.types import (
 
 def _sha256_file(path: Path) -> tuple[int, str] | None:
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        # O_NONBLOCK: a FIFO put at a card or temp path would block a read-only open forever.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
     except FileNotFoundError:
         return None
     try:
@@ -141,16 +144,27 @@ def _settle_exchange(temp_path: Path, target: Path, expected: str) -> str:
 
     The locks are advisory, so an editor can save between the CAS read and the
     exchange. The displaced bytes then differ from ``expected``: swap back so the
-    person's save is live again, and drop our card.
+    person's save is live again. The caller closes the txn, then removes the temp
+    (``_finish_then_drop_temp``).
     """
     displaced = _sha256_file(temp_path)
     if displaced is not None and displaced[1] != expected:
         _exchange(temp_path, target)
-        _unlink_if_present(temp_path)
         return 'conflict_user_edited'
-    _unlink_if_present(temp_path)
-    fsync_dir(target.parent)
     return 'published'
+
+
+def _finish_then_drop_temp(store, tx_id: str, state: str, temp_path: Path, **audit) -> None:
+    """Close the txn before removing its temp.
+
+    The other order lets a stop between the two read as "renamed, then a person
+    edited": recovery would close a conflict or abort as ``published_user_edited``
+    and record a generation for a card that never landed. A temp left behind a
+    closed txn is the orphan sweep's to remove.
+    """
+    store.finish_publish_txn(tx_id, state, **audit)
+    _unlink_if_present(temp_path)
+    fsync_dir(temp_path.parent)
 
 
 def _cas_matches(live_sha: str | None, expected_target_sha: str | None) -> bool:
@@ -165,20 +179,18 @@ def _apply(store, tx_id: str, rel: str, temp_path: Path, target: Path, temp_sha:
     live_sha = live[1] if live is not None else None
     if live_sha == temp_sha:
         # Same bytes already live (a same-second repeat or a replayed publish).
-        _unlink_if_present(temp_path)
-        store.finish_publish_txn(tx_id, 'published', audit_kind=audit_kind, audit_payload=audit_payload)
+        _finish_then_drop_temp(store, tx_id, 'published', temp_path,
+                               audit_kind=audit_kind, audit_payload=audit_payload)
         return PublishOutcome(tx_id, rel, 'published', live_sha=live_sha, displaced_sha=expected)
     if not _cas_matches(live_sha, expected):
-        _unlink_if_present(temp_path)
-        store.finish_publish_txn(tx_id, 'conflict_user_edited')
+        _finish_then_drop_temp(store, tx_id, 'conflict_user_edited', temp_path)
         return PublishOutcome(tx_id, rel, 'conflict_user_edited', live_sha=live_sha, displaced_sha=expected)
     if expected is None:
         try:
             _create_into_place(temp_path, target)
         except FileExistsError:
             # A person created the path after the CAS read; keep their file.
-            _unlink_if_present(temp_path)
-            store.finish_publish_txn(tx_id, 'conflict_user_edited')
+            _finish_then_drop_temp(store, tx_id, 'conflict_user_edited', temp_path)
             current = _sha256_file(target)
             return PublishOutcome(tx_id, rel, 'conflict_user_edited',
                                   live_sha=current[1] if current else None, displaced_sha=None)
@@ -187,9 +199,14 @@ def _apply(store, tx_id: str, rel: str, temp_path: Path, target: Path, temp_sha:
         _exchange(temp_path, target)
         state = _settle_exchange(temp_path, target, expected)
     if state == 'published':
-        store.finish_publish_txn(tx_id, 'published', audit_kind=audit_kind, audit_payload=audit_payload)
+        if expected is None:
+            store.finish_publish_txn(tx_id, 'published', audit_kind=audit_kind, audit_payload=audit_payload)
+        else:
+            # The temp name holds the displaced card the CAS matched.
+            _finish_then_drop_temp(store, tx_id, 'published', temp_path,
+                                   audit_kind=audit_kind, audit_payload=audit_payload)
         return PublishOutcome(tx_id, rel, 'published', live_sha=temp_sha, displaced_sha=expected)
-    store.finish_publish_txn(tx_id, state)
+    _finish_then_drop_temp(store, tx_id, state, temp_path)
     current = _sha256_file(target)
     return PublishOutcome(tx_id, rel, state, live_sha=current[1] if current else None, displaced_sha=expected)
 
@@ -228,8 +245,7 @@ def publish_card(project_root: Path | str, wiki_root: Path | str, target_path: P
         locks = lock_context() if lock_context is not None else _card_locks(root)
         with locks:
             if store.get_fence(FENCE_GLOBAL_PUBLISH) is not None:
-                _unlink_if_present(temp_path)
-                store.finish_publish_txn(resolved_tx, 'aborted')
+                _finish_then_drop_temp(store, resolved_tx, 'aborted', temp_path)
                 return PublishOutcome(resolved_tx, rel, 'aborted', displaced_sha=expected_target_sha)
             return _apply(store, resolved_tx, rel, temp_path, target, temp_sha,
                           expected_target_sha, audit_kind, audit_payload)
@@ -238,7 +254,13 @@ def publish_card(project_root: Path | str, wiki_root: Path | str, target_path: P
 def recover_publishes(project_root: Path | str, wiki_root: Path | str, *,
                       lock_context=None) -> list[PublishOutcome]:
     """Deterministically roll forward, roll back, or finalize interrupted publish txns,
-    then remove ``.publish-*.tmp`` files that no open txn owns."""
+    then remove ``.publish-*.tmp`` files that no open txn owns.
+
+    One txn that cannot be recovered (its folder became a symlink, its path a
+    directory or FIFO, its parent a file, or the file system refuses the exchange)
+    is closed ``aborted`` with its files left in place, so the other txns and the
+    caller's verify pass still run. Store errors still propagate.
+    """
     root, wiki = Path(project_root), Path(wiki_root)
     outcomes: list[PublishOutcome] = []
     with open_pipeline(root) as store:
@@ -246,18 +268,51 @@ def recover_publishes(project_root: Path | str, wiki_root: Path | str, *,
         locks = lock_context() if lock_context is not None else _card_locks(root)
         with locks:
             for row in pending:
-                outcomes.append(_recover_one(store, wiki, row))
+                try:
+                    outcomes.append(_recover_one(store, wiki, row))
+                except (PipelineError, OSError) as exc:
+                    store.finish_publish_txn(row['tx_id'], 'aborted')
+                    outcomes.append(PublishOutcome(
+                        row['tx_id'], row['target_path'], 'aborted',
+                        displaced_sha=row['expected_target_sha'],
+                        reason='unrecoverable:' + _error_code(exc),
+                    ))
             _sweep_orphan_temps(store, wiki)
     return outcomes
 
 
+def _error_code(exc: BaseException) -> str:
+    if isinstance(exc, OSError) and exc.errno is not None:
+        return errno.errorcode.get(exc.errno, str(exc.errno))
+    return str(exc) or type(exc).__name__
+
+
+def _replaceable_leftover(path: Path, row: dict) -> bool:
+    """The txn's own candidate, or after a published exchange the card the CAS matched."""
+    try:
+        info = _sha256_file(path)
+    except (PipelineError, OSError):
+        return False
+    if info is None:
+        return False
+    if info == (row['temp_ino'], row['temp_sha']):
+        return True
+    return row['state'] == 'published' and info[1] == row['expected_target_sha']
+
+
 def _sweep_orphan_temps(store, wiki: Path) -> int:
-    """A temp written before its txn commit has no row; nothing will ever rename it."""
+    """Remove temps no open txn will ever rename.
+
+    A temp written before its txn commit has no row. A temp behind a closed txn
+    goes only when it holds that txn's own candidate bytes, which a later publish
+    can write again, or the card a published exchange displaced after its CAS
+    matched; any other file there (an editor's save, an unknown file) stays.
+    """
     if not wiki.is_dir() or wiki.is_symlink():
         return 0
     owned = {row['temp_name'] for row in store.open_publish_txns(state='publishing')}
-    removed = 0
     now = time.time()
+    leftovers: list[Path] = []
     for directory, dirnames, filenames in os.walk(wiki, followlinks=False):
         dirnames[:] = [d for d in dirnames if not d.startswith('.')]
         for name in filenames:
@@ -268,10 +323,19 @@ def _sweep_orphan_temps(store, wiki: Path) -> int:
                 info = os.lstat(path)
             except FileNotFoundError:
                 continue
-            if not stat.S_ISREG(info.st_mode) or now - info.st_mtime < ORPHAN_TEMP_MIN_AGE_SECONDS:
-                continue
-            _unlink_if_present(path)
-            removed += 1
+            if stat.S_ISREG(info.st_mode) and now - info.st_mtime >= ORPHAN_TEMP_MIN_AGE_SECONDS:
+                leftovers.append(path)
+    if not leftovers:
+        return 0
+    closed = {row['temp_name']: row for state in PUBLISH_STATES if state != 'publishing'
+              for row in store.open_publish_txns(state=state)}
+    removed = 0
+    for path in leftovers:
+        row = closed.get(path.name)
+        if row is not None and not _replaceable_leftover(path, row):
+            continue
+        _unlink_if_present(path)
+        removed += 1
     return removed
 
 
@@ -291,7 +355,7 @@ def _recover_one(store, wiki: Path, row: dict) -> PublishOutcome:
     if temp_info is not None and live == ours and expected is not None:
         # Stopped after the exchange: the temp name holds the displaced file.
         state = _settle_exchange(temp_path, target, expected)
-        store.finish_publish_txn(tx_id, state)
+        _finish_then_drop_temp(store, tx_id, state, temp_path)
         current = _sha256_file(target)
         return PublishOutcome(tx_id, rel, state, live_sha=current[1] if current else None, displaced_sha=expected)
     if temp_info is not None:

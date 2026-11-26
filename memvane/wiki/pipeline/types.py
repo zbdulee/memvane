@@ -53,6 +53,7 @@ class PublishOutcome:
     state: str
     live_sha: str | None = None
     displaced_sha: str | None = None
+    reason: str | None = None
 
 
 class PipelineHandle(Protocol):

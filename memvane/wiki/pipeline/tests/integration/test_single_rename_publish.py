@@ -1,8 +1,10 @@
 """Integration tests for single-rename publish, CAS conflict, fence, and 4 crash recoveries."""
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import signal
 
 from memvane.wiki.pipeline import api as pipeline
 from memvane.wiki.pipeline.types import FENCE_GLOBAL_PUBLISH, TEMP_PREFIX, TEMP_SUFFIX
@@ -260,3 +262,142 @@ class SingleRenamePublishTests(FixtureCase):
         with pipeline.open_pipeline(self.project.root, readonly=True) as store:
             self.assertEqual(store.generations(target_path='concepts/g.md'), [row])
             self.assertEqual(store.generations(target_path='concepts/taken.md'), [])
+
+    # I1: one txn recovery cannot settle must not stall the others or the caller's pass.
+    def _interrupt(self, rel, text, expected=None):
+        """Real writer up to the txn commit, then a stop before the card lock."""
+        class Crash(Exception):
+            pass
+
+        def crash():
+            raise Crash
+        (self.wiki / rel).parent.mkdir(parents=True, exist_ok=True)
+        with self.assertRaises(Crash):
+            pipeline.publish_card(self.project.root, self.wiki, rel, text,
+                                  expected_target_sha=expected, lock_context=crash)
+        with pipeline.open_pipeline(self.project.root, readonly=True) as store:
+            return [r for r in store.open_publish_txns() if r['target_path'] == rel][0]
+
+    def _folder_became_symlink(self):
+        row = self._interrupt('concepts/a.md', '# A\n')
+        elsewhere = self.project.root / 'elsewhere'
+        os.rename(self.wiki / 'concepts', elsewhere)
+        os.symlink(elsewhere, self.wiki / 'concepts')
+        return row, elsewhere / row['temp_name'], 'unrecoverable:unsafe_target_path'
+
+    def _target_became_directory(self):
+        row = self._interrupt('concepts/d.md', '# D\n')
+        (self.wiki / 'concepts/d.md').mkdir()
+        return row, self.wiki / 'concepts' / row['temp_name'], 'unrecoverable:unsafe_publish_file'
+
+    def _target_became_fifo(self):
+        row = self._interrupt('concepts/f.md', '# F\n')
+        os.mkfifo(self.wiki / 'concepts/f.md')
+        return row, self.wiki / 'concepts' / row['temp_name'], 'unrecoverable:unsafe_publish_file'
+
+    def _parent_became_file(self):
+        row = self._interrupt('gone/p.md', '# P\n')
+        for child in (self.wiki / 'gone').iterdir():
+            child.unlink()
+        (self.wiki / 'gone').rmdir()
+        (self.wiki / 'gone').write_text('a file now\n', encoding='utf-8')
+        return row, None, 'unrecoverable:ENOTDIR'
+
+    def _exchange_unsupported(self):
+        live = self._card('concepts/x.md', '# Base\n')
+        row = self._interrupt('concepts/x.md', '# New\n', expected=_sha('# Base\n'))
+        from unittest.mock import patch
+        from memvane.wiki.pipeline import publish
+
+        def refuse(*_args, **_kwargs):
+            raise OSError(errno.ENOTSUP, 'exchange not supported')
+        self._exchange_patch = patch.object(publish, 'rename_exchange', refuse)
+        self._exchange_live = live
+        return row, self.wiki / 'concepts' / row['temp_name'], 'unrecoverable:ENOTSUP'
+
+    def test_one_unrecoverable_txn_is_aborted_and_the_others_still_recover(self):
+        from contextlib import nullcontext
+
+        def hang(_signum, _frame):
+            raise AssertionError('recovery blocked on a file it cannot read')
+        previous = signal.signal(signal.SIGALRM, hang)
+        self.addCleanup(signal.signal, signal.SIGALRM, previous)
+        for case in ('_folder_became_symlink', '_target_became_directory', '_target_became_fifo',
+                     '_parent_became_file', '_exchange_unsupported'):
+            with self.subTest(case=case):
+                # A project per case: a failing case cannot leave state the next one trips on.
+                self.project = make_project(self.home, git=False, dirname='project' + case)
+                self.wiki = self.project.root / '.memvane/wiki'
+                self._exchange_patch = None
+                bad, temp, reason = getattr(self, case)()
+                good = self._interrupt(f'other/{case}.md', '# Good\n')
+                signal.alarm(10)
+                try:
+                    with self._exchange_patch or nullcontext():
+                        first = pipeline.recover_publishes(self.project.root, self.wiki)
+                        again = pipeline.recover_publishes(self.project.root, self.wiki)
+                finally:
+                    signal.alarm(0)
+                by_tx = {o.tx_id: o for o in first}
+                self.assertEqual((by_tx[bad['tx_id']].state, by_tx[bad['tx_id']].reason), ('aborted', reason))
+                self.assertEqual(by_tx[good['tx_id']].state, 'published')
+                self.assertEqual((self.wiki / f'other/{case}.md').read_text(encoding='utf-8'), '# Good\n')
+                self.assertEqual(again, [], 'nothing stays open to fail the next pass')
+                with pipeline.open_pipeline(self.project.root, readonly=True) as store:
+                    self.assertEqual(store.open_publish_txns(), [])
+                    self.assertEqual(store.generations(target_path=bad['target_path']), [])
+                if temp is not None:
+                    self.assertTrue(temp.exists(), 'recovery leaves the files of a txn it cannot settle')
+                if case == '_exchange_unsupported':
+                    self.assertEqual(self._exchange_live.read_text(encoding='utf-8'), '# Base\n')
+
+    def test_a_stop_between_closing_a_conflict_and_dropping_its_temp_is_not_a_user_edit(self):
+        """N3: the txn closes before the temp goes, so recovery never reads a dropped temp as a publish."""
+        from unittest.mock import patch
+        from memvane.wiki.pipeline import publish
+
+        class Crash(Exception):
+            pass
+        real = publish._unlink_if_present
+
+        def drop_then_stop(path):
+            real(path)
+            if path.name.startswith(TEMP_PREFIX):
+                raise Crash
+        for rel, expected in (('concepts/n3-new.md', None), ('concepts/n3-replace.md', _sha('# Base\n'))):
+            with self.subTest(rel=rel):
+                self._card(rel, '# Person\n')
+                with patch.object(publish, '_unlink_if_present', drop_then_stop), self.assertRaises(Crash):
+                    pipeline.publish_card(self.project.root, self.wiki, rel, '# Machine\n',
+                                          expected_target_sha=expected,
+                                          generation={'targetPath': rel, 'action': 'created'})
+                self.assertEqual(pipeline.recover_publishes(self.project.root, self.wiki), [])
+                with pipeline.open_pipeline(self.project.root, readonly=True) as store:
+                    self.assertEqual(store.generations(target_path=rel), [])
+                    states = [r['state'] for r in store._conn.execute(
+                        'SELECT state FROM publish_txns WHERE target_path = ?', (rel,))]
+                self.assertEqual(states, ['conflict_user_edited'])
+                self.assertEqual((self.wiki / rel).read_text(encoding='utf-8'), '# Person\n')
+
+    def test_a_closed_txn_leftover_goes_only_when_a_later_publish_can_rewrite_it(self):
+        from unittest.mock import patch
+        from memvane.wiki.pipeline import publish
+
+        def refuse(*_args, **_kwargs):
+            raise OSError(errno.ENOTSUP, 'exchange not supported')
+        rows = []
+        for rel in ('concepts/own.md', 'concepts/foreign.md'):
+            self._card(rel, '# Base\n')
+            rows.append(self._interrupt(rel, '# New\n', expected=_sha('# Base\n')))
+        own, foreign = (self.wiki / 'concepts' / row['temp_name'] for row in rows)
+        foreign.unlink()
+        foreign.write_text('# Someone else\n', encoding='utf-8')
+        with patch.object(publish, 'rename_exchange', refuse):
+            out = pipeline.recover_publishes(self.project.root, self.wiki)
+        self.assertEqual(sorted(o.state for o in out), ['aborted', 'aborted'])
+        for temp in (own, foreign):
+            old = temp.stat().st_mtime - 120
+            os.utime(temp, (old, old))
+        pipeline.recover_publishes(self.project.root, self.wiki)
+        self.assertFalse(own.exists(), 'its own candidate bytes come back with the next publish')
+        self.assertEqual(foreign.read_text(encoding='utf-8'), '# Someone else\n')
