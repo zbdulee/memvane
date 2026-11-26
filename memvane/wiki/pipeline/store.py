@@ -201,6 +201,83 @@ class PipelineStore(DecisionLedgerMixin):
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def refresh_rows(self) -> list[dict]:
+        """Every refresh event ordered by its hook time, then arrival (``seq``), any state."""
+        rows = self._conn.execute(
+            'SELECT rowid AS seq, event_id, source_path, ts, engine, state FROM refresh_events ORDER BY ts, rowid'
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def absorb_refresh_events(self, events: list[dict], consumed: list[str]) -> int:
+        """Insert hook inbox events once (``eventId`` key) and note the consumed files."""
+        added = 0
+        with self._write_tx() as cur:
+            for event in events:
+                cur.execute(
+                    'INSERT OR IGNORE INTO refresh_events(event_id, source_path, ts, engine, state) '
+                    "VALUES(?, ?, ?, ?, 'pending')",
+                    (event['eventId'], event['sourcePath'], event['ts'], event['engine']),
+                )
+                added += cur.rowcount
+            cur.execute(
+                'INSERT INTO pipeline_meta(key, value) VALUES(?, ?) '
+                'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+                ('edit_inbox_consumed', _dumps(sorted(consumed))),
+            )
+        return added
+
+    def resolve_pending_event(self, event: dict, resolved_at: float) -> bool:
+        """Resolve ``event`` only while it is the newest event of its source."""
+        with self._write_tx() as cur:
+            cur.execute(
+                'INSERT OR IGNORE INTO refresh_events(event_id, source_path, ts, engine, state) '
+                "VALUES(?, ?, ?, ?, 'pending')",
+                (event['eventId'], event['sourcePath'], event['ts'], event['engine']),
+            )
+            newest = cur.execute(
+                'SELECT event_id, state FROM refresh_events WHERE source_path = ? ORDER BY ts DESC, rowid DESC '
+                'LIMIT 1',
+                (event['sourcePath'],),
+            ).fetchone()
+            if newest is None or newest['event_id'] != event['eventId'] or newest['state'] == 'resolved':
+                return False
+            cur.execute("UPDATE refresh_events SET state = 'resolved', resolved_at = ? WHERE event_id = ?",
+                        (resolved_at, event['eventId']))
+            return cur.rowcount == 1
+
+    def prune_refreshes(self) -> int:
+        """Keep only each source's newest event; an older one is superseded either way."""
+        with self._write_tx() as cur:
+            cur.execute(
+                'DELETE FROM refresh_events WHERE EXISTS (SELECT 1 FROM refresh_events AS newer '
+                'WHERE newer.source_path = refresh_events.source_path AND (newer.ts > refresh_events.ts '
+                'OR (newer.ts = refresh_events.ts AND newer.rowid > refresh_events.rowid)))'
+            )
+            return cur.rowcount
+
+    def settle_event(self, event: dict, source_sha256: str | None, reason: str, settled_at: float) -> bool:
+        """Record that one compile attempt for ``event`` ended without a card (not resolved)."""
+        with self._write_tx() as cur:
+            cur.execute(
+                'INSERT OR IGNORE INTO refresh_events(event_id, source_path, ts, engine, state) '
+                "VALUES(?, ?, ?, ?, 'pending')",
+                (event['eventId'], event['sourcePath'], event['ts'], event['engine']),
+            )
+            cur.execute(
+                "UPDATE refresh_events SET state = 'settled', settled_sha = ?, settled_reason = ?, "
+                "settled_at = ? WHERE event_id = ? AND state != 'resolved'",
+                (source_sha256, reason, float(settled_at), event['eventId']),
+            )
+            return cur.rowcount == 1
+
+    def settled_refreshes(self) -> dict[str, dict]:
+        rows = self._conn.execute(
+            "SELECT event_id, source_path, settled_sha, settled_reason, settled_at FROM refresh_events "
+            "WHERE state = 'settled'"
+        ).fetchall()
+        return {r['event_id']: {'sourcePath': r['source_path'], 'sourceSha256': r['settled_sha'],
+                                'reason': r['settled_reason'], 'settledAt': r['settled_at']} for r in rows}
+
     def settle_refresh(self, event_id: str, sha256: str, reason: str, settled_at: float) -> bool:
         with self._write_tx() as cur:
             cur.execute(

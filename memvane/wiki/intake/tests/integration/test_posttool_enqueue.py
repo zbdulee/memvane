@@ -24,7 +24,7 @@ class PosttoolEnqueue(FixtureCase):
         self.public_queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
         self.public_pending = self.root / workspace.rel(card_types.SOURCE_REFRESH_PENDING)
         self.queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
-        self.pending = self.public_pending.parent / '.handoff' / 'v1' / 'refresh' / 'events.jsonl'
+        self.pending = self.public_pending.with_name('edit-inbox.jsonl')
 
 
     def run_edit(self, path, **extra):
@@ -91,7 +91,7 @@ class PosttoolEnqueue(FixtureCase):
         self.source.write_text('source changed after compilation\n')
         outside = self.home / 'outside.jsonl'
         outside.write_text('untouched\n')
-        self.pending.parent.mkdir(parents=True)
+        self.pending.parent.mkdir(parents=True, exist_ok=True)
         self.pending.symlink_to(outside)
         self.assertEqual(self.run_edit(self.source), {'queued': 0, 'reason': 'no_sources'})
         self.assertEqual(self.rows(self.queue), [])
@@ -176,7 +176,7 @@ class PosttoolEnqueue(FixtureCase):
         extra_b = self.root / 'docs/b.md'
         extra_a.write_text('# a\n')
         extra_b.write_text('# b\n')
-        lock_path = self.public_pending.with_name(f'{self.public_pending.name}.lock')
+        lock_path = self.pending.with_name(f'{self.pending.name}.lock')
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             'hook_event_name': 'PostToolUse', 'cwd': str(self.root), 'engine': 'claude',

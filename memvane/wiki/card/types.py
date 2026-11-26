@@ -19,6 +19,8 @@ SUMMARY_TRUNCATION_MARK = "… (이하 생략)"
 SOURCE_KIND_FILE = "file"
 
 SOURCE_REFRESH_PENDING = "source-refresh-pending.jsonl"
+# The hook edit inbox beside the compile ledger (``memvane-edit-inbox-v1`` rows).
+EDIT_INBOX = "edit-inbox.jsonl"
 
 # Card source freshness states (wiki_freshness).
 FRESH = "fresh"

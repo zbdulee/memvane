@@ -377,17 +377,18 @@ class DiscoverySyncBoundary(FixtureCase):
         cursor = discovery._paths(decision)[0]
         pending = discovery._read(cursor)['pending']
         seen = []
-        def concurrent_sync(root, name):
-            if name == 'source-queue.jsonl':
-                seen.append(discovery.observe_grants(decision))
-                install.run_sync()
-                return None
-            return project.root / '.memvane/compile' / name
+        def concurrent_sync(kind, root, **kwargs):
+            # A sync runs while the session's compile wake is being refused.
+            if kind == 'laya-compile':
+                if not seen:
+                    seen.append(discovery.observe_grants(decision))
+                    install.run_sync()
+                return {}
+            return {'status': 'queued'}
         payload = {'hook_event_name': 'SessionStart', 'cwd': str(project.root), 'session_id': 'fixture'}
-        with patch('memvane.settings.api.ledger', side_effect=concurrent_sync), \
-             patch.object(runtime, 'request', return_value={'status': 'queued'}), \
+        with patch.object(runtime, 'request', side_effect=concurrent_sync), \
              patch.object(runtime, 'hook_wake'):
-            with self.assertRaisesRegex(HostResponseError, 'selected_compile_queue_unsafe'):
+            with self.assertRaisesRegex(HostResponseError, 'selected_compile_enqueue_failed'):
                 host.serve_selected('update-queued', 'claude', decision, payload)
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0]['grants']['session_start'], [])

@@ -110,7 +110,9 @@ class WorktreeRouteBoundary(FixtureCase):
             first = host.serve_selected('update-queued', 'claude', decision, payload)
             second = host.serve_selected('update-queued', 'claude', decision, payload)
         self.assertEqual(first, second)
-        self.assertEqual([call.args[0] for call in wake.call_args_list].count('laya-compile'), 1)
+        # One wake for the coalesced lifecycle request, plus the compile pass every session
+        # start offers (hooks cannot read the wiki pipeline ledger).
+        self.assertEqual([call.args[0] for call in wake.call_args_list].count('laya-compile'), 3)
         claim = workspace.claim_lifecycle(self.project.root)
         self.assertEqual(claim['trigger'], 'session_start')
         self.assertIsNone(workspace.claim_lifecycle(self.project.root))
@@ -191,7 +193,7 @@ class WorktreeRouteBoundary(FixtureCase):
         with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
             host.serve_selected('update-queued', 'claude', decision, payload)
             host.serve_selected('update-queued', 'claude', decision, payload)
-            self.assertEqual([call.args[0] for call in wake.call_args_list].count('laya-compile'), 1)
+            self.assertEqual([call.args[0] for call in wake.call_args_list].count('laya-compile'), 3)
             result = compile_api.run(self.project.root)
         self.assertEqual(result, {'state': 'drained', 'processed': 0})
         self.assertIsNone(workspace.claim_lifecycle(self.project.root))

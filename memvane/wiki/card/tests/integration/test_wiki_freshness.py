@@ -88,8 +88,7 @@ class WikiFreshnessTests(FixtureCase):
                          [later['eventId']])
         self.assertTrue(wiki_freshness.resolve_pending_refresh(root, later, current, [current]))
 
-    def test_pending_refresh_compaction_preserves_latest_unresolved_event(self):
-        import json
+    def test_resolved_pending_events_are_pruned_to_each_sources_newest(self):
         root = self.tmp / 'project'
         root.mkdir()
         for name in ('source.md', 'other.md'):
@@ -103,221 +102,53 @@ class WikiFreshnessTests(FixtureCase):
         revision = {'kind': 'file', 'path': 'other.md', 'collection': 'raw',
                     **api.snapshot_file(root / 'other.md')}
         self.assertTrue(wiki_freshness.resolve_pending_refresh(root, other, revision, [revision]))
-        self.assertTrue(wiki_freshness.compact_pending_refreshes(root, force=True))
-        ledger = root / '.memvane' / 'compile' / 'source-refresh-pending.jsonl'
-        self.assertFalse(ledger.exists())
-        ledger = wiki_freshness.refresh_lanes.private_path(ledger)
-        rows = [json.loads(line) for line in ledger.read_text(encoding='utf-8').splitlines()]
-        self.assertEqual([row['state'] for row in rows], ['pending_refresh', 'pending_refresh', 'resolved'])
-        self.assertEqual(rows[0]['eventId'], latest['eventId'])
-        self.assertEqual(rows[1]['eventId'], other['eventId'])
-        self.assertEqual(rows[2]['pendingEventId'], other['eventId'])
-        self.assertNotRegex(json.dumps(rows), r'sha256|sourceRevision|mtimeNs|"size"|content|secret')
-        self.assertFalse(ledger.with_suffix(ledger.suffix + '.compact.tmp').exists())
+        self.assertEqual(wiki_freshness.absorb_edit_inbox(root)['files'], 1)
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(root, readonly=True) as store:
+            rows = store.refresh_rows()
+        self.assertEqual([(r['event_id'], r['state']) for r in rows],
+                         [(latest['eventId'], 'pending'), (other['eventId'], 'resolved')])
+        self.assertEqual(api.unresolved_pending_refreshes_strict(root), [latest])
+        self.assertFalse((root / '.memvane/compile/source-refresh-pending.jsonl').exists())
+        self.assertFalse((root / '.memvane/compile/.handoff').exists())
 
-    def test_strict_pending_reader_distinguishes_absent_and_corrupt(self):
+    def test_strict_pending_reader_distinguishes_absent_and_unreadable_ledger(self):
         root = self.tmp / 'project'
         (root / '.memvane').mkdir(parents=True)
         self.assertEqual(api.unresolved_pending_refreshes_strict(root), [])
-        api.record_pending_refresh(root, 'source.md', 'claude')
-        (root / '.memvane' / 'compile').mkdir(exist_ok=True)
-        ledger = next(root.rglob('events.jsonl'))
-        ledger.write_text('{broken\n', encoding='utf-8')
+        event = api.record_pending_refresh(root, 'source.md', 'claude')
+        self.assertEqual(api.unresolved_pending_refreshes_strict(root), [event])
+        (root / '.memvane/compile/wiki-pipeline.sqlite3').write_bytes(b'not a database')
         self.assertIsNone(api.unresolved_pending_refreshes_strict(root))
-
-    def test_strict_pending_reader_rejects_duplicate_and_orphan_events(self):
-        root = self.tmp / 'project'
-        (root / '.memvane' / 'compile').mkdir(parents=True)
-        ledger = root / '.memvane' / 'compile' / 'source-refresh-pending.jsonl'
-        pending = {'eventId': 'event-1', 'ts': '2026-08-07T00:00:00Z',
-                   'sourcePath': 'docs/source.md', 'state': 'pending_refresh', 'engine': 'codex'}
-        import json
-        for rows in ([pending, pending], [{'pendingEventId': 'missing',
-                                          'ts': '2026-08-07T00:00:01Z', 'state': 'resolved'}],
-                     [{'state': 'pending_refresh', 'sourcePath': 'docs/source.md'}]):
-            with self.subTest(rows=rows):
-                ledger.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
-                self.assertIsNone(api.unresolved_pending_refreshes_strict(root))
-        ledger.write_text(json.dumps(pending) + '\n', encoding='utf-8')
-        self.assertEqual(api.unresolved_pending_refreshes_strict(root), [pending])
+        self.assertEqual(api.unresolved_pending_refreshes(root), [])
 
     def test_pending_read_permission_failure_is_unknown(self):
         root = self.tmp / 'project'
         (root / '.memvane' / 'compile').mkdir(parents=True)
         with patch.object(wiki_freshness, '_pending_path', side_effect=PermissionError):
             self.assertIsNone(api.unresolved_pending_refreshes_strict(root))
-        ledger = root / '.memvane' / 'compile' / 'source-refresh-pending.jsonl'
-        ledger.write_text('', encoding='utf-8')
-        exists = Path.exists
-        def denied_exists(path):
-            if path == ledger:
-                raise PermissionError('synthetic refusal')
-            return exists(path)
-        with patch.object(Path, 'exists', denied_exists):
-            self.assertIsNone(api.unresolved_pending_refreshes_strict(root))
-        with patch.object(wiki_freshness.legacy_ledgers, 'read_public_events', side_effect=PermissionError):
-            self.assertIsNone(api.unresolved_pending_refreshes_strict(root))
-
-    def test_valid_pending_ledger_is_never_quarantined(self):
-        root = self.tmp / 'project'
-        (root / '.memvane').mkdir(parents=True)
-        self.assertIsNone(wiki_freshness.quarantine_corrupt_pending(root))
-        source = root / 'source.md'
-        source.write_text('valid', encoding='utf-8')
-        pending = api.record_pending_refresh(root, 'source.md', 'claude')
-        ledger = root / '.memvane' / 'compile' / 'source-refresh-pending.jsonl'
-        revision = {'kind': 'file', 'path': 'source.md', 'collection': 'raw',
-                    **api.snapshot_file(source)}
-        self.assertTrue(wiki_freshness.resolve_pending_refresh(root, pending, revision, [revision]))
-        rows = wiki_freshness.refresh_lanes.private_path(ledger).read_bytes()
-        for content in (rows, b'', b'\n'):
-            with self.subTest(content=content):
-                ledger.write_bytes(content)
-                self.assertIsNone(wiki_freshness.quarantine_corrupt_pending(root))
-                self.assertEqual(ledger.read_bytes(), content)
-
-    def test_strict_corruption_is_quarantined_without_overwriting_earlier_evidence(self):
-        root = self.tmp / 'project'
-        (root / '.memvane' / 'compile').mkdir(parents=True)
-        ledger = root / '.memvane' / 'compile' / 'source-refresh-pending.jsonl'
-        first_bytes = b'{broken one\n'
-        second_bytes = b'{broken two\n'
-        ledger.write_bytes(first_bytes)
-        first = wiki_freshness.quarantine_corrupt_pending(root)
-        self.assertEqual(first['reason'], 'strict_reject')
-        self.assertFalse(ledger.exists())
-        self.assertEqual((ledger.parent / first['quarantinedTo']).read_bytes(), first_bytes)
-        self.assertIsNone(wiki_freshness.quarantine_corrupt_pending(root))
-        ledger.write_bytes(second_bytes)
-        second = wiki_freshness.quarantine_corrupt_pending(root)
-        self.assertNotEqual(first['quarantinedTo'], second['quarantinedTo'])
-        self.assertEqual((ledger.parent / first['quarantinedTo']).read_bytes(), first_bytes)
-        self.assertEqual((ledger.parent / second['quarantinedTo']).read_bytes(), second_bytes)
-        self.assertEqual(api.unresolved_pending_refreshes_strict(root), [])
-
-    def test_unreadable_ledger_is_not_quarantined(self):
-        root = self.tmp / 'project'
-        (root / '.memvane').mkdir(parents=True)
         api.record_pending_refresh(root, 'source.md', 'claude')
-        ledger = root / '.memvane' / 'compile' / 'source-refresh-pending.jsonl'
-        ledger.write_bytes(wiki_freshness.refresh_lanes.private_path(ledger).read_bytes())
-        original = ledger.read_bytes()
-        read_text = Path.read_text
-        def denied(path, *args, **kwargs):
-            if path == ledger:
-                raise PermissionError('synthetic refusal')
-            return read_text(path, *args, **kwargs)
-        with patch.object(Path, 'read_text', denied):
-            self.assertIsNone(wiki_freshness.quarantine_corrupt_pending(root))
-        self.assertEqual(ledger.read_bytes(), original)
+        with patch.object(wiki_freshness, '_read_inbox_file', side_effect=PermissionError):
+            self.assertIsNone(api.unresolved_pending_refreshes_strict(root))
 
-    def test_quarantine_cli_exits_success_for_corrupt_and_empty_ledger(self):
-        import json
-        import subprocess
-        import sys
-        root = self.tmp / 'project'
-        ledger = root / '.memvane' / 'compile' / 'source-refresh-pending.jsonl'
-        ledger.parent.mkdir(parents=True)
-        ledger.write_text('{broken\n', encoding='utf-8')
-        command = [sys.executable, '-B', '-m', 'memvane.wiki.card.wiki_freshness',
-                   '--cwd', str(root), '--quarantine-corrupt-pending', '--json']
-        result = subprocess.run(command, text=True, capture_output=True, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)['reason'], 'strict_reject')
-        result = subprocess.run(command, text=True, capture_output=True, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), {})
-
-    def test_corrupt_pending_bytes_are_quarantined_and_preserved(self):
-        root = self.tmp / 'project'
-        (root / '.memvane' / 'compile').mkdir(parents=True)
-        ledger = root / '.memvane' / 'compile' / 'source-refresh-pending.jsonl'
-        original = b'\xffbroken\n'
-        ledger.write_bytes(original)
-        result = wiki_freshness.quarantine_corrupt_pending(root)
-        self.assertEqual(result['reason'], 'invalid_utf8')
-        self.assertFalse(ledger.exists())
-        self.assertEqual((ledger.parent / result['quarantinedTo']).read_bytes(), original)
-        self.assertIsNone(wiki_freshness.quarantine_corrupt_pending(root))
-
-    def test_mixed_release_pending_preserves_original_pair_and_independent_event(self):
-        import json
-        root = self.tmp / 'project'
-        ledger = root / '.memvane/compile/source-refresh-pending.jsonl'
-        ledger.parent.mkdir(parents=True)
-        pending = {'eventId': 'old', 'state': 'pending_refresh', 'ts': '2026-08-07T00:00:00Z',
-                   'sourcePath': 'docs/source.md', 'engine': 'codex'}
-        resolve = {'state': 'resolved', 'pendingEventId': 'excluded', 'ts': '2026-08-07T00:00:01Z'}
-        for separator in ('\x85', '\u2028', '\u2029'):
-            excluded = dict(pending, eventId='excluded', sourcePath='docs/a' + separator + 'b.md')
-            for escaped in (True, False):
-                for rows in ([pending, excluded], [excluded, resolve, pending]):
-                    with self.subTest(code=ord(separator), escaped=escaped, count=len(rows)):
-                        original = b''.join((json.dumps(row, ensure_ascii=escaped) + '\r\n').encode() for row in rows)
-                        ledger.write_bytes(original)
-                        expected = [pending, excluded] if len(rows) == 2 else [pending]
-                        self.assertEqual(api.unresolved_pending_refreshes_strict(root), expected)
-                        for _ in range(2):
-                            self.assertFalse(wiki_freshness.compact_pending_refreshes(root, force=True))
-                            self.assertIsNone(wiki_freshness.quarantine_corrupt_pending(root))
-                        self.assertEqual(ledger.read_bytes(), original)
-                        self.assertFalse(list(ledger.parent.glob('*.corrupt.*')))
-        ledger.write_bytes(b'{broken\n' + original)
-        self.assertIsNone(wiki_freshness.quarantine_corrupt_pending(root))
-        self.assertEqual(ledger.read_bytes(), b'{broken\n' + original)
-
-    def test_normal_refresh_in_a_mixed_public_generation_appends_only_its_exact_resolve(self):
-        import json
-        root = self.tmp / 'project'
-        ledger = root / '.memvane/compile/source-refresh-pending.jsonl'
-        ledger.parent.mkdir(parents=True)
-        (root / 'new.md').write_text('Current source.')
-        normal = {'eventId': 'normal', 'state': 'pending_refresh', 'ts': '2026-08-07T00:00:00Z',
-                  'sourcePath': 'new.md', 'engine': 'codex'}
-        special = dict(normal, sourcePath='old\u2028name.md', eventId='special')
-        original = b''.join((json.dumps(row, ensure_ascii=False) + '\r\n').encode() for row in (special, normal))
-        ledger.write_bytes(original)
-        self.assertEqual(ledger.read_bytes(), original)
-        revision = dict(wiki_freshness.snapshot_file(root / 'new.md'), kind='file', path='new.md', collection='raw')
-        self.assertTrue(api.resolve_pending_refresh(root, normal, revision, [revision]))
-        after = ledger.read_bytes()
-        self.assertTrue(after.startswith(original))
-        self.assertEqual(json.loads(after[len(original):])['pendingEventId'], normal['eventId'])
-        self.assertEqual(api.unresolved_pending_refreshes_strict(root), [special])
-        self.assertFalse(wiki_freshness.compact_pending_refreshes(root, force=True))
-        self.assertEqual(ledger.read_bytes(), after)
-
-    def test_public_refresh_symlink_cannot_quarantine_or_compact_its_target(self):
-        root = self.tmp / 'project'
-        ledger = root / '.memvane/compile/source-refresh-pending.jsonl'
-        ledger.parent.mkdir(parents=True)
-        other = ledger.with_name('other.jsonl')
-        other.write_bytes(b'incomplete')
-        ledger.symlink_to(other)
-        self.assertFalse(wiki_freshness.compact_pending_refreshes(root, force=True))
-        self.assertIsNone(wiki_freshness.quarantine_corrupt_pending(root))
-        self.assertEqual(other.read_bytes(), b'incomplete')
-        self.assertTrue(ledger.is_symlink())
-
-    def test_hook_pending_mode_skips_compact_respects_lock_timeout_and_compacts_off_hook(self):
+    def test_hook_append_respects_lock_timeout_and_never_opens_the_ledger(self):
         import fcntl
+        import sqlite3
         root = self.tmp / 'project'
         (root / '.memvane/compile').mkdir(parents=True)
-        for index in range(3):
-            event = api.record_pending_refresh(root, 'source.md', 'claude', compact=False, lock_timeout=0.15)
-            self.assertIsNotNone(event)
-        with patch.object(wiki_freshness, 'PENDING_COMPACT_BYTES', 1):
-            event = api.record_pending_refresh(root, 'source.md', 'claude', compact=False, lock_timeout=0.15)
-            self.assertIsNotNone(event)
-            private_lane = root / '.memvane/compile/.handoff/v1/refresh/events.jsonl'
-            self.assertEqual(len(private_lane.read_text().splitlines()), 4)
-            self.assertEqual([r['eventId'] for r in api.unresolved_pending_refreshes(root, compact=True)], [event['eventId']])
-            self.assertEqual(len(private_lane.read_text().splitlines()), 1)
-        lock_path = root / '.memvane/compile/source-refresh-pending.jsonl.lock'
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        with patch.object(sqlite3, 'connect', side_effect=AssertionError('hook opened the ledger')):
+            for _ in range(3):
+                self.assertIsNotNone(api.record_pending_refresh(root, 'source.md', 'claude', compact=False,
+                                                                lock_timeout=0.15))
+        inbox = root / '.memvane/compile/edit-inbox.jsonl'
+        self.assertEqual(len(inbox.read_text().splitlines()), 3)
+        fd = os.open(inbox.with_name(inbox.name + '.lock'), os.O_RDWR | os.O_CREAT, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.assertIsNone(api.record_pending_refresh(root, 'source.md', 'claude', compact=False, lock_timeout=0.05))
+            reasons = []
+            self.assertIsNone(api.record_pending_refresh(root, 'source.md', 'claude', compact=False,
+                                                         lock_timeout=0.05, error_out=reasons))
+            self.assertEqual(reasons, ['busy'])
         finally:
             os.close(fd)
 

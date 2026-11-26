@@ -234,7 +234,8 @@ C4~C11은 서로 의존한다(C7은 C5·C6, C8은 C7, C9는 C7·C8). 각 커밋 
 | ① pipeline | `af5c9c3d` | `staged_cards` Work 행, `publish_card` 교환·대조·멱등, `recover_publishes` 교환 복구·고아 temp 정리, migrate는 hold 버림·fence 없음 |
 | ① verify Work | `a0fad489` | `Work` SQLite backend, `HOLD_SCAN_LIMIT`·`copy_quota.py` 삭제 |
 | A안 재계획 | `5737bdbb` | §1~§8, A2~A7 승인 |
-| C4 원장 확장 | (C4) | `card_generations`·`suppressions`·`dedup_pairs`·`publish_txns.generation_json`·`verify_jobs.pending_blob`·`compile_jobs.reason`, `decisions.py` mixin(store 800줄 상한), `migrate_from_v1` 재작성(가져오기 3종 + 마커 한 트랜잭션 → 삭제), 출시 태그 writer 드라이버 `tagged_v1_ledgers.py`(`v1.1.0`·`v1.1.1`·`v1.1.2`). pipeline 3/3·Python 18, structure 28/28, v1_guard 0, py3.9 import 통과. teeth: 가져오기 전 삭제(M2)·줄 번호 없는 origin key(M4)·충돌 시 generation 기록·`.first-*` 미삭제(M5) 각각 FAIL 확인. 연결(worker 시작·양보)은 C12 |
+| C4 원장 확장 | `7c105463` | `card_generations`·`suppressions`·`dedup_pairs`·`publish_txns.generation_json`·`verify_jobs.pending_blob`·`compile_jobs.reason`, `decisions.py` mixin(store 800줄 상한), `migrate_from_v1` 재작성(가져오기 3종 + 마커 한 트랜잭션 → 삭제), 출시 태그 writer 드라이버 `tagged_v1_ledgers.py`(`v1.1.0`·`v1.1.1`·`v1.1.2`). pipeline 3/3·Python 18, structure 28/28, v1_guard 0, py3.9 import 통과. teeth: 가져오기 전 삭제(M2)·줄 번호 없는 origin key(M4)·충돌 시 generation 기록·`.first-*` 미삭제(M5) 각각 FAIL 확인. 연결(worker 시작·양보)은 C12 |
+| C5 inbox + refresh 원장 | (C5) | 훅 `record_pending_refresh` → `.memvane/compile/edit-inbox.jsonl`(`memvane-edit-inbox-v1`, `edit-inbox.jsonl.lock` 0.15초, 한 번의 `O_APPEND`, 짧은 쓰기는 `ftruncate`로 원복, 8 MiB `busy`). worker `absorb_edit_inbox`(rename→`INSERT OR IGNORE eventId`+파일명 기록 한 트랜잭션→삭제→원문별 최신만 남김). 미해결 판정은 원장+미흡수 inbox를 `ts` 순으로 접는다. 정산(`source-refresh-settled.json`) → `refresh_events.settled_*`. SessionStart는 매번 `laya-compile` wake(A2), 훅은 원장을 열지 않는다. `refresh_lanes.py`·`quarantine_corrupt_pending`·`compact_pending_refreshes`·`read_pending_refreshes`·CLI 삭제(제품 호출부 0). 1.x 공용/전용 refresh 혼재 시험 삭제: `test_markerless_backfill_refresh.py`(4), `test_source_path_line_separators.py`(2), `test_wiki_freshness`의 공용 원장·quarantine 시험(Python 52→46). 검사: card 9/9(py46)·intake 13/13(py189)·host 24/24(py219)·compile 41/41(py264)·verify 18/18(py191)·workspace 6/6·lifecycle 10/10·dedup 6/6·diagnostics 9/9·sync 16/16, structure 28/28, v1_guard 0, py3.9 import. teeth: 원복 없는 짧은 쓰기·도착순 정렬·`OR IGNORE` 제거·8 MiB 상한 제거·SessionStart wake 제거 각각 FAIL 확인 |
 
 ①의 검사 결과(커밋 `a0fad489` 워킹트리):
 
@@ -262,4 +263,4 @@ teeth(제품 줄을 깨서 FAIL 확인, 확인 후 원복):
 
 ## 10. 다음 재개 지점
 
-C5(inbox)부터 진행한다. C4의 `migrate_from_v1`은 아직 진입 경로에 연결하지 않았다(C12).
+C7(큐)부터 진행한다(§5의 C6 refresh는 C5에 포함됐다). C4의 `migrate_from_v1`은 아직 진입 경로에 연결하지 않았다(C12).

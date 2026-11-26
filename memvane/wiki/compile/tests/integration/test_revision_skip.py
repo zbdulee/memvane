@@ -596,9 +596,9 @@ class RevisionSkipChecks(FixtureCase):
 
     def test_corrupt_pending_ledger_does_not_skip(self):
         self.compile_verified_once()
-        ledger = settings.ledger(self.root, card_types.SOURCE_REFRESH_PENDING)
-        ledger.parent.mkdir(parents=True, exist_ok=True)
-        ledger.write_text('{"torn', encoding='utf-8')
+        wiki_freshness.unresolved_pending_refreshes(self.root, compact=True)
+        inbox = settings.ledger(self.root, 'edit-inbox.jsonl')
+        inbox.symlink_to(self.home / 'elsewhere.jsonl')  # an unreadable inbox is unknown, not empty
         self.process('session_start')
         self.assertEqual(len(self.extractor_calls), 2)
 

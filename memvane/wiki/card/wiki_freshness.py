@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Current-source revision snapshots and fail-closed wiki freshness checks.
 
 ``sourceHash`` identifies a generated card.  It is deliberately not the source
@@ -12,14 +11,15 @@ import fcntl
 import hashlib
 import json
 import os
+import stat
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from memvane.settings.api import compile_dir, ledger
-from memvane.wiki.card.types import SOURCE_REFRESH_PENDING
-from memvane.wiki.card import legacy_ledgers, refresh_lanes, yaml_scalars
+from memvane.wiki.card.types import EDIT_INBOX, SOURCE_REFRESH_PENDING
+from memvane.wiki.card import yaml_scalars
 
 from memvane.wiki.card.types import FRESH, STALE, UNKNOWN
 PENDING_REFRESH = "pending_refresh"
@@ -37,10 +37,6 @@ def _pending_path(root: Path) -> Path | None:
     root = Path(root).resolve()
     public, folder = ledger(root, SOURCE_REFRESH_PENDING), compile_dir(root)
     return public if folder is not None and public == folder / SOURCE_REFRESH_PENDING else None
-
-
-def _pending_lock_path(path: Path) -> Path:
-    return path.with_name(f"{path.name}.lock")
 
 
 def _safe_source_path(value) -> str | None:
@@ -108,50 +104,62 @@ def _valid_event_time(value) -> bool:
     return parsed.tzinfo is not None
 
 
-def _read_events_unlocked(path: Path, strict: bool = False) -> list[dict] | None:
+INBOX = EDIT_INBOX
+INBOX_SCHEMA = "memvane-edit-inbox-v1"
+INBOX_MAX_BYTES = 8 * 1024 * 1024
+CONSUMING = ".consuming-"
+
+
+def _inbox_path(root: Path) -> Path | None:
+    public = _pending_path(root)
+    return public.with_name(INBOX) if public is not None else None
+
+
+def _inbox_lock(inbox: Path) -> Path:
+    return inbox.with_name(inbox.name + ".lock")
+
+
+def _inbox_event(raw: bytes) -> dict | None:
     try:
-        if not path.exists():
-            return []
-        if strict and path.name == SOURCE_REFRESH_PENDING:
-            return legacy_ledgers.read_public_events(path)
-        text = path.read_text(encoding="utf-8", errors="strict")
-    except (OSError, ValueError, RecursionError):
-        return None if strict else []
-    rows = []
-    for line in text.split("\n"):
+        row = json.loads(raw, object_pairs_hook=_closed_json_object)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(row, dict) or row.get("schema") != INBOX_SCHEMA or row.get("state") != PENDING_REFRESH:
+        return None
+    event = {key: row.get(key) for key in PENDING_FIELDS}
+    if _pending_id(event) is None or not _valid_event_time(event["ts"]):
+        return None
+    return event
+
+
+def _read_inbox_file(path: Path) -> tuple[list[dict], int]:
+    """Events of one inbox file and its count of unusable lines; absent reads as empty."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return [], 0
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise OSError("unsafe edit inbox")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            data = stream.read(INBOX_MAX_BYTES + 1)
+    finally:
+        os.close(fd)
+    events, malformed = [], 0
+    for line in data.split(b"\n"):
         if not line.strip():
             continue
-        try:
-            if strict:
-                row = json.loads(line, object_pairs_hook=_closed_json_object)
-            else:
-                row = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
-            if strict:
-                return None
-            continue
-        if not _valid_event(row) or (strict and not _valid_event_time(row.get("ts"))):
-            if strict:
-                return None
-            continue
-        rows.append(row)
-    return rows
+        event = _inbox_event(line)
+        if event is None:
+            malformed += 1
+        else:
+            events.append(event)
+    return events, malformed
 
 
-def _append_event_unlocked(path: Path, event: dict, *, source=None) -> bool:
-    if path.name != SOURCE_REFRESH_PENDING:
-        return refresh_lanes.append_private(path, event)
-    if not legacy_ledgers.writable(path.parent, append_for={'sources': [{'path': source}]} if source else None):
-        return False
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-    except OSError:
-        return False
-    return True
+def _consuming(inbox: Path) -> list[Path]:
+    return sorted(p for p in inbox.parent.glob(inbox.name + CONSUMING + "*") if p.is_file())
 
 
 def _acquire_pending_lock(fd: int, timeout: float | None) -> None:
@@ -170,18 +178,31 @@ def _acquire_pending_lock(fd: int, timeout: float | None) -> None:
             time.sleep(min(0.01, remaining))
 
 
+def _lock_fd(inbox: Path) -> int:
+    fd = os.open(_inbox_lock(inbox), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        os.close(fd)
+        raise OSError("unsafe edit inbox lock")
+    return fd
+
+
 def record_pending_refresh(root: Path, source_path: str, engine: str, *,
                            compact: bool = True, lock_timeout: float | None = None,
                            error_out: list | None = None) -> dict | None:
-    """Durably invalidate one source before its separate queue append."""
+    """Append one edit event to the hook inbox; the compile worker absorbs it into the ledger.
+
+    Hooks never open ``wiki-pipeline.sqlite3``. ``compact`` is accepted for callers that
+    predate the inbox and has no effect here.
+    """
     from memvane.wiki.card.trust import incompatible_source
     if incompatible_source(source_path, report=True):
         if error_out is not None:
             error_out.append("failed")
         return None
     source = _safe_source_path(source_path)
-    public = _pending_path(root)
-    if source is None or public is None:
+    inbox = _inbox_path(root)
+    if source is None or inbox is None:
         if error_out is not None:
             error_out.append("failed")
         return None
@@ -192,16 +213,29 @@ def record_pending_refresh(root: Path, source_path: str, engine: str, *,
         "state": PENDING_REFRESH,
         "engine": engine if isinstance(engine, str) and engine.strip() else "unknown",
     }
+    line = (json.dumps({**event, "schema": INBOX_SCHEMA}, ensure_ascii=False, sort_keys=True) + "\n").encode()
     try:
-        path = refresh_lanes.private_path(public, create=True)
-        with _pending_lock_path(public).open("a", encoding="utf-8") as lock:
-            _acquire_pending_lock(lock.fileno(), lock_timeout)
-            # This event is private. Public-ledger reassessment still gates the
-            # worker's card write; it must not discard the edit before queueing.
-            if not _append_event_unlocked(path, event):
-                if error_out is not None:
-                    error_out.append("failed")
-                return None
+        inbox.parent.mkdir(parents=True, exist_ok=True)
+        lock = _lock_fd(inbox)
+        try:
+            _acquire_pending_lock(lock, lock_timeout)
+            fd = os.open(inbox, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                    raise OSError("unsafe edit inbox")
+                if info.st_size + len(line) > INBOX_MAX_BYTES:
+                    # Full until the worker absorbs it; the caller still wakes the worker.
+                    raise BlockingIOError("edit inbox full")
+                written = os.write(fd, line)
+                if written != len(line):
+                    os.ftruncate(fd, info.st_size)  # Never leave a torn line behind.
+                    raise OSError("short edit inbox write")
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        finally:
+            os.close(lock)
     except BlockingIOError:
         if error_out is not None:
             error_out.append("busy")
@@ -210,76 +244,103 @@ def record_pending_refresh(root: Path, source_path: str, engine: str, *,
         if error_out is not None:
             error_out.append("failed")
         return None
-    if compact:
-        _compact(path, public, False)
     return event
 
 
-def read_pending_refreshes(root: Path) -> list[dict]:
+def absorb_edit_inbox(root: Path) -> dict:
+    """Move hook inbox events into ``refresh_events`` once; the caller holds ``.compile-run.lock``.
+
+    The inbox is renamed aside under its lock, so later hook appends go to a fresh file.
+    The aside files are inserted by ``eventId`` and their names recorded in one
+    transaction, then deleted; a stop between the two re-inserts nothing on the next run.
+    """
+    inbox = _inbox_path(root)
+    if inbox is None or not inbox.parent.is_dir():
+        return {"absorbed": 0, "malformed": 0, "files": 0}
+    lock = _lock_fd(inbox)
     try:
-        return [row for path in refresh_lanes.paths(_pending_path(root))
-                for row in _read_events_unlocked(path) or []]
-    except (OSError, ValueError):
-        return []
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            size = os.lstat(inbox).st_size
+        except FileNotFoundError:
+            size = 0
+        if size:
+            aside = inbox.with_name(f"{inbox.name}{CONSUMING}{time.time_ns():020d}-{uuid.uuid4().hex[:8]}")
+            os.rename(inbox, aside)
+    finally:
+        os.close(lock)
+    files = _consuming(inbox)
+    if not files:
+        return {"absorbed": 0, "malformed": 0, "files": 0}
+    events, malformed = [], 0
+    for path in files:
+        found, bad = _read_inbox_file(path)
+        events.extend(found)
+        malformed += bad
+    from memvane.wiki.pipeline import api as pipeline
+    with pipeline.open_pipeline(Path(root).resolve()) as store:
+        added = store.absorb_refresh_events(events, [p.name for p in files])
+        for path in files:
+            path.unlink()
+        store.prune_refreshes()
+    return {"absorbed": added, "malformed": malformed, "files": len(files)}
+
+
+def _events(root: Path) -> list[tuple[dict, bool]]:
+    """``(event, resolved)`` oldest first: ledger rows and unabsorbed inbox files together."""
+    from memvane.wiki.pipeline import api as pipeline
+    root = Path(root).resolve()
+    inbox = _inbox_path(root)
+    if inbox is None:
+        raise ValueError("unsafe compile directory")
+    items, known = [], set()
+    if pipeline.pipeline_db_path(root).exists():
+        with pipeline.open_pipeline(root, readonly=True) as store:
+            for row in store.refresh_rows():
+                event = {"eventId": row["event_id"], "ts": row["ts"], "sourcePath": row["source_path"],
+                         "state": PENDING_REFRESH, "engine": row["engine"]}
+                items.append((event, row["state"] == "resolved"))
+                known.add(row["event_id"])
+    for path in [*_consuming(inbox), inbox]:
+        for event in _read_inbox_file(path)[0]:
+            if event["eventId"] not in known:
+                known.add(event["eventId"])
+                items.append((event, False))
+    # Hook time decides which event is newest; arrival breaks a tie. A resolve can insert
+    # a newer event into the ledger before an older one leaves the inbox.
+    order = {id(item): index for index, item in enumerate(items)}
+    return sorted(items, key=lambda item: (item[0]["ts"], order[id(item)]))
 
 
 def _unresolved(root, strict, *, receipt=None):
-    result = []
-    ids = set()
-    for path in refresh_lanes.paths(_pending_path(root)):
-        rows = _read_events_unlocked(path, strict=strict)
-        if rows is None:
+    try:
+        items = _events(root)
+    except Exception:
+        if strict:
             return None
-        latest = _ordered_latest_strict(rows) if strict else _ordered_latest(rows)
-        if latest is None:
-            return None
-        lane_ids = {row['eventId'] for row in rows if row['state'] == PENDING_REFRESH}
-        if ids.intersection(lane_ids):
-            return None
-        ids.update(lane_ids)
-        if receipt is None or any((row.get('eventId'), row.get('sourcePath')) == receipt for row in rows):
-            result.extend(pending for _, pending, resolved in latest.values() if resolved is None)
-    return result
+        return []
+    if receipt is not None and not any((event["eventId"], event["sourcePath"]) == receipt
+                                       for event, _ in items):
+        return []
+    latest: dict[str, tuple[dict, bool]] = {}
+    for event, resolved in items:
+        latest[event["sourcePath"]] = (event, resolved)
+    return [event for event, resolved in latest.values() if not resolved]
 
 
 def unresolved_pending_refreshes(root: Path, *, compact: bool = False) -> list[dict]:
-    """Each ledger owns its latest unresolved event for a source."""
+    """Each source's newest event when it is still unresolved. ``compact`` absorbs the inbox first
+    and is only for the compile worker, which holds ``.compile-run.lock``."""
     if compact:
-        compact_pending_refreshes(root)
-    try:
-        return _unresolved(root, False) or []
-    except (OSError, ValueError, RuntimeError):
-        return []
+        try:
+            absorb_edit_inbox(root)
+        except Exception:
+            pass  # Unabsorbed events are still read from the inbox below.
+    return _unresolved(root, False) or []
 
 
 def unresolved_pending_refreshes_strict(root: Path) -> list[dict] | None:
-    try:
-        return _unresolved(root, True)
-    except (OSError, ValueError, RuntimeError):
-        return None
-
-
-def _ordered_latest(rows: list[dict]) -> dict[str, tuple[int, dict, tuple[int, dict] | None]]:
-    """Fold ordered history; a resolve only applies to an earlier exact event id."""
-    seen: dict[str, tuple[int, dict]] = {}
-    latest: dict[str, tuple[int, dict, tuple[int, dict] | None]] = {}
-    for index, row in enumerate(rows):
-        if row.get("state") == PENDING_REFRESH:
-            event_id = _pending_id(row)
-            if event_id is None:
-                continue
-            seen[event_id] = (index, row)
-            latest[row["sourcePath"]] = (index, row, None)
-            continue
-        event_id = _resolved_id(row)
-        pending_item = seen.get(event_id) if event_id is not None else None
-        if pending_item is None or pending_item[0] >= index:
-            continue
-        source = pending_item[1]["sourcePath"]
-        current = latest.get(source)
-        if current is not None and current[1].get("eventId") == event_id:
-            latest[source] = (current[0], current[1], (index, row))
-    return latest
+    return _unresolved(root, True)
 
 
 def _ordered_latest_strict(
@@ -315,11 +376,8 @@ def _ordered_latest_strict(
 
 def latest_unresolved_pending(root: Path, source_path: str, *, event_id=None) -> dict | None:
     source = _safe_source_path(source_path)
-    try:
-        receipt = (event_id, source) if event_id is not None else None
-        events = _unresolved(root, True, receipt=receipt) or []
-    except (ValueError, OSError, RuntimeError):
-        return None
+    receipt = (event_id, source) if event_id is not None else None
+    events = _unresolved(root, True, receipt=receipt) or []
     matches = [row for row in events if row['sourcePath'] == source]
     return matches[0] if len(matches) == 1 else None
 
@@ -334,195 +392,38 @@ def resolve_pending_refresh(
     root: Path, pending: dict, captured_revision: dict, compiled_revisions: list[dict],
     compiled_event_id: str | None = None,
 ) -> bool:
-    """Resolve only the latest event with the captured bytes the writer returned."""
+    """Resolve only the newest event of its source, and only for the bytes the writer captured."""
     pending_id = _pending_id(pending) if isinstance(pending, dict) else None
     captured = yaml_scalars.normalize_source_revision(captured_revision)
     compiled = [yaml_scalars.normalize_source_revision(item) for item in compiled_revisions]
-    path = _pending_path(root)
     if compiled_event_id is None:
         compiled_event_id = pending_id
     if (
-        pending_id is None or captured is None or path is None
+        pending_id is None or captured is None or _inbox_path(root) is None
         or compiled_event_id != pending_id
         or captured.get("path") != pending.get("sourcePath")
         or any(item is None for item in compiled)
         or captured not in compiled
     ):
         return False
-    public = path
     root = Path(root).resolve()
     source = (root / pending["sourcePath"]).resolve()
     try:
         source.relative_to(root)
     except ValueError:
         return False
-    try:
-        public.parent.mkdir(parents=True, exist_ok=True)
-        with _pending_lock_path(public).open("a", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            owners = []
-            occurrences = 0
-            for lane in refresh_lanes.paths(public):
-                rows = _read_events_unlocked(lane, strict=True)
-                latest = _ordered_latest_strict(rows) if rows is not None else None
-                if latest is None:
-                    return False
-                occurrences += sum(r.get("eventId") == pending_id for r in rows)
-                item = latest.get(pending["sourcePath"])
-                if item and item[2] is None and item[1] == pending:
-                    owners.append(lane)
-            if len(owners) != 1 or occurrences != 1:
-                return False
-            path, = owners
-            current = snapshot_file(source)
-            if current is None or current["sha256"] != captured["sha256"]:
-                return False
-            event = {
-                "ts": _now_iso(),
-                "state": RESOLVED,
-                "pendingEventId": pending_id,
-            }
-            if not _append_event_unlocked(path, event, source=pending['sourcePath']):
-                return False
-    except (OSError, ValueError):
+    current_events = _unresolved(root, True)
+    if current_events is None or pending not in current_events:
         return False
-    _compact(path, public, False)
-    return True
-
-
-def compact_pending_refreshes(root: Path, force: bool = False) -> bool:
-    """Atomically retain each source's latest pending event and resolved pair."""
-    public = _pending_path(root)
-    try:
-        existing = [p for p in refresh_lanes.paths(public) if p.exists()]
-        return bool(existing) and all(_compact(p, public, force) for p in existing)
-    except (ValueError, OSError):
+    current = snapshot_file(source)
+    if current is None or current["sha256"] != captured["sha256"]:
         return False
-
-
-def _compact(path, public, force):
+    from memvane.wiki.pipeline import api as pipeline
     try:
-        if not force and path.stat().st_size < PENDING_COMPACT_BYTES:
-            return True
-        with _pending_lock_path(public).open("a", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            if path.name == SOURCE_REFRESH_PENDING and not legacy_ledgers.writable(path.parent):
-                return False
-            rows = _read_events_unlocked(path, strict=True)
-            latest = _ordered_latest_strict(rows) if rows is not None else None
-            if latest is None:
-                return False
-            kept: list[tuple[int, dict]] = []
-            for pending_index, pending, resolved in latest.values():
-                kept.append((pending_index, pending))
-                if resolved is not None:
-                    kept.append(resolved)
-            kept.sort(key=lambda item: item[0])
-            tmp = path.with_suffix(path.suffix + ".compact.tmp")
-            with tmp.open("w", encoding="utf-8") as handle:
-                for _index, row in kept:
-                    handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp, path)
-            try:
-                dir_fd = os.open(path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(dir_fd)
-                finally:
-                    os.close(dir_fd)
-            except OSError:
-                pass
-    except OSError:
+        with pipeline.open_pipeline(root) as store:
+            return store.resolve_pending_event(pending, time.time())
+    except Exception:
         return False
-    return True
-
-
-CORRUPT_QUARANTINE_PREFIX = "source-refresh-pending.corrupt-"
-
-
-def quarantine_corrupt_pending(root: Path) -> dict | None:
-    """Rename an unparsable pending ledger aside so the lifecycle can restart.
-
-    Corruption here is not an outside accident -- this module's own failure path
-    produces it.  ``_append_event_unlocked`` issues one buffered ``write``; when
-    that write is short and then fails (ENOSPC/EFBIG), the bytes already handed
-    to the kernel stay durable while the caller is told the append failed.  A
-    torn last line is the result (measured: 40 of 153 bytes, no newline).
-
-    From there nothing recovers.  ``unresolved_pending_refreshes`` (permissive)
-    still yields the earlier valid events, so ``recover_pending_refreshes``
-    re-enqueues the source every worker run, while ``resolve_pending_refresh``
-    reads strictly, refuses, and preserves the job -- one extractor call plus
-    one verify call per run, forever (measured: 20 runs -> 20 + 20 calls).
-    Recall is fail-closed at the same time: ``pending_refresh_cutoffs`` gets
-    ``None`` and every card is reported ``unknown``.  ``compact_pending_refreshes``
-    cannot clean up because it reads strictly too, and a fresh
-    ``record_pending_refresh`` only appends after the torn line.
-
-    Renaming (never deleting) keeps the bytes for post-mortem; this repository
-    has repeatedly recorded deletions whose ledger held no body and so could not
-    be explained afterwards.  The ledger is deliberately left ABSENT rather than
-    recreated empty, so the next ``record_pending_refresh`` builds it normally.
-
-    The cost is real and accepted: the pending marks captured at that moment are
-    lost, so a card compiled from an already-edited source can look settled for
-    one cycle.  That is a degradation, not a hole -- the authoritative freshness
-    decision is the ``sourceRevisions`` SHA-256 comparison against the file on
-    disk (``check_card``), which this never touches.
-
-    Quarantining is idempotent: the renamed path no longer resolves as the
-    ledger, so the next call sees an absent (= known-empty) ledger.
-    """
-    try:
-        path = _pending_path(root)
-        if path is None:
-            return None
-        with _pending_lock_path(path).open("a", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            if not path.exists():
-                return None
-            if legacy_ledgers.quarantine_preserves_special(path):
-                return None
-            # The judgement is deliberately narrow, because a false positive
-            # *is* the loss this function exists to bound.  Two conditions must
-            # both hold: the bytes are readable, and the strict reader (reused,
-            # never reimplemented) rejects their content.
-            #
-            # `_read_events_unlocked` folds "cannot read" and "read fine but
-            # invalid" into the same `None`, so the read below splits them: an
-            # OSError is a permission/transient filesystem problem and must
-            # never cost a healthy ledger, while a UnicodeError is genuine byte
-            # corruption.  Everything the strict reader accepts is left alone --
-            # notably blank lines and valid pending/resolved pairs, which the
-            # permissive/strict divergence survey showed are NOT corruption
-            # (only torn lines, non-JSON, duplicate JSON keys, schema
-            # violations, invalid/naive timestamps, duplicate event ids, and
-            # causally impossible resolves are).
-            try:
-                path.read_text(encoding="utf-8", errors="strict")
-            except UnicodeError:
-                reason = "invalid_utf8"
-            except OSError:
-                return None
-            else:
-                if _read_events_unlocked(path, strict=True) is not None:
-                    return None
-                reason = "strict_reject"
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            root_path = Path(root).resolve()
-            target = ledger(root_path, "{}{}.jsonl".format(CORRUPT_QUARANTINE_PREFIX, stamp))
-            if target is not None and target.exists():
-                # Never overwrite an earlier quarantine; that would destroy the
-                # very evidence this function preserves.
-                target = ledger(root_path, "{}{}-{}.jsonl".format(
-                    CORRUPT_QUARANTINE_PREFIX, stamp, uuid.uuid4().hex[:8]))
-            if target is None:
-                return None
-            os.replace(path, target)
-    except OSError:
-        return None
-    return {"quarantinedTo": target.name, "reason": reason}
 
 
 def snapshot_bytes(path: Path) -> tuple[dict, bytes] | None:
@@ -619,33 +520,3 @@ def check_card(card: dict, project_root: Path, allow_roots: list[Path]) -> dict:
         if state != FRESH:
             return {"state": state, "reason": reason}
     return {"state": FRESH, "checked": len(revisions)}
-
-
-def _main() -> int:
-    """Worker-side maintenance CLI.  Always exits 0 -- never kills the worker.
-
-    `argparse` is imported here, not at module scope: recall imports this module
-    on the blocking hook path and must not pay for a CLI it never runs.
-    """
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cwd", default=os.getcwd())
-    parser.add_argument("--quarantine-corrupt-pending", action="store_true")
-    parser.add_argument("--json", action="store_true")
-    args = parser.parse_args()
-    result = None
-    if args.quarantine_corrupt_pending:
-        try:
-            result = quarantine_corrupt_pending(Path(args.cwd))
-        except Exception:
-            result = None
-    if args.json:
-        print(json.dumps(result or {}, ensure_ascii=False, sort_keys=True))
-    return 0
-
-
-if __name__ == "__main__":
-    import sys
-
-    sys.exit(_main())

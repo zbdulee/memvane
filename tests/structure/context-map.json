@@ -1433,11 +1433,6 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/wiki/card/refresh_lanes.py": {
-      "context": "wiki/card",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/wiki/card/snapshot.py": {
       "context": "wiki/card",
       "layer": "adapter",

@@ -51,3 +51,29 @@ def work_control(queue, stage_id):
     with sqlite3.connect(str(queue.parent / DB_NAME)) as db:
         row = db.execute('SELECT control_json FROM staged_cards WHERE stage_id = ?', (stage_id,)).fetchone()
     return None if row is None else row[0].encode()
+
+
+def failing_ledger_method(name, error):
+    """Patch ``pipeline.api.open_pipeline`` so the handle's ``name`` method raises ``error``."""
+    from unittest.mock import patch
+    from memvane.wiki.pipeline import api as pipeline
+    real = pipeline.open_pipeline
+
+    class Handle:
+        def __init__(self, store):
+            self._store = store
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._store.close()
+
+        def __getattr__(self, attr):
+            if attr == name:
+                def fail(*args, **kwargs):
+                    raise error
+                return fail
+            return getattr(self._store, attr)
+
+    return patch.object(pipeline, 'open_pipeline', lambda *a, **k: Handle(real(*a, **k)))
