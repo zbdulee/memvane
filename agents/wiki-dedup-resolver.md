@@ -1,16 +1,16 @@
 ---
 name: wiki-dedup-resolver
-description: Cleanup agent spawned by the wiki-dedup skill to drain the candidate wiki page pairs that memvane/wiki/dedup/wiki_dedup_scan.py queued to .memvane/compile/dedup-needed.jsonl. Not triggered by user request phrases -- judges each queued pair, folds any unique content into the page it keeps via its own edits, then deletes the duplicate through memvane/wiki/dedup/wiki_dedup_resolve.py, and reports a short summary.
+description: Cleanup agent spawned by the wiki-dedup skill to drain the candidate wiki page pairs that memvane/wiki/dedup/wiki_dedup_scan.py queued in the project ledger (listed by `entry/run.py wiki-ledger dedup-pairs`). Not triggered by user request phrases -- judges each queued pair, folds any unique content into the page it keeps via its own edits, then deletes the duplicate through memvane/wiki/dedup/wiki_dedup_resolve.py, and reports a short summary.
 ---
 
 # Wiki Dedup Resolver
 
-Resolves every pending pair in `.memvane/compile/dedup-needed.jsonl` — pairs of
+Resolves every pending pair in the project ledger's dedup queue (`wiki-ledger dedup-pairs`) — pairs of
 ALREADY-EXISTING wiki pages that `memvane/wiki/dedup/wiki_dedup_scan.py`'s retroactive scan found similar enough
 (cosine similarity of 0.9 or more between the cards' stored memvane-db vectors) to be worth checking
 for consolidation. The `score` is a candidate filter, not a verdict — the semantic comparison in
 step 4.b decides merge vs. skip. This resolver handles only pairs where every page involved is
-already a real file on disk; write-time `merge-needed.jsonl` records remain passive collision
+already a real file on disk; write-time `merge_needed` log rows remain passive collision
 diagnostics and are not an input to this workflow. The `wiki-dedup` skill spawns you; report the
 short summary at the end (step 5).
 
@@ -27,11 +27,10 @@ short summary at the end (step 5).
 1. Resolve the plugin root from the host-provided plugin environment, with a repository fallback:
    `ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}"`.
    Every CLI call below uses `"$ROOT"` — never a bare relative path.
-2. Before reading the queue, run
-   `python3 "$ROOT/entry/run.py" wiki-dedup-resolve --cwd <cwd> --recover-queue`.
-   It reclaims dead-owner `dedup-needed.jsonl.claimed.*` files under the queue
-   lock. Then read `.memvane/compile/dedup-needed.jsonl` in the target
-   project. Empty or missing → release the run-lock and stop; nothing to do.
+2. Read the queue with
+   `python3 "$ROOT/entry/run.py" wiki-ledger dedup-pairs --cwd <cwd> --json`.
+   It prints a JSON array of `{index, pageA, pageB, score}` in resolver order (read-only).
+   An empty array → release the run-lock and stop; nothing to do.
 3. Before resolving ANY entry, read the whole queue and group entries into clusters: two entries
    belong to the same cluster when they share a page (e.g. (A,B) and (B,C) share B → one cluster
    {A,B,C}). An entry sharing no page with any other entry is its own cluster and needs nothing
@@ -60,12 +59,9 @@ short summary at the end (step 5).
       re-verified) — anything folded inside the block is silently lost on the next source edit.
       Everything outside the block survives REGENERATION, frontmatter included, so transplanting
       the deleted page's `aliases`/`canonicalKey`/`sources` entries is safe against source edits.
-      **It does not survive card DELETION.** Machine verification deletes the keeper outright on
-      `fail` and on `inconclusive` (both default) and `verify-deleted.jsonl` records no body, so the
-      folded section is then unrecoverable — including the facts you just rescued from the pages you
-      deleted. That is the intended policy, not a gap (an unverifiable card must not stay in the
-      wiki). Fold the facts in anyway — that is what keeps the wiki correct — but do not treat the
-      keeper as the only copy of anything you cannot regenerate from its sources. WRITE TRANSPLANTED
+      Machine verification never deletes a card: a `fail` or `inconclusive` verdict leaves the
+      keeper in place, unverified. Deleting the keeper's source retires the generated card whole
+      (folded sections included) into `.memvane/compile/retired-wiki/`. WRITE TRANSPLANTED
       `sources` ENTRIES IN THE EMITTED FORM — one flow mapping per list item,
       `  - {kind: "file", path: "docs/a.md"}`. `memvane/host/host_response.py` injects `sources[].path` as the
       link back to the original document and reads only that form (plus quoted keys, single
@@ -80,8 +76,8 @@ short summary at the end (step 5).
       the keeper with a page you decided to delete → `--action merge --delete <that page>`; an
       entry pointing at a page you already deleted earlier in this run is now stale, and step
       4.a's existing file-missing fallback handles it (`--action skip`) — do not re-judge it.
-4. For each entry (in file order; re-derive `<index>` fresh before each call by re-reading the
-   queue file — resolving one entry removes it and shifts every later index down by one):
+4. For each entry (in queue order; re-derive `<index>` fresh before each call by re-running
+   `wiki-ledger dedup-pairs` — resolving one entry removes it and shifts every later index down by one):
    a. Read BOTH pages' full content (paths are wiki-root-relative). Either file missing → the
       pair is stale; call the CLI with `--action skip` and move on.
    b. Judge: do the two pages belong to the same category/topic (same mechanism, same event, same
@@ -131,7 +127,7 @@ short summary at the end (step 5).
 
 ## Notes
 
-- Never edit `memvane/wiki/dedup/wiki_dedup_resolve.py`, `memvane/wiki/dedup/wiki_dedup_scan.py`, or the queue file directly —
+- Never edit `memvane/wiki/dedup/wiki_dedup_resolve.py`, `memvane/wiki/dedup/wiki_dedup_scan.py`, or the ledger directly —
   every mutation goes through step 4.d's CLI call.
 - The auto-block placement rule in step 3.c is not stylistic. Two resolver runs on the same day
   reached opposite conclusions about it (one folded merged facts into the auto block, one added a

@@ -1,17 +1,17 @@
 ---
 name: wiki-dedup
-description: Use when the user asks to clean up, dedupe, merge, or consolidate near-duplicate wiki pages that already exist on disk — e.g. "위키 중복 정리해줘", "dedup 돌려줘", "dedup-needed 처리해줘", "중복 카드 합쳐줘", "clean up duplicate wiki pages". Resolves the retroactive-scan queue at .memvane/compile/dedup-needed.jsonl by spawning the wiki-dedup-resolver agent. Write-time merge-needed.jsonl remains a passive collision diagnostic and is outside this workflow.
+description: Use when the user asks to clean up, dedupe, merge, or consolidate near-duplicate wiki pages that already exist on disk — e.g. "위키 중복 정리해줘", "dedup 돌려줘", "dedup-needed 처리해줘", "중복 카드 합쳐줘", "clean up duplicate wiki pages". Resolves the retroactive-scan dedup queue in the project ledger by spawning the wiki-dedup-resolver agent. Write-time merge-needed log rows remain a passive collision diagnostic and are outside this workflow.
 ---
 
 # Wiki Dedup
 
-Drain `.memvane/compile/dedup-needed.jsonl` — pairs of **already-existing** wiki pages that
+Drain the project ledger's dedup queue — pairs of **already-existing** wiki pages that
 `memvane/wiki/dedup/wiki_dedup_scan.py`'s retroactive scan found similar enough (cosine similarity of 0.9 or more
 between the cards' stored memvane-db vectors) to be worth consolidating. The scan runs in the background
 after SessionStart and source edits on a selected project and only fills the queue; this skill is
 the one entry point that drains it.
 
-This workflow never consumes `merge-needed.jsonl`; that file is a passive diagnostic for
+This workflow never consumes the `merge_needed` log rows; they are a passive diagnostic for
 write-time collisions. Here every page is a real file already on disk, and the resolver compares
 each queued pair autonomously.
 
@@ -21,14 +21,10 @@ each queued pair autonomously.
 
    ```bash
    ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}"
-   DIR="$PWD/.memvane"
-   cat "$DIR/compile/dedup-needed.jsonl" 2>/dev/null
+   python3 "$ROOT/entry/run.py" wiki-ledger dedup-pairs --cwd "$PWD" --json
    ```
 
-   If the queue is missing or empty, also check for a
-   `dedup-needed.jsonl.claimed.*` file. A claimed file can be a recoverable
-   interrupted run; spawn the resolver so its first queue-recovery step can
-   check ownership. Stop only when both the queue and claimed files are absent.
+   It prints a JSON array of `{index, pageA, pageB, score}` (read-only). Stop when it is empty.
 
 2. Spawn the resolver — **do not run its per-pair judgment inline in the main thread**, and do not
    re-type its workflow here (it lives in `agents/wiki-dedup-resolver.md`, the single source of
@@ -49,8 +45,8 @@ each queued pair autonomously.
 
 ## Safety
 
-- Read-only for the queue in step 1 (`cat` and claimed-file existence check); every mutation goes through the resolver's
-  `memvane/wiki/dedup/wiki_dedup_resolve.py` calls — never edit the queue file or the resolver scripts directly.
+- Step 1 only reads the queue; every mutation goes through the resolver's
+  `memvane/wiki/dedup/wiki_dedup_resolve.py` calls — never edit the ledger or the resolver scripts directly.
 - The resolver acquires a per-project run-lock (`~/.local/state/memvane/v1/auto-context/dedup-resolve-lock/<project_key>`);
   if one is already active it will stop on its own. Don't bypass it by editing pages by hand.
 - Cards with `status: generated` (unreviewed) are valid targets — the resolver handles them.
