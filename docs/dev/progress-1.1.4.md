@@ -270,7 +270,19 @@ teeth(제품 줄을 깨서 FAIL 확인, 확인 후 원복):
 
 ## 10. 다음 재개 지점
 
-**현재 재개 지점(task_a297fbe64921): C9b·C10 완료, 다음은 C11.** 남은 `.handoff/v1/` 사용처는 `compile/backfill_work.py`(`backfill/<id>`)와 `card/manifest_scan.py`(`manifest-scan/projection.db`)이고, `generated-manifest.jsonl`은 아직 compile이 쓰고 읽는다(`wiki_compile.py`·`card/legacy_ledgers.py`). 이 셋은 C11에서 원장(`card_generations`)으로 옮긴다. 그 뒤 C12~C15. Q1~Q5는 사용자 승인(msg_7ec3d3939641, 전부 추천안). Q2로 지우는 '검수 실패 시 삭제' 서술은 C15에서 working-rules·README·resolver 지침을 현재 동작에 맞게 고친다.
+**현재 재개 지점(task_a297fbe64921): C9b `c195a303`·C10 `c030426b` 완료, 다음은 C11.** 이 dispatch는 컨텍스트 한도로 C11 전에 멈췄다. C11~C15는 아래 인계 메모에서 시작한다.
+
+#### C11 인계 메모 (HEAD `c030426b` 조사, 제품 호출부는 `rg`로 확인 — 착수 시 CodeGraphContext로 다시 대조)
+
+- 원장 API는 C4에 이미 있다: `append_audit`(`AUDIT_KINDS`), `set/get/clear_cooldown`, `set_suppression`·`get_suppression`·`suppressions(kind)`, `enqueue_dedup_pair`·`dedup_pairs`·`set_dedup_pair_state`, `append_generation`·`generations`·`latest_generation`·`all_generations`. C11은 아래 파일 writer·reader를 이 API로 옮기는 일이다.
+- 로그 → `audit_events`: `verify-log.jsonl`(`wiki_verify_worker.log_verdict`), `candidates.jsonl`(`wiki_compile`·`wiki_compile_worker`·`wiki_compile_retrieval` — retrieval은 읽기), `merge-needed.jsonl`(`wiki_compile`), `dedup-deleted.jsonl`(`wiki_dedup_resolve`), `discard-ledger.jsonl`(`workspace/queue._write_discard_ledger`, dedup 텍스트 큐 전용으로 남음). `verify-deleted.jsonl`은 제품 writer 0.
+- 억제 → `suppressions`: `verify-skipped.jsonl`(제품 writer 0, reader `wiki_compile_worker`가 `verify.api.verify_skipped_path`·`load_verify_suppressions`로 읽는다 → `suppressions('verify')`), `dedup-skipped.jsonl`(writer `wiki_dedup_resolve.record_skip`·`wiki_dedup_judge`, reader `wiki_dedup_scan.load_skip_suppressions`).
+- 쿨다운 → `cooldowns`: `COMPILE_COOLDOWN`(`wiki_compile_worker`), `VERIFY_ENGINE_COOLDOWN`·`LEGACY_VERIFY_COOLDOWN`(`wiki_verify_worker`), `DEDUP_JUDGE_COOLDOWN`·`DEDUP_JUDGE_ENGINE_COOLDOWN`(`wiki_dedup_judge`). `engines.api.set_engine_cooldown`의 파일 경로 인자도 함께 바꾼다.
+- dedup 큐 → `dedup_pairs`: `dedup-needed.jsonl` writer `wiki_dedup_scan`(`requeue_lines`), reader·claim `wiki_dedup_resolve.main`(`claim_queue`·`load_entries`·`requeue_lines`). 이것이 끝나면 `workspace/queue.py`의 텍스트 큐 claim·`reclaim_orphaned_claimed`·`_write_discard_ledger`, `queue_paths.requeue_lines`, `api.requeue_lines`가 제품 호출부 0이 되어 지운다. resolver CLI의 `--index`는 `dedup_pairs` 행 순서로 유지하거나 `pair_key`로 바꾼다(C13 조회 CLI와 함께 정한다).
+- manifest → `card_generations`: `generated-manifest.jsonl`은 아직 `wiki_compile`이 쓰고(`append_jsonl(manifest_path, …)`·`compact_manifest`) `publish_first_card`가 `generation=`으로 원장에도 넣는다(이중 기록). reader: `wiki_compile` identity 이력, `card/legacy_ledgers.py`(1.x 증거 검사 `writable`·`_receipts` — `tombstones.jsonl`·`candidates.jsonl`·`source-refresh-pending` 포함), `card/manifest_scan.py`(`.handoff/v1/manifest-scan/projection.db`), `lifecycle` 원문 삭제 은퇴. `compile/backfill_work.py`는 `.handoff/v1/backfill/<id>`를 쓴다. 1.x 혼재가 route로 배제되므로 `legacy_ledgers`·`manifest_scan`·`backfill_work`의 `.handoff` 상태는 원장 조회로 바꾸거나 지운다. 이 부분은 상태 조합표 R6(원문 삭제 시 기계 생성 카드 은퇴)과 M1의 시험을 먼저 정한다.
+- 영향 시험(파일명에 원장 이름이 나오는 것): verify `test_wiki_verify_worker`, compile `test_summary_history`·`test_legacy_*`·`test_manifest_*`·`test_writer_lifecycle`, dedup 전부, card `test_manifest_checkpoint`·`test_legacy_ledgers`, lifecycle `test_wiki_lifecycle`.
+
+C12~C15는 §5·§6.3·§7과 작업 지시서 순서 그대로다. C15 문서 대상: working-rules 77·79행(tombstone), README·설계서 §4.2(`staged_cards`·64 MiB 쿼터 서술 포함 — C9b로 없어졌다), release.md(§7), `docs/ROADMAP.md` Python 3.11 항목.
 
 이전 dispatch(task_4eea2e2522db)는 C7b까지 하고 미완으로 종료했다. 코디네이터가 §10.2 질문(msg_dd37abb859e8)에 답하지 않고 멈춰, 재설계 방향은 승인된 원칙(D1=A·원칙 3·A4) 안에 있다고 보되 규모(제품 약 4,000줄 삭제, 시험 약 30파일 재작성)를 고려해 새 worker가 이어받도록 정했다. 다음 worker는 §10.2를 C7c로 시작하고, 이어서 C10(tombstone 제거·dedup 이름표 이전)→C11(로그·억제·쿨다운·dedup 큐)→C12(마이그레이션 연결: worker 시작·`selected_execution` 양보·wiki-compile skill 거절)→C13(조회 CLI)→C14(E2E)→C15(문서·release.md 개정·working-rules 77·79행·ROADMAP Python 3.11)를 진행한다. §5의 C6 refresh는 C5에 포함됐다. C4의 `migrate_from_v1`은 아직 진입 경로에 연결하지 않았다(C12).
 
