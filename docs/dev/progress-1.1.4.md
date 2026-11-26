@@ -5,8 +5,7 @@
 - 브랜치: `claude/1.1.4` (출시 태그 `v1.1.2`)
 - 완료 단계: Stage 0+1 `3a3f7001`(stateFormat 2, `~/.local/state/memvane/v2`, 설계서 r4), Stage 2 `41fc37b9`(`memvane/wiki/pipeline/` 신설, 기존 wiki 도메인에서 호출 없음)
 - 기준 문서: [공통 개발 규칙](contexts/working-rules.md), [릴리스 체크리스트](contexts/release.md), [설계서 §4.2·§5](../design-wiki-pipeline-v2.md), [pipeline README](../../memvane/wiki/pipeline/README.md)
-- 현재 단계: **A. 계획 게이트 — 코디네이터 검토 대기. 제품 코드는 수정하지 않았다.**
-- 워킹트리의 미커밋 부분 bump(`package.json`·`plugin.json`·`plugin.yaml` = 1.1.4)는 C1에서 마무리한다.
+- 현재 단계: **B. 구현.** 코디네이터가 계획 질문(msg_bfef0dcef1ae)에 답하지 않고 종료해 D1~D8은 §3 추천안으로 구현자가 확정했다.
 
 ## 1. 조사로 확인한 사실
 
@@ -155,8 +154,9 @@
 
 | 시각 | 단계 | 커밋 | 결과 |
 |---|---|---|---|
-| 2026-11-26 | A. 계획 게이트 | (이 문서) | 코디네이터 검토 요청 |
+| 2026-11-26 | A. 계획 게이트 | `8fe05f3e` | 코디네이터 무응답 종료 → D1~D8 추천안 확정 |
+| 2026-11-26 | C1 버전 bump | (C1) | manifest 7종·`RELEASE` 1.1.4. `plugin-manifest.test.mjs` 5/5, `static.test.mjs` 통과. worker·provider 쌍 변화 없음(`v1.1.2`=HEAD=`PREVIOUS_PAIR`). tier 표의 각 호스트 모델·가격 문서 대조는 이 환경에서 **미확인** |
 
 ## 8. 다음 재개 지점
 
-코디네이터 답(D1~D8 결정)을 받은 뒤 C1부터 시작한다. 답을 받기 전에는 제품 코드를 고치지 않는다.
+C2(pipeline 보강)부터 진행한다.
