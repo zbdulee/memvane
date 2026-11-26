@@ -86,7 +86,7 @@
 | `resolve_target` | 1 | 4 | `wiki/compile/wiki_compile.py` | 변경 없음(병합 이름표 이전이 이 색인에 기댄다) |
 | `write_pending_card` / `enqueue_replacement` / `create_first_card` / `stage_candidate` | 1 / 1 / 1 / 1 | 0 | `wiki/compile/wiki_compile.py` | 숨김 파일 대신 원장 blob |
 | `stamp_verification` | 9 | 5 | `wiki/verify/{wiki_verify_worker,api}.py` | `publish_card`(교체) |
-| `record_verify_deletion` | 3 | 1 | `wiki/verify/{wiki_verify_worker,pending_ownership}.py` | `card_generations` 행(판정용) + `audit_events`(로그) |
+| `record_verify_deletion` | 3 | 1 | `wiki/verify/{wiki_verify_worker,pending_ownership}.py` | `card_generations` 행(기록) + `audit_events`(로그) |
 | `verify_skipped_path` / `load_verify_suppressions` | 3 / 0 | 3 / 3 | `wiki/{compile/wiki_compile_worker,verify/wiki_verify_worker}.py` | `suppressions` |
 | `check_compile_queue` | 1 | 1 | `host/host_response.py` | §3.3 |
 
@@ -196,7 +196,7 @@ C4~C11은 서로 의존한다(C7은 C5·C6, C8은 C7, C9는 C7·C8). 각 커밋 
 | R3 | 이름표 이전이 다른 카드 C의 이름표와 겹침 | merge CLI가 이전 전에 충돌을 검사해 `alias_conflict`로 거절하고 B를 지우지 않는다. 이미 겹친 상태로 compile되면 `resolve_target`의 기존 ambiguous 처리를 따른다 — C10에서 현 동작을 확인해 이 칸을 확정한다 | 0 | `test_merge_alias_conflict_refuses_delete` |
 | R4 | 같은 원문 revision에서 생성 → 검수 inconclusive → 기계 삭제 | `verify-skipped` 억제가 같은 body hash 재추출을 막아 반복 없음 | 1회차만 extract 1 + verify 1, 이후 0 | `test_machine_deleted_same_revision_does_not_loop` |
 | R5 | R4 뒤 원문 변경 | 새 body hash → 다시 생성 | extract 1 + verify 1 | 같음 |
-| R6 | 원문 삭제 | `card_generations`로 기계 생성 카드 은퇴 | 0 | `test_source_delete_retires_generated_card` (c) |
+| R6 | 원문 삭제 | 카드 frontmatter `sourceRevisions`·`createdBy`로 기계 생성 카드 은퇴(`card_generations`는 읽지 않는다) | 0 | `test_source_delete_retires_generated_card` (c) |
 | R7 | merge CLI 이전 쓰기 실패 | B를 지우지 않고 rejected | 0 | `test_merge_transfer_failure_keeps_loser` |
 | R8 | dedup judge 같은 쌍 반복 | `suppressions`(dedup) 억제 | 1회차만 judge 1 | `test_dedup_skip_suppresses_rejudge` |
 
