@@ -76,5 +76,99 @@ class FootprintRecordTests(unittest.TestCase):
         self.assertEqual(seen, [600, 600])
 
 
+
+class TrainerFootprintTests(unittest.TestCase):
+    """Training admission: the measured trainer peak, not the 4,096 MiB RSS ceiling."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+        self.root.chmod(0o700)
+        self.policy = {'trainerArgv': [sys.executable, '/fixture/adapter.py', '/fixture/model'],
+                       'maxRssMib': 4096, 'minAvailableMib': 1024, 'maxLoadPerCpu': .8}
+
+    def test_a_measured_peak_admits_on_its_envelope_under_the_ceiling(self):
+        from memvane.learning.context_learning import trainer_footprint as footprint
+        from memvane.runtime.api import admission_policy
+        self.assertIs(footprint.admission_view(self.root, self.policy), self.policy)  # nothing measured yet
+        # About 1.9 GB measured over a real training run (1,945 MiB).
+        footprint.record(self.root, self.policy, {'observed_peak_rss_kib': 1945 * 1024, 'resource_samples': 40})
+        view = footprint.admission_view(self.root, self.policy)
+        self.assertEqual(view['maxRssMib'], 2918)  # max(ceil(1.5 * 1945), 1945 + 512)
+        self.assertEqual(admission_policy(view)['maxRssMib'] + view['minAvailableMib'], 3942)
+        self.assertEqual(self.policy['maxRssMib'], 4096)  # the running trainer's ceiling is unchanged
+        # A smaller later run never lowers it; a larger one raises it; the ceiling caps it.
+        footprint.record(self.root, self.policy, {'observed_peak_rss_kib': 1000 * 1024, 'resource_samples': 40})
+        self.assertEqual(footprint.admission_view(self.root, self.policy)['maxRssMib'], 2918)
+        footprint.record(self.root, self.policy, {'observed_peak_rss_kib': 3000 * 1024, 'resource_samples': 40})
+        self.assertEqual(footprint.admission_view(self.root, self.policy)['maxRssMib'], 4096)
+
+    def test_what_is_not_a_measurement_keeps_the_ceiling(self):
+        from memvane.learning.context_learning import trainer_footprint as footprint
+        for resources in ({'recovered_completion': True}, {'observed_peak_rss_kib': None},
+                          {'observed_peak_rss_kib': 1945 * 1024, 'resource_samples': 1},
+                          {'observed_peak_rss_kib': -1, 'resource_samples': 40}):
+            footprint.record(self.root, self.policy, resources)
+        self.assertFalse((self.root / footprint.NAME).exists())
+        # Another trainer command, an explicit memory profile, an unreadable record.
+        footprint.record(self.root, self.policy, {'observed_peak_rss_kib': 1945 * 1024, 'resource_samples': 40})
+        other = {**self.policy, 'trainerArgv': [sys.executable, '/fixture/adapter.py', '/other/model']}
+        self.assertIs(footprint.admission_view(self.root, other), other)
+        adaptive = {**self.policy, 'adaptiveMemory': {'fixedMib': 1}}
+        self.assertIs(footprint.admission_view(self.root, adaptive), adaptive)
+        (self.root / footprint.NAME).write_text('{not json')
+        self.assertIs(footprint.admission_view(self.root, self.policy), self.policy)
+        self.assertEqual(footprint.envelope(100), footprint.MIN_ENVELOPE_MIB)
+
+
+class IdleReleaseTests(unittest.TestCase):
+    """A loaded selector model with no request for a while is released; the service stays."""
+
+    def engine(self):
+        loads = []
+        engine = inference_service.GenerationEngine(
+            load=lambda job: loads.append(job['generation']) or object(),
+            forward=lambda *_a, **_k: {'schema_version': 1, 'predictions': []},
+            admission=lambda *_a, **_k: ({'batch': 1}, {'available_mib': 8000}), rss=lambda: 100,
+            end_reuse=lambda: None)
+        # A fixed clock: ``(last + IDLE_RELEASE_SECONDS) - last`` on an uptime-sized monotonic
+        # value can round one ULP below the limit and make the boundary host-dependent.
+        engine.last_used = 1000.0
+        return engine, loads
+
+    def test_an_idle_model_is_released_and_the_next_request_loads_it_again(self):
+        from memvane.learning.context_learning import idle_release
+        engine, loads = self.engine()
+        engine.active, engine.footprint_mib = (('generation',), object()), 512
+        last = engine.last_used
+        self.assertFalse(idle_release.release_idle(engine, now=last + idle_release.IDLE_RELEASE_SECONDS - 1))
+        self.assertIsNotNone(engine.active)
+        self.assertTrue(idle_release.release_idle(engine, now=last + idle_release.IDLE_RELEASE_SECONDS))
+        self.assertEqual((engine.active, engine.footprint_mib, engine.cached_load), (None, None, None))
+        self.assertFalse(idle_release.release_idle(engine, now=last + 2 * idle_release.IDLE_RELEASE_SECONDS))
+
+    def test_a_prepared_generation_waiting_for_its_activation_is_kept(self):
+        from memvane.learning.context_learning import idle_release
+        engine, _loads = self.engine()
+        engine.active = (('generation',), object())
+        later = engine.last_used + idle_release.IDLE_RELEASE_SECONDS
+        engine.pending = ('token', 'key', engine.active, 512, later + 60)
+        self.assertFalse(idle_release.release_idle(engine, now=later))
+        # Once its deadline passed nothing can activate it: both go.
+        self.assertTrue(idle_release.release_idle(engine, now=later + 60))
+        self.assertEqual((engine.active, engine.pending), (None, None))
+
+    def test_a_request_counts_as_use(self):
+        from memvane.learning.context_learning import idle_release
+        engine, _loads = self.engine()
+        engine.active = (('generation',), object())
+        engine.last_used -= idle_release.IDLE_RELEASE_SECONDS
+        with self.assertRaises(Exception):  # the double's request ends early; it was still a request
+            engine.run({'deadline': 0}, cancelled=lambda: False, revalidate=lambda: None)
+        self.assertFalse(idle_release.release_idle(engine))
+        self.assertFalse(idle_release.release_idle(object()))  # an engine without the clock keeps its model
+
+
 if __name__ == '__main__':
     unittest.main()

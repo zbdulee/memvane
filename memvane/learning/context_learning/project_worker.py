@@ -125,7 +125,8 @@ def _record_admission_deferral(project, policy, report, reason=None):
 # (an approval, a policy, a file). Nothing else in the log would say the cycle stands still.
 HELD = ('staged_artifact_changed', 'cohort_cycle_conflict', 'evaluation_stage_unavailable',
         'experiment_paused', 'existing_trial_requires_review', 'multilingual_policy_required',
-        'cohort_source_revoked', 'runtime_approval_required', 'synthetic_training_budget_exhausted')
+        'cohort_source_revoked', 'runtime_approval_required', 'synthetic_training_budget_exhausted',
+        'rollback_pending', 'incumbent_damaged')
 
 
 def _record_held(root, project, cycle):
@@ -145,6 +146,36 @@ def _record_held(root, project, cycle):
              detail=str(cycle['reason'])[:80] if cycle.get('reason') else None)
     except Exception:
         pass  # Diagnostic only: the result itself is returned and stored.
+
+
+def _base_active_damaged(root, policy):
+    """Whether the active pointer names the policy's base model and that file's bytes are not the pointer's."""
+    from .candidate_apply import incumbent_damaged
+    from .dataset import read_private_json
+    try:
+        pointer = read_private_json(Path(root) / 'active-checkpoint.json')
+        return pointer.get('artifact_path') == policy.get('baseArtifact') and incumbent_damaged(pointer)
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _held_damaged(root, project, policy):
+    """The pass's held result, its ``learning.cycle`` row and, for the default teacher, its score rows."""
+    from .candidate_apply import INCUMBENT_DAMAGED
+    from .local_cycle import _atomic_json
+    cycle = {'status': 'incumbent_damaged', 'reason': INCUMBENT_DAMAGED}
+    _record_held(root, project, cycle)
+    try:
+        from . import prequential, project_scope
+        from memvane.learning.default_enrollment import profile_kind
+        if profile_kind(root, project, policy) == 'default-teacher':
+            # The accepted grant as written; the refused check is the binding of the damaged bytes.
+            prequential.record_pass(root, project, project_scope._envelope(root), cycle)
+    except Exception:
+        pass  # Diagnostic only: the stored result below is the record.
+    result = {'status': cycle['status'], 'cycle': cycle, 'activeCheckpointChanged': False}
+    _atomic_json(Path(root) / 'project-last-status.json', result)
+    return result
 
 
 def run(root, project, config=None):
@@ -177,6 +208,11 @@ def run(root, project, config=None):
         except ResourceDeferred as exc:
             _record_admission_deferral(project,policy,report,reason=str(exc))
             return {'status':'deferred_resource','reason':str(exc)}
+        except ValueError:
+            # The grant binds the base model's bytes: when that file is the active one and
+            # changed, the pass ends here like an evaluation of a damaged incumbent would.
+            if not _base_active_damaged(root,policy):raise
+            return _held_damaged(root,project,policy)
         kind=profile_kind(root,project,policy)
         if kind=='default-local':
             teacher={'status':'disabled_local_only'}

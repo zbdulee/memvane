@@ -12,7 +12,7 @@ base checkpoint 포인터는 `schema_version: 1`을 기록한다. 해당 키만 
 `learning` wake는 미완으로 끝난 pass가 연속 288회(약 24시간)면 `retry_cap`으로
 버려지고(`wake.drop`), 다음 hook의 요청이나 selector 재제안이 새 행을 만든다. 이 상한은 사유를 보지 않고 미완 pass를 센다: 학습이 조각으로 진행 중인 pass와 자식이 도는 동안의 확인도 한 번이므로, `kind` `learning`의 `wake.drop` `retry_cap` 행만으로 "학습이 끝내 못 돌았다"고 읽지 않고 같은 시간대의 `learning.cycle` 행과 함께 본다. 상한이 없던 버전에서 오래 미뤄진 행은 갱신 뒤 첫 미완 pass에서 큰 `attempts`와 함께 바로 버려질 수 있다.
 worker 자식이 재시도 결과(`deferred_resource`·`busy`·`apply_deferred` 등, 종류가 섞여도 이어 센다)로 연속 288회 끝나면 그 요청은 더 깨우지 않고
-마지막 결과로 정산되며 `learning.cycle` `retry_cap` 행(사유 = 마지막 결과, `retries`)이 남는다(`worker_retry.py`. 횟수는 namespace의 `worker-retry.json`에 두며, 없거나 읽히지 않으면 0부터 세는 캐시라 1.x 영속 계약에 들지 않는다). 재시도가 아닌 결과, 그리고 진척이 있었던 pass가 이 수를 0으로 돌린다. 진척의 정의는 `worker_retry.moved` 하나다: 직전 재시도 결과 때 같은 파일에 적어 둔 durable 상태(`worker_retry.snapshot`)와 지금 사이에 job·cycle·평가·적용 journal·활성 포인터가 `worker_retry.FORWARD`의 쌍(상태 모델의 `PROGRESS` 이벤트에서 유도, 학습 완료·종결, 평가 지표 저장·종결, 포인터 기록, 활성화·종결)로 앞으로 갔거나 학습 cursor의 저장 그룹이 늘었으면 진척이다. 기다림·재시도·다시 형성되는 intent와 prepare·되돌아가는 전이는 진척이 아니다. 상태를 읽지 못한 pass(잠긴 DB 등)는 진척도 초기화도 아니다: 마지막으로 읽은 상태를 그대로 두고 한 번으로 센다.
+마지막 결과로 정산되며 `learning.cycle` `retry_cap` 행(사유 = 마지막 결과, `retries`)이 남는다(`worker_retry.py`. 횟수는 namespace의 `worker-retry.json`에 두며, 없거나 읽히지 않거나 저장된 상태가 없는 옛 형식이면 0부터 세는 캐시라 1.x 영속 계약에 들지 않는다). 횟수를 쓰지 못한 결과는 그 자리에서 정산하고 `retry_cap` 행에 `detail` `retry_count_unwritable`을 남긴다. 재시도가 아닌 결과, 그리고 진척이 있었던 pass가 이 수를 0으로 돌린다. 진척의 정의는 `worker_retry.moved` 하나다: 직전 재시도 결과 때 같은 파일에 적어 둔 durable 상태(`worker_retry.snapshot`)와 지금 사이에 job·cycle·평가·적용 journal·활성 포인터가 `worker_retry.FORWARD`의 쌍(상태 모델의 `PROGRESS` 이벤트에서 유도, 학습 완료·종결, 평가 지표 저장·종결, 포인터 기록, 활성화·종결)로 앞으로 갔거나 학습 cursor의 저장 그룹이 늘었으면 진척이다. 상태는 최근 64행, 열린 후보(`staged`·`staged_evaluated` cycle)의 행, 직전 상태에 있던 행을 읽으므로 오래된 열린 후보가 평가를 끝낸 것도 진척이다. 기다림·재시도·다시 형성되는 intent와 prepare·되돌아가는 전이는 진척이 아니다. 상태를 읽지 못한 pass(잠긴 DB 등)는 진척도 초기화도 아니다: 마지막으로 읽은 상태를 그대로 두고 한 번으로 센다.
 다음 hook의 요청부터 다시 센다. trainer 실패로 막힌 job은 실패한 학습 시도의 누적(`attempts`: 실패하거나 중단된 claim만 세고, cursor가 전진한 조각과 자원·추론 미룸은 세지 않는다)이 30회에 닿으면 재무장하지 않고
 `trainer_attempts_exhausted`로 닫히며, trainer 자식이 보고한 반복 불가 사유(`trainer_failed:` 접두)도
 worker의 것과 같이 즉시 닫힌다.
@@ -47,6 +47,13 @@ CLI다.
 완료와 경합이 아닌 결과는 `busyRetries`를 지운다. 횟수는 `learning.selector.request`와
 `learning.selector.maintenance`의 `busyRetries`에 남고, 경합 미룸은 유지보수 진입에서
 예외로 올라가지 않는다. `busyRetries`를 모르는 1.x 번들은 그 행을 10분 하한으로 읽는다.
+
+학습·평가를 시작할 때의 coordinator 메모리 승인은 측정한 trainer peak로 판단한다. 학습이 끝나면 process group의 peak RSS를 namespace의
+`trainer-footprint.json`(trainer 명령별 최댓값, 계약 밖 캐시)에 남기고, 그 뒤의 승인은 `max(ceil(1.5×peak), peak+512)`
+(하한 1,024MiB, 상한 policy `maxRssMib`)를 peak 추정으로 쓴다(`trainer_footprint.py`). 측정이 없으면 `maxRssMib`(4,096MiB)
+그대로다. 약 1.9GB peak에서 필요량은 reserve 1,024MiB를 더해 5,120MiB에서 3,942MiB가 된다. 실행 중인 trainer의 RSS 상한과
+학습 요청의 `learning_control` policy(요청 정체성의 일부, 단계마다의 승인은 올린 모델만큼 credit을 받는다)는 설정값 그대로다. 추론 서비스는 요청 없이 `IDLE_RELEASE_SECONDS`(900초)가 지나면 올린 selector 모델을 내려놓고
+(`idle_release.py`, 적용의 준비된 세대가 활성화를 기다리는 동안은 제외) 다음 요청이 첫 요청처럼 다시 올린다.
 
 warm은 client 검증 30초, resident 준비 대기 60초, 준비 뒤 추론 요청
 30초를 각각 사용한다. 추론 요청 상한은 wire의 30초와 같다. 첫 추론
@@ -136,6 +143,14 @@ code/executable/manifest/adapter 지문과 기본 승인 체인, 현재 공식 r
 
 구현: `context_learning_auto.py`, `context_learning_cli.py`, `prepare_laya_inference.py`, `project_learning_setup.py`, `project_learning_recovery.py`, `selector_maintenance.py`, `default_teacher_enable.py`, `candidate_close.py`, `case_rotation.py`.
 
+공유 학습 queue는 `context_learning/shared.py`가 진입점이다. `shared.py`는 경로·policy·DB·동의 같은
+공통 seam, owned worker 자식 본문과 CLI `main`을 두고, 역할 모듈의 이름을 모두 다시 내보낸다.
+역할 모듈은 `shared_cases.py`(사례 수락·학습 출처·holdout), `shared_queue.py`(capture queue·상태·후보 채점),
+`shared_train.py`(학습 주기·학습 한 번·되돌리기·trial 관찰), `shared_run.py`(계측 run·hook launch·학습 전용
+pass), `shared_dispatch.py`(durable worker 요청과 dispatcher step)다. 호출부와 시험의 patch는
+`shared.<이름>`을 가리킨다. 역할 모듈 본문은 `shared`와 공유하는 이름을 실행 시점에 `shared` 모듈에서
+읽으므로 `shared`의 patch가 모든 본문에 닿는다.
+
 공유 학습 `cases` 테이블은 상태와 무관하게 `CASE_LIMIT`(2,000행)에서 새 사례 수집을
 멈춘다(`queue_full`). default-teacher namespace의 worker pass는 행 수가 1,800
 (`case_rotation.ROTATE_LIMIT`)을 넘으면 teacher 호출 전에 이 프로젝트의
@@ -144,7 +159,7 @@ code/executable/manifest/adapter 지문과 기본 승인 체인, 현재 공식 r
 트랜잭션 없이 읽어 hook의 capture 쓰기를 기다리게 하지 않고, 삭제만 짧은 쓰기 트랜잭션
 하나로 한다. 지울 것이 없으면(`nothing_closed`) 계획이 의존하는 개수와 상태의 서명을
 namespace의 `case-rotation-status.json`에 남기고, 서명이 같은 동안은 다시 계획하지 않는다.
-`nothing_closed`와 계획 실패(`deferred`)도 `learning.rotation` 이벤트로 남는다. 지우지
+`nothing_closed`와 계획 실패(`deferred`)도 `learning.rotation` 이벤트로 남는다. 기본 모델 파일이 활성 artifact인데 그 바이트가 바뀌면 scope 권한 검사가 grant를 거절하고, worker pass는 `incumbent_damaged` 결과(`held`, `apply_incumbent_artifact_changed`)를 `project-last-status.json`에 남기며 처음 그렇게 끝난 pass가 `learning.cycle` `held` 행을, default-teacher 프로필이면 `learning.score` 집계도 남긴다. 지우지
 않는 것은 종결되지 않은 사례, 최근 gold 128건과 최근 소비 gold 128건, 어느 학습 job도
 소비하지 않은 gold, 판정 전 job(미학습, 열린 후보, apply journal의 cycle, 가장 새 적용
 후보)의 구성원과 평가 사례, 활성 checkpoint cycle과 가장 새 job의 구성원, 다른 프로젝트의
@@ -275,10 +290,10 @@ namespace의 `apply-failures.json`(cycle별 연속 횟수와 마지막 사유)�
 유지보수 명령 하나뿐이다(`candidate_rollback.restore`, setup action `restore-previous-model`). 대상은 포인터의 적용 표식이
 가리키는 journal이다(살아 있는 것, 또는 뒤 후보의 intent가 서면서 `candidate-applications/`로 옮겨진 것). 그 journal이
 `activated`이거나 `pointer_committed`에서 멈췄고 포인터가 그 `new_pointer`일 때, 적용의 두 잠금 아래에서 먼저 journal을
-`rejected`(`reason` `rolled_back`)로 닫고 receipt → binding → 포인터를 이전 값으로 쓴다. 뒤 후보의 적용이 archive에 복사해 둔 채 살아 있는 journal은 두 곳에 있으므로 두 사본을 모두 닫는다(archive 먼저). 닫힌 journal의 후보는 다시 적용되지
+`rejected`(`reason` `rolled_back`)로 닫고 receipt → binding → 포인터를 이전 값으로 쓴다. 포인터 직전에 namespace의 `rollback-announce.json`(계약 밖 파생물)에 그 적용을 적어 두고, `rolled_back` 행을 남긴 요청이나 worker pass가 지운다. 포인터를 쓴 직후 멈춘 되돌리기도 다음 요청이나 pass가 그 행을 한 번 남긴다. 뒤 후보의 적용이 archive에 복사해 둔 채 살아 있는 journal은 두 곳에 있으므로 두 사본을 모두 닫는다(archive 먼저). 닫힌 journal의 후보는 다시 적용되지
 않고 worker pass도 그 적용을 재개하지 않으며, cycle 행은 `applied`로 남는다. 따로 기록을 두지 않는다: 중단된 되돌리기는
 `rolled_back` journal인데 포인터가 아직 그 `new_pointer`인 상태로 알아보고, 같은 요청이나 다음 worker pass
-(`candidate_rollback.resume`)가 이어서 끝낸다. worker가 끝낸 되돌리기도 `learning.promotion` `rolled_back` 행과 유지보수 요청을 내고, 끝내지 못한 pass는 `rollback_pending` 행에 사유를 남긴다. 그 사이 selector 추론은 거절된다. 요청 한 번은 적용 하나를 되돌린다: 복원된 모델이 앞 적용의 것이면 같은 요청을 다시 보낼 때 그 적용도 되돌린다. 뒤 후보의 미커밋 journal(`intent`·`prepared`)은
+(`candidate_rollback.resume`)가 이어서 끝낸다. worker가 끝낸 되돌리기도 `learning.promotion` `rolled_back` 행과 유지보수 요청을 내고, 끝내지 못한 pass는 `rollback_pending` 행에 사유(오류의 고정 코드, 없으면 예외 종류 이름)를 남긴 뒤 평가·학습·적용 없이 `rollback_pending` 결과(`held`)로 끝난다. 그 사이 selector 추론은 거절된다. 같은 포인터로 되돌린 적용이 여럿이면 `already_restored`는 적용 시각이 가장 늦은 것을 고른다. 요청 한 번은 적용 하나를 되돌린다: 복원된 모델이 앞 적용의 것이면 같은 요청을 다시 보낼 때 그 적용도 되돌린다. 뒤 후보의 미커밋 journal(`intent`·`prepared`)은
 사라지는 포인터를 전제로 한 것이라 결정을 쓴 직후(포인터를 바꾸기 전에) 지우고, 그 후보는 `apply_incumbent_changed`로 재평가에 돌아가 복원된 모델과 다시
 비교된다. resident는 다음 요청에서 포인터가 가리키는 세대를 올린다. `candidate_apply.readable`은 적용된 포인터에서 표식의 journal(살아 있는 것, 없거나 다른 후보의 것이면 archive의 것)이 `activated`이고
 지금 묶인 receipt가 그 포인터를 가리키는지를 본다(플러그인 갱신 뒤 다시 준비된 receipt도 같은 포인터의 것이면 읽힌다). journal이 생기기 전의 실패는 그 후보의 `completed` 평가에

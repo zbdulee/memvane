@@ -653,6 +653,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/learning/context_learning/idle_release.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/learning/context_learning/inference_identity.py": {
       "context": "learning",
       "layer": "adapter",
@@ -803,6 +808,31 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/learning/context_learning/shared_cases.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/shared_dispatch.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/shared_queue.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/shared_run.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/shared_train.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/learning/context_learning/store.py": {
       "context": "learning",
       "layer": "adapter",
@@ -814,6 +844,11 @@
       "pinned": false
     },
     "memvane/learning/context_learning/teacher_budget.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/trainer_footprint.py": {
       "context": "learning",
       "layer": "adapter",
       "pinned": false

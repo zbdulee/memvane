@@ -15,7 +15,11 @@ for the previous pointer, its binding and the previous pointer are written. No r
 stopped after the journal is recognised by that journal (``rolled_back``
 while the pointer is still its ``new_pointer``) and finished by the same
 request or by the next worker pass (``resume``). Until then the receipt,
-binding and pointer may disagree and selector inference refuses (fail closed).
+binding and pointer may disagree and selector inference refuses (fail closed),
+and the worker pass evaluates and applies nothing. Right before the pointer is
+written, ``rollback-announce.json`` names the application: the ``rolled_back``
+row is owed until the request or a later worker pass writes it and removes the
+file, so a run that stopped after the pointer is still announced once.
 
 A later candidate's journal that committed nothing (``intent``, ``prepared``)
 was formed against the pointer that is going away: it is removed right after
@@ -32,8 +36,10 @@ active checkpoint.
 from __future__ import annotations
 
 import fcntl
+import math
 import os
 from pathlib import Path
+import re
 import time
 
 from . import candidate_apply as application
@@ -46,6 +52,10 @@ from memvane.runtime.api import coordination_lock as _lock
 REASON = 'rolled_back'
 POINTER = 'active-checkpoint.json'
 PHASES = ('activated', 'pointer_committed')
+# Outside the 1.x contract: a missing file owes nothing, and an older bundle ignores it.
+ANNOUNCE = 'rollback-announce.json'
+ANNOUNCE_SCHEMA = 'memvane-rollback-announce-v1'
+_CODE = re.compile(r'[a-z][a-z0-9_]{0,79}')
 
 
 def _binding(receipt):
@@ -75,6 +85,19 @@ def _rolled_back(row):
     return row.get('phase') == 'rejected' and row.get('reason') == REASON
 
 
+def _applied_at(row):
+    """When the application was formed: undoing restores its pointer, so the newest one was undone last."""
+    receipt = row.get('new_receipt')
+    stamp = receipt.get('createdAt') if isinstance(receipt, dict) else None
+    return stamp if type(stamp) in (int, float) and math.isfinite(stamp) else float('-inf')
+
+
+def _reason(exc):
+    """A fixed code for an event row: the error's own code, else its type, never a message or a path."""
+    text = str(exc)
+    return text if _CODE.fullmatch(text) else type(exc).__name__
+
+
 def _state(root):
     """``(status, path, row)`` of what a restore would do; reads only.
 
@@ -91,9 +114,12 @@ def _state(root):
             if (row.get('apply_id') == marker.get('id') and row.get('phase') in PHASES
                     and row.get('new_pointer') == pointer):
                 return 'rollback_planned', path, row
-    for path, row in journals:
-        if _rolled_back(row) and row.get('old_pointer') == pointer:
-            return 'already_restored', path, row
+    # Applications on one pointer follow each other (a restore puts that pointer back before
+    # the next one forms), so the newest undone application is the last restore.
+    restored = [(path, row) for path, row in journals if _rolled_back(row) and row.get('old_pointer') == pointer]
+    if restored:
+        path, row = max(restored, key=lambda item: _applied_at(item[1]))
+        return 'already_restored', path, row
     return 'nothing_to_restore', None, None
 
 
@@ -141,7 +167,7 @@ def plan(root):
         return {**_summary(row, 'rollback_planned' if status == 'rollback_resumed' else status),
                 'phase': 'rolling_back' if status == 'rollback_resumed' else row['phase'], 'changesApplied': 0}
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        return {'status': 'rollback_blocked', 'reason': str(exc)[:80], 'changesApplied': 0}
+        return {'status': 'rollback_blocked', 'reason': _reason(exc), 'changesApplied': 0}
 
 
 def _copies(root, row):
@@ -231,13 +257,16 @@ def restore(root, *, fault=lambda _point: None, resume_only=False):
         fault('receipt_restored')
         application.put(root / identity.BINDING, _binding(receipt))
         fault('binding_restored')
+        # Before the pointer: a run that stops right after it still owes the ``rolled_back`` row.
+        _owe(root, row)
+        fault('announcement_owed')
         application.put(root / POINTER, row['old_pointer'])
         fault('pointer_restored')
         _history(root, row['old_pointer'])
         return {**summary, 'changesApplied': 1}
     except (OSError, ValueError, KeyError, TypeError) as exc:
         # Stopped between its writes: the same request or the next worker pass finishes it.
-        return {'status': 'rollback_interrupted' if written else 'rollback_blocked', 'reason': str(exc)[:80],
+        return {'status': 'rollback_interrupted' if written else 'rollback_blocked', 'reason': _reason(exc),
                 'changesApplied': 0}
     finally:
         if pointer_fd is not None:
@@ -245,27 +274,58 @@ def restore(root, *, fault=lambda _point: None, resume_only=False):
         os.close(fd)
 
 
+def _owe(root, row):
+    """Name the application whose ``rolled_back`` row is owed."""
+    try:
+        application.put(root / ANNOUNCE, {'schema': ANNOUNCE_SCHEMA, 'applyId': row['apply_id'],
+                                          'cycleId': row['cycle_id']})
+    except (OSError, ValueError):
+        # Ignored: only the row of a run that also stops right after its pointer depends on it,
+        # and a marker that cannot be written must not keep the previous model from coming back.
+        pass
+
+
+def _owed(root, row):
+    """Whether the ``rolled_back`` row of ``row``'s restore is still owed."""
+    path = root / ANNOUNCE
+    if not (path.exists() or path.is_symlink()):
+        return False
+    try:
+        marker = read_private_json(path)
+    except (OSError, ValueError):
+        return True  # Unreadable: owed rather than lost; the announcement replaces it.
+    return not isinstance(marker, dict) or marker.get('applyId') == row['apply_id']
+
+
 def resume(root):
     """The worker pass's part: finish a restore that stopped after its decision; never raises.
 
-    A finished one is announced like the owner's own request. One that still
-    cannot be finished leaves a ``learning.promotion`` row (``rollback_pending``
-    and the reason) per pass: the selection stays closed until it is finished.
+    A finished one is announced like the owner's own request, and so is a
+    restore that stopped after its pointer before it was announced. One that
+    still cannot be finished leaves a ``learning.promotion`` row
+    (``rollback_pending`` and the reason) per pass: the selection stays closed
+    until it is finished. None when there is nothing to finish.
     """
     result = None
     try:
         root = Path(root)
-        if _state(root)[0] != 'rollback_resumed':
+        if not os.path.lexists(root / POINTER):
+            return None  # Nothing was applied here, so nothing is being undone.
+        status, _path, row = _state(root)
+        if status == 'already_restored' and _owed(root, row):
+            result = {**_summary(row, 'restored'), 'changesApplied': 0}
+        elif status != 'rollback_resumed':
             return None
-        result = restore(root, resume_only=True)
+        else:
+            result = restore(root, resume_only=True)
     except Exception as exc:  # noqa: BLE001 - the pass goes on; the journal still says what is left
-        result = {'status': 'rollback_interrupted', 'reason': str(exc)[:80], 'changesApplied': 0}
+        result = {'status': 'rollback_interrupted', 'reason': _reason(exc), 'changesApplied': 0}
     try:
         from . import prequential
         from .candidate_close import _project_of
         project = _project_of(root)
         if result.get('status') == 'restored':
-            _announce(project, result)
+            _announce(project, result, root)
         elif result.get('status') in ('rollback_interrupted', 'rollback_blocked'):
             prequential._emit(project, 'learning.promotion', outcome='rollback_pending', reason=result.get('reason'))
     except Exception:  # noqa: BLE001 - diagnostic only
@@ -273,12 +333,16 @@ def resume(root):
     return result
 
 
-def _announce(project, result):
-    """The ``rolled_back`` row and a request for the resident's upkeep."""
+def _announce(project, result, root):
+    """The ``rolled_back`` row and a request for the resident's upkeep; then nothing is owed."""
     from memvane.learning import selector_maintenance
     from . import prequential
     prequential._emit(project, 'learning.promotion', outcome=REASON, cycle=result['cycle_id'],
                       previousCycle=result['previousCycle'])
+    try:
+        os.unlink(root / ANNOUNCE)
+    except OSError:
+        pass  # Ignored: a file left behind announces this restore once more, never another one.
     try:
         # The resident loads the previous head on its next request; this asks for that now.
         decision = selector_maintenance._selected_route(project)
@@ -314,7 +378,12 @@ def restore_project(project, *, plan_only=False):
         return plan(root)
     result = restore(root)
     if result.get('status') == 'restored':
-        _announce(project, result)
+        _announce(project, result, root)
+    elif result.get('status') == 'already_restored':
+        # A request that stopped after the pointer: its row is still owed.
+        _status, _path, row = _state(root)
+        if row is not None and _owed(root, row):
+            _announce(project, {**result, 'status': 'restored'}, root)
     return result
 
 
