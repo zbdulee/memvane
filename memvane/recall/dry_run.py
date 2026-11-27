@@ -397,7 +397,7 @@ def _selector_stage(decision, settings, prompt, rows, *, top_n, deadline, use_se
                     project_root=decision['projectRoot'], wiki_names=names,
                     scope_id=decision['scopeId'], ensure_service=_reject_service_start,
                     deadline=selector_deadline, pair_budget=PROMPT_PAIR_BUDGET, lane='prompt',
-                    skip_busy=True)
+                    skip_busy=True, allow_admit_spawn=False)
             except Exception:
                 result = {'reason': 'selector_unavailable', 'final_results': []}
             _selector_measurement(trace, result.get('resources'))

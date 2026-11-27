@@ -44,6 +44,20 @@ class HandlerTable(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), '[]')
 
+    def test_runtime_work_snapshot_readonly_prints_json_without_creating_directory(self):
+        import io
+        import json
+        from contextlib import redirect_stdout
+        from memvane.app import entry_commands
+        missing = self.root / 'absent-service'
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = entry_commands.runtime_work_main(['snapshot-readonly', str(missing)])
+        self.assertEqual(code, 0)
+        self.assertFalse(missing.exists())
+        data = json.loads(buf.getvalue())
+        self.assertIn('wakes', data)
+
 
 if __name__ == '__main__':
     unittest.main()

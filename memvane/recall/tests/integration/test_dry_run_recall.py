@@ -258,6 +258,7 @@ class DryRunSelector(DryRunCase):
             result = self.dry_run(use_selector=True)
         self.assertEqual(len(asked), 1)
         self.assertTrue(asked[0]['skip_busy'])
+        self.assertIs(asked[0]['allow_admit_spawn'], False)
         view = result.as_dict()
         self.assertEqual((view['outcome'], view['reason']), ('served', 'selected'))
         selector = view['selectorResult']
@@ -268,6 +269,22 @@ class DryRunSelector(DryRunCase):
         self.assertEqual(decisions[0], 'selected')
         self.assertTrue(set(decisions[1:]) <= {'not_selected', 'outside_selector_candidates'})
         self.assertEqual(view['timings']['selectorPairs'], 4)
+
+    def test_warm_selector_without_admission_receipt_falls_back_without_spawning_trainer(self):
+        warm = self.tmp / 'warm-service'
+        warm.mkdir(mode=0o700)
+        with mock.patch('memvane.learning.api.selector_prepared', return_value=True), \
+                mock.patch('memvane.runtime.api.service_root', return_value=warm), \
+                mock.patch('memvane.learning.api.inference_version', return_value={'status': 'ready'}), \
+                mock.patch('memvane.learning.context_learning.selection_port.apply_published_selection') as _apply, \
+                mock.patch('memvane.learning.context_learning.live_select.VerifiedLayaTrainer') as trainer_cls, \
+                mock.patch('memvane.learning.context_learning.live_select.choose',
+                           return_value=(None, 'selector_not_prepared', {})) as mocked_choose:
+            result = self.dry_run(use_selector=True)
+        trainer_cls.assert_not_called()
+        if mocked_choose.called:
+            self.assertIs(mocked_choose.call_args.kwargs.get('allow_admit_spawn'), False)
+        self.assertEqual((result.outcome, result.reason), ('served', 'ranked'))
 
 
 class DryRunWorktree(DryRunCase):
