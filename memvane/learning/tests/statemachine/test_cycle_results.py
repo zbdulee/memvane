@@ -54,14 +54,16 @@ def statuses(name, start=None):
 class CycleResults(unittest.TestCase):
     def found(self):
         return (statuses('automatic_staging.py') | statuses('candidate_apply.py')
-                | statuses('shared.py', 'def run_training_pending') | statuses('project_worker.py')) - NOT_RESULTS
+                | statuses('shared_run.py', 'def run_training_pending') | statuses('shared.py', 'def _profile_apply')
+                | statuses('project_worker.py')) - NOT_RESULTS
 
     def test_no_pass_result_is_unclassified(self):
         found = self.found()
         self.assertEqual(sorted(found - set(CYCLE_RESULTS) - TEACHER_STEP), [])
         # And nothing is classified that the source no longer returns.
         text = ''.join((SOURCE / name).read_text(encoding='utf-8')
-                       for name in ('automatic_staging.py', 'candidate_apply.py', 'shared.py', 'project_worker.py'))
+                       for name in ('automatic_staging.py', 'candidate_apply.py', 'shared.py', 'shared_run.py',
+                                    'project_worker.py'))
         self.assertEqual([status for status in CYCLE_RESULTS if "'%s'" % status not in text], [])
         self.assertGreaterEqual(len(found), 25)
 
