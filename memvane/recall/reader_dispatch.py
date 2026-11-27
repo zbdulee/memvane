@@ -1,4 +1,6 @@
 """Internal read-only adapter for the selected view."""
+from __future__ import annotations
+
 import copy
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -26,8 +28,12 @@ def _session_excluded(name):
     return [[path[len(name)+1:],sha] for path,sha in session_exclusions() if path.startswith(name+'/')] or None
 
 
-def _fused_sources(lexical, nearest, timings, emptied=None):
+def _fused_sources(lexical, nearest, timings, emptied=None, stages=None):
     from memvane.recall.domain.rules import _fuse_verified_lists
+    if stages is not None and emptied is not None:
+        # The dry run's stage lists: exactly what this fusion reads.
+        stages.update(queries=list(emptied[2]), lexical=[list(lane) for lane in lexical],
+                      semantic=None if nearest is None else list(nearest), status=emptied[4])
     if (emptied is not None and emptied[3] and timings is not None and not any(lexical) and not nearest
             and 'sessionExcludedHits' not in timings):
         store, pin, queries, excluded, status, deadline = emptied
@@ -188,13 +194,20 @@ def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline
 
 
 def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline,
-                   snapshot=None, decision=None, provider=None, authority=None, linked=None, timings=None):
-    """Read the journal-selected view for this checkout."""
+                   snapshot=None, decision=None, provider=None, authority=None, linked=None, timings=None,
+                   stages=None):
+    """Read the journal-selected view for this checkout.
+
+    ``stages`` (the dry run's) receives the lists the fusion read: ``queries``,
+    ``lexical`` (FTS rows with their bm25 ``score``), ``semantic`` (rows with
+    their cosine ``score``, or None) and ``status``. The served rows are the same.
+    """
     if not _persisted_schema3(endpoint):
         raise ValueError('reader_endpoint_not_issued')
     return _query_persisted_schema3(endpoint, checkout=checkout, prompt=prompt,
         query_vector=query_vector, deadline=deadline, snapshot=snapshot,
-        decision=decision, provider=provider, authority=authority, linked=linked, timings=timings)
+        decision=decision, provider=provider, authority=authority, linked=linked, timings=timings,
+        stages=stages)
 
 
 def auxiliary_wiki_row(path: str, body: str, wiki_roots) -> bool:
@@ -375,7 +388,7 @@ def _proved_search_spec(store, record, vector, proof, *, partial):
 
 
 def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,snapshot,decision,
-                             provider,authority,linked=None,timings=None):
+                             provider,authority,linked=None,timings=None,stages=None):
     """Read the journal-selected schema3 endpoint at its current view head.
 
     Rows leave in the recall row shape (``scope, generation, path, hash, body,
@@ -501,7 +514,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
 
             if status == 'lexical_only' and query_vector is not None:
                 lexical = _atom_fallback(store,pin,queries,lexical,shaped,excluded,None,timings,deadline)
-            rows = _fused_sources(lexical, nearest, timings, emptied=(store, pin, queries, excluded, status, deadline))
+            rows = _fused_sources(lexical, nearest, timings, emptied=(store, pin, queries, excluded, status, deadline), stages=stages)
             started = time.monotonic()
             try:
                 spans = _card_spans(store, pin, rows, name, status, deadline)
