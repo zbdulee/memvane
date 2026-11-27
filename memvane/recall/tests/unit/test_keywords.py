@@ -101,6 +101,18 @@ class LexTerms(unittest.TestCase):
         prompt = 'EP012 도구를 쓰지 말고 컨텍스트만 써.\nrelease QA alpha 문서의 codename은?'
         self.assertEqual(keywords.semantic_query_text(prompt), prompt)
 
+    def test_content_word_questions_and_fenced_blocks_are_preserved(self):
+        for prompt in (
+            'MemVane 설정을 바꿨어.\n파일 검색 명령 알려줘.',
+            'What do I run? Use the given context.\nHow do I run commands?\nsync owner contention',
+            '파일 검색 명령 짧게 알려줘.\nsync owner contention',
+            'sync 큐 구조\n```\nrun\nread file\n```',
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(keywords.strip_instructions(prompt), (prompt, False))
+        fenced = "도구는 쓰지 말고 답만 해 줘.\nsync 큐 구조\n```\nDon't use tools\n```"
+        self.assertEqual(keywords.strip_instructions(fenced), ("sync 큐 구조\n```\nDon't use tools\n```", True))
+
     # -- exact identifiers ---------------------------------------------------------
     def test_backtick_code_span_becomes_an_identifier_first(self):
         built = kw('`recallVerifiedOnly` 기본값이 뭐야')

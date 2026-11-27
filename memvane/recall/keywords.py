@@ -283,29 +283,35 @@ def _keyword_question_span(prompt: str) -> tuple[str, str]:
 # 아니다. 키워드 추출이 등장 순서를 보존하고 일반 lex 문자열이 앞 3개만 AND 로
 # 쓰므로(``GENERAL_LEX_TERM_CAP``) 이런 문장이 앞에 오면 질문의 드문 토큰이 컷 뒤로
 # 밀리고 lex 가 지시문 어휘의 AND(대개 0건)가 된다. 같은 지시문은 질의 벡터도 끈다.
-# 문장 **전체**가 이 어휘로만 이뤄졌을 때만 지시문으로 본다 — 내용어가 하나라도 있는
-# 문장("도구 설정 방법")은 남는다. 그래서 `도구`·`파일`처럼 내용어로도 쓰이는 단어가
-# 목록에 있어도 그 단어를 담은 질문을 지우지 않는다.
-INSTRUCTION_TERMS = frozenset((
-    # 도구·검색·실행 금지
-    "도구", "툴", "tool", "tools", "쓰지", "쓰지마", "사용하지", "사용하지마", "사용", "쓰고",
-    "말고", "말아", "말아줘", "마", "마세요", "없이", "금지", "하지마", "하지", "않고",
-    "검색", "검색하지", "찾지", "읽지", "실행하지", "열지", "보지", "파일", "명령",
-    "컨텍스트", "컨텍스트만", "주어진", "제공된", "context",
-    # 답 형식
-    "답", "답만", "대답", "대답만", "답변", "답변만", "결론", "결론만", "답해", "답해줘",
-    "대답해", "대답해줘", "답변해", "답변해줘", "말해", "말해줘", "알려줘", "해", "줘", "주세요",
-    "짧게", "간단히", "간단하게", "간결하게", "바로", "그냥", "한국어", "영어", "한글",
-    "한두", "문장", "한", "줄", "설명", "설명없이", "부연", "추가", "없이만",
-    # English
-    "don", "doesn", "never", "use", "using", "any", "without", "just", "only",
-    "answer", "reply", "respond", "brief", "briefly", "short", "concise", "concisely",
-    "directly", "search", "files", "file", "read", "run", "commands", "command",
-    "explain", "explanation", "english", "korean", "given", "provided", "one", "sentence",
+# ``파일``·``검색``·``run``·``command``처럼 내용어로도 쓰이는 어휘는 부정·금지 표지와
+# 함께일 때만 지시문으로 보고, 의문문과 Markdown 코드 펜스 블록은 건드리지 않는다.
+_NEGATION_MARKERS = frozenset((
+    "쓰지", "쓰지마", "사용하지", "사용하지마", "말고", "말아", "말아줘", "마", "마세요",
+    "없이", "금지", "하지마", "않고", "검색하지", "찾지", "읽지", "실행하지", "열지",
+    "보지", "설명없이", "없이만", "don", "doesn", "never", "without",
 ))
+_ACTION_NOUNS = frozenset((
+    "도구", "툴", "tool", "tools", "사용", "쓰고", "하지", "검색", "파일", "명령",
+    "설명", "부연", "추가", "use", "using", "search", "file", "files", "read",
+    "run", "command", "commands", "explain", "explanation",
+))
+_FORMAT_MARKERS = frozenset((
+    "컨텍스트만", "답만", "대답만", "답변만", "결론만", "짧게", "간단히", "간단하게",
+    "간결하게", "한두", "한국어", "영어", "한글", "just", "only", "brief", "briefly",
+    "short", "concise", "concisely", "directly", "english", "korean",
+))
+_FORMAT_COMMON = frozenset((
+    "컨텍스트", "주어진", "제공된", "context", "답", "대답", "답변", "결론", "답해",
+    "답해줘", "대답해", "대답해줘", "답변해", "답변해줘", "말해", "말해줘", "알려줘",
+    "해", "줘", "주세요", "바로", "그냥", "문장", "한", "줄", "any", "answer",
+    "reply", "respond", "given", "provided", "one", "sentence",
+))
+_FORMAT_TERMS = _FORMAT_MARKERS | _FORMAT_COMMON
+INSTRUCTION_TERMS = _NEGATION_MARKERS | _ACTION_NOUNS | _FORMAT_TERMS
 # 문장 경계: 줄바꿈, 그리고 뒤에 공백이 오는 종결 부호. 토큰 안의 `.`(`v1.2.3`,
 # `docs/settings.md`)은 경계가 아니다. 정규식은 bounded 하고 검사 문장 수도 상한한다.
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])[ \t]+|\n+")
+_INLINE_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])[ \t]+")
 _MAX_INSTRUCTION_SENTENCES = 64
 
 
@@ -320,28 +326,74 @@ def _sentence_terms(sentence: str) -> list[str]:
     return terms
 
 
+def _is_instruction_sentence(sentence: str) -> bool:
+    """표지어(부정·금지 또는 답 형식 한정)가 있고 비목록 내용어가 없는 평서문만 True."""
+    if sentence.rstrip().endswith(("?", "？")):
+        return False
+    terms = _sentence_terms(sentence)
+    if not terms:
+        return False
+    if any(term in _NEGATION_MARKERS for term in terms):
+        return all(term in INSTRUCTION_TERMS for term in terms)
+    if any(term in _FORMAT_MARKERS for term in terms):
+        return all(term in _FORMAT_TERMS for term in terms)
+    return False
+
+
+def _fence_prefix(line: str) -> tuple[str, int] | None:
+    stripped = line.lstrip()
+    if stripped.startswith(("```", "~~~")):
+        ch = stripped[0]
+        return ch, len(stripped) - len(stripped.lstrip(ch))
+    return None
+
+
 def strip_instructions(prompt: str) -> tuple[str, bool]:
     """답 형식·도구 사용 지시문으로만 된 문장을 뺀 질의 본문과 뺐는지 여부.
 
-    ``INSTRUCTION_TERMS`` 로만 이뤄진 문장을 지운다. 남는 문장에 키워드가 하나도 없으면
-    (프롬프트 전체가 지시문이면) 원문을 그대로 돌려준다. 문장이
-    ``_MAX_INSTRUCTION_SENTENCES`` 를 넘는 붙여넣기는 건드리지 않는다. 어떤 입력에도
-    예외를 던지지 않는다.
+    의문문과 Markdown 코드 펜스 블록은 보존한다. 남는 문장에 키워드가 하나도
+    없으면(프롬프트 전체가 지시문이면) 원문을 그대로 돌려준다. 단위가
+    ``_MAX_INSTRUCTION_SENTENCES`` 를 넘는 붙여넣기는 건드리지 않는다.
     """
     if not isinstance(prompt, str) or not prompt:
         return prompt, False
     try:
-        sentences = [part for part in _SENTENCE_SPLIT_RE.split(prompt) if part.strip()]
-        if len(sentences) > _MAX_INSTRUCTION_SENTENCES:
+        units: list[tuple[bool, str]] = []
+        fence_char: str | None = None
+        fence_len = 0
+        fence_lines: list[str] = []
+        for line in prompt.splitlines():
+            if fence_char is not None:
+                fence_lines.append(line)
+                stripped = line.lstrip()
+                if (stripped.startswith(fence_char * fence_len)
+                        and stripped.lstrip(fence_char).strip() == ""):
+                    units.append((False, "\n".join(fence_lines)))
+                    fence_char = None
+                    fence_len = 0
+                    fence_lines = []
+                continue
+            opened = _fence_prefix(line)
+            if opened is not None:
+                fence_char, fence_len = opened
+                fence_lines = [line]
+                continue
+            if not line.strip():
+                continue
+            for sentence in _INLINE_SENTENCE_SPLIT_RE.split(line):
+                if sentence.strip():
+                    units.append((True, sentence))
+        if fence_lines:
+            units.append((False, "\n".join(fence_lines)))
+        if len(units) > _MAX_INSTRUCTION_SENTENCES:
             return prompt, False
         kept, dropped = [], False
-        for sentence in sentences:
-            terms = _sentence_terms(sentence)
-            if terms and all(term in INSTRUCTION_TERMS for term in terms):
+        for check, text in units:
+            if check and _is_instruction_sentence(text):
                 dropped = True
                 continue
-            kept.append(sentence.strip())
-        rest = "\n".join(part for part in kept if part)
+            kept.append(text.strip() if check else text)
+        rest = "\n".join(kept)
         if not dropped or not extract_keywords(rest):
             return prompt, False
         return rest, True

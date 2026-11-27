@@ -361,6 +361,10 @@ def _fts_delta(store, db, view_id, head, changes, deadline):
     text_acc = rows.acc_value(base['fts_acc'])
     for row, sign in changes:
         text_acc = rows.acc_update(text_acc, rows._FTS_DOMAIN, row, sign)
+    if text_acc['count'] > view_fts.MAX_ROWS:
+        v.fail('fts_rows_invalid')
+    if text_acc['bytes'] - text_acc['count'] * len(rows._row_bytes({k: '' for k in view_fts._FIELDS})) > view_fts.MAX_FTS_BYTES:
+        v.fail('fts_rows_too_large')
     if rows.fts_acc(view_fts.head_rows(db, view_id, deadline)) != text_acc:
         v.fail('fts_rows_mismatch')
     return view_fts.head_storage_digest(db, view_id, deadline), text_acc
