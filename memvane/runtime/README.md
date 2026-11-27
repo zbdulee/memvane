@@ -2,6 +2,8 @@
 
 wake 큐, admission, lease와 자원 정책을 다룬다. wake kind는 `laya-sync`·`laya-compile`·`learning`·`auto`다. 알 수 없는 wake kind는 보존하고, 출시 전 빌드가 남긴 `index`·`update`·`cleanup` 행만 큐를 읽을 때 `retired_kind` 사유(`runtime-wake-drops.json`)로 지운다.
 
+`runtime_main(['snapshot-readonly'[, root]], execute=collector)`는 wake 큐를 읽기만 한 스냅샷 dict를 `collector`에 넘기고 0을 돌려준다. `wakes`·`wake_overflow`·`wake_meta`를 `PRAGMA query_only`로, `runtime-wake-failures.json`·`drops`·`overflow`·`preparing`·`deferred` 파일을 그대로 읽는다. `service_root(create=False)`라 디렉터리를 만들지 않고, `WakeQueue.pending()`과 달리 행을 지우거나 승격하지 않으며 lease를 잡지 않는다. `QMD_SETUP_GUARD_FIXTURE=1`에서는 테스트 runtime root나 platform temp 안의 명시 root만 읽고 계정 홈의 큐는 `fixture_blocked`로 답한다.
+
 구현: `host_bundle.py`, `qa_model_budget.py`, `resource_controls.py`, `resource_platform.py`, `runtime_admission.py`, `runtime_cpu.py`, `runtime_handlers.py`, `runtime_lease.py`, `runtime_monitor.py`, `runtime_wake_policy.py`, `runtime_work.py`, `wake_cancel.py`.
 
 selector 유지보수의 재시도 예약은 기존 `learning` kind와 canonical project

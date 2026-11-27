@@ -35,7 +35,7 @@ def selector_prepared(config, project_root):
 
 def select_published(pool, *, prompt, config, project_root,
                      wiki_names, scope_id, deadline=None, ensure_service=None, skip_busy=False,
-                     pair_budget=None, lane=None):
+                     pair_budget=None, lane=None, allow_admit_spawn=True):
     """Select verified Laya-index cards with the existing local Laya model.
 
     The index query supplies immutable, provenance-checked wiki rows. This
@@ -44,7 +44,8 @@ def select_published(pool, *, prompt, config, project_root,
     host then serves its ranked rows. An invalid pool is `candidate_invalid`.
     ``skip_busy`` (edit recall) answers ``service_busy`` instead of queueing
     behind a request the inference service is already scoring. ``pair_budget``
-    and ``lane`` pass to the selector's pair plan.
+    and ``lane`` pass to the selector's pair plan. ``allow_admit_spawn=False``
+    never spawns the selector's admission validation (``live_select.choose``).
     """
     from . import selection_port
     from .contracts import digest
@@ -98,7 +99,8 @@ def select_published(pool, *, prompt, config, project_root,
             corpus_fingerprint=fingerprint, deadline=deadline, pointer_name=pointer,
             ensure_service=ensure_service, **({'skip_busy': True} if skip_busy else {}),
             **({'pair_budget': pair_budget} if pair_budget is not None else {}),
-            **({'lane': lane} if lane is not None else {}))
+            **({'lane': lane} if lane is not None else {}),
+            **({'allow_admit_spawn': False} if not allow_admit_spawn else {}))
         out['reason'], out['resources'] = reason, resources
         if ids is not None:
             out['final_results'] = selection_port.apply_published_selection(pool, ids)

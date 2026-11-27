@@ -843,15 +843,13 @@ def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: 
     ``attempts`` and ``failure`` codes, and a card that fits logs
     ``measured_after_failure`` (nothing is logged for a fitting card otherwise).
     """
-    from memvane.learning.api import (card_budget_failure_fields, emit_card_budget, measure_card,
-                                      selector_tokenizers)
+    from memvane.learning.api import emit_card_budget, measure_card, selector_tokenizers
     tokenizer = selector_tokenizers(config, root)
-    measured = measure_card(card_text, tokenizer)
+    # A runtime that failed before another answered stays visible on every outcome.
+    measured, failure = measure_card(card_text, tokenizer, failure_fields=True)
     rel = target.relative_to(wiki_root).as_posix()
     fields = {"size": measured["size"], "budget": measured["budget"],
               "method": measured["method"]}
-    # A runtime that failed before another answered stays visible on every outcome.
-    failure = card_budget_failure_fields(measured)
     if measured["reason"] in ("measure_failed", "tokenizer_unavailable"):
         record["cardBudget"] = {**fields, "reason": measured["reason"], **failure}
         emit_card_budget(root, "measure_failed" if measured["reason"] == "measure_failed"

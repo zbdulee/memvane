@@ -27,7 +27,7 @@ the coordinator, the resident service's monitor and the learning-state mover.
 A test run resolves that root to ``MEMVANE_TEST_RUNTIME_ROOT`` instead
 (``inference_service.service_root``), so a test never writes the user's queue.
 """
-from contextlib import contextmanager
+from contextlib import closing,contextmanager
 import fcntl
 import json
 import math
@@ -736,8 +736,49 @@ def hook_wake():
     wake()
 
 
+SNAPSHOT_FILES={'failures':FAILURE_DETAIL_FILE,'drops':DROP_DETAIL_FILE,'overflow':'runtime-wake-overflow.json',
+                'preparing':PREPARING_FILE,'deferred':DEFERRED_FILE}
+
+
+def snapshot_readonly(root=None):
+    """Wake tables and diagnostics files; ``status`` read/absent/fixture_blocked/unsafe_root/unreadable.
+
+    Unlike ``WakeQueue``: no mkdir (``service_root(create=False)``), no write (``PRAGMA query_only``), no
+    lease, no drop or promotion, no raise. A fixture run reads only its test root or a platform-temp root."""
+    import pwd
+    from memvane.kernel.errors import _query_only_uri
+    from memvane.kernel.memvane_paths import state_base
+    from memvane.runtime.runtime_lease import in_platform_temp
+    from memvane.runtime.service_state import TEST_ROOT_ENV,service_root
+    out={'status':'absent','root':None,'at':time.time(),'wakes':[],'overflowRows':[],'meta':{},**{k:{} for k in SNAPSHOT_FILES}}
+    fixture,test=os.environ.get('QMD_SETUP_GUARD_FIXTURE')=='1',os.environ.get(TEST_ROOT_ENV)
+    if (root is not None and not os.path.isabs(root)) or (fixture and not (in_platform_temp(root) if root else test)):
+        return dict(out,status='fixture_blocked' if fixture else 'unsafe_root')
+    candidate=(Path(root) if root is not None else Path(os.path.realpath(test))/'laya-inference' if test
+               else state_base(Path(pwd.getpwuid(os.getuid()).pw_dir).resolve())/'wake')
+    try:
+        if not os.path.lexists(candidate):return out  # Not created yet: nothing is queued.
+        found=_private_state(Path(root)) if root is not None else service_root(create=False)
+        path=found/'runtime-wakes.sqlite3';info=os.lstat(path) if os.path.lexists(path) else None
+        out.update(status='read' if info else 'absent',root=str(found))
+        if info:
+            if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o077 or info.st_nlink!=1:raise ValueError('unsafe_runtime_queue')
+            with closing(sqlite3.connect(_query_only_uri(path),uri=True,timeout=.2)) as db:
+                db.execute('PRAGMA query_only=ON');db.row_factory=sqlite3.Row
+                tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                for key,table,order in (('wakes','wakes','due,id'),('overflowRows','wake_overflow','at,id')):
+                    if table in tables:out[key]=[dict(r) for r in db.execute(f'SELECT * FROM {table} ORDER BY {order} LIMIT ?',(MAX_WAKES*4,))]
+                if 'wake_meta' in tables:out['meta']={r[0]:r[1] for r in db.execute('SELECT key,value FROM wake_meta')}
+        for key,name in SNAPSHOT_FILES.items():out[key]=_read_map(found/name)
+    except Exception as exc:  # A diagnostic read: the answer names the failure and nothing else.
+        out.update(status='unsafe_root' if 'unsafe' in str(exc) else 'unreadable',root=None,error=type(exc).__name__)
+    return out
+
+
 def main(argv, *, execute, on_drop=None, on_stall=None):
     if argv==['wake']:hook_wake();return 0
+    if argv[:1]==['snapshot-readonly'] and len(argv) in (1,2):
+        execute(snapshot_readonly(argv[1] if len(argv)==2 else None));return 0
     if argv[:1]==['worker'] and len(argv)==2:
         queue=WakeQueue();fd=int(argv[1]);info=os.fstat(fd);expected=(queue.root/'runtime-worker.lock').stat()
         if (info.st_dev,info.st_ino)!=(expected.st_dev,expected.st_ino):raise ValueError('runtime_lease_changed')

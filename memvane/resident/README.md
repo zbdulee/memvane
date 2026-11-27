@@ -15,3 +15,5 @@ MemVane을 켠 호스트가 하나도 없으면 서비스는 drain하고 끝나�
 설치 socket 옆의 `.resident.state`는 1.x 진단 행이다. 공유 기동 실패를 설치에 표시할 때는 기존 로컬 증명 횟수를 담은 증명 기록을 진단 파일의 inode와 수정 시각에 연결해 먼저 저장한다. resident는 현재 진단 파일에 연결된 기록에서만 설치의 증명 횟수를 읽는다. 구버전이 진단 파일을 교체해도 이전 파일의 횟수가 이어지지 않는다. 자원 보류는 유효한 설치별 증명 횟수만 유지한다. 별도 증명 기록이 없는 구형 `resource_deferred` 행은 짧은 자원 대기만 적용한다. terminal 증명 실패는 기록 시각에서 한 시간 뒤 다시 시도하고, 서비스는 남은 기한과 5분 중 짧은 시간 뒤 설치 상태를 확인한다. 벽시계가 기록 시각보다 이르면 저장된 대기를 만료로 취급한다. 구버전(1.1.1)은 0이 아닌 증명 횟수를 가진 `startup_failed` 증명 기록을 거절하므로, 다운그레이드 시 해당 설치의 `adopt`가 다음 재시도 창까지 늦어질 수 있다.
 
 호스트 설치 경로 밖의 플러그인 사본(dev worktree 등)은 live 서비스를 띄우거나 교체하지 않고, 프로젝트를 등록하거나 adopt를 요청하지도 않는다(`ResourceDeferred` `live_write_requires_plugin_cache`). 그 사본의 recall은 lexical 결과로 답한다.
+
+`api.inspect_owner_state(manifest)`는 상태 화면용 읽기 전용 조회다. socket `probe` 결과, 설치별 기록(`.resident.state`와 연결된 `.proof-*`, 다음 증명까지 남은 시간: 무효 증명은 기록 시각에서 3,600초), 공유 worker 기록(`w-<24 hex>.sock.resident.state`, 재시도 지연)을 돌려준다. `_failure_decision`과 달리 소진된 기동을 기록하지 않고 owner lock을 시험하지 않으며 서비스 root를 만들지 않는다.

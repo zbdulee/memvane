@@ -307,6 +307,92 @@ def _failure_decision(manifest, *, own_lock=False, installation=False):
 
 
 
+def _error_code(exc):
+    code = str(exc)
+    return code if code.replace('_', '').isalnum() and code.islower() and len(code) <= 80 else type(exc).__name__
+
+
+def _retry_view(remaining):
+    """``retryInSeconds`` (None when no wait applies) and ``retryNever`` for an unbounded wait."""
+    if math.isinf(remaining):
+        return {'retryInSeconds': None, 'retryNever': True}
+    return {'retryInSeconds': round(remaining, 3) if remaining > 0 else None, 'retryNever': False}
+
+
+def _record_view(row):
+    return {key: row[key] for key in ('reason', 'terminal', 'at', 'attempts')}
+
+
+def _inspect_installation(manifest):
+    try:
+        row, info = _read_record(manifest)
+        if row is None:
+            return {'status': 'absent'}
+        view = {'status': 'present', **_record_view(row), 'proofAttempts': None}
+        path = _state_path(manifest['serviceSocketPath'])
+        proof, _ = _read_record(manifest, path=_proof_record_path(path, info))
+        if proof is not None:
+            view['proofAttempts'] = proof['attempts']
+        effective = _install_state(manifest)
+    except FileNotFoundError:
+        return {'status': 'absent'}
+    except (OSError, ValueError, IndexContractError, ResourceDeferred) as exc:
+        return {'status': 'unreadable', 'error': _error_code(exc)}
+    if effective is None:
+        return dict(view, effectiveAttempts=0, exhausted=False, **_retry_view(0))
+    exhausted = _exhausted(effective)
+    remaining = _failure_window_remaining(effective) if exhausted else 0
+    return dict(view, effectiveAttempts=effective['attempts'], exhausted=exhausted, **_retry_view(remaining))
+
+
+def _inspect_shared_worker(manifest):
+    try:
+        from memvane.runtime.api import service_root
+        from memvane.resident.resident_service import _worker_key, _worker_socket
+        socket_path = _worker_socket(service_root(create=False), _worker_key(manifest))
+    except (OSError, ValueError, KeyError) as exc:
+        # A service root not created yet reads as private_state's ValueError; ServiceFailure has a code.
+        missing = isinstance(exc, FileNotFoundError) or (isinstance(exc, ValueError)
+                                                         and getattr(exc, 'code', None) is None)
+        return {'status': 'absent'} if missing else {'status': 'unreadable', 'error': _error_code(exc)}
+    try:
+        row = read_owner_state(dict(manifest, serviceSocketPath=socket_path))
+    except FileNotFoundError:
+        return {'status': 'absent', 'socket': os.path.basename(socket_path)}
+    except (OSError, ValueError, IndexContractError) as exc:
+        return {'status': 'unreadable', 'socket': os.path.basename(socket_path), 'error': _error_code(exc)}
+    if row is None:
+        return {'status': 'absent', 'socket': os.path.basename(socket_path)}
+    view = {'status': 'present', 'socket': os.path.basename(socket_path), **_record_view(row)}
+    remaining = 0
+    if row['reason'] in _TRANSIENT_FAILURES and row['attempts']:
+        elapsed = time.time() - row['at']
+        delay = _process_delay(row['reason'], row['attempts'])
+        # The resident expires a future-dated or elapsed cooldown on restart.
+        remaining = 0 if elapsed < 0 else max(0, delay - elapsed)
+    return dict(view, **_retry_view(remaining))
+
+
+def inspect_owner_state(manifest):
+    """A read-only view of one installation's embedding owner; never writes, locks or raises.
+
+    ``socket`` is ``probe``'s answer (``ready``, ``mismatch``, ``absent``) or ``error``
+    with its code. ``installation`` is the installation's own record (``.resident.state``
+    and its linked ``.proof-*`` record) with the seconds left before another proof
+    (``_ATTESTATION_RETRY_SECONDS`` after an invalid attestation). ``sharedWorker`` is the
+    shared worker's process record beside ``w-<24 hex>.sock`` with its retry delay.
+    Unlike ``_failure_decision`` it never records an exhausted start nor tests the owner lock.
+    """
+    try:
+        socket_view = {'status': probe(manifest)}
+    except FileNotFoundError:
+        socket_view = {'status': 'absent'}
+    except (OSError, ValueError, KeyError, IndexContractError, ResourceDeferred) as exc:
+        socket_view = {'status': 'error', 'error': _error_code(exc)}
+    return {'socket': socket_view, 'installation': _inspect_installation(manifest),
+            'sharedWorker': _inspect_shared_worker(manifest)}
+
+
 def probe(manifest):
     """Read the existing socket's identity without running an embedding."""
     path = manifest['serviceSocketPath']

@@ -913,6 +913,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/learning/project_inspection.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/learning/selector_maintenance.py": {
       "context": "learning",
       "layer": "adapter",
