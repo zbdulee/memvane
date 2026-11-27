@@ -176,20 +176,17 @@ def _owned_dir(path, *, create, private):
 
 
 def _directory(home, create):
-    """HOME/.local/state/memvane/registry, every component a real owned dir."""
+    """HOME/.local/state/memvane/v2/registry, every component a real owned dir."""
     from memvane.kernel import memvane_paths
     root = Path(home) if home is not None else Path.home()
-    if not root.is_absolute() or not root.is_dir():
-        _fail('registry_unsafe')
-    cursor = root
-    for name in (*memvane_paths.STATE_PARTS, PARENT, DIRECTORY):
+    if not root.is_absolute() or not root.is_dir(): _fail('registry_unsafe')
+    try: cursor = memvane_paths.ensure_state_dir(home=root, create=create)
+    except ValueError: _fail('registry_unsafe')
+    for name in (PARENT, DIRECTORY):
         parent, cursor = cursor, cursor / name
         if name == PARENT and create and not os.path.lexists(cursor):
-            # Creating it is one more state base entry: never past the
-            # older bundles' entry limit.
             from memvane.registry.types import MAX_STATE_ENTRIES
-            if len(os.listdir(parent)) >= MAX_STATE_ENTRIES:
-                _fail('registry_state_base_full')
+            if len(os.listdir(parent)) >= MAX_STATE_ENTRIES: _fail('registry_state_base_full')
         _owned_dir(cursor, create=create, private=name == DIRECTORY)
     return cursor
 

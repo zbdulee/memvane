@@ -53,15 +53,10 @@ def _prepare_state_root(path, install_id):
             type(install_id) is not str or not re.fullmatch(r'[0-9a-f]{32}', install_id) or
             root.name != install_id):
         _fail('unsupported_state_root_creation')
-    cursor = Path.home()
-    for name in (*memvane_paths.STATE_PARTS, 'installs', install_id):
-        cursor = cursor / name
-        if not cursor.exists() and not cursor.is_symlink():
-            os.mkdir(cursor, 0o700)
-        info = cursor.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
-                stat.S_IMODE(info.st_mode) & 0o022):
-            _fail('unsafe_state_root_ancestor')
+    try:
+        memvane_paths.ensure_state_dir('installs', install_id)
+    except ValueError:
+        _fail('unsafe_state_root_ancestor')
     memvane_paths.ensure_state_layout()
     return _private_parent(root)
 

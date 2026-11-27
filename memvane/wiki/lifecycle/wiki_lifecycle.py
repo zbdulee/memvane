@@ -140,7 +140,7 @@ def log_path() -> Path:
 def log(message: str) -> None:
     try:
         path = log_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        memvane_paths.ensure_auto_context_dir(path.parent)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{datetime.now(timezone.utc).isoformat()}] {message}\n")
     except OSError:

@@ -45,7 +45,7 @@ def write_state_atomic(path, snapshot):
     백그라운드 worker(`wiki_lifecycle`·`wiki_dedup_scan`)에서는 각자의 `main()`이 잡아
     로그에 `EXCEPTION`으로 남긴다.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    memvane_paths.ensure_auto_context_dir(path.parent)
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     with open(tmp, "w", encoding="utf-8") as handle:
         json.dump(snapshot, handle, ensure_ascii=False, indent=2, sort_keys=True)

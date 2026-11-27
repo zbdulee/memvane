@@ -110,18 +110,13 @@ def _runtime_root(home=None, *, create=False):
             and base.resolve() == _account_home()):
         # Test and sandbox runs never read or write the account's real runtime.
         _fail('laya_embed_runtime_fixture_real_home')
-    cursor = base
     from memvane.kernel import memvane_paths
-    for name in (*memvane_paths.STATE_PARTS, 'embed-runtime'):
-        cursor = cursor / name
-        if not cursor.exists() and not cursor.is_symlink():
-            if not create:
-                _fail('laya_embed_runtime_missing')
-            os.mkdir(cursor, 0o700)
-        info = cursor.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
-                stat.S_IMODE(info.st_mode) & 0o022):
-            _fail('laya_embed_runtime_unsafe')
+    try:
+        cursor = memvane_paths.ensure_state_dir('embed-runtime', home=base, create=create)
+    except FileNotFoundError:
+        _fail('laya_embed_runtime_missing')
+    except ValueError:
+        _fail('laya_embed_runtime_unsafe')
     _owner_dir(cursor)
     return cursor
 

@@ -51,5 +51,8 @@ def service_root(*, create=False, home=None):
     root = memvane_paths.state_base(home) / 'wake'
     _check_root(root, home)
     if create:
-        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            memvane_paths.ensure_state_dir('wake', home=home)
+        except ValueError as exc:
+            raise ServiceFailure('unsafe_root') from exc
     return private_state(root)
