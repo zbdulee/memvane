@@ -1298,6 +1298,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/store/checkout/checkout_values.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/store/types.py": {
       "context": "store",
       "layer": "domain",

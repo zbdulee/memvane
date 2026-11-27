@@ -70,7 +70,6 @@
       "memvane/route/index_host_route.py": 1024,
       "memvane/settings/config.py": 1421,
       "memvane/store/blob/blob_store.py": 1118,
-      "memvane/store/checkout/checkout_view.py": 822,
       "memvane/store/view/view_rows.py": 1472,
       "memvane/sync/product_sync_worker.py": 1740,
       "memvane/wiki/compile/wiki_compile.py": 1961,
