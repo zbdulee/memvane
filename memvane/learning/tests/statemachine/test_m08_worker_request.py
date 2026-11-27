@@ -292,6 +292,87 @@ class WorkerRequestTable(unittest.TestCase):
         self.assertEqual((kept.count(True), kept[-1]), (limit - 1, False))
         self.assertEqual([(row['outcome'], row['retries']) for _event, row in emitted], [('retry_cap', limit)])
 
+    def test_a_count_that_cannot_be_written_settles_the_request_at_once(self):
+        # 1.1.x: the count stayed where it was on every result and the request never settled.
+        from memvane.learning.context_learning import worker_retry
+        self.fresh()
+        (self.root / worker_retry.NAME).mkdir()  # Something else sits where the file belongs.
+        still = {'M3': {'job': 'deferred'}, 'M4': {'job': 'deferred'}, 'groups': {}}
+        kept, emitted = self.retry(still)
+        self.assertFalse(kept)
+        self.assertEqual([(event, row['outcome'], row['reason'], row['retries'], row['detail'])
+                          for event, row in emitted],
+                         [('learning.cycle', 'retry_cap', 'deferred_resource', 1, 'retry_count_unwritable')])
+
+    def test_a_count_file_without_a_saved_state_starts_over(self):
+        # 1.1.x: a file written before states were kept went on counting with nothing to compare.
+        from memvane.learning.context_learning import worker_retry
+        limit = worker_retry.RETRY_RESULT_LIMIT
+        self.fresh()
+        path = self.root / worker_retry.NAME
+        # The shape the pre-snapshot writer (3636f3ea..7da2253c) left.
+        path.write_text(json.dumps({'schema': 1, 'status': 'busy', 'count': limit - 1}))
+        path.chmod(0o600)
+        still = {'M3': {'job': 'deferred'}, 'M4': {'job': 'deferred'}, 'groups': {}}
+        self.assertEqual(self.retry(still), (True, []))
+        saved = json.loads(path.read_text())
+        self.assertEqual((saved['count'], saved['state']), (1, still))
+
+    def test_an_open_candidate_older_than_the_newest_rows_that_ends_its_evaluation_is_progress(self):
+        # 1.1.x: the snapshot kept only the newest 64 evaluations, so this one was never compared.
+        import sqlite3
+        from contextlib import contextmanager
+        from memvane.learning.context_learning import learning_queue, worker_retry
+        limit = worker_retry.RETRY_RESULT_LIMIT
+        self.fresh()
+        database = self.root / 'fixture.sqlite3'
+        with sqlite3.connect(database) as db:
+            db.execute('CREATE TABLE learning_jobs (job_id TEXT, namespace TEXT, status TEXT)')
+            db.execute('CREATE TABLE cycles (cycle_id TEXT, status TEXT)')
+            db.execute('CREATE TABLE learning_evaluations (cycle_id TEXT, namespace TEXT, status TEXT)')
+            for index in range(worker_retry.SNAPSHOT_ROWS + 1):
+                cycle = 'cycle-%03d' % index
+                # The oldest is the open candidate; every newer one was closed.
+                db.execute('INSERT INTO learning_jobs VALUES (?,?,?)', (cycle, 'scope', 'staged'))
+                db.execute('INSERT INTO cycles VALUES (?,?)', (cycle, 'staged' if index == 0 else 'applied'))
+                db.execute('INSERT INTO learning_evaluations VALUES (?,?,?)',
+                           (cycle, 'scope', 'running' if index == 0 else 'blocked'))
+
+        class Queue:
+            scope = 'scope'
+
+            def __init__(self, root):
+                pass
+
+            @contextmanager
+            def connect(self):
+                db = sqlite3.connect(database)
+                try:
+                    yield db
+                finally:
+                    db.commit()
+                    db.close()
+        emitted, kept = [], []
+        with patch.object(learning_queue, 'LearningQueue', Queue), \
+                patch('memvane.diagnostics.api.emit', side_effect=lambda event, **f: emitted.append((event, f))), \
+                patch('memvane.journal.api.select_route', return_value={}):
+            for _ in range(limit - 1):
+                kept.append(worker_retry.again(self.root, self.project, 'busy', True))
+            with sqlite3.connect(database) as db:
+                db.execute("UPDATE learning_evaluations SET status='completed' WHERE cycle_id='cycle-000'")
+                db.execute("UPDATE cycles SET status='staged_evaluated' WHERE cycle_id='cycle-000'")
+            kept.append(worker_retry.again(self.root, self.project, 'busy', True))
+            self.assertEqual(json.loads((self.root / worker_retry.NAME).read_text())['count'], 1)
+            # Closed now, it was compared once and is not kept; the newest rows still are.
+            with sqlite3.connect(database) as db:
+                db.execute("UPDATE cycles SET status='applied' WHERE cycle_id='cycle-000'")
+            kept.append(worker_retry.again(self.root, self.project, 'busy', True))
+            kept.append(worker_retry.again(self.root, self.project, 'busy', True))
+        self.assertEqual((kept.count(True), emitted), (limit + 2, []))
+        saved = json.loads((self.root / worker_retry.NAME).read_text())['state']
+        self.assertNotIn('cycle-000', saved['M5'])
+        self.assertEqual(len(saved['M5']), worker_retry.SNAPSHOT_ROWS)
+
     def test_a_result_that_is_not_a_retry_clears_the_count(self):
         from memvane.learning.context_learning import worker_retry
         self.build('open')
