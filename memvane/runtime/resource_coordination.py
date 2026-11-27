@@ -41,6 +41,11 @@ def _present(path):
     return True
 
 
+def _gate_name(name):
+    """``control.lock`` -> ``control``: the fixed code of a held kernel gate."""
+    return name[:-len('.lock')] if name.endswith('.lock') else name
+
+
 def default_root():
     from .service_state import service_root
     return service_root(create=True)
@@ -209,8 +214,10 @@ class Coordinator:
             while True:
                 try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);break
                 except BlockingIOError:
-                    if deadline is None:raise ResourceDeferred('learning_compute_busy')
-                    if time.monotonic()>=deadline:raise ResourceDeferred('learning_inference_deadline')
+                    # The gate that was held (``provider``, ``control``, ``trainer``,
+                    # ``compute``) rides in the report for the deferral's record.
+                    if deadline is None:raise ResourceDeferred('learning_compute_busy',{'gate':_gate_name(name)})
+                    if time.monotonic()>=deadline:raise ResourceDeferred('learning_inference_deadline',{'gate':_gate_name(name)})
                     time.sleep(min(.005,max(0,deadline-time.monotonic())))
             if name=='compute.lock':
                 # Recheck AFTER acquisition: startup may have won the race

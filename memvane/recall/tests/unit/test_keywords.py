@@ -73,6 +73,34 @@ class LexTerms(unittest.TestCase):
         self.assertTrue(kw(ep, ['ep'])['epTerms'])
         self.assertEqual(kw(ep, ['ep'])['epTerms'], kw(ep.replace('\n', ' '), ['ep'])['epTerms'])
 
+    def test_answer_format_and_tool_instruction_sentences_leave_the_keywords(self):
+        question = 'sendbird 장애 원인이 뭐였지?'
+        for prompt in ('도구는 쓰지 말고 답만 해 줘. ' + question, '도구는 쓰지 말고 답만 해 줘.\n' + question,
+                       question + ' 짧게 한국어로 답해줘.', "Don't use any tools, just answer. " + question):
+            with self.subTest(prompt=prompt):
+                built = kw(prompt)
+                self.assertTrue(built['instructionFree'])
+                self.assertEqual(built['lexQueries'], kw(question)['lexQueries'])
+                self.assertEqual(keywords.semantic_query_text(prompt).strip(), question)
+        self.assertFalse(kw(question)['instructionFree'])
+        self.assertEqual(keywords.semantic_query_text(question), question)
+
+    def test_a_sentence_with_any_content_word_is_not_an_instruction(self):
+        for prompt in ('도구 설정 방법 알려줘', '도구는 쓰지 말고 sendbird 장애 원인만 답해 줘.',
+                       'docs/settings.md 파일 읽지 말고 답해', '답만 해 줘'):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(keywords.strip_instructions(prompt), (prompt, False))
+        # A token's dots are no sentence end: the identifier stays whole.
+        built = kw('파일 읽지 말고 바로 답해줘. docs/settings.md 구조')
+        self.assertTrue(built['instructionFree'])
+        self.assertIn('settings', built['identifiers'])
+
+    def test_the_question_span_rule_keeps_its_own_span(self):
+        built = kw('도구를 쓰지 말고 `MCP/Tool.py` 컨텍스트만 써.\r\nrelease QA alpha 문서의 codename은?')
+        self.assertEqual((built['keywordSpan'], built['instructionFree']), ('question', False))
+        prompt = 'EP012 도구를 쓰지 말고 컨텍스트만 써.\nrelease QA alpha 문서의 codename은?'
+        self.assertEqual(keywords.semantic_query_text(prompt), prompt)
+
     # -- exact identifiers ---------------------------------------------------------
     def test_backtick_code_span_becomes_an_identifier_first(self):
         built = kw('`recallVerifiedOnly` 기본값이 뭐야')

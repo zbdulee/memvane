@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import math
 import os
+import re
 from pathlib import Path
 
 FLOOR = 20
@@ -47,6 +48,8 @@ SYNC_SECONDS = 300
 SYNC_OK = frozenset(('indexed', 'unchanged'))
 REFUSED = frozenset(('failed', 'refused'))
 CYCLE_OUTCOMES = ('trained', 'failed', 'deferred_resource', 'blocked', 'rearmed')
+# 1.0.x-4: a sync put off by a learning gate waits at most this long at the median.
+LEARNING_WAIT_SECONDS = 30
 
 
 def _ts(row):
@@ -396,23 +399,7 @@ def _sync(rows, window, now):
     """The trailing failure run, and the time from a sync request to the first pass that started after it and published."""
     count, reasons, last_ok = next(iter(sync_runs([dict(row, install=None) for row in rows]).values()),
                                    (0, Counter(), None))
-    passes = []
-    for row in rows:
-        ended, ms = _ts(row), _number(row.get('ms'))
-        if row.get('event') == 'wake.sync' and row.get('outcome') in SYNC_OK and ended and ms is not None:
-            passes.append((ended - timedelta(milliseconds=ms), ended))
-    passes.sort()
-    starts = [item[0] for item in passes]
-    delays, waiting = [], []
-    for row in _requests(window):
-        asked = _ts(row)
-        if asked is None:
-            continue
-        index = bisect_left(starts, asked)
-        if index < len(passes):
-            delays.append((passes[index][1] - asked).total_seconds())
-        else:
-            waiting.append((now - asked).total_seconds())
+    delays, waiting = _publish_delays(rows, window, now)
     values = {'failedRun': count, 'failedRunTarget': SYNC_STREAK}
     if count:
         values['reasons'] = dict(reasons.most_common(3))
@@ -450,6 +437,226 @@ def _sync(rows, window, now):
     stalled = count > SYNC_STREAK or (waiting and max(waiting) > SYNC_SECONDS)
     status = 'over' if stalled else _judge(len(delays), SYNC_FLOOR, delays and values['p95Seconds'] > SYNC_SECONDS)
     return _line('sync', status, len(delays), **values)
+
+
+def _publish_delays(rows, window, now):
+    """``(delays, waiting)`` seconds: each sync request to the end of the first pass that started after it
+    and published, and the age of the requests no such pass answers yet."""
+    passes = []
+    for row in rows:
+        ended, ms = _ts(row), _number(row.get('ms'))
+        if row.get('event') == 'wake.sync' and row.get('outcome') in SYNC_OK and ended and ms is not None:
+            passes.append((ended - timedelta(milliseconds=ms), ended))
+    passes.sort()
+    starts = [item[0] for item in passes]
+    delays, waiting = [], []
+    for row in _requests(window):
+        asked = _ts(row)
+        if asked is None:
+            continue
+        index = bisect_left(starts, asked)
+        if index < len(passes):
+            delays.append((passes[index][1] - asked).total_seconds())
+        else:
+            waiting.append((now - asked).total_seconds())
+    return delays, waiting
+
+
+def _deferral_waits(rows, window, matches, now):
+    """How long sync stayed put off by the deferrals ``matches`` names (seconds).
+
+    A run of ``wake.sync`` rows starts at the first matching row's start
+    (``ts`` - ``ms``) and ends at the next published pass. Returns
+    ``(unpublished rows matched in the window, waits of the runs that ended in
+    the window, age of a run still open)``.
+    """
+    inside = {id(row) for row in window}
+    matched, waits, opened = 0, [], None
+    for row in rows:
+        if row.get('event') != 'wake.sync':
+            continue
+        ended = _ts(row)
+        if ended is None:
+            continue
+        if row.get('outcome') in SYNC_OK:
+            # A published pass ends the run (its linked views may still wait; that is the linked line's).
+            if opened is not None and id(row) in inside:
+                waits.append((ended - opened).total_seconds())
+            opened = None
+        elif matches(row):
+            matched += id(row) in inside
+            if opened is None:
+                opened = ended - timedelta(milliseconds=_number(row.get('ms')) or 0)
+    return matched, waits, (None if opened is None else (now - opened).total_seconds())
+
+
+_LEARNING_CODE = re.compile(r'learning_[a-z_]{1,60}')
+_GATE_CODE = re.compile(r'gate_(provider|control|trainer|compute)\b')
+_OWNER_BUSY = re.compile(r'(?:^|:)owner_busy(?::|$)')
+
+
+def _row_text(row):
+    """The fixed codes of a row (reason, detail, notes, linked reasons) as one string."""
+    parts = [row.get('reason'), row.get('detail')]
+    notes = row.get('notes')
+    parts.extend(notes if isinstance(notes, list) else ())
+    linked = row.get('linked')
+    if isinstance(linked, dict) and isinstance(linked.get('reasons'), dict):
+        parts.extend(linked['reasons'])
+    return ' '.join(part for part in parts if isinstance(part, str))
+
+
+def learning_codes(row):
+    """The ``learning_*`` deferral codes a ``wake.*`` or ``recall`` row names (sorted, once each)."""
+    return sorted(set(_LEARNING_CODE.findall(_row_text(row))))
+
+
+def _contention(rows, window, now):
+    """Deferrals the learning gates caused in sync, compile and recall, and how long sync waited.
+
+    Judged against the 1.0.x-4 decision: no recall put off by a ``learning_*``
+    reason and a sync wait median of at most ``LEARNING_WAIT_SECONDS``.
+    """
+    events, codes, gates = Counter(), Counter(), Counter()
+    for row in window:
+        event = row.get('event')
+        if event not in ('wake.sync', 'wake.compile', 'recall'):
+            continue
+        found = learning_codes(row)
+        if not found:
+            continue
+        name = event.removeprefix('wake.')
+        if name == 'recall' and not learning_codes(dict(row, notes=[
+                note for note in row.get('notes') or () if not str(note).startswith('laya_selector_')])):
+            # Only the local selector met a learning gate: the recall served the hybrid rank.
+            name = 'recallSelector'
+        events[name] += 1
+        codes.update(found)
+        gates.update(_GATE_CODE.findall(_row_text(row)))
+    _matched, waits, open_age = _deferral_waits(rows, window, lambda row: bool(learning_codes(row)), now)
+    values = {name: events.get(name, 0) for name in ('sync', 'compile', 'recall')}
+    if events.get('recallSelector'):
+        values['recallSelector'] = events['recallSelector']
+    if codes:
+        values['reasons'] = dict(codes.most_common(5))
+    if gates:
+        values['gates'] = dict(gates.most_common())
+    # A prompt recall whose embedding owner was put off by the resource admission: the inner
+    # reason (learning or memory) stays with the resident, so it is counted beside, not judged.
+    resident = sum(1 for row in window if row.get('event') == 'recall'
+                   and 'laya_vector_selected_provider_resource_deferred' in _row_text(row))
+    if resident:
+        values['recallResourceDeferred'] = resident
+    if waits:
+        values.update(syncWaits=len(waits), syncWaitP50Seconds=round(_percentile(waits, .5), 1),
+                      syncWaitMaxSeconds=round(max(waits), 1))
+    if open_age is not None:
+        values['syncWaitOpenSeconds'] = round(open_age, 1)
+    values['targetSyncWaitP50Seconds'] = LEARNING_WAIT_SECONDS
+    over = values['recall'] > 0 or (waits and values['syncWaitP50Seconds'] > LEARNING_WAIT_SECONDS) or (
+        open_age is not None and open_age > LEARNING_WAIT_SECONDS)
+    return _line('contention', 'over' if over else 'ok', sum(events.values()), **values)
+
+
+def _owner(rows, window, now):
+    """Sync owner occupancy of the install's selected passes (``sync.profile``), shown without a target.
+
+    ``holdP95Ms``/``holdMaxMs`` are per pass (every owner the pass took),
+    ``busy`` the acquisitions that gave up (``owner_busy``) and ``contended``
+    the ones that got the owner only after it was held by another process (a
+    sync of another project, an initial build or another owner's short hold).
+    ``busyWait*`` is how long sync stayed put off by ``owner_busy`` until a
+    pass published; ``editPublishP95Seconds`` is the sync line's request to
+    publish p95.
+    """
+    profiles = [row for row in window if row.get('event') == 'sync.profile'
+                and _number(row.get('ownerCalls')) is not None]
+    values = {}
+    if profiles:
+        holds = _values(profiles, 'ownerHoldMs')
+        waits = _values(profiles, 'ownerWaitMs')
+        values.update(passes=len(profiles),
+                      busy=int(sum(_values(profiles, 'ownerBusy'))),
+                      contended=int(sum(_values(profiles, 'ownerContended'))))
+        if holds:
+            values.update(holdP50Ms=round(_percentile(holds, .5)), holdP95Ms=round(_percentile(holds, .95)),
+                          holdMaxMs=round(max(_values(profiles, 'ownerHoldMaxMs') or holds)))
+        if waits:
+            values.update(waitP95Ms=round(_percentile(waits, .95)))
+    busy_rows, busy_waits, busy_open = _deferral_waits(
+        rows, window, lambda row: bool(_OWNER_BUSY.search(str(row.get('detail') or row.get('reason') or ''))), now)
+    if busy_rows:
+        values['busyPasses'] = busy_rows
+    if busy_waits:
+        values.update(busyWaitP50Seconds=round(_percentile(busy_waits, .5), 1),
+                      busyWaitMaxSeconds=round(max(busy_waits), 1))
+    if busy_open is not None:
+        values['busyWaitOpenSeconds'] = round(busy_open, 1)
+    delays, _waiting = _publish_delays(rows, window, now)
+    if delays:
+        values.update(editPublishP95Seconds=round(_percentile(delays, .95), 1), editPublishN=len(delays))
+    return _line('owner', 'shown' if profiles or busy_rows or delays else 'no-data', **values)
+
+
+def _linked(window):
+    """Main publishes and linked view waits counted apart (``sync.profile`` ``main``/``linked``/``linkedViews``).
+
+    ``mainPublished`` passes published the main view; ``mainPublishedNotOk``
+    of them still did not end ``indexed``/``unchanged`` (by final reason).
+    ``linkedWaitingPasses`` left linked views waiting, ``pending`` says what
+    happened to them (re-offered, next request, capped). ``unpublished`` counts
+    the linked views (by hashed id) that no pass of the window published,
+    with the reasons of their latest state.
+    """
+    profiles = [row for row in window if row.get('event') == 'sync.profile' and _text(row.get('main'))]
+    if not profiles:
+        return _line('linked', 'no-data')
+    published = [row for row in profiles if row['main'] in SYNC_OK]
+    not_ok = Counter(str(row.get('reason') or row.get('passState')) for row in published
+                     if row.get('passState') not in SYNC_OK)
+    pending, waiting = Counter(), 0
+    views, latest = set(), {}
+    for row in published:
+        linked = row.get('linked') if isinstance(row.get('linked'), dict) else {}
+        if (_number(linked.get('waiting')) or 0) > 0 or (_number(linked.get('held')) or 0) > 0:
+            waiting += 1
+            if _text(linked.get('pending')):
+                pending[linked['pending']] += 1
+        for view in row.get('linkedViews') or ():
+            if not isinstance(view, dict) or not _text(view.get('view')):
+                continue
+            current = view.get('state') in SYNC_OK and view.get('vector') not in ('pending', 'deferred')
+            if current:
+                views.add(view['view'])
+                latest.pop(view['view'], None)
+            elif view['view'] not in views:
+                latest[view['view']] = str(view.get('reason') or view.get('vector') or view.get('state'))
+    values = {'mainPublished': len(published), 'mainNotPublished': len(profiles) - len(published),
+              'mainPublishedNotOk': sum(not_ok.values()), 'linkedWaitingPasses': waiting}
+    if not_ok:
+        values['notOkReasons'] = dict(not_ok.most_common(3))
+    if pending:
+        values['pending'] = dict(pending.most_common())
+    if views or latest:
+        values.update(views=len(views) + len(latest), unpublished=len(latest))
+    if latest:
+        values['unpublishedReasons'] = dict(Counter(latest.values()).most_common(3))
+    return _line('linked', 'shown', len(profiles), **values)
+
+
+SUMMARY_LABELS = {'owner': 'sync owner', 'linked': 'sync linked', 'contention': 'learning contention'}
+
+
+def summary_lines(rows, window, now=None):
+    """The occupancy lines the summary prints for one install: owner, linked views, learning contention.
+
+    A line with nothing to say (``no-data``, or no learning deferral and no wait) is left out.
+    """
+    now = now or datetime.now(timezone.utc)
+    found = [_owner(rows, window, now), _linked(window), _contention(rows, window, now)]
+    return [line for line in found if line['status'] != 'no-data'
+            and not (line['line'] == 'contention' and not line['n'] and 'syncWaits' not in line
+                     and 'syncWaitOpenSeconds' not in line and 'recallResourceDeferred' not in line)]
 
 
 def _failed(window):
@@ -506,7 +713,8 @@ def lines(rows, hours, *, state_root=None, now=None):
     size = install_size(state_root) if state_root is not None else None
     return [_line('install', 'shown', size=size or 'unknown'),
             *_hook(prompt, size), _stage(prompt, size), _semantic(prompt, window), _selector(prompt), *_hosts(prompt),
-            _dedup(rows, floor_time), _sync(rows, window, now), _failed(window),
+            _dedup(rows, floor_time), _sync(rows, window, now), _owner(rows, window, now), _linked(window),
+            _contention(rows, window, now), _failed(window),
             _learning(rows, window), _identity(state_root) if state_root is not None else _line('identity', 'no-data')]
 
 

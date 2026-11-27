@@ -456,6 +456,93 @@ class Lines(unittest.TestCase):
         line = by_name(rows)['sync']
         self.assertEqual((line['linkedWaiting'], line['linkedWaitingLast'], line['linkedHeldLast']), (2, 0, 3))
 
+    def profile(self, ended, **fields):
+        return {'ts': at(ended), 'event': 'sync.profile', 'outcome': 'observed', 'ms': 100, **fields}
+
+    def test_contention_counts_learning_deferrals_by_gate_and_the_sync_wait_until_a_publish(self):
+        learning = 'deferred:deferred:learning_compute_busy:vec_deferred_learning_compute_busy:gate_provider'
+        rows = [self.sync_pass(1000, 1000, outcome='failed', reason='target_deferred', detail=learning),
+                self.sync_pass(990, 1000, outcome='failed', reason='target_deferred',
+                               detail='deferred:deferred:learning_compute_busy:gate_control'),
+                self.sync_pass(960, 1000),
+                self.sync_pass(900, 1000, outcome='failed', reason='target_deferred',
+                               detail='deferred:deferred:learning_deferred_inference'),
+                self.sync_pass(800, 1000, outcome='unchanged'),
+                {'ts': at(700), 'event': 'wake.compile', 'outcome': 'failed', 'reason': 'target_deferred',
+                 'detail': 'deferred:deferred:learning_compute_busy:gate_trainer'},
+                # Another deferral and an unrelated failure are no learning deferral.
+                self.sync_pass(600, 1000, outcome='failed', reason='target_deferred',
+                               detail='deferred:deferred:owner_busy'),
+                self.sync_pass(500, 1000)]
+        line = by_name(rows)['contention']
+        self.assertEqual((line['status'], line['n'], line['sync'], line['compile'], line['recall']),
+                         ('over', 4, 3, 1, 0))
+        self.assertEqual(line['gates'], {'provider': 1, 'control': 1, 'trainer': 1})
+        self.assertEqual(line['reasons'], {'learning_compute_busy': 3, 'learning_deferred_inference': 1})
+        # Two runs: 41 s (first deferral start to the publish) and 101 s; the median is the first.
+        self.assertEqual((line['syncWaits'], line['syncWaitP50Seconds'], line['syncWaitMaxSeconds']), (2, 41.0, 101.0))
+        rows = rows[:3]
+        line = by_name(rows)['contention']
+        self.assertEqual((line['status'], line['syncWaitP50Seconds']), ('over', 41.0))
+        rows[2] = self.sync_pass(985, 1000)
+        self.assertEqual(by_name(rows)['contention']['status'], 'ok')
+        # A recall put off by a learning reason is over at once; the resident's resource deferral is shown beside.
+        rows = [recall(1, reason='learning_deferred_inference', outcome='refused'),
+                recall(2, notes=['laya_vector_selected_provider_resource_deferred'])]
+        line = by_name(rows)['contention']
+        self.assertEqual((line['status'], line['recall'], line['recallResourceDeferred']), ('over', 1, 1))
+        # A selector that met a learning gate fell back to the hybrid rank: counted apart, not judged.
+        line = by_name([recall(1, notes=['laya_selector_learning_compute_busy'])])['contention']
+        self.assertEqual((line['status'], line['recall'], line['recallSelector']), ('ok', 0, 1))
+        # A run with no publish yet is open.
+        line = by_name([self.sync_pass(100, 1000, outcome='failed', reason='target_deferred',
+                                       detail='deferred:deferred:learning_compute_busy:gate_control')])['contention']
+        self.assertEqual((line['status'], line['syncWaitOpenSeconds']), ('over', 101.0))
+
+    def test_owner_shows_holds_waits_busy_runs_and_the_edit_to_publish_p95(self):
+        rows = [self.request(2000), self.request(1500),
+                self.profile(1990, ownerCalls=2, ownerBusy=0, ownerContended=1, ownerWaitMs=80,
+                             ownerHoldMs=40_000, ownerHoldMaxMs=39_000),
+                self.sync_pass(1990, 1000),
+                self.profile(1500, ownerCalls=1, ownerBusy=1, ownerContended=0, ownerWaitMs=3000,
+                             ownerHoldMs=0, ownerHoldMaxMs=0),
+                self.sync_pass(1500, 3000, outcome='failed', reason='target_deferred',
+                               detail='deferred:deferred:owner_busy'),
+                self.sync_pass(1400, 2000),
+                # A profile without owner fields (an older pass) is left out.
+                self.profile(1300)]
+        line = by_name(rows)['owner']
+        self.assertEqual((line['status'], line['passes'], line['busy'], line['contended']), ('shown', 2, 1, 1))
+        self.assertEqual((line['holdP50Ms'], line['holdP95Ms'], line['holdMaxMs'], line['waitP95Ms']),
+                         (0, 40000, 39000, 3000))
+        self.assertEqual((line['busyPasses'], line['busyWaitP50Seconds']), (1, 103.0))
+        self.assertEqual((line['editPublishP95Seconds'], line['editPublishN']), (100.0, 2))
+        self.assertEqual(by_name([])['owner']['status'], 'no-data')
+
+    def test_linked_counts_main_publishes_apart_from_linked_views_that_never_published(self):
+        a, b, c = ('a' * 12, 'b' * 12, 'c' * 12)
+        waiting = {'waiting': 1, 'held': 1, 'reasons': {'schema3_pass_budget': 1, 'worktree_missing': 1},
+                   'pending': 'linked_capped'}
+        rows = [self.profile(900, main='unchanged', passState='unchanged', linked=waiting,
+                             linkedViews=[{'view': a, 'state': 'pending', 'reason': 'schema3_pass_budget'},
+                                          {'view': b, 'state': 'held', 'reason': 'worktree_missing'},
+                                          {'view': c, 'state': 'unchanged'}]),
+                self.profile(800, main='indexed', passState='pending', reason='external_edits_pending',
+                             linked=dict(waiting, pending='linked_reoffer'),
+                             linkedViews=[{'view': a, 'state': 'indexed'},
+                                          {'view': b, 'state': 'held', 'reason': 'worktree_missing'},
+                                          {'view': c, 'state': 'unchanged', 'vector': 'pending'}]),
+                self.profile(700, main='deferred', passState='deferred', reason='owner_busy')]
+        line = by_name(rows)['linked']
+        self.assertEqual((line['status'], line['n'], line['mainPublished'], line['mainNotPublished']),
+                         ('shown', 3, 2, 1))
+        self.assertEqual((line['mainPublishedNotOk'], line['notOkReasons']), (1, {'external_edits_pending': 1}))
+        self.assertEqual((line['linkedWaitingPasses'], line['pending']),
+                         (2, {'linked_capped': 1, 'linked_reoffer': 1}))
+        # ``a`` published in the second pass, ``c`` in the first; ``b`` never did.
+        self.assertEqual((line['views'], line['unpublished'], line['unpublishedReasons']),
+                         (3, 1, {'worktree_missing': 1}))
+
     def test_sync_failure_run_is_over_above_the_target_and_skips_progress_rows(self):
         failed = [self.sync_pass(500 - i, 100, outcome='failed', reason='target_deferred') for i in range(3)]
         rows = [self.sync_pass(900, 100)] + failed
@@ -535,7 +622,11 @@ class Skill(FixtureCase):
         self.assertEqual(lines[0], 'slo (last 24h)')
         self.assertEqual([line.split(':')[0] for line in lines[1:]],
                          ['slo install', 'slo hook', 'slo hook+selector', 'slo stage', 'slo semantic', 'slo selector',
-                          'slo host claude', 'slo dedup', 'slo sync', 'slo failed', 'slo learning', 'slo identity'])
+                          'slo host claude', 'slo dedup', 'slo sync', 'slo owner', 'slo linked', 'slo contention',
+                          'slo failed', 'slo learning', 'slo identity'])
+        self.assertIn('slo owner: no-data', out)
+        self.assertIn('slo linked: no-data', out)
+        self.assertIn('slo contention: ok n=0 sync=0 compile=0 recall=0 targetSyncWaitP50Seconds=30', out)
         self.assertIn('slo hook: ok n=20 p50=100 p95=100 targetP50=700 targetP95=1200', out)
         self.assertIn('slo install: shown size=unknown', out)
         self.assertIn('slo stage: ok n=20 pin=1 pinN=20 pinTarget=50 pinStatus=ok lexical=1 lexicalN=20 '
@@ -617,6 +708,33 @@ class Skill(FixtureCase):
                           'sync consecutive failed passes: install=' + 'b' * 32 + ' 0 last ok ' + at(499)])
         # One target's rows are one run whatever install id each row logged.
         self.assertEqual(summary(), ['sync consecutive failed passes: 0 last ok ' + at(499)])
+
+    def test_summary_prints_owner_linked_and_learning_lines_per_install(self):
+        def rows(install, offset):
+            base = [{'ts': at(offset + 100), 'event': 'sync.profile', 'outcome': 'observed', 'install': install,
+                     'ms': 100, 'ownerCalls': 2, 'ownerBusy': 0, 'ownerContended': 1, 'ownerWaitMs': 60,
+                     'ownerHoldMs': 5000, 'ownerHoldMaxMs': 4900, 'main': 'unchanged', 'passState': 'unchanged',
+                     'linked': {'waiting': 1, 'held': 0, 'reasons': {'schema3_pass_budget': 1},
+                                'pending': 'linked_next_request'}},
+                    {'ts': at(offset + 100), 'event': 'wake.sync', 'outcome': 'unchanged', 'install': install,
+                     'ms': 100}]
+            if install == 'a' * 32:
+                base.append({'ts': at(offset + 50), 'event': 'wake.sync', 'outcome': 'failed', 'install': install,
+                             'reason': 'target_deferred', 'ms': 10,
+                             'detail': 'deferred:deferred:learning_compute_busy:gate_control'})
+            return base
+        merged = sorted(rows('a' * 32, 0) + rows('b' * 32, 10), key=lambda row: row['ts'])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.logs['summary'](merged, SimpleNamespace(hours=None), unified=True)
+        text = out.getvalue()
+        for install in ('a' * 32, 'b' * 32):
+            self.assertIn(f'sync owner: install={install} shown passes=1 busy=0 contended=1 holdP50Ms=5000', text)
+            self.assertIn(f'sync linked: install={install} shown n=1 mainPublished=1 mainNotPublished=0 '
+                          'mainPublishedNotOk=0 linkedWaitingPasses=1 pending=linked_next_request:1', text)
+        self.assertIn('learning contention: install=' + 'a' * 32 + ' over n=1 sync=1 compile=0 recall=0 '
+                      'reasons=learning_compute_busy:1 gates=control:1', text)
+        self.assertNotIn('learning contention: install=' + 'b' * 32, text)
 
 
 if __name__ == '__main__':

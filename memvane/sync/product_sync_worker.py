@@ -10,6 +10,7 @@ from memvane.store import types as store_types
 
 from collections.abc import Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 from pathlib import Path
 import re
@@ -70,12 +71,82 @@ def _profile_read_cards(profile, root, paths, regular):
 
 
 def _deferred(exc):
-    """Keep the admission criterion (cpu_pressure, memory_reserve, ...) for status."""
+    """Keep the admission criterion (cpu_pressure, memory_reserve, ...) for status.
+
+    A busy kernel gate (``learning_compute_busy``) names the gate that was
+    held (``provider``, ``control``, ``trainer``, ``compute``) as ``gate`` and,
+    without another criterion, as the ``gate_<name>`` detail.
+    """
     result = {'state': 'deferred', 'reason': str(exc)}
     report = getattr(exc, 'report', None)
     if isinstance(report, dict) and isinstance(report.get('reason'), str):
         result['detail'] = report['reason']
+    gate = report.get('gate') if isinstance(report, dict) else None
+    if isinstance(gate, str) and re.fullmatch(r'[a-z]{1,16}', gate):
+        result['gate'] = gate
+        result.setdefault('detail', 'gate_' + gate)
     return result
+
+
+# Sync owner occupancy, reported in ``sync.profile``. ``sync_owner(wait=True)``
+# polls a held owner or queue lock every 50 ms, so an acquisition that took at
+# least this long met a held lock (contention); an uncontended one is immediate.
+OWNER_CONTENDED_MS = 50
+_OWNER_PASS = ContextVar('memvane_sync_owner_pass', default=None)
+
+
+@contextmanager
+def _sync_owner(store_path):
+    """``sync_owner(wait=True)`` with this pass's wait and hold measured.
+
+    Measurement only: the owner, its refusal and its release are unchanged.
+    """
+    sink = _OWNER_PASS.get()
+    started = time.monotonic_ns()
+    with sync_owner(Path(store_path), wait=True) as owner:
+        entered = time.monotonic_ns()
+        try:
+            yield owner
+        finally:
+            if isinstance(sink, list):
+                sink.append({'acquired': owner is not None, 'waitNs': entered - started,
+                             'holdNs': time.monotonic_ns() - entered if owner is not None else 0})
+
+
+def _owner_fields(acquisitions):
+    """``sync.profile`` fields of a pass's sync owner acquisitions; {} without any."""
+    if not acquisitions:
+        return {}
+    held = [item for item in acquisitions if item['acquired']]
+    waits = [item['waitNs'] for item in acquisitions]
+    holds = [item['holdNs'] for item in held]
+    ms = lambda ns: round(ns / 1000000, 3)  # noqa: E731
+    return {'ownerCalls': len(acquisitions), 'ownerBusy': len(acquisitions) - len(held),
+            'ownerContended': sum(item['waitNs'] >= OWNER_CONTENDED_MS * 1000000 for item in held),
+            'ownerWaitMs': ms(sum(waits)), 'ownerWaitMaxMs': ms(max(waits)),
+            'ownerHoldMs': ms(sum(holds)), 'ownerHoldMaxMs': ms(max(holds) if holds else 0)}
+
+
+def _view_id(root):
+    """A linked view's stable event id: no path, the first 12 hex of its root's SHA-256."""
+    return hashlib.sha256(str(root).encode('utf-8', 'surrogateescape')).hexdigest()[:12]
+
+
+def _pass_fields(result, main):
+    """``sync.profile`` fields of a settled pass: its main view, final state and linked views."""
+    if not isinstance(result, dict):
+        return {}
+    fields = {'main': main, 'passState': result.get('state')}
+    if isinstance(result.get('linkedWaiting'), dict):
+        fields['linked'] = result['linkedWaiting']
+    views = [item for item in result.get('worktrees') or () if isinstance(item, dict)]
+    if views:
+        fields['linkedViews'] = [{'view': _view_id(item.get('root')), 'state': item.get('state'),
+                                  **({'reason': item['reason']} if isinstance(item.get('reason'), str) else {}),
+                                  **({'vector': (item.get('vector') or {}).get('state')}
+                                     if isinstance(item.get('vector'), dict) else {})}
+                                 for item in views[:SCHEMA3_MAX_LINKED]]
+    return fields
 
 def _large_initial_document(body):
     """Keep the existing provider recipe; only extend a large build request."""
@@ -329,7 +400,7 @@ def _prepare_provider_reattest(project):
     from memvane.kernel.memvane_version import writer_floor_allows
     if not writer_floor_allows(proof['writerFloor']):
         raise IndexContractError('writer_floor')
-    with sync_owner(Path(decision['storePath']), wait=True) as owner:
+    with _sync_owner(decision['storePath']) as owner:
         if owner is None:
             raise ResourceDeferred('owner_busy')
         if verify_selected_route(decision) != proof:
@@ -356,6 +427,18 @@ def _prepare_provider_reattest(project):
 
 
 def _run_sync(project, *, coordinator=None, report=None, start_service=start_owned_embed_service):
+    acquisitions = []
+    token = _OWNER_PASS.set(acquisitions)
+    try:
+        return _run_measured_sync(project, acquisitions, coordinator=coordinator, report=report,
+                                  start_service=start_service)
+    finally:
+        _OWNER_PASS.reset(token)
+
+
+def _run_measured_sync(project, acquisitions, *, coordinator=None, report=None,
+                       start_service=start_owned_embed_service):
+    """One selected sync; ``sync.profile`` closes it with the stage, owner and view fields."""
     try:
         _prepare_provider_reattest(project)
         decision, proof = _selected(project, owner_wait=True)
@@ -376,27 +459,40 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
     profile = {stage + suffix: 0 for stage in _PROFILE_STAGES for suffix in ('Calls', 'Ns')}
     started = time.monotonic_ns()
     token = store_types.FILL_PROFILE.set(profile)
+    observed = {}
     try:
-        result, proof = _run_schema3(decision, proof, coordinator=coordinator, report=report,
-                                     start_service=start_service, raw_scan=raw_scan, profile=profile)
+        try:
+            result, proof = _run_schema3(decision, proof, coordinator=coordinator, report=report,
+                                         start_service=start_service, raw_scan=raw_scan, profile=profile)
+        finally:
+            store_types.FILL_PROFILE.reset(token)
+            # The schema3 run alone: the discovery after it is not in ``ms``.
+            observed['ms'] = (time.monotonic_ns() - started) / 1000000
+        # The main view's own outcome, before a linked view's publish turns an unchanged pass indexed.
+        main = result.get('mainState', result.get('state')) if isinstance(result, dict) else None
+        cache = bool(result.pop('cacheReoffer', False)) if isinstance(result, dict) else False
+        result = _after_sync(decision, proof, grants, result, raw_snapshot=raw_scan.get('snapshot'))
+        def reoffer():
+            from memvane.runtime import api as runtime_work
+            runtime_work.request('laya-sync', str(project), delay=SCHEMA3_VECTOR_REOFFER_SECONDS)
+        backlog = result.pop('linkedBacklog', None) if isinstance(result, dict) else None
+        linked = 'none'
+        if result.get('state') in ('indexed', 'unchanged'):
+            from memvane.sync import linked_reoffer
+            linked = linked_reoffer.decide(decision.get('stateRoot'), backlog)
+        settled = _settle_vectors(result, reoffer, linked, cache)
+        observed.update(_pass_fields(settled, main))
+        observed['reason'] = settled.get('reason') if isinstance(settled, dict) else None
+        return settled
     finally:
-        store_types.FILL_PROFILE.reset(token)
         from memvane.diagnostics import api as diagnostics
         fields = {stage + 'Calls': profile[stage + 'Calls'] for stage in _PROFILE_STAGES}
         fields.update({stage + 'Ms': round(profile[stage + 'Ns'] / 1000000, 3) for stage in _PROFILE_STAGES})
-        diagnostics.emit('sync.profile', decision=decision, outcome='observed',
-                         ms=(time.monotonic_ns() - started) / 1000000, **fields)
-    cache = bool(result.pop('cacheReoffer', False)) if isinstance(result, dict) else False
-    result = _after_sync(decision, proof, grants, result, raw_snapshot=raw_scan.get('snapshot'))
-    def reoffer():
-        from memvane.runtime import api as runtime_work
-        runtime_work.request('laya-sync', str(project), delay=SCHEMA3_VECTOR_REOFFER_SECONDS)
-    backlog = result.pop('linkedBacklog', None) if isinstance(result, dict) else None
-    linked = 'none'
-    if result.get('state') in ('indexed', 'unchanged'):
-        from memvane.sync import linked_reoffer
-        linked = linked_reoffer.decide(decision.get('stateRoot'), backlog)
-    return _settle_vectors(result, reoffer, linked, cache)
+        fields.update(_owner_fields(acquisitions))
+        ms, reason = observed.pop('ms', None), observed.pop('reason', None)
+        fields.update(observed)
+        diagnostics.emit('sync.profile', decision=decision, outcome='observed', reason=reason,
+                         ms=ms, **fields)
 
 
 def _settle_vectors(result, reoffer, linked='none', cache=False):
@@ -410,8 +506,12 @@ def _settle_vectors(result, reoffer, linked='none', cache=False):
     are left (``vector_cache.finish``).
 
     A published main view is a success whatever linked views wait for. The
-    pass fails only for the main view's own unfinished vectors, a provider
-    defect of the install (whichever view met it), or a capped linked wait.
+    pass fails only for the main view's own unfinished vectors or a provider
+    defect of the install (whichever view met it). What happens to waiting
+    linked views is ``linkedWaiting['pending']``: ``linked_reoffer`` (the
+    same wake comes again: offered, or kept by the main view's own wait),
+    ``linked_next_request`` (no re-offer: the next sync request reaches them)
+    or ``linked_capped`` (offered too often without less to do; no re-offer).
     """
     main = result.get('vector') or {}
     views = [main, *(item.get('vector') or {} for item in result.get('worktrees', ()))]
@@ -420,6 +520,10 @@ def _settle_vectors(result, reoffer, linked='none', cache=False):
     progressed = main.get('state') == 'pending' and main.get('progress', 0) > 0
     published = result.get('state') in ('indexed', 'unchanged')
     main_waits = main.get('state') in ('pending', 'deferred')
+    pending = 'linked_capped' if linked == 'capped' else 'linked_next_request'
+    if result.get('state') in ('pending', 'deferred'):
+        # Discovery or external edits kept the wake after the publish: the linked views come with it.
+        pending = 'linked_reoffer'
     if published and not blocked and (progressed or ((linked == 'offer' or cache) and not main_waits)):
         # The main view's vectors moved this pass, a waiting linked view has less
         # left to do, or the vector arena is catching up: ACK (not a counted failure) and offer the same wake
@@ -428,23 +532,30 @@ def _settle_vectors(result, reoffer, linked='none', cache=False):
         try:
             reoffer()
             result = {**result, 'vectorReoffer': True}
+            pending = 'linked_reoffer'
         except Exception:
             # Unchecked for a linked view's offer: the pass published the main
             # view and the next sync request reaches the linked ones. The main
             # view's own unfinished vectors keep the wake instead.
             if progressed:
-                result = {**result, 'state': 'pending', 'reason': main.get('reason')}
+                result = {**result, 'state': 'pending',
+                          'reason': main.get('reason') or 'schema3_vector_reoffer_failed'}
+                pending = 'linked_reoffer'
     elif published and (blocked or main_waits):
         # The lexical generations are published and discovery ran; the
         # wake stays until the main view's vector generation is published,
         # or ends ``blocked`` on a provider defect of the install. A linked
         # view's unfinished vectors are ``linkedWaiting``, not a failed pass.
         first = blocked[0] if blocked else main
-        result = {**result, 'state': 'blocked' if blocked else main['state'], 'reason': first.get('reason')}
-    elif published and linked == 'capped':
-        # Offered again and again with no less left to do: from here the wait
-        # is a counted failure, bounded by the backoff and the retry cap.
-        result = {**result, 'state': 'pending', 'reason': 'schema3_linked_pending'}
+        result = {**result, 'state': 'blocked' if blocked else main['state'],
+                  'reason': first.get('reason') or ('provider_blocked' if blocked else 'schema3_vector_' + main['state'])}
+        pending = 'linked_next_request' if blocked else 'linked_reoffer'
+    if isinstance(result.get('linkedWaiting'), dict):
+        # The main publish and the linked wait are recorded apart: offered too
+        # often without less to do (``linked_capped``) the wait is no failure
+        # either; the pass ends without a re-offer and the next sync request
+        # (SessionStart, an edit, a manual update) reaches those views.
+        result = {**result, 'linkedWaiting': {**result['linkedWaiting'], 'pending': pending}}
     detail = _schema3_vector_detail(result)
     if detail:
         result = {**result, 'detail': detail}
@@ -494,7 +605,7 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
     from contextlib import ExitStack
     from memvane.journal.api import selected_v1_writer_scope
     try:
-        with sync_owner(Path(decision['storePath']), wait=True) as owner:
+        with _sync_owner(decision['storePath']) as owner:
             if owner is None:
                 return {'state': 'deferred', 'reason': 'owner_busy'}, proof
             with ExitStack() as lane, selected_v1_writer_scope(decision, queue_owner=owner) as writer:
@@ -632,7 +743,8 @@ def _publish_schema3(decision, proof, writer, vectors=None):
     proof = marks.get('proof', proof)
     if not linked:
         return result, proof
-    result = {**result, 'worktrees': linked}
+    # The main view's own outcome stays readable after a linked publish turns the pass indexed.
+    result = {**result, 'worktrees': linked, 'mainState': result['state']}
     if result['state'] == 'unchanged' and any(item['state'] == 'indexed' for item in linked):
         result['state'] = 'indexed'
     waiting, backlog = _linked_waiting(linked)
@@ -1515,7 +1627,7 @@ def _after_sync(decision, proof, grants, result, *, raw_snapshot=None):
     if result.get('state') not in ('indexed', 'unchanged'):
         return result
     try:
-        with sync_owner(Path(decision['storePath']), wait=True) as owner:
+        with _sync_owner(decision['storePath']) as owner:
             if owner is None:
                 return {**result, 'state': 'deferred', 'reason': 'owner_busy'}
 

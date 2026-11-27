@@ -433,6 +433,16 @@ def summary(rows, args, unified=False):
         if last_ok:
             line += f' last ok {_esc(str(last_ok))}'
         print(line)
+    # Sync owner occupancy, main publishes apart from linked view waits, and what the learning gates put
+    # off: one block per install, as the failure run above.
+    blocks = {}
+    for row in rows:
+        blocks.setdefault(row.get('install') if unified else None, []).append(row)
+    for install, block in sorted(blocks.items(), key=lambda item: str(item[0])):
+        for line in logs_slo.summary_lines(block, _since(block, args.hours)):
+            text = logs_slo.render(line, _esc)[len('slo ' + line['line'] + ': '):]
+            print(logs_slo.SUMMARY_LABELS[line['line']] + ': '
+                  + (f'install={_esc(install)} ' if unified else '') + text)
     for name, test in (('last publish', lambda row: row.get('event') == 'index.publish'),
                        ('last error', lambda row: row.get('severity') != 'warning' and
                         (row.get('outcome') in FAILED or row.get('event') == 'hook.error'))):

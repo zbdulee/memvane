@@ -277,6 +277,89 @@ def _keyword_question_span(prompt: str) -> tuple[str, str]:
         return prompt, "full"
     return question, "question"
 
+# 답 형식·도구 사용에 관한 메타 지시문의 어휘(``strip_ko_suffix`` 뒤 소문자).
+#
+# 프롬프트 앞(또는 뒤)의 "도구는 쓰지 말고 답만 해 줘." 같은 문장은 질문의 내용이
+# 아니다. 키워드 추출이 등장 순서를 보존하고 일반 lex 문자열이 앞 3개만 AND 로
+# 쓰므로(``GENERAL_LEX_TERM_CAP``) 이런 문장이 앞에 오면 질문의 드문 토큰이 컷 뒤로
+# 밀리고 lex 가 지시문 어휘의 AND(대개 0건)가 된다. 같은 지시문은 질의 벡터도 끈다.
+# 문장 **전체**가 이 어휘로만 이뤄졌을 때만 지시문으로 본다 — 내용어가 하나라도 있는
+# 문장("도구 설정 방법")은 남는다. 그래서 `도구`·`파일`처럼 내용어로도 쓰이는 단어가
+# 목록에 있어도 그 단어를 담은 질문을 지우지 않는다.
+INSTRUCTION_TERMS = frozenset((
+    # 도구·검색·실행 금지
+    "도구", "툴", "tool", "tools", "쓰지", "쓰지마", "사용하지", "사용하지마", "사용", "쓰고",
+    "말고", "말아", "말아줘", "마", "마세요", "없이", "금지", "하지마", "하지", "않고",
+    "검색", "검색하지", "찾지", "읽지", "실행하지", "열지", "보지", "파일", "명령",
+    "컨텍스트", "컨텍스트만", "주어진", "제공된", "context",
+    # 답 형식
+    "답", "답만", "대답", "대답만", "답변", "답변만", "결론", "결론만", "답해", "답해줘",
+    "대답해", "대답해줘", "답변해", "답변해줘", "말해", "말해줘", "알려줘", "해", "줘", "주세요",
+    "짧게", "간단히", "간단하게", "간결하게", "바로", "그냥", "한국어", "영어", "한글",
+    "한두", "문장", "한", "줄", "설명", "설명없이", "부연", "추가", "없이만",
+    # English
+    "don", "doesn", "never", "use", "using", "any", "without", "just", "only",
+    "answer", "reply", "respond", "brief", "briefly", "short", "concise", "concisely",
+    "directly", "search", "files", "file", "read", "run", "commands", "command",
+    "explain", "explanation", "english", "korean", "given", "provided", "one", "sentence",
+))
+# 문장 경계: 줄바꿈, 그리고 뒤에 공백이 오는 종결 부호. 토큰 안의 `.`(`v1.2.3`,
+# `docs/settings.md`)은 경계가 아니다. 정규식은 bounded 하고 검사 문장 수도 상한한다.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])[ \t]+|\n+")
+_MAX_INSTRUCTION_SENTENCES = 64
+
+
+def _sentence_terms(sentence: str) -> list[str]:
+    """한 문장의 키워드 후보(불용어 제외, 접미 제거, 소문자). 상한 없음."""
+    tokens = re.findall(r"[a-zA-Z0-9가-힣_-]{2,}", re.sub(r"[`*_~>|]", " ", sentence))
+    terms = []
+    for token in tokens:
+        if token.lower() in EN_STOPWORDS or token in KO_STOPWORDS:
+            continue
+        terms.append(strip_ko_suffix(token).lower())
+    return terms
+
+
+def strip_instructions(prompt: str) -> tuple[str, bool]:
+    """답 형식·도구 사용 지시문으로만 된 문장을 뺀 질의 본문과 뺐는지 여부.
+
+    ``INSTRUCTION_TERMS`` 로만 이뤄진 문장을 지운다. 남는 문장에 키워드가 하나도 없으면
+    (프롬프트 전체가 지시문이면) 원문을 그대로 돌려준다. 문장이
+    ``_MAX_INSTRUCTION_SENTENCES`` 를 넘는 붙여넣기는 건드리지 않는다. 어떤 입력에도
+    예외를 던지지 않는다.
+    """
+    if not isinstance(prompt, str) or not prompt:
+        return prompt, False
+    try:
+        sentences = [part for part in _SENTENCE_SPLIT_RE.split(prompt) if part.strip()]
+        if len(sentences) > _MAX_INSTRUCTION_SENTENCES:
+            return prompt, False
+        kept, dropped = [], False
+        for sentence in sentences:
+            terms = _sentence_terms(sentence)
+            if terms and all(term in INSTRUCTION_TERMS for term in terms):
+                dropped = True
+                continue
+            kept.append(sentence.strip())
+        rest = "\n".join(part for part in kept if part)
+        if not dropped or not extract_keywords(rest):
+            return prompt, False
+        return rest, True
+    except Exception:
+        return prompt, False
+
+
+def semantic_query_text(prompt: str) -> str:
+    """질의 벡터가 embed 할 프롬프트: 지시문 문장(``strip_instructions``)을 뺀 본문.
+
+    호스트 지시 + 단일 질문 형태(``_keyword_question_span`` 이 ``question``)는 원문을
+    그대로 둔다. 그 밖에서는 lexical 키워드와 같은 규칙으로 지시문만 뺀다.
+    """
+    if not isinstance(prompt, str) or _keyword_question_span(prompt)[1] != "full":
+        return prompt
+    return strip_instructions(prompt)[0]
+
+
 # EP 변형을 **독립 lex search** 로 내보낼 개수 상한.
 #
 # qmd 는 하나의 lex 문자열 안의 positive term 을 AND 로 결합하므로 EP 변형
@@ -508,6 +591,10 @@ def build_lexical_terms(prompt: str, patterns: list[str]) -> dict:
     ``lexicalTerms`` 는 (EP 변형 포함) 전체 term 목록으로 기존 계약을 유지한다.
     """
     keyword_prompt, keyword_span = _keyword_question_span(prompt)
+    instruction_free = False
+    if keyword_span == "full":
+        # 지시문 문장은 질문의 키워드 예산·AND 컷을 먹지 않는다(``INSTRUCTION_TERMS``).
+        keyword_prompt, instruction_free = strip_instructions(keyword_prompt)
     keywords = extract_keywords(keyword_prompt)
     identifiers = extract_identifiers(keyword_prompt)
 
@@ -549,6 +636,8 @@ def build_lexical_terms(prompt: str, patterns: list[str]) -> dict:
 
     return {
         "keywordSpan": keyword_span,
+        # 답 형식·도구 지시문 문장을 빼고 키워드를 골랐는지(``strip_instructions``).
+        "instructionFree": instruction_free,
         "keywords": keywords,
         "identifiers": identifiers,
         "lexicalTerms": deduped,
