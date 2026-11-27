@@ -136,6 +136,14 @@ code/executable/manifest/adapter 지문과 기본 승인 체인, 현재 공식 r
 
 구현: `context_learning_auto.py`, `context_learning_cli.py`, `prepare_laya_inference.py`, `project_learning_setup.py`, `project_learning_recovery.py`, `selector_maintenance.py`, `default_teacher_enable.py`, `candidate_close.py`, `case_rotation.py`.
 
+공유 학습 queue는 `context_learning/shared.py`가 진입점이다. `shared.py`는 경로·policy·DB·동의 같은
+공통 seam, owned worker 자식 본문과 CLI `main`을 두고, 역할 모듈의 이름을 모두 다시 내보낸다.
+역할 모듈은 `shared_cases.py`(사례 수락·학습 출처·holdout), `shared_queue.py`(capture queue·상태·후보 채점),
+`shared_train.py`(학습 주기·학습 한 번·되돌리기·trial 관찰), `shared_run.py`(계측 run·hook launch·학습 전용
+pass), `shared_dispatch.py`(durable worker 요청과 dispatcher step)다. 호출부와 시험의 patch는
+`shared.<이름>`을 가리킨다. 역할 모듈 본문은 `shared`와 공유하는 이름을 실행 시점에 `shared` 모듈에서
+읽으므로 `shared`의 patch가 모든 본문에 닿는다.
+
 공유 학습 `cases` 테이블은 상태와 무관하게 `CASE_LIMIT`(2,000행)에서 새 사례 수집을
 멈춘다(`queue_full`). default-teacher namespace의 worker pass는 행 수가 1,800
 (`case_rotation.ROTATE_LIMIT`)을 넘으면 teacher 호출 전에 이 프로젝트의
