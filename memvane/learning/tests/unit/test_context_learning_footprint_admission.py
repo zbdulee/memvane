@@ -169,6 +169,17 @@ class IdleReleaseTests(unittest.TestCase):
         self.assertFalse(idle_release.release_idle(engine))
         self.assertFalse(idle_release.release_idle(object()))  # an engine without the clock keeps its model
 
+    def test_an_expired_pending_generation_on_a_cold_engine_is_released(self):
+        from memvane.learning.context_learning import idle_release
+        engine, _loads = self.engine()
+        last = engine.last_used
+        engine.pending = ('token', 'key', (('cand',), object()), 512, last + 60)
+        self.assertFalse(idle_release.release_idle(engine, now=last + 59))
+        self.assertIsNotNone(engine.pending)
+        self.assertTrue(idle_release.release_idle(engine, now=last + 60))
+        self.assertIsNone(engine.pending)
+        self.assertFalse(idle_release.release_idle(engine, now=last + 61))
+
 
 if __name__ == '__main__':
     unittest.main()

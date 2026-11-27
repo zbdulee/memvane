@@ -26,7 +26,13 @@ def release_idle(engine, now=None):
     now = time.monotonic() if now is None else now
     pending = engine.pending
     waiting = pending is not None and now < pending[-1]  # A prepared generation before its deadline.
-    if engine.active is None or waiting or now - last < IDLE_RELEASE_SECONDS:
+    if engine.active is None:
+        if pending is None or waiting:
+            return False
+        engine.pending = None
+        free_memory()
+        return True
+    if waiting or now - last < IDLE_RELEASE_SECONDS:
         return False
     engine.active = engine.footprint_mib = engine.cached_load = engine.pending = None
     free_memory()
