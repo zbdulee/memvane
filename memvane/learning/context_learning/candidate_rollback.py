@@ -275,8 +275,14 @@ def restore(root, *, fault=lambda _point: None, resume_only=False):
 
 
 def _owe(root, row):
-    """Name the application whose ``rolled_back`` row is owed; raises like the restore's other writes."""
-    application.put(root / ANNOUNCE, {'schema': ANNOUNCE_SCHEMA, 'applyId': row['apply_id'], 'cycleId': row['cycle_id']})
+    """Name the application whose ``rolled_back`` row is owed."""
+    try:
+        application.put(root / ANNOUNCE, {'schema': ANNOUNCE_SCHEMA, 'applyId': row['apply_id'],
+                                          'cycleId': row['cycle_id']})
+    except (OSError, ValueError):
+        # Ignored: only the row of a run that also stops right after its pointer depends on it,
+        # and a marker that cannot be written must not keep the previous model from coming back.
+        pass
 
 
 def _owed(root, row):
