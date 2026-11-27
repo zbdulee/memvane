@@ -158,9 +158,12 @@ class Checks(unittest.TestCase):
           'observed_at_mono':time.monotonic(),'query_status':{'memory_pressure':'ok'},
           'memory_pressure':{'level':'normal','system_free_percent':60}}
   coord=self.root/'controller';coord.mkdir(mode=0o700)
+  trainer=SimpleNamespace()
   with patch.object(learning_profile,'present',return_value=True),patch.object(shared,'resource_report',return_value=report),patch.object(shared,'_predict',return_value=(score,{})),patch.object(automatic_staging,'require_operation',return_value=self.grant):
-   result=automatic_staging.evaluate_pending(self.root,policy,self.cycle,trainer_factory=lambda _:SimpleNamespace(),coordinator=Coordinator(coord))
+   result=automatic_staging.evaluate_pending(self.root,policy,self.cycle,trainer_factory=lambda _:trainer,coordinator=Coordinator(coord))
   self.assertEqual(result['status'],'staged_evaluated',result)
+  # The request's control keeps the configured policy: it is part of a training request's identity.
+  self.assertEqual(trainer.learning_control['policy']['maxRssMib'],4096)
  def test_multi_irrelevant_incumbent_can_be_replaced_by_verified_improvement(self):
   self.stage['metrics']['incumbent']={**self.stage['metrics']['incumbent'],'irrelevant_injection_rate':2.0}
   with self.db(None) as conn:conn.execute('UPDATE cycles SET evidence=?',(canonical(self.stage),))

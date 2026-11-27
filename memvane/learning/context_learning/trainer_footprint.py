@@ -7,7 +7,11 @@ one per trainer command in the namespace's ``trainer-footprint.json`` (a cache
 outside the 1.x contract: missing or unreadable means no measurement). From
 then on ``admission_view`` admits on the reviewed envelope of that peak,
 ``max(ceil(1.5 * peak), peak + 512)`` and never below ``MIN_ENVELOPE_MIB``,
-capped by the ceiling. The ceiling itself still bounds the running trainer.
+capped by the ceiling. Only the coordinator's admission when a training or an
+evaluation starts takes this view. The ceiling still bounds the running trainer,
+and the request's ``learning_control`` keeps the configured policy: it is part of
+the training request's identity (``train-intent.json``), and its per-step
+admissions credit the memory the loaded model already holds.
 """
 from __future__ import annotations
 

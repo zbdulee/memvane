@@ -48,11 +48,11 @@ CLI다.
 `learning.selector.maintenance`의 `busyRetries`에 남고, 경합 미룸은 유지보수 진입에서
 예외로 올라가지 않는다. `busyRetries`를 모르는 1.x 번들은 그 행을 10분 하한으로 읽는다.
 
-학습·평가의 메모리 승인은 측정한 trainer peak로 판단한다. 학습이 끝나면 process group의 peak RSS를 namespace의
+학습·평가를 시작할 때의 coordinator 메모리 승인은 측정한 trainer peak로 판단한다. 학습이 끝나면 process group의 peak RSS를 namespace의
 `trainer-footprint.json`(trainer 명령별 최댓값, 계약 밖 캐시)에 남기고, 그 뒤의 승인은 `max(ceil(1.5×peak), peak+512)`
 (하한 1,024MiB, 상한 policy `maxRssMib`)를 peak 추정으로 쓴다(`trainer_footprint.py`). 측정이 없으면 `maxRssMib`(4,096MiB)
-그대로다. 약 1.9GB peak에서 필요량은 reserve 1,024MiB를 더해 5,120MiB에서 3,942MiB가 된다. 실행 중인 trainer의 RSS 상한은
-그대로 `maxRssMib`다. 추론 서비스는 요청 없이 `IDLE_RELEASE_SECONDS`(900초)가 지나면 올린 selector 모델을 내려놓고
+그대로다. 약 1.9GB peak에서 필요량은 reserve 1,024MiB를 더해 5,120MiB에서 3,942MiB가 된다. 실행 중인 trainer의 RSS 상한과
+학습 요청의 `learning_control` policy(요청 정체성의 일부, 단계마다의 승인은 올린 모델만큼 credit을 받는다)는 설정값 그대로다. 추론 서비스는 요청 없이 `IDLE_RELEASE_SECONDS`(900초)가 지나면 올린 selector 모델을 내려놓고
 (`idle_release.py`, 적용의 준비된 세대가 활성화를 기다리는 동안은 제외) 다음 요청이 첫 요청처럼 다시 올린다.
 
 warm은 client 검증 30초, resident 준비 대기 60초, 준비 뒤 추론 요청
