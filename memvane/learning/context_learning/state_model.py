@@ -610,6 +610,10 @@ CYCLE_RESULTS = {
     'cohort_source_revoked': ('held', _CYCLE + ' held', 'more than 2,000 admitted rows'),
     'runtime_approval_required': ('held', _CYCLE + ' held', 'no valid runtime approval'),
     'synthetic_training_budget_exhausted': ('held', _CYCLE + ' held', 'the synthetic QA profile used its budget'),
+    'rollback_pending': ('held', _CYCLE + ' held', "nothing: an owner's restore that stopped after its decision is "
+                         'finished first (a learning.promotion rollback_pending row each pass)'),
+    'incumbent_damaged': ('held', _CYCLE + ' held', 'nothing: the base model is the active file and its bytes changed '
+                          '(the scope check refuses the grant until it is repaired or restored)'),
 }
 
 # Ends of a worker run that are not a cycle result: as (the status the run answers with,

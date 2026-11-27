@@ -183,10 +183,11 @@ class Restore(Case):
                     answer = case.run_apply()
                     self.assertEqual((answer['status'], answer['reason'], case.events),
                                      ('apply_blocked', 'candidate_rejected', events))
-                    # The worker pass's own part finishes the restore; nothing is applied.
+                    # The worker pass's own part finishes the restore; nothing is applied. After the
+                    # pointer only its announcement is left (``rollback-announce.json``).
                     resumed = R.resume(case.root)
-                    self.assertEqual(None if resumed is None else resumed['status'],
-                                     None if point == 'pointer_restored' else 'restored')
+                    self.assertEqual((resumed['status'], resumed['changesApplied']),
+                                     ('restored', 0 if point == 'pointer_restored' else 1))
                     self.assertEqual(self.files(case), self.before)
                     A.readable(case.root)
                     self.assertEqual(R.restore(case.root)['status'], 'already_restored')
@@ -534,6 +535,93 @@ class Project(Restore):
                                                               'reason': 'rollback_previous_artifact_changed'})])
         artifact.write_bytes(original)
         self.restored(case, self.resumed(case)[0])
+
+    def test_a_restore_stopped_right_after_its_pointer_is_announced_once(self):
+        # 1.1.x: the pointer was the last write and nothing said the model went back.
+        for finisher in ('worker', 'request'):
+            with self.subTest(finished_by=finisher):
+                case = self.stopped('pointer_restored')
+                self.assertEqual(self.files(case), self.before)
+                if finisher == 'worker':
+                    result, events, requests = self.resumed(case)
+                    self.assertEqual((result['status'], result['changesApplied']), ('restored', 0))
+                else:
+                    result, events, requests = self.call(case)
+                    self.assertEqual(result['status'], 'already_restored')
+                self.assertEqual(events, [('learning.promotion', {'outcome': 'rolled_back', 'cycle': case.cycle,
+                                                                  'previousCycle': 'base'})])
+                self.assertEqual(requests, [{'force': True}])
+                self.assertFalse((case.root / R.ANNOUNCE).exists())
+                # Owed once: neither the next pass nor the next request says it again.
+                self.assertEqual(self.resumed(case), (None, [], []))
+                again, events, requests = self.call(case)
+                self.assertEqual((again['status'], events, requests), ('already_restored', [], []))
+
+    def test_a_pending_restore_names_a_code_and_never_a_message(self):
+        # 1.1.x: an error message (with a path) was the reason, logged as unlabeled.
+        from memvane.diagnostics.api import code
+        case = self.stopped('journal_closed')
+        real = A.put
+
+        def put(path, row):
+            if Path(path).name == inference_identity.RECEIPT:
+                raise PermissionError(13, 'Permission denied', str(path))
+            return real(path, row)
+        with mock.patch.object(A, 'put', side_effect=put):
+            result, events, requests = self.resumed(case)
+        self.assertEqual((result['status'], result['reason'], requests),
+                         ('rollback_blocked', 'PermissionError', []))
+        self.assertEqual(events, [('learning.promotion', {'outcome': 'rollback_pending',
+                                                          'reason': 'PermissionError'})])
+        self.assertEqual(code(result['reason']), 'PermissionError')
+        self.restored(case, self.resumed(case)[0])
+
+    def test_already_restored_names_the_newest_of_two_restores_to_one_pointer(self):
+        # Third-party review T-5: base -> A -> restore -> B -> restore, both journals archived.
+        case = self.applied()
+        self.restored(case, R.restore(case.root))
+        first = A.read_journal(case.root)
+        stamp = first['new_receipt']['createdAt'] + 100
+        second_id = 'f' * 32
+        self.assertLess(first['apply_id'], second_id)  # The older one is read first from the archive.
+        second = {**first, 'apply_id': second_id, 'cycle_id': 'cohort-' + 'b' * 20,
+                  'new_pointer': {**first['new_pointer'], 'cycle_id': 'cohort-' + 'b' * 20,
+                                  'application': {'schema': A.SCHEMA, 'id': second_id}},
+                  'new_receipt': {**first['new_receipt'], 'createdAt': stamp}}
+        (case.root / A.ARCHIVE).mkdir(mode=0o700, exist_ok=True)
+        for row in (first, second):
+            A.put(case.root / A.ARCHIVE / (row['apply_id'] + '.json'), row)
+        (case.root / A.JOURNAL).unlink()
+        for answer in (R.plan(case.root), R.restore(case.root)):
+            self.assertEqual((answer['status'], answer['cycle_id'], answer['appliedAtUnixMs']),
+                             ('already_restored', second['cycle_id'], int(stamp * 1000)), answer)
+
+    def test_a_worker_pass_over_a_restore_it_cannot_finish_evaluates_and_applies_nothing(self):
+        # 1.1.x double fault: the restore stopped after its decision and the pass's resume fails too.
+        from memvane.learning.context_learning import automatic_staging, candidate_close, shared
+        from memvane.settings import api as config
+        case = self.stopped('journal_closed')
+        pointer = self.read(case, 'active-checkpoint.json')
+        (case.root / 'base.artifact').write_bytes(b'changed since the decision')
+        case.profile['localTrain'] = True
+        cfg = {'sharedLearning': {'enabled': True, 'root': str(case.root), 'profile': learning_profile.SCHEMA}}
+        refuse = mock.Mock(side_effect=AssertionError('a step over the model being undone'))
+        events = []
+        with mock.patch.object(config, 'find_project_config', return_value={'config': cfg}), \
+                mock.patch.object(shared, '_safe_root', return_value=case.root), \
+                mock.patch.object(shared, '_policy', return_value={**case.policy, '_runtime_authorization_v2': True}), \
+                mock.patch.object(learning_profile, 'present', return_value=True), \
+                mock.patch.object(candidate_close, '_project_of', return_value=str(case.project)), \
+                mock.patch.object(prequential, '_emit',
+                                  side_effect=lambda _project, event, **fields: events.append((event, fields))), \
+                mock.patch.object(automatic_staging, 'evaluate_pending', refuse), \
+                mock.patch.object(shared, 'train_due', refuse), mock.patch.object(A, 'apply_candidate', refuse):
+            for _ in range(2):
+                result = shared.run_training_pending(case.root, case.project)
+                self.assertEqual(result, {'status': 'rollback_pending', 'reason': 'rollback_previous_artifact_changed'})
+        refuse.assert_not_called()
+        self.assertEqual(self.read(case, 'active-checkpoint.json'), pointer)
+        self.assertEqual([fields['outcome'] for _event, fields in events], ['rollback_pending'] * 2)
 
     def test_the_plan_reports_and_asks_for_nothing(self):
         case = self.applied()

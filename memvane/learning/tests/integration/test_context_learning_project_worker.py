@@ -101,5 +101,46 @@ class ProjectWorkerTests(unittest.TestCase):
             result=shared.run_training_pending(self.state,self.project)
         self.assertEqual(result['status'],'deferred_quota')
 
+    def test_a_damaged_base_model_that_is_the_active_file_ends_the_pass_held_with_its_row(self):
+        # 1.1.x: the grant binds the base file's bytes, so the scope check raised and the pass
+        # ended with no stored result and no event.
+        import hashlib
+        from memvane.learning.context_learning import shared,project_scope,general_teacher
+        from memvane.learning.context_learning.candidate_apply import INCUMBENT_DAMAGED
+        from memvane.learning.context_learning.local_cycle import _atomic_json
+        base=self.state/'base.artifact';base.write_bytes(b'base');base.chmod(0o600)
+        candidate=self.state/'candidate.artifact';candidate.write_bytes(b'candidate');candidate.chmod(0o600)
+        policy={'enabled':True,'baseArtifact':str(base)}
+        def run(active):
+            active.write_bytes(b'as installed')
+            _atomic_json(self.state/'active-checkpoint.json',{'schema_version':1,'artifact_path':str(active),
+                'artifact_sha256':hashlib.sha256(active.read_bytes()).hexdigest(),'cycle_id':'base'})
+            active.write_bytes(b'damaged')
+            emitted=[]
+            with patch.object(shared,'_safe_root',return_value=self.state), \
+                 patch.object(shared,'_policy',return_value=policy), \
+                 patch.object(shared,'resource_report',return_value={'ready':True}), \
+                 patch.object(project_scope,'require',side_effect=ValueError('project_scope_binding_changed')), \
+                 patch.object(general_teacher,'process_pending',side_effect=AssertionError('teacher')), \
+                 patch.object(shared,'run_training_pending',side_effect=AssertionError('cycle')), \
+                 patch('memvane.journal.api.select_route',return_value={}), \
+                 patch('memvane.diagnostics.api.emit',side_effect=lambda event,**f:emitted.append((event,f))):
+                return project_worker.run(self.state,self.project,self.cfg),emitted
+        for _ in range(2):
+            answer,emitted=run(base)
+            self.assertEqual(answer,{'status':'incumbent_damaged','cycle':{'status':'incumbent_damaged',
+                'reason':INCUMBENT_DAMAGED},'activeCheckpointChanged':False})
+            self.assertEqual(json.loads((self.state/'project-last-status.json').read_text()),answer)
+        # One held row, from the pass that first ended so.
+        answer,emitted=run(base)
+        self.assertEqual(emitted,[])
+        (self.state/'project-last-status.json').unlink()
+        answer,emitted=run(base)
+        self.assertEqual([(e,f['outcome'],f['reason'],f['detail']) for e,f in emitted],
+                         [('learning.cycle','held','incumbent_damaged',INCUMBENT_DAMAGED)])
+        # Another refusal of the grant, or a damaged file that is not the active one, still raises.
+        with self.assertRaisesRegex(ValueError,'project_scope_binding_changed'):
+            run(candidate)
+
 
 if __name__=='__main__':unittest.main()

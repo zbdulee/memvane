@@ -416,6 +416,8 @@ pass의 결과는 cycle 단계의 결과다. 모든 결과 상태는 아래 다�
 | `cohort_source_revoked` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | more than 2,000 admitted rows |
 | `runtime_approval_required` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | no valid runtime approval |
 | `synthetic_training_budget_exhausted` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | the synthetic QA profile used its budget |
+| `rollback_pending` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | nothing: an owner's restore that stopped after its decision is finished first (a learning.promotion rollback_pending row each pass) |
+| `incumbent_damaged` | held(멈춤(밖의 변화 필요)) | `learning.cycle held` | nothing: the base model is the active file and its bytes changed (the scope check refuses the grant until it is repaired or restored) |
 
 아래는 cycle 결과가 아닌 종료다. 어느 것도 job·cycle·평가 행을 바꾸지 않고 이벤트를 쓰지 않으며 wake를 다시 요청하지 않는다.
 
