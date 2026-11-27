@@ -604,15 +604,19 @@ def _publish_pass(root, config, job, live, wiki_root, text, expected, recorded, 
                                         expected_target_sha=expected,
                                         lock_context=_card_locks(root))
         state = outcome.state
+        # A publish aborts with a reason only when the file system cannot exchange (``exchange_unsupported``).
+        cause = (outcome.reason or state) if state == 'aborted' else state
     except (OSError, ValueError, sqlite3.Error):
-        state = 'write_failed'
+        state = cause = 'write_failed'
     if state != 'published':
         if intent_path is not None:
             _supersede_compile_intent(intent_path)
         if state in ('write_failed', 'aborted'):
             # The verdict is recorded on the row; the retry publishes without paying again.
-            log_verdict(log_path, {**record, 'result': 'publish_pending', 'reason': state})
-            return "queued", "publish_" + state, False
+            # ``exchange_unsupported`` keeps the row too: the card stays as it is until the
+            # file system can exchange, and no pass pays for the review again.
+            log_verdict(log_path, {**record, 'result': 'publish_pending', 'reason': cause})
+            return "queued", "publish_" + cause, False
         log_verdict(log_path, {**record, "result": "skipped", "reason": "changed_during_verify"})
         return "done", "changed_during_verify", True
     reindex_wiki(root, config)

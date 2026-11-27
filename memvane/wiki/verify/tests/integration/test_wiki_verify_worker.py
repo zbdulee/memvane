@@ -201,6 +201,37 @@ class RecordedVerdict(VerifyCase):
         self.assertEqual(len(fake.calls), 1, 'the recorded verdict is reused, not paid again')
         self.assert_status('verified')
 
+    def test_a_file_system_without_exchange_keeps_the_card_and_the_row_without_paying_again(self):
+        """``exchange_unsupported``: the card stays, the row stays queued, every pass reuses the verdict."""
+        import errno
+        from memvane.kernel import atomic_rename
+        from memvane.wiki.pipeline import api as pipeline
+        before = self.setup()
+        fake = self.fake()
+        real = atomic_rename._rename
+
+        def no_exchange(*args, exchange, **kwargs):
+            if exchange:
+                raise OSError(errno.ENOTSUP, 'exchange not supported')
+            return real(*args, exchange=exchange, **kwargs)
+        with mock.patch.object(atomic_rename, '_rename', no_exchange):
+            for _ in range(3):
+                self.assertEqual(self.run_verify()['processed'], 0)
+        self.assertEqual(len(fake.calls), 1, 'the recorded verdict is reused on every pass')
+        self.assertEqual(self.card_now(), before, 'the card keeps its bytes')
+        row = self.rows()[-1]
+        self.assertEqual((row['state'], row['reason']), ('queued', 'publish_exchange_unsupported'))
+        self.assertEqual(row['payload']['_verdict']['verdict'], 'pass')
+        self.assertEqual((self.log()[-1]['result'], self.log()[-1]['reason']),
+                         ('publish_pending', 'exchange_unsupported'))
+        self.assertEqual(list(self.card.parent.glob('.publish-*.tmp')), [])
+        with pipeline.open_pipeline(self.root, readonly=True) as store:
+            self.assertEqual(store.open_publish_txns(), [])
+            self.assertEqual(len(store.open_publish_txns(state='aborted')), 3)
+        self.assertEqual(self.run_verify()['processed'], 1)
+        self.assertEqual(len(fake.calls), 1, 'a file system that exchanges again publishes without paying')
+        self.assert_status('verified')
+
     def test_a_dead_claim_after_the_verdict_is_reused_and_a_fourth_claim_drops_the_row(self):
         from memvane.wiki.pipeline import api as pipeline
         self.setup()

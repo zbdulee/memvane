@@ -13,6 +13,8 @@ WORKER_BUSY_TIMEOUT_MS = 5000
 TEMP_PREFIX = '.publish-'
 TEMP_SUFFIX = '.tmp'
 FENCE_GLOBAL_PUBLISH = 'global_publish'
+# ``PublishOutcome.reason`` of a replacement the file system cannot exchange into place.
+EXCHANGE_UNSUPPORTED = 'exchange_unsupported'
 
 # Log-only kinds: no generation, deletion or resume decision reads them.
 AUDIT_KINDS = (

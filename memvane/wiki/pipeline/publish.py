@@ -15,6 +15,7 @@ import uuid
 from memvane.kernel.atomic_rename import fsync_dir, rename_exchange, rename_noreplace
 from memvane.wiki.pipeline.store import _ensure_compile_dir, open_pipeline
 from memvane.wiki.pipeline.types import (
+    EXCHANGE_UNSUPPORTED,
     FENCE_GLOBAL_PUBLISH,
     PUBLISH_STATES,
     TEMP_PREFIX,
@@ -167,6 +168,13 @@ def _finish_then_drop_temp(store, tx_id: str, state: str, temp_path: Path, **aud
     fsync_dir(temp_path.parent)
 
 
+# Errors the OS returns when the file system (or kernel) has no atomic exchange.
+EXCHANGE_UNSUPPORTED_ERRNOS = frozenset(
+    code for code in (getattr(errno, name, None) for name in ('EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS'))
+    if code is not None
+)
+
+
 def _cas_matches(live_sha: str | None, expected_target_sha: str | None) -> bool:
     if expected_target_sha is None:
         return live_sha is None
@@ -196,7 +204,19 @@ def _apply(store, tx_id: str, rel: str, temp_path: Path, target: Path, temp_sha:
                                   live_sha=current[1] if current else None, displaced_sha=None)
         state = 'published'
     else:
-        _exchange(temp_path, target)
+        try:
+            _exchange(temp_path, target)
+        except OSError as exc:
+            if exc.errno not in EXCHANGE_UNSUPPORTED_ERRNOS:
+                raise
+            # 교환을 지원하지 않는 파일 시스템에서는 교체 게시를 하지 않는다. 교환은 일어나지 않았으므로
+            # temp는 이 txn의 후보 바이트이고, live 카드는 손대지 않은 채 남는다(사람 편집을 잃지 않는다).
+            # 대안(구현하지 않음): live를 하드링크로 백업한 뒤 os.replace로 덮고, 백업 해시가 expected와
+            # 다르면 백업을 되돌린다. 편집기가 새 파일을 만들어 rename으로 저장하면 백업 링크와 replace
+            # 사이에 들어온 그 저장은 백업에 잡히지 않아, 이 짧은 창에서 유실될 수 있다.
+            _finish_then_drop_temp(store, tx_id, 'aborted', temp_path)
+            return PublishOutcome(tx_id, rel, 'aborted', live_sha=live_sha, displaced_sha=expected,
+                                  reason=EXCHANGE_UNSUPPORTED)
         state = _settle_exchange(temp_path, target, expected)
     if state == 'published':
         if expected is None:
@@ -257,9 +277,10 @@ def recover_publishes(project_root: Path | str, wiki_root: Path | str, *,
     then remove ``.publish-*.tmp`` files that no open txn owns.
 
     One txn that cannot be recovered (its folder became a symlink, its path a
-    directory or FIFO, its parent a file, or the file system refuses the exchange)
-    is closed ``aborted`` with its files left in place, so the other txns and the
-    caller's verify pass still run. Store errors still propagate.
+    directory or FIFO, its parent a file, or the exchange fails for a reason other
+    than ``exchange_unsupported``) is closed ``aborted`` with its files left in
+    place, so the other txns and the caller's verify pass still run. Store errors
+    still propagate.
     """
     root, wiki = Path(project_root), Path(wiki_root)
     outcomes: list[PublishOutcome] = []

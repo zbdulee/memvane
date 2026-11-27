@@ -303,17 +303,17 @@ class SingleRenamePublishTests(FixtureCase):
         (self.wiki / 'gone').write_text('a file now\n', encoding='utf-8')
         return row, None, 'unrecoverable:ENOTDIR'
 
-    def _exchange_unsupported(self):
+    def _exchange_refused(self):
         live = self._card('concepts/x.md', '# Base\n')
         row = self._interrupt('concepts/x.md', '# New\n', expected=_sha('# Base\n'))
         from unittest.mock import patch
         from memvane.wiki.pipeline import publish
 
         def refuse(*_args, **_kwargs):
-            raise OSError(errno.ENOTSUP, 'exchange not supported')
+            raise OSError(errno.EIO, 'exchange failed')
         self._exchange_patch = patch.object(publish, 'rename_exchange', refuse)
         self._exchange_live = live
-        return row, self.wiki / 'concepts' / row['temp_name'], 'unrecoverable:ENOTSUP'
+        return row, self.wiki / 'concepts' / row['temp_name'], 'unrecoverable:EIO'
 
     def test_one_unrecoverable_txn_is_aborted_and_the_others_still_recover(self):
         from contextlib import nullcontext
@@ -323,7 +323,7 @@ class SingleRenamePublishTests(FixtureCase):
         previous = signal.signal(signal.SIGALRM, hang)
         self.addCleanup(signal.signal, signal.SIGALRM, previous)
         for case in ('_folder_became_symlink', '_target_became_directory', '_target_became_fifo',
-                     '_parent_became_file', '_exchange_unsupported'):
+                     '_parent_became_file', '_exchange_refused'):
             with self.subTest(case=case):
                 # A project per case: a failing case cannot leave state the next one trips on.
                 self.project = make_project(self.home, git=False, dirname='project' + case)
@@ -348,7 +348,7 @@ class SingleRenamePublishTests(FixtureCase):
                     self.assertEqual(store.generations(target_path=bad['target_path']), [])
                 if temp is not None:
                     self.assertTrue(temp.exists(), 'recovery leaves the files of a txn it cannot settle')
-                if case == '_exchange_unsupported':
+                if case == '_exchange_refused':
                     self.assertEqual(self._exchange_live.read_text(encoding='utf-8'), '# Base\n')
 
     def test_a_stop_between_closing_a_conflict_and_dropping_its_temp_is_not_a_user_edit(self):
@@ -384,7 +384,7 @@ class SingleRenamePublishTests(FixtureCase):
         from memvane.wiki.pipeline import publish
 
         def refuse(*_args, **_kwargs):
-            raise OSError(errno.ENOTSUP, 'exchange not supported')
+            raise OSError(errno.EIO, 'exchange failed')
         rows = []
         for rel in ('concepts/own.md', 'concepts/foreign.md'):
             self._card(rel, '# Base\n')
@@ -401,6 +401,43 @@ class SingleRenamePublishTests(FixtureCase):
         pipeline.recover_publishes(self.project.root, self.wiki)
         self.assertFalse(own.exists(), 'its own candidate bytes come back with the next publish')
         self.assertEqual(foreign.read_text(encoding='utf-8'), '# Someone else\n')
+
+    def test_a_file_system_without_exchange_keeps_the_card_and_still_creates_new_ones(self):
+        """A replacement aborts as ``exchange_unsupported``; its temp goes and the live card stays."""
+        from unittest.mock import patch
+        from memvane.wiki.pipeline import publish
+        codes = [code for code in (getattr(errno, name, None)
+                                   for name in ('EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS')) if code is not None]
+        for code in sorted(set(codes)):
+            with self.subTest(errno=errno.errorcode[code]):
+                def refuse(*_args, _code=code, **_kwargs):
+                    raise OSError(_code, os.strerror(_code))
+                direct, resumed = f'concepts/direct-{code}.md', f'concepts/resumed-{code}.md'
+                for rel in (direct, resumed):
+                    self._card(rel, '# Person kept\n')
+                stopped = self._interrupt(resumed, '# Machine\n', expected=_sha('# Person kept\n'))
+                with patch.object(publish, 'rename_exchange', refuse):
+                    out = pipeline.publish_card(self.project.root, self.wiki, direct, '# Machine\n',
+                                                expected_target_sha=_sha('# Person kept\n'),
+                                                generation={'targetPath': direct, 'action': 'updated'})
+                    recovered = pipeline.recover_publishes(self.project.root, self.wiki)
+                    created = pipeline.publish_card(self.project.root, self.wiki, f'concepts/new-{code}.md',
+                                                    '# New\n')
+                self.assertEqual((out.state, out.reason, out.live_sha),
+                                 ('aborted', 'exchange_unsupported', _sha('# Person kept\n')))
+                self.assertEqual([(o.tx_id, o.state, o.reason) for o in recovered],
+                                 [(stopped['tx_id'], 'aborted', 'exchange_unsupported')])
+                self.assertEqual(created.state, 'published', 'a new card needs no exchange')
+                for rel in (direct, resumed):
+                    self.assertEqual((self.wiki / rel).read_text(encoding='utf-8'), '# Person kept\n')
+                self.assertEqual(self._publish_temps(), [], 'the candidate temps are removed')
+                with pipeline.open_pipeline(self.project.root, readonly=True) as store:
+                    self.assertEqual(store.open_publish_txns(), [])
+                    states = {r['target_path']: r['state'] for r in store._conn.execute(
+                        'SELECT target_path, state FROM publish_txns WHERE target_path IN (?, ?)',
+                        (direct, resumed))}
+                    self.assertEqual(store.generations(target_path=direct), [])
+                self.assertEqual(states, {direct: 'aborted', resumed: 'aborted'})
 
     def test_a_temp_the_sweep_cannot_remove_does_not_stop_recovery(self):
         from unittest.mock import patch
