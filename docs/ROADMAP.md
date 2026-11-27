@@ -48,6 +48,7 @@
 | 1.1.1 | 설치별 provider 증명 실패 분류와 재시도, 1시간 뒤 재증명, provider 기동 실패 시 lexical recall, 부분 vector 검색, 같은 원문의 compile·pending 검수 중복 제거 |
 | 1.1.2 | 구조적 식별자 단독 어휘 검색, resident 증명 EIO 훅 보호·냉기동·반복 adopt 진단 정리, discovery lock 경합 grant 건너뛰기와 번들 조회 재시도, 예약 실패 롤백·고아 hold 회수·hold 스캔 상한(첫 카드 게시 정체 복구), 출시 smoke 도구와 shim 예열 보강 |
 | 1.1.4 | 위키 파이프라인 v2(`stateFormat` 2, `~/.local/state/memvane/v2` 0700 생성·넓은 권한 복구), 훅 경량화(`edit-inbox.jsonl` 단일 append·discovery 중복 스킵), 단일 SQLite 원장(`.memvane/compile/wiki-pipeline.sqlite3`·큐/검수/게시/억제/쿨다운/dedup/생성 이력/보존 정리), 단일 교환 게시·행 단위 복구·교환 미지원 파일시스템 보호, tombstone 제거와 dedup 이름표 이전, 1.x 일회성 마이그레이션, `entry/run.py wiki-ledger` 조회 CLI |
+| 1.1.5 | 학습·색인 경합 및 sync owner 점유 계측, 연결 worktree view 대기 분리, recall 지시문 문장 필터링(표지어·코드 펜스 보호), ingest delta와 `source_fingerprints` 재사용, `checkout_view.py`·`shared.py` 분해, 학습 안정화 4종(이중 고장 되돌리기·손상 기본 모델·재시도 계수 영속과 진척·실측 trainer peak 승인과 유휴 모델 해제) |
 
 ## 한눈에
 
@@ -56,11 +57,7 @@
 | 1.1.x | L3 검색 필요 판단기 | M | 없음 |
 | 1.1.x | 1.1.0 이월 항목 | S~M | 확인 |
 | 1.1.x | 로컬 웹 대시보드(UI) ([설계](design-local-web-ui.md)) | L | 없음 |
-| 1.0.x | 1 연결 worktree view 대기의 실패 기록 | S | 없음 |
 | 1.0.x | 2 resident 선행 요청 | M | 없음 |
-| 1.0.x | 3 ingest delta화와 원문 지문 누적 정지 | M | 확인 |
-| 1.0.x | 4 학습과 색인의 경합 계측 | S | 없음 |
-| 1.0.x | 5 sync owner 점유 계측 | S | 없음 |
 | 1.0.x | 6 재봉인·온보딩 안내 정리 | S | 없음 |
 | 1.0.x | 7 GPU 폴백 후속 | S | 없음 |
 | 1.0.x | 8 운영 가시성 | M | 없음 |
@@ -82,9 +79,6 @@
 
 ```
 L2 후속 ── L3
-1.0.x  4 ── 1.1-3
-       3 ── 1.1-4
-       5 ── 1.1-8
 1.1-1 C2 (resident 메모리 vector 검색)
 ```
 
@@ -106,22 +100,17 @@ L2 후속 ── L3
 - **목표.** 멀티 프로젝트·연결 git worktree를 한 창에서 통합 조회하는 로컬 웹 대시보드(Preact + TypeScript + Vite 사전 빌드 `ui/dist/` + Python `memvane/ui/` 온디맨드 싱글톤 서버)와 `memvane:ui` 스킬을 제공한다.
 - **설계 · 리뷰.** [설계 문서(r5)](design-local-web-ui.md), [독립 리뷰](reviews/2026-11-24-local-web-ui-design-review.md), [UI 가안 프로토타입](mockups/local-web-ui-prototype.html).
 - **범위.** Phase 1(1.1.x 목표, 읽기 전용 4개 화면 전체 — 좌측 오르카 스타일 프로젝트·worktree 트리, Overview, Recall 인스펙터·무오염 4단계 Query Playground, Wiki Browser·원문 대조, Runtime·Learning 모니터·opt-in `onboarded_sessions` SessionStart 자동 오픈)을 M0(기반 정리: `diagnostics` 로그·SLO 승격, `recall.dry_run_recall` `partial` 지원, `learning.inspect_project` 슬롯 확보, `resident` read-only 상태 파사드, `wiki/pipeline` 원장 요약, `runtime_main(['snapshot-readonly'])`) → M1a(보안 서버·Overview·`skills/ui`) → M1b(Wiki Browser) → M1c(Recall·Playground) → M1d(Runtime·Learning·SessionStart opt-in)로 분할 구현한다. Phase 2(제어 액션, M2)는 기존 `entry/setup.py` `previewSha256` 승인 계약을 래핑해 후속 진행한다.
-- **의존.** `1.1.4` 출시 완료(현행 기준 반영); 1.1.x 이월의 `shared.py`·`checkout_view.py` 분해 전이라도 M0 우회 경로로 착수 가능. **크기.** L.
+- **의존.** `1.1.5` 출시 완료(현행 기준 반영). **크기.** L.
 - **불변.** 없음(1.x 영속 계약·`.memvane/settings.json` 5키·`hook_closures` 무변경, `$HOME/.local/state/memvane/v2/ui/`만 계약 밖 파생물로 등재; `manual-skills.test.mjs`·5개 매니페스트·`context-map.json`·`ui/` 정적 가드 갱신).
 - **합격(live).** `v1_guard.py --strict`, `static.test.mjs`(외부 URL 금지·`ui/dist/` drift·번들 100KB gzip 이하), `/usr/bin/python3`(3.9) import, 보안·무오염 테스트를 통과한다. `skills/ui`로 열어 카나리·service-engineering 및 연결 worktree를 4개 화면에서 조회할 때 `events.jsonl`·`edit-recall-sessions/`·학습 DB 무변경, `activeClients == 0` 유휴 30분 뒤 서버 자동 종료.
 
-- **학습 적용·되돌리기.** 되돌리기가 결정을 쓴 뒤 끊기고 이어 끝내기도 실패하는 이중 고장에서 worker pass가 실패로 끝나거나 뒤 후보가 되돌린 모델 위에 적용된다. 포인터를 쓴 직후 끊긴 되돌리기는 이벤트를 남기지 않는다. `already_restored`는 가장 최근 이력을 고르지 않는다.
-- **기본 모델이 활성 파일일 때의 손상.** 그 파일이 손상되면 worker pass가 scope 권한 검사에서 끝나고 집계와 이벤트가 없다.
-- **재시도 계수.** 횟수 파일을 쓰지 못하면 계수가 고정된다. 최근 64행 밖의 열린 후보는 평가를 끝내고도 진척으로 세어지지 않는다. 옛 형식의 계수 파일은 상태 없이 이어 센다.
-- **학습 자원.** 학습 resident는 유휴 중에도 모델을 메모리에 둔다. 학습 메모리 승인 필요량(5,120MiB)은 실측 peak(약 1.9GB)의 두 배를 넘어 24GB Mac에서 미룸이 잦다.
 - **학습 검사.** 여러 조각에 걸친 cursor 재개의 실제 모델 시험, 학습 점검의 일관성 읽기, 쌍 예산의 정확 비교와 12→20 복귀 기준.
 - **wiki.** 편집 뒤 원문이 root 안 symlink로 바뀌면 refresh pending이 해결·종결되지 않는다.
-- **구조.** `shared.py`·`checkout_view.py`가 줄 수 한도에 닿아 있다. 분해가 1.1.x의 첫 리팩터링이다.
 - **recall resident/API 방식.** 1.2 후보다.
-- **recall 순위.** 프롬프트 앞의 일반 지시문("도구는 쓰지 말고 답만 해 줘.")이 semantic 순위를 끌어, 드문 토큰이 정확히 일치하는 카드가 상위 3장에서 빠진다. 같은 질문에서 지시문을 빼면 그 카드가 1위다. 선택 reader 경로의 일반어 선택(`memvane/recall/keywords.py`)은 코퍼스 필터 없이 위치로만 자른다. 긴 질의에서 일반어 선택, lexical 일치의 비중과 fusion 가중을 조사한다.
+- **recall 순위.** 선택 reader 경로의 일반어 선택(`memvane/recall/keywords.py`)은 코퍼스 필터 없이 위치로만 자른다. 긴 질의에서 일반어 선택, lexical 일치의 비중과 fusion 가중을 조사한다.
 - **세션 밖 변경의 즉시 반영.** 세션 밖 변경(에디터 편집, 터미널의 `git pull`·checkout)은 다음 SessionStart, 프로젝트 안 편집(`index`), Claude의 성공한 Bash(`file-change-event`) 때 full-scan sync로 반영된다. 프롬프트(UserPromptSubmit)는 sync를 깨우지 않아서, 열린 세션에서 에이전트가 편집·Bash를 하기 전까지 색인이 옛 상태로 남는다. 후보는 셋이다. (A) resident가 선택된 프로젝트를 OS 파일 이벤트(macOS FSEvents)로 감시해 sync를 깨운다. (B) recall hook이 sync 요청을 함께 남기고 짧은 간격의 중복은 합친다. (C) resident의 주기 점검. A를 기본, B를 보조로 검토한다.
 - **resident 상시 기동(OS 로그인 항목).** 지금 resident는 hook이 처음 필요할 때 띄우고, 재부팅 뒤 첫 프롬프트가 기동과 모델 로드를 기다리며, 죽거나 영구 실패에 빠지면 다음 hook 전까지 되살리는 주체가 없다. OS 로그인 항목으로 상시 기동하는 안을 위 감시 항목과 함께 검토한다. macOS는 launchd 사용자 agent(`~/Library/LaunchAgents`, KeepAlive), Windows는 작업 스케줄러 로그온 작업 또는 시작 프로그램, Linux는 systemd `--user` unit이다(Windows·Linux는 지원 플랫폼이 되면 적용). 검토할 것: 등록·해제를 setup의 명시 승인으로만 하고 플러그인 제거 때 함께 지우는 방법, 플러그인 버전이 바뀔 때 실행 경로를 갱신하는 방법(지금의 번들 인계와의 관계), 쓰지 않는 날의 메모리(resident 약 350MB, 학습 resident는 수 GB), hook 기동 방식과의 공존. 새 로그인 항목과 설정 키는 사용자 결정 사항이다.
-- **학습 되돌리기 사유.** `candidate_rollback.resume`의 `rollback_pending` 사유가 `unlabeled`로 남는다. compile 진척 streak은 상태 파일을 쓰지 못하는 동안 쌓이지 않는다.
+- **compile 진척.** compile 진척 streak은 상태 파일을 쓰지 못하는 동안 쌓이지 않는다.
 - **시험 격리.** `test_setup_entry_inventory_119`가 Claude Code 안에서 돌면 `CLAUDECODE`·`CLAUDE_CODE_*` 환경 변수 때문에 실패한다. 시험이 host 환경 변수를 지우지 않고, host 판별이 환경 변수에 기대는지 확인한다.
 - **리뷰 범위.** `vectorcache/writer.py`의 compaction·append, teacher와 `automatic_staging`의 유료 호출 경로를 독립 리뷰한다.
 - **일반 편집 후보의 부분 실패.** 한 원문에서 나온 두 후보 중 하나의 첫 쓰기가 실패하면, 재시도가 원문을 다시 추출하고 남은 후보가 사라진다. 원래 응답과 후보별 완료 기록, 혼합 버전의 재시도 경계를 설계한다.
@@ -131,14 +120,6 @@ L2 후속 ── L3
 
 번호는 권장 순서다.
 
-### 1.0.x-1 연결 worktree view 대기의 실패 기록
-
-- **현재 동작.** main view가 게시된 pass는 연결 worktree view가 기다려도 `wake.sync`가 `indexed`·`unchanged`로 기록되고 재시도 횟수가 쌓이지 않는다. 연결 view의 대기는 이벤트의 `linked` 필드(`waiting`·`held`·`reasons`)에 사유별 수로 남는다. `memvane:logs`의 SLO `sync` 줄이 그런 pass의 수(`linkedWaiting`)와 사유를 보인다. service-engineering의 연결 view 2개가 게시되지 않는 원인은 진단 전이다.
-- **목표.** main 게시는 성공으로 기록되고, 연결 view의 대기는 사유와 함께 따로 기록된다.
-- **범위.** wake 결과에서 main 게시와 연결 view 대기를 분리한다. `pending`에 사유를 채운다. `memvane:logs` 요약이 둘을 따로 센다. 연결 view가 끝내 게시되지 않는 원인을 service-engineering에서 진단한다.
-- **의존.** 없음. **크기.** S. **불변.** 없음.
-- **합격(live).** service-engineering의 24시간 `wake.sync`에서 main이 게시된 pass의 `failed`가 0건이다. 연결 view 2개가 게시되거나, 게시되지 않는 사유가 이벤트에 남는다.
-
 ### 1.0.x-2 resident 선행 요청
 
 - **현재 동작.** fill은 문서 하나를 임베딩하고 store commit·검증이 끝난 뒤 다음 요청을 보낸다. 임베딩 중에는 Python이, commit 중에는 worker가 논다.
@@ -146,32 +127,6 @@ L2 후속 ── L3
 - **범위.** 다음 target의 요청을 이전 target의 commit·검증과 겹쳐 보낸다. protocol `1`과 요청 모양을 유지한다. content claim은 임베딩 동안 보유하고, deadline 뒤에 끝난 결과는 게시하지 않으며, provider 호출 경계의 초기 빌드 양보 검사를 선행 요청에도 적용한다.
 - **의존.** 없음. **크기.** M. **불변.** 없음.
 - **합격(live).** service-engineering의 fill pass에서 `sync.profile`의 provider 시간이 pass 벽시계의 70% 이상이다(현재 약 45%). 새 카드 1장당 벽시계가 0.3초 이하다.
-
-### 1.0.x-3 ingest delta화와 원문 지문 누적 정지
-
-- **현재 동작.** 카드 한 장이 바뀐 pass도 카드 전부를 읽고 해시하며 FTS 행을 pass당 4회 다시 만든다. 고정비가 16~20초다. `source_fingerprints`는 pass마다 source 수만큼 행이 늘어 service-engineering에서 source 1,991개에 225,612행이다.
-- **목표.** ingest pass의 비용이 바뀐 카드 수에 비례하고, 원문 지문 행 수가 관측 내용이 바뀔 때만 는다.
-- **범위.** FTS 행과 wiki 파일 대조를 delta로 만든다. 같은 `(worktree, branch, path, sha, tracked_state)` 관측은 행을 다시 쓰지 않는다. 이미 쌓인 행의 회수는 1.1-4가 맡는다.
-- **의존.** 없음. 1.1-4의 선행이다.
-- **크기.** M. **불변.** 확인(DDL은 유지한다. fingerprint id와 manifest `sources`의 의미가 바뀌므로 세대 seal·stage digest 입력과 낮은 버전 호스트의 검증을 먼저 판정한다).
-- **합격(live).** service-engineering에서 카드 1장 변경 pass의 `sync.profile` scan+plan+publish 합이 5초 이하다. 편집 없는 24시간 동안 `source_fingerprints` 행 수 증가가 0이다.
-
-### 1.0.x-4 학습과 색인의 경합 계측
-
-- **목표.** 학습 기본 켜짐 뒤 학습이 sync·초기 빌드·recall을 얼마나 미루는지 수치로 안다.
-- **범위.** 10개 설치 기준 7일의 `learning_*` 사유 deferral 건수·대기 시간을 logs 요약으로 낸다. busy 사유에 막은 게이트(provider·control·trainer)를 싣는다.
-- **의존.** 없음. 1.1-3의 착수 판단 입력이다.
-- **크기.** S. **불변.** 없음.
-- **합격(live).** 7일 요약에서 `learning_*` 사유로 미뤄진 recall이 0건이고 미뤄진 sync의 대기 중앙값이 30초 이하면 1.1-3을 뒤로 미룬다. 넘으면 1.1의 첫 항목으로 올린다.
-
-### 1.0.x-5 sync owner 점유 계측
-
-- **현재 동작.** ingest pass도 최대 240초의 vector window를 쓰므로 사용자당 sync owner를 그만큼 쥔다. 선택된 프로젝트가 10개가 되면 다른 프로젝트의 sync가 그 뒤에 선다.
-- **목표.** 프로젝트 사이의 sync 대기가 수치로 보인다.
-- **범위.** sync owner 보유 시간과 `owner_busy` 대기 시간을 이벤트에 싣고 logs 요약이 프로젝트별로 낸다. resident의 5초 주기 소유 재증명과의 경합 빈도를 함께 센다.
-- **의존.** 없음. 1.1-8의 입력이다.
-- **크기.** S. **불변.** 없음.
-- **합격(live).** 10개 설치의 7일 요약에서 편집부터 그 프로젝트의 게시까지 p95가 나온다. p95가 5분을 넘으면 1.1-8의 window 분할을 패치로 당긴다.
 
 ### 1.0.x-6 재봉인·온보딩 안내 정리
 
@@ -264,7 +219,7 @@ L2 후속 ── L3
 - **현재 동작.** 학습과 색인이 같은 wake 큐와 dispatcher lease를 쓴다. 학습 추론 슬롯이 차 있으면 sync·초기 빌드·recall admission이 `learning_*` 사유로 미뤄진다.
 - **목표.** 기존 큐·wake kind·lock을 유지한 채 학습이 recall·sync·초기 빌드를 막지 않는다.
 - **범위.** admission을 색인용과 학습용으로 나눈다. sync·초기 빌드·recall 경로에서 학습 수요 확인을 뺀다. 학습이 상위 수요에 한 step(5초 이하) 안에 양보한다. 학습 예약 메모리를 회수 가능으로 센다.
-- **의존.** 1.0.x-4. **크기.** M. **불변.** 없음(큐·lease 분리는 2.0이다).
+- **의존.** 1.1.5(학습·색인 경합 계측). **크기.** M. **불변.** 없음(큐·lease 분리는 2.0이다).
 - **합격(live).** 7일 동안 `learning_*` 사유로 미뤄진 recall·sync 0건. 학습 cycle 완료 건수가 분리 전의 80% 이상이다.
 
 ### 1.1-4 공유 content GC
@@ -272,13 +227,13 @@ L2 후속 ── L3
 - **현재 동작.** 여러 view가 공유하는 blob 본문·admission·attestation·원문 지문·chunk/embedding set은 지우지 않는다.
 - **목표.** 어떤 view의 head·직전 세대에서도 닿지 않는 공유 내용을 회수한다.
 - **범위.** 선택 sync의 owner·writer scope 안에서 게시·fill이 정상 반환된 뒤 같은 프로세스에서만 실행한다. journal이 선택한 store만 대상으로 한다. 유계 `BEGIN IMMEDIATE`마다 참조를 다시 확인하고 vector → embedding set → chunk → chunk set → attestation → admission → blob 순으로 지운다. head·직전·stage·delta·진행 중 fill 대상·compile intent·trust chain에 닿는 blob을 보호한다. 참조 없는 원문 지문과 소비가 끝난 compile intent 파일을 회수한다.
-- **의존.** 1.0.x-3, `writer_floor` 판정. **크기.** L(설계 문서와 독립 리뷰 선행). **불변.** 없음(DDL과 compile intent 키 집합을 유지한다).
+- **의존.** 1.1.5(ingest delta화), `writer_floor` 판정. **크기.** L(설계 문서와 독립 리뷰 선행). **불변.** 없음(DDL과 compile intent 키 집합을 유지한다).
 - **합격(live).** service-engineering의 `source_fingerprints`가 225,612행에서 살아 있는 관측 수의 2배 이하로 준다. store 파일 크기가 30일 동안 카드 수 변화 비율 안에서 움직인다. GC가 돈 pass의 recall p95가 목표 이하다.
 
 ### 1.1-5 진단과 deferral 정확성
 
 - **범위.** recall 거절 이벤트의 내부 고정 코드 필드. lexical 0건 recall의 reason은 `no_candidates`다. off-hook 자식 진입점 전체가 `ResourceDeferred`를 deferral로 끝내는지 전수 점검. `normal_writer_deadline`의 sync 분류. compile 중첩 worker의 실패 범주와 backlog 크기 필드.
-- **의존.** 1.0.x-1. **크기.** M. **불변.** 없음.
+- **의존.** 1.1.5(연결 worktree view 대기 분리). **크기.** M. **불변.** 없음.
 - **합격(live).** 7일 이벤트에서 사유 없는 `failed`·`refused`가 0건이다.
 
 ### 1.1-6 recall·wiki 품질
@@ -298,7 +253,7 @@ L2 후속 ── L3
 
 - **목표.** 사용자당 lock을 한 번에 쥐는 시간에 상한이 있고, resident 교체 중 vector 폴백 구간이 5초 이하다.
 - **범위.** vector window를 여러 프로젝트가 나눠 쓰도록 쪼갠다. embed runtime 준비의 `npm ci`·모델 다운로드를 사용자당 lock 밖으로 옮긴다. resident 교체를 make-before-break로 바꾸고 메모리 admission이 막으면 break-before-make로 돌아간다.
-- **의존.** 1.0.x-5, 1.1-3. **크기.** L. **불변.** 확인(resident 교체 절차가 `successor.lock`·protocol `1`의 의미를 바꾸면 저촉이다).
+- **의존.** 1.1.5(sync owner 점유 계측), 1.1-3. **크기.** L. **불변.** 확인(resident 교체 절차가 `successor.lock`·protocol `1`의 의미를 바꾸면 저촉이다).
 - **합격(live).** 10개 프로젝트 환경에서 편집부터 게시까지 p95 2분 이하. 업데이트 중 `laya_service_preparing` 폴백 recall이 5초 구간 밖에서 0건이다.
 
 ## 1.1 이후
@@ -326,7 +281,6 @@ L2 후속 ── L3
 | store 안의 영속 근사 검색 색인 | store DDL. 1.1-1의 파생 캐시로 부족할 때 |
 | resident protocol 번호 변경이 필요한 검색·batch 위임 | protocol `1`, service 파일 |
 | `provider-reattest.json` v1 모양의 변경·폐기 | 1.0.3 이후 호스트가 읽는 기록 |
-| 원문 지문 id·세대 seal digest 입력의 변경으로 낮은 버전 호스트가 세대를 검증하지 못하는 경우 | store 행 의미. 1.0.x-3의 판정 결과에 따른다 |
 | 학습 끄기를 한 키로 묶는 설정, hook 지연 목표 설정 등 새 settings 키 | settings 허용 키 집합 |
 | 영속 이름 정리(`laya_*.mjs`, wake kind `laya-sync`·`laya-compile`, `laya-install.lock`, `schema3` 식별자) | 파일·kind·lock 이름 |
 
