@@ -12,6 +12,17 @@ from tests.support.case import FixtureCase
 from tests.support.project import make_project
 
 
+class Orphan:
+    """The dead claim of one queue row, observed through the ledger."""
+
+    def __init__(self, queue):
+        self.queue = queue
+
+    def exists(self):
+        from tests.support.wiki_handoff import claimed_jobs
+        return bool(claimed_jobs(self.queue))
+
+
 class BackfillChecks(FixtureCase):
     def setUp(self):
         super().setUp()
@@ -61,8 +72,8 @@ class BackfillChecks(FixtureCase):
         return backfill.dispatch(self.decision, row, self.snapshot, self.config, recheck=lambda: None)
 
     def jobs(self):
-        path = selected.safe_queue_path(self.project, '.memvane/compile/source-queue.jsonl', native=True)
-        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+        path = selected.safe_queue_path(self.project, '.memvane/compile/source-queue.jsonl')
+        return [job for _, job in selected.read_queue(path)]
 
     def settle(self, job):
         job = {**job, '_processedContentRevision': job['contentRevision']}
@@ -219,13 +230,10 @@ class BackfillChecks(FixtureCase):
         job = self.jobs()[0]
         if markerless:
             job.pop('initialBackfill')
-        job['_requeue_count'] = workspace_types.MAX_REQUEUE_COUNT
         queue = self.project / '.memvane/compile/source-queue.jsonl'
-        selected.safe_queue_path(self.project, '.memvane/compile/source-queue.jsonl', native=True).write_bytes(b'')
-        queue.write_text('')
-        orphan = queue.with_name(queue.name + '.claimed.99999999.dead')
-        orphan.write_text(json.dumps(job) + '\n')
-        return queue, orphan, job
+        from tests.support.wiki_handoff import dead_claim
+        dead_claim(queue, job, workspace_types.MAX_REQUEUE_COUNT + 1)
+        return queue, Orphan(queue), job
 
     def claim_orphan(self, queue):
         import os
@@ -244,25 +252,6 @@ class BackfillChecks(FixtureCase):
         before = backfill.summary(backfill._load(self.decision))
         backfill.reconcile_discards(self.bound)
         self.assertEqual(backfill.summary(backfill._load(self.decision)), before)
-
-    def test_torn_discard_audit_is_not_authoritative_backfill_evidence(self):
-        from pathlib import Path
-        queue, orphan, _job = self.orphan_first_batch()
-        real_open = Path.open
-        def torn_open(path, mode='r', *args, **kwargs):
-            if path.name == 'discard-ledger.jsonl' and mode == 'a':
-                with real_open(path, 'ab') as handle:
-                    handle.write(b'{"timestamp":')
-                raise OSError('synthetic audit ENOSPC')
-            return real_open(path, mode, *args, **kwargs)
-        with patch.object(Path, 'open', torn_open):
-            with self.assertRaisesRegex(OSError, 'audit ENOSPC'):
-                self.claim_orphan(queue)
-        self.assertTrue(orphan.exists())
-        self.claim_orphan(queue)
-        self.assertFalse(orphan.exists())
-        backfill.reconcile_discards(self.bound)
-        self.assertEqual(backfill.summary(backfill._load(self.decision))['skipped'], 1)
 
     def test_partial_atomic_receipt_write_keeps_claim_and_retry_recovers(self):
         import os

@@ -2,10 +2,9 @@
 
 ``VerifyCase`` builds a ``.memvane`` project (minimal settings) with
 ``docs/source.md`` and a generated card at ``CARD_REL`` carrying an auto block,
-and queues the job the compiler would write for it. ``run`` drains the queue
-in process through ``verify.api.run`` with the expanded config; a host CLI is
-``FakeEngines`` (``fake``). Without a selected route the legacy machine-delete
-defaults (``onFail``/``onInconclusive: delete``) apply.
+and queues the ``verify_jobs`` row the compiler writes for it. ``run`` drains the
+rows in process through ``verify.api.run`` with the expanded config; a host CLI
+is ``FakeEngines`` (``fake``). The verifier never deletes a card.
 """
 from __future__ import annotations
 
@@ -74,9 +73,13 @@ class VerifyCase(FixtureCase):
         job.update(overrides)
         return job
 
-    def write_queue(self, *jobs, raw=()):
-        lines = [json.dumps(job) for job in jobs] + list(raw)
-        self.queue.write_text(''.join(line + '\n' for line in lines), encoding='utf-8')
+    def write_queue(self, *jobs, images=None):
+        """Replace the verify rows with ``jobs`` (``images`` are replacement blobs)."""
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.root) as store:
+            store._conn.execute('DELETE FROM verify_jobs')
+            store._conn.commit()
+            store.append_jobs('verify', list(jobs), pending_blobs=images)
 
     def config(self, **compile_overrides):
         return settings_fake.expanded(self.project, compile=compile_overrides)
@@ -94,11 +97,20 @@ class VerifyCase(FixtureCase):
         return jsonl(self.compile_dir / name)
 
     def log(self):
-        return self.ledger('verify-log.jsonl')
+        from memvane.wiki.pipeline import api as pipeline
+        return pipeline.log_rows(self.root, 'verify_log')
+
+    def rows(self):
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.root) as store:
+            return [{**dict(r), 'payload': json.loads(r['payload_json'])} for r in store._conn.execute(
+                'SELECT job_id, state, reason, attempt_count, payload_json, pending_blob IS NOT NULL AS has_blob '
+                'FROM verify_jobs ORDER BY created_ns, job_id')]
 
     def queued(self):
-        from tests.support.queue_files import pending_text
-        return pending_text(self.queue)
+        """Open rows as JSONL text, the shape the former queue file had."""
+        return ''.join(json.dumps(row['payload']) + '\n' for row in self.rows()
+                       if row['state'] in ('queued', 'claimed'))
 
     def card_now(self):
         return self.card.read_text(encoding='utf-8')
@@ -107,45 +119,20 @@ class VerifyCase(FixtureCase):
         text = self.card_now()
         return text[:text.index('\n---\n', 4)]
 
-    def engine_cooldown(self):
-        path = self.compile_dir / 'verify-engine-cooldown.json'
-        return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    def engine_cooldown(self, scope='verify_engine'):
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.root) as store:
+            return store.cooldowns(scope)
+
+    def clear_engine_cooldown(self):
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.root) as store:
+            for key in store.cooldowns('verify_engine'):
+                store.clear_cooldown('verify_engine', key)
+
+    def suppressed(self):
+        from memvane.wiki.pipeline import api as pipeline
+        return pipeline.suppressions(self.root, 'verify')
 
     def assert_status(self, status):
         self.assertRegex(self.card_now(), '(?m)^status: %s$' % status)
-
-
-def during_native_review(queue, bound, work, callback):
-    from memvane.wiki.verify import native_review
-
-    def retry(owned):
-        callback(owned.read('raw'))
-        return False, True
-
-    assert native_review.process(queue, bound, work, retry) == (False, True)
-
-
-def waiting_reviews(queue):
-    from memvane.wiki.verify.native_review import waiting
-    return waiting(queue)
-
-
-def deferred_replacements(queue):
-    from memvane.wiki.verify.deferred_review import active
-    return active(queue)
-
-
-def retained_batches(queue):
-    from memvane.wiki.verify.batch_handoff import active
-    return active(queue)
-
-
-def full_copy_quota(queue):
-    from memvane.wiki.verify.copy_quota import LIMIT
-    from memvane.wiki.verify.handoff_work import Work
-    retained = []
-    for index in range(8):
-        record = Work.create(queue, 'hold', {'purpose': 'test-sole-copy', 'index': index}, bytes([index]) * (LIMIT // 8))
-        record.commit('held', proof={'validated': True}).commit('finished').archive()
-        retained.append(record)
-    return retained

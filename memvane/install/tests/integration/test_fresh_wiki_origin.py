@@ -173,7 +173,7 @@ class ForeignPointers(InstallCase):
             'state root exists here': lambda: (live.mkdir(parents=True, mode=0o700),
                                                self.write_pointer('route.json', self.foreign_route('6' * 32)),
                                                self.write_pointer('selection.json', self.marker('6' * 32))),
-            'another major': lambda: (self.write_pointer('route.json', self.foreign_route(stateFormat=2)),
+            'another major': lambda: (self.write_pointer('route.json', self.foreign_route(stateFormat=3)),
                                       self.write_pointer('selection.json', self.marker())),
             'two installs': lambda: (self.write_pointer('route.json', self.foreign_route()),
                                      self.write_pointer('selection.json', self.marker('7' * 32))),

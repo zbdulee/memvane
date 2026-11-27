@@ -606,6 +606,21 @@ def _successful_edit(payload: dict) -> bool:
 
 
 
+def _edit_inbox_bytes(root: Path) -> int | None:
+    """Size of the hook edit inbox for the trace; ``None`` when it cannot be read."""
+    from memvane.settings import api as project_settings
+    from memvane.wiki.card import types as card_types
+    inbox = project_settings.ledger(root, card_types.EDIT_INBOX)
+    if inbox is None:
+        return None
+    try:
+        return os.lstat(inbox).st_size
+    except FileNotFoundError:
+        return 0
+    except OSError:
+        return None
+
+
 def _request_selected_sync(action: str, decision: dict, proof: dict, *,
                            start: bool = True) -> None:
     """The hook's sync wake and its checks; raises on any refusal.
@@ -621,27 +636,12 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
     defer = {} if start else {'start': False}
     result = runtime_work.request("laya-sync", decision["projectRoot"], **defer)
     from memvane.host.host_rules import check_compile_queue
+    compile_result = None
     if check_compile_queue('collections' in decision, action):
-        from memvane.wiki.workspace import types as compile_types
-        from memvane.settings import api as project_settings
-        from memvane.wiki.card import api as wiki_freshness
-        root = Path(decision['projectRoot'])
-        queues = (project_settings.ledger(root, compile_types.SOURCE_QUEUE),
-                  project_settings.ledger(root, compile_types.VERIFY_QUEUE))
-        if any(path is None for path in queues):
-            _fail('selected_compile_queue_unsafe')
-        pending = wiki_freshness.unresolved_pending_refreshes_strict(root)
-        if pending is None:
-            _trace_fields(pendingRefresh='unknown')
-            try:
-                runtime_work.request('laya-compile', decision['projectRoot'], **defer)
-            except Exception:
-                pass
-        elif pending or any(path.exists() and path.stat().st_size > 0 for path in queues):
-            compile_result = runtime_work.request('laya-compile', decision['projectRoot'],
-                                                  **defer)
-            if not _wake_recorded(compile_result):
-                _fail('selected_compile_enqueue_failed')
+        # Hooks never open the wiki pipeline ledger, so a session start always offers the
+        # compile worker a pass; the wake queue merges repeats and an idle pass ends fast.
+        _trace_fields(editInbox=_edit_inbox_bytes(Path(decision['projectRoot'])))
+        compile_result = runtime_work.request('laya-compile', decision['projectRoot'], **defer)
     refreshed = verify_selected_route(decision)
     # The owner may have started and advanced the journal epoch before
     # request() returns. Keep the installed identity fixed, while allowing
@@ -653,6 +653,8 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
         _fail("selected_proof_changed")
     if not _wake_recorded(result):
         _fail("selected_sync_enqueue_failed")
+    if compile_result is not None and not _wake_recorded(compile_result):
+        _fail('selected_compile_enqueue_failed')
 
 
 def _request_wiki_lifecycle(action: str, decision: dict) -> None:

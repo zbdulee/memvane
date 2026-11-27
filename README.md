@@ -125,8 +125,8 @@ MemVane은 프로젝트 밖의 사용자 디렉터리에 state를 둡니다. 아
 
 | 항목 | 위치 | 크기 |
 |---|---|---|
-| 임베딩 런타임(모델 포함) | `~/.local/state/memvane/v1/embed-runtime` | 약 0.5GB |
-| 프로젝트별 색인(설치 하나) | `~/.local/state/memvane/v1/installs/<id>` | 수십~수백 MB |
+| 임베딩 런타임(모델 포함) | `~/.local/state/memvane/v2/embed-runtime` | 약 0.5GB |
+| 프로젝트별 색인(설치 하나) | `~/.local/state/memvane/v2/installs/<id>` | 수십~수백 MB |
 | 로컬 학습 런타임(학습을 켠 경우) | `~/Library/Application Support/memvane` | 약 1.4GB |
 | 상주 프로세스 메모리 | 임베딩 모델을 올린 동안 | 약 1GB |
 

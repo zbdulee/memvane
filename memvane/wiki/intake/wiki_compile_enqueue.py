@@ -209,75 +209,50 @@ def _engine(payload):
 
 
 
-def _write_jsonl(path, records):
-    with open(path, "a", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-
-
 def _append_jsonl(path, records):
     from memvane.wiki.card.api import card_sources_allowed
     if path.name == ct.SOURCE_QUEUE:
         records = [record for record in records if card_sources_allowed(record, report=True)]
+        if records:
+            _append_unqueued(path, [(None, None, row) for row in records], len(records))
+        return
     if not records:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.name == ct.SOURCE_QUEUE:
-        candidates = [(None, None, row) for row in records]
-        _append_unqueued(path, candidates, len(candidates))
-        return
     lock_path = _queue_lock_path(path)
     with open(lock_path, "a", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
-            _write_jsonl(path, records)
+            with open(path, "a", encoding="utf-8") as handle:
+                for record in records:
+                    handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def _queued_revision_keys(path, limit=None):
-    try:
-        _, _, groups = source_queue.read_live(path, QUEUE_SCAN_MAX_BYTES if limit is None else limit)
-    except source_queue.HandoffRequired:
-        return set()
-    return {key for group in groups.values() for _, row in group
-            if (key := intent.revision_key(row)) is not None}
+    from memvane.wiki.workspace import api as workspace
+    groups, _ = source_queue.queued_revisions(
+        [{'payload': job} for _, job in workspace.read_queue(path)])
+    return {key for group in groups.values() for item in group
+            if (key := intent.revision_key(item['payload'])) is not None}
 
 
 def _append_unqueued(path, candidates, cap):
     """Skip identical revisions, cap fresh intents, and replace superseded live rows.
 
-    The queue image is prepared outside the claim/requeue lock and its original
-    identity is rechecked under that lock before publication. Skipped
-    candidates are neither queued nor deferred, and when all are skipped the
-    result is the usual `no_sources`. They still use cap slots: they will be
+    Skipped candidates are neither queued nor deferred, and when all are skipped
+    the result is the usual `no_sources`. They still use cap slots: they will be
     compiled by the same wake, so only `cap - skipped` fresh rows are appended
-    and the rest is deferred (its snapshot entries stay behind for the next
-    run). Otherwise a retry after a snapshot failure would add the tail and
-    one wake would compile more than `cap` paid sources.
-
-    A skipped row is still live work (e.g. a retry after the snapshot write
-    failed), so the result gains internal `wakePending: True` and the caller
-    can still kick the compile worker. It is absent when nothing was skipped
-    and is not part of any status/sync output.
+    and the rest is deferred. A skipped row is still live work, so the result
+    gains internal `wakePending: True` and the caller can still kick the
+    compile worker.
     """
     from memvane.wiki.card.api import card_sources_allowed
     candidates = [item for item in candidates if card_sources_allowed(item[2], report=True)]
     if not candidates:
         return intent.plan_enqueue([], cap)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    from memvane.wiki.workspace.handoff.api import native_live, public_name
-    path = native_live(public_name(path), create=True)
-    keys = {intent.operation_key(row) for _, _, row in candidates}
-    original, lines, groups = source_queue.read_live(path, QUEUE_SCAN_MAX_BYTES, keys)
-    revisions = {key: intent.queue_revision(group[0][1])
-                 for key, group in groups.items() if len(group) == 1}
-    plan = intent.plan_source_batch(candidates, revisions, cap)
-    if plan["records"]:
-        source_queue.store(path, original, lines, groups, plan["records"], QUEUE_SCAN_MAX_BYTES)
-    elif plan["result"].get("wakePending"):
-        source_queue.publish(path, original)
-    return plan
+    return source_queue.enqueue(path, candidates, cap)
 
 
 def compile_gate(config, accepted_triggers):

@@ -18,7 +18,7 @@ from memvane.settings import types as settings_types
 from memvane.wiki.dedup import api as dedup
 from memvane.wiki.dedup import wiki_dedup_judge as judge
 from memvane.wiki.engines import api as engines
-from memvane.wiki.workspace import api as workspace
+from memvane.wiki.pipeline import api as pipeline
 from tests.support import settings_fake
 from tests.support.case import FixtureCase
 from tests.support.engines_fake import FakeEngines
@@ -44,9 +44,15 @@ class JudgeCase(FixtureCase):
         return dedup.judge_pair(self.root, compile_cfg or self.compile_cfg, PAGE_A, PAGE_B, engine)
 
     def cool_engine(self, key):
-        self.assertTrue(engines.set_engine_cooldown(
-            judge.engine_cooldown_path(self.root), key, 600,
-            _queue_lock_path=workspace.queue_lock_path, write_text_atomic=workspace.write_text_atomic))
+        self.assertTrue(pipeline.set_cooldown(self.root, 'dedup_judge_engine', 600, key))
+
+    def cooldowns(self, scope):
+        with pipeline.open_pipeline(self.root) as store:
+            return store.cooldowns(scope)
+
+    def clear_cooldown(self):
+        with pipeline.open_pipeline(self.root) as store:
+            store.clear_cooldown('dedup_judge', 'global')
 
 
 class Reach(JudgeCase):
@@ -133,8 +139,8 @@ class Unavailable(JudgeCase):
         verdict, info = self.judge()
         self.assertEqual((verdict, info['outcome'], info['reason']), (None, 'unavailable', 'cli_absent'))
         self.assertEqual(len(fake.calls), 1)
-        self.assertFalse(judge.cooldown_path(self.root).exists())
-        self.assertFalse(judge.engine_cooldown_path(self.root).exists())
+        self.assertEqual(self.cooldowns('dedup_judge'), {})
+        self.assertEqual(self.cooldowns('dedup_judge_engine'), {})
         self.assertEqual(judge.diagnostics(info)['enginesAttempted'], ['claude'])
 
 
@@ -154,7 +160,7 @@ class Transient(JudgeCase):
         for kwargs, reason in (({'timeout': True}, 'extractor_timeout'),
                                ({'returncode': 1}, 'extractor_failed')):
             with self.subTest(reason=reason):
-                judge.cooldown_path(self.root).unlink(missing_ok=True)
+                self.clear_cooldown()
                 fake = self.fake(**kwargs)
                 verdict, info = self.judge()
                 self.assertEqual((verdict, info['outcome'], info['reason']), (None, 'transient', reason))
@@ -170,22 +176,21 @@ class Transient(JudgeCase):
             verdict, info = self.judge()
         self.assertEqual((verdict, info['outcome'], info['reason'], run.call_count),
                          (None, 'transient', 'resource_deferred', 1))
-        self.assertFalse(judge.cooldown_path(self.root).exists())
+        self.assertEqual(self.cooldowns('dedup_judge'), {})
 
     def test_an_unbounded_cooldown_value_does_not_stop_the_judge_forever(self):
-        path = judge.cooldown_path(self.root)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        for raw in ('1e300', 'inf', 'nan', 'garbage'):
-            with self.subTest(raw=raw):
-                path.write_text(raw + '\n', encoding='utf-8')
+        for raw in (1e300, float('inf')):
+            with self.subTest(raw=raw), pipeline.open_pipeline(self.root) as store:
+                store.set_cooldown('dedup_judge', 'global', raw)
                 self.assertFalse(judge.cooldown_active(self.root))
         fake = self.fake()
         self.assertEqual(self.judge()[0], 'duplicate')
         self.assertEqual(len(fake.calls), 1)
 
     def test_both_cooldown_writes_failing_is_surfaced(self):
-        path = judge.cooldown_path(self.root)
-        path.mkdir(parents=True)  # a directory where the expiry file belongs
+        with pipeline.open_pipeline(self.root) as store:
+            store._conn.execute("CREATE TRIGGER refuse_cooldown BEFORE INSERT ON cooldowns "
+                                "BEGIN SELECT RAISE(ABORT, 'synthetic cooldown refusal'); END")
         self.fake(timeout=True)
         verdict, info = self.judge()
         self.assertEqual((verdict, info['outcome'], info.get('cooldownWriteFailed')), (None, 'transient', True))
@@ -199,7 +204,7 @@ class UnusableOutput(JudgeCase):
                  ({}, {'dedup': {'reason': 'no verdict at all'}}, 'invalid_verdict')]
         for kwargs, responses, reason in table:
             with self.subTest(reason=reason, responses=responses):
-                judge.cooldown_path(self.root).unlink(missing_ok=True)
+                self.clear_cooldown()
                 fake = self.fake(responses, **kwargs)
                 verdict, info = self.judge()
                 # A terminal unclear: the caller records a body-hash marker for the pair.

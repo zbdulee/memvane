@@ -17,6 +17,7 @@ from tests.support.case import FixtureCase
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
+from tests.support.queue_files import pending_text, replace_queue
 
 
 class StaleSourceBacklog(FixtureCase):
@@ -37,7 +38,6 @@ class StaleSourceBacklog(FixtureCase):
         self.identity = workspace.route_identity(self.bound)
         self.queue = self.project.root / '.memvane/compile/source-queue.jsonl'
         self.queue.parent.mkdir(parents=True, exist_ok=True)
-        self.audit = self.queue.parent / 'candidates.jsonl'
 
     def job(self, path, *, stale=False, ts='2026-01-01T00:00:00Z'):
         identity = dict(self.identity)
@@ -49,14 +49,11 @@ class StaleSourceBacklog(FixtureCase):
                            'collection': self.project.raw_name}}
 
     def write_jobs(self, jobs):
-        self.queue.write_text(''.join(json.dumps(job) + '\n' for job in jobs), encoding='utf-8')
+        replace_queue(self.queue, ''.join(json.dumps(job) + '\n' for job in jobs))
 
     def remaining_jobs(self):
-        # A failed audit/requeue may retain the claimed file for recovery.
-        from tests.support.queue_files import pending_files
-        files = pending_files(self.queue)
-        return [json.loads(line) for path in files if path.exists()
-                for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
+        # Queued rows and rows a failed return left claimed.
+        return [json.loads(line) for line in pending_text(self.queue).splitlines() if line.strip()]
 
     def run_pass(self):
         calls = []
@@ -74,28 +71,6 @@ class StaleSourceBacklog(FixtureCase):
                                 self.config, self.config['compile'], self.queue, self.bound)
         return json.loads(output.getvalue()), calls
 
-    def test_private_source_larger_than_a_slab_reaches_the_actual_selected_worker(self):
-        from memvane.wiki.workspace.handoff.api import native_live
-        from tests.support.wiki_handoff import retained_batches
-        private = native_live(self.queue, create=True)
-        job = self.job(self.paths[0])
-        raw = b'!' * (65536 + 1) + b'\n' + json.dumps(job).encode() + b'\r\n'
-        private.write_bytes(raw)
-        inode = private.stat().st_ino
-        calls = []
-        for _ in range(50):
-            report, seen = self.run_pass()
-            calls += seen
-            if calls:
-                break
-        self.assertEqual(calls, self.paths[:1])
-        self.assertEqual(report['completed'], 1)
-        batch, = retained_batches(self.queue)
-        original = batch.work.folder / 'raw'
-        self.assertEqual((original.stat().st_ino, original.read_bytes()), (inode, raw))
-        self.assertFalse(self.queue.exists() and self.queue.read_bytes())
-        self.assertEqual(self.run_pass()[1], [])
-
     def test_old_install_prefix_does_not_consume_current_extractor_budget(self):
         old = [self.job('docs/old-%04d.md' % n, stale=True) for n in range(2281)]
         for job in old:
@@ -105,7 +80,8 @@ class StaleSourceBacklog(FixtureCase):
         self.assertEqual(calls, self.paths[:10])
         self.assertEqual([row['source']['path'] for row in self.remaining_jobs()], self.paths[10:])
         self.assertEqual((report['completed'], report['staleDropped']), (10, 2281))
-        audit = [json.loads(line) for line in self.audit.read_text(encoding='utf-8').splitlines()]
+        from memvane.wiki.pipeline import api as pipeline
+        audit = pipeline.log_rows(self.project.root, 'candidate')
         stale = [row for row in audit if row.get('reason') == 'selected_route_identity_changed']
         self.assertEqual(len(stale), 2281)
         self.assertTrue(all(row['action'] == 'skipped' for row in stale))
@@ -118,55 +94,6 @@ class StaleSourceBacklog(FixtureCase):
         self.assertEqual(calls, self.paths[:1])
         self.assertEqual(report['staleDropped'], 1)
         self.assertEqual(self.remaining_jobs(), [])
-
-    def test_stale_scan_leaves_an_over_limit_suffix_for_another_pass(self):
-        self.write_jobs([self.job('docs/old-%04d.md' % n, stale=True) for n in range(5000)])
-        raw = self.queue.read_bytes()
-        report, calls = self.run_pass()
-        self.assertEqual(calls, [])
-        self.assertEqual(report['remaining'], 1)
-        from tests.support.wiki_handoff import retained_batches as active
-        batch, = active(self.queue)
-        self.assertEqual((batch.work.folder / 'raw').read_bytes(), raw)
-        self.run_pass()
-        self.assertGreater(active(self.queue)[0].cursor, 0)
-
-    def test_stale_scan_byte_budget_preserves_unscanned_large_rows(self):
-        old = [self.job('docs/old-%02d.md' % n, stale=True) for n in range(10)]
-        for job in old:
-            job['syntheticPadding'] = 'x' * (1024 * 1024)
-        self.write_jobs(old)
-        before = self.queue.stat()
-        report, calls = self.run_pass()
-        self.assertEqual(calls, [])
-        self.assertEqual(report['remaining'], 1)
-        from tests.support.wiki_handoff import retained_batches as active
-        batch, = active(self.queue)
-        held = batch.work.folder / 'raw'
-        self.assertEqual((held.stat().st_ino, held.stat().st_size), (before.st_ino, before.st_size))
-        self.assertEqual(self.queue.read_bytes(), b'')
-
-    def test_stale_audit_failure_returns_original_rows_to_normal_queue(self):
-        old = self.job('docs/old.md', stale=True)
-        other = self.job('docs/other-old.md', stale=True)
-        jobs = [old, other, self.job(self.paths[0])]
-        self.write_jobs(jobs)
-        original = self.queue.read_text(encoding='utf-8')
-        append = worker.append_jsonl
-
-        def fail_stale(path, row):
-            if (row.get('reason') == 'selected_route_identity_changed'
-                    and row.get('source', {}).get('path') == 'docs/other-old.md'):
-                raise OSError('synthetic audit unavailable')
-            return append(path, row)
-
-        with patch.object(worker, 'append_jsonl', side_effect=fail_stale):
-            with self.assertRaisesRegex(OSError, 'synthetic audit unavailable'):
-                self.run_pass()
-        from tests.support.queue_files import pending_text
-        self.assertEqual(pending_text(self.queue), original)
-        self.assertFalse(self.queue.read_bytes())
-        self.assertEqual(list(self.queue.parent.glob('source-queue.jsonl.claimed.*')), [])
 
     def test_same_install_scope_drift_is_retained_not_declared_stale_progress(self):
         drift = self.job(self.paths[0])
@@ -200,23 +127,7 @@ class StaleSourceBacklog(FixtureCase):
     def test_repeated_partition_owner_busy_never_consumes_orphan_retry_count(self):
         jobs = [self.job('docs/old.md', stale=True), self.job(self.paths[0])]
         self.write_jobs(jobs)
-        claim = worker.claim_queue
-        dead_pid = 4242421
-
-        def claim_as_exited_worker(path, **kwargs):
-            claimed = claim(path, **kwargs)
-            if claimed is None:
-                return None
-            # Model separate worker exits using the supported dead-pid fixture.
-            # A surviving claim must go through the real orphan recovery path.
-            token = claimed.name.rsplit('.', 1)[1]
-            renamed = claimed.with_name('native.claimed.%s.%s' % (dead_pid, token))
-            claimed.replace(renamed)
-            return renamed
-
-        with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(dead_pid)}), \
-             patch.object(worker, 'claim_queue', side_effect=claim_as_exited_worker), \
-             patch.object(worker, 'recover_pending_refreshes'), \
+        with patch.object(worker, 'recover_pending_refreshes'), \
              patch.object(intake, 'reconcile_discards'), \
              patch.object(workspace, 'recheck', side_effect=ResourceDeferred('owner_busy')):
             for _ in range(4):

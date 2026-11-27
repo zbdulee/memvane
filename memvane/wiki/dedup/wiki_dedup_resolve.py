@@ -1,32 +1,43 @@
 #!/usr/bin/env python3
 """Resolve one entry in the retroactive wiki dedup queue.
 
-Reads .memvane/compile/dedup-needed.jsonl, applies one action to the
-entry at --index, and rewrites the queue with that entry removed. Never
-touches entries other than the one resolved this run.
+Reads the queued ``dedup_pairs`` ledger rows in resolver order (oldest
+first), applies one action to the row at --index, and marks that row done
+when the action applied. Never touches rows other than the one resolved
+this run.
 
 This script's `merge` action DELETES a file. The caller (the
 wiki-dedup-resolver subagent) has already folded any unique content into the
-page it is keeping via its own Edit tool before invoking this CLI.
+page it is keeping via its own Edit tool before invoking this CLI. Before the
+delete, the CLI moves the deleted card's canonicalKey, title and aliases into
+the keeper's aliases and its sources into the keeper's sources, so a later
+compile of the deleted card's source resolves to the keeper. When that move
+fails or a moved label already names a third card, nothing is deleted.
 """
 from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import stat
 import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from memvane.wiki.workspace import api as cp, types as ct
+from memvane.wiki.workspace import api as cp
 from memvane.settings import api as project_dir, types as project_types
 from memvane.settings import api as qmd_config
 from memvane.wiki.workspace import api as workspace_files
 from memvane.kernel.paths import safe_managed_dir
+from contextlib import nullcontext
+import hashlib
+from memvane.wiki.card import api as cards
+from memvane.settings import api as source_text
 from memvane.wiki.card.api import parse_frontmatter
+from memvane.wiki.card import types as card_types
+from memvane.wiki.card.types import FRONTMATTER_RE
 from memvane.wiki.dedup import wiki_dedup_scan as dedup_scan
 from memvane.wiki.workspace import api as wiki_selected_laya
-from memvane.wiki.workspace.api import claim_queue, requeue_lines
 
 ACTIONS = {"merge", "skip"}
 
@@ -35,29 +46,9 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def load_entries(claimed: Path) -> list[tuple[str, dict | None]]:
-    if not claimed.exists():
-        return []
-    rows = []
-    try:
-        content = claimed.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return []
-    for line in content.splitlines():
-        if not line.strip():
-            continue
-        try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError:
-            rows.append((line, None))
-            continue
-        rows.append((line, parsed if isinstance(parsed, dict) else None))
-    return rows
-
-
 def record_skip(root: Path, wiki_root: Path, compile_dir: Path, entry: dict) -> bool:
-    """Append the skip judgment to dedup-skipped.jsonl so the scanner can
-    suppress re-queueing this pair while both bodies are unchanged.
+    """Record the skip judgment as a ``dedup`` suppression so the scanner does
+    not re-queue this pair while both bodies are unchanged.
 
     Returns False -- recording NOTHING -- for stale skips: either page
     missing, path-unsafe, or unreadable. A stale skip is not a content
@@ -67,10 +58,9 @@ def record_skip(root: Path, wiki_root: Path, compile_dir: Path, entry: dict) -> 
     The hashes are computed HERE, by the CLI, at skip time -- never supplied
     by the resolver agent (an agent-supplied hash would be nondeterministic).
 
-    An unwritable ledger returns False instead of propagating OSError. Same class as
-    the verify workers' ledgers: without the row the scanner re-queues this pair and
-    the judge re-bills it, so the failure must be visible (`recorded: false` in the
-    CLI's JSON) rather than a traceback that loses the rest of the resolve.
+    An unwritable ledger returns False (working-rules 1): without the row the scanner
+    re-queues this pair and the judge re-bills it, so the failure is visible
+    (`recorded: false` in the CLI's JSON) rather than a traceback.
     """
     page_a = entry.get("pageA")
     page_b = entry.get("pageB")
@@ -89,21 +79,17 @@ def record_skip(root: Path, wiki_root: Path, compile_dir: Path, entry: dict) -> 
             texts[rel] = target.read_text(encoding="utf-8")
         except OSError:
             return False
-    skipped_path = qmd_config.ledger(root, ct.DEDUP_SKIPPED)
-    if skipped_path is None:
-        return False
+    from memvane.wiki.pipeline import api as pipeline
     first, second = sorted((page_a, page_b))  # order-independent pair key
-    try:
-        cp.append_jsonl(skipped_path, {
-            "pageA": first,
-            "pageB": second,
-            "pageAHash": dedup_scan.body_hash(texts[first]),
-            "pageBHash": dedup_scan.body_hash(texts[second]),
-            "skippedAt": now_iso(),
-        })
-    except OSError:
-        return False
-    return True
+    row = {
+        "pageA": first,
+        "pageB": second,
+        "pageAHash": dedup_scan.body_hash(texts[first]),
+        "pageBHash": dedup_scan.body_hash(texts[second]),
+        "skippedAt": now_iso(),
+    }
+    return pipeline.set_suppression(root, 'dedup', first + '\n' + second,
+                                    row['pageAHash'] + ':' + row['pageBHash'], row)
 
 
 def record_recovery(compile_dir: Path, delete_rel: str, paired_with: str, content: str) -> Path:
@@ -156,6 +142,108 @@ def keeper_over_budget(root: Path, wiki_root: Path, keeper_rel) -> dict | None:
     # A page the selector does not read at all (no frontmatter) or one no runtime
     # could count is not refused: only a measured overflow keeps the pair apart.
     return measured if measured["reason"] == "over_budget" else None
+
+
+UNKNOWN_SOURCE = '{kind: unknown}'
+
+
+def _block_entries(text: str, key: str) -> list[str] | None:
+    """Raw ``  - <entry>`` values of one top-level frontmatter block, or None when unreadable."""
+    match = FRONTMATTER_RE.match(text)
+    if match is None:
+        return []
+    sections = cards.frontmatter_sections(match.group(1))
+    if sections is None:
+        return None
+    for name, lines in sections:
+        if name != key:
+            continue
+        if lines[0].rstrip() in (f'{key}:', f'{key}: []') and all(line.startswith('  - ') for line in lines[1:]):
+            return [line[4:] for line in lines[1:]]
+        return None
+    return []
+
+
+def _label_owners(wiki_root: Path, keys: set[str]) -> set[Path]:
+    """Cards whose canonicalKey, title or an alias has one of ``keys`` (compile's identity lookup)."""
+    owners = set()
+    for page in wiki_root.rglob('*.md'):
+        if source_text.is_wiki_meta_page(page, wiki_root):
+            continue
+        try:
+            meta, ok = parse_frontmatter(page.read_text(encoding='utf-8'))
+        except (OSError, UnicodeError):
+            continue
+        if ok and any(card_types.identity_keys(value) & keys
+                      for value in card_types.identity_values_from_meta(meta)):
+            owners.add(page.resolve())
+    return owners
+
+
+def transfer_labels(root: Path, wiki_root: Path, keeper_rel: str, loser: Path, loser_text: str) -> str | None:
+    """Move the loser's identity labels and sources into the keeper; None on success.
+
+    Runs under the card locks the caller holds. The keeper is rewritten through
+    ``publish_card`` against the bytes read here, so an edit made meanwhile keeps
+    the keeper as it is and refuses the merge.
+    """
+    keeper = (wiki_root / keeper_rel).resolve()
+    try:
+        keeper.relative_to(wiki_root)
+        raw = keeper.read_bytes()
+        text = raw.decode('utf-8')
+    except (ValueError, OSError, UnicodeError):
+        return 'keeper_unreadable'
+    # A page without frontmatter has no labels or sources; one whose frontmatter
+    # does not parse cannot be read safely and refuses the merge.
+    meta_a, ok_a = parse_frontmatter(text) if FRONTMATTER_RE.match(text) else ({}, True)
+    meta_b, ok_b = parse_frontmatter(loser_text) if FRONTMATTER_RE.match(loser_text) else ({}, True)
+    if not ok_a:
+        return 'keeper_frontmatter_invalid'
+    if not ok_b:
+        return 'loser_frontmatter_invalid'
+    known = set()
+    for value in card_types.identity_values_from_meta(meta_a):
+        known.add(card_types.normalize_identity(value))
+    moved = []
+    for value in card_types.identity_values_from_meta(meta_b):
+        norm = card_types.normalize_identity(value)
+        if norm and norm not in known:
+            known.add(norm)
+            moved.append(value)
+    moved_keys = set()
+    for value in moved:
+        moved_keys |= card_types.identity_keys(value)
+    if moved_keys and _label_owners(wiki_root, moved_keys) - {keeper, loser.resolve()}:
+        return 'alias_conflict'
+    blocks = {}
+    if moved:
+        aliases = meta_a.get('aliases')
+        current = [a.strip() for a in aliases if isinstance(a, str) and a.strip()] if isinstance(aliases, list) else []
+        blocks['aliases'] = [cards.dump(alias) for alias in current + moved]
+    sources_a, sources_b = _block_entries(text, 'sources'), _block_entries(loser_text, 'sources')
+    if sources_a is None or sources_b is None:
+        return 'sources_unreadable'
+    added = [entry for entry in sources_b if entry != UNKNOWN_SOURCE and entry not in sources_a]
+    if added:
+        kept = [entry for entry in sources_a if entry != UNKNOWN_SOURCE]
+        blocks['sources'] = kept + added
+    if not blocks:
+        return None
+    if not FRONTMATTER_RE.match(text):
+        return 'keeper_frontmatter_missing'
+    rewritten = cards.render_frontmatter_fields(text, {}, blocks)
+    if rewritten is None or not parse_frontmatter(rewritten)[1]:
+        return 'label_transfer_failed'
+    from memvane.wiki.pipeline import api as pipeline
+    try:
+        outcome = pipeline.publish_card(root, wiki_root, keeper.relative_to(wiki_root), rewritten,
+                                        expected_target_sha=hashlib.sha256(raw).hexdigest(),
+                                        lock_context=nullcontext)
+    except (OSError, ValueError, sqlite3.Error):
+        # 1번 기준: 이름표를 옮기지 못하면 loser를 지우지 않는다(원장 busy 포함).
+        return 'label_transfer_failed'
+    return None if outcome.state == 'published' else 'label_transfer_failed'
 
 
 def pair_missing(wiki_root: Path, entry: dict) -> bool:
@@ -228,20 +316,22 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
                     "size": refused["size"], "budget": refused["budget"],
                     "method": refused["method"]}
         content = target.read_text(encoding="utf-8")
+        refusal = transfer_labels(root, wiki_root, paired_with, target, content)
+        if refusal is not None:
+            # 1번 기준: 이름표가 옮겨지지 않으면 지운 카드의 원문이 새 카드를 다시 만든다.
+            return {"action": "rejected", "reason": refusal, "kept": delete_rel}
         if laya_bound is not None:
             record_recovery(compile_dir, delete_rel, paired_with, content)
-        deleted_path = qmd_config.ledger(root, ct.DEDUP_DELETED)
-        if deleted_path is not None:
-            cp.append_jsonl(deleted_path, {
-                "deletedPath": delete_rel,
-                "content": content,
-                "pairedWith": paired_with,
-                "score": entry.get("score"),
-                "resolvedAt": now_iso(),
-            })
-            # write-only audit log storing full deleted-card bodies (KB each) --
-            # cap it so it can't grow unbounded.
-            cp.trim_jsonl(deleted_path)
+        # Log row only (working-rules 3): no decision reads it.
+        from memvane.wiki.pipeline import api as pipeline
+        pipeline.audit_log(root, 'dedup_deleted').append({
+            "deletedPath": delete_rel,
+            "targetPath": delete_rel,
+            "content": content,
+            "pairedWith": paired_with,
+            "score": entry.get("score"),
+            "resolvedAt": now_iso(),
+        })
         target.unlink()
         meta, _ = parse_frontmatter(content)
         title = str(meta.get("title") or Path(delete_rel).stem)
@@ -275,20 +365,10 @@ def main() -> int:
     if wiki_root is None or compile_dir is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_managed_path"}, ensure_ascii=False))
         return 1
-    queue_path = qmd_config.ledger(root, ct.DEDUP_NEEDED)
-    if queue_path is None:
-        print(json.dumps({"action": "rejected", "reason": "unsafe_compile_path"}, ensure_ascii=False))
-        return 1
-
+    from memvane.wiki.pipeline import api as pipeline
     if args.recover_queue:
-        # claim_queue reclaims dead-owner *.claimed.* files under the queue
-        # lock. Give the currently claimed rows back unchanged before the
-        # agent inspects the queue. No card or index is touched here.
-        claimed = claim_queue(queue_path)
-        if claimed is not None:
-            rows = load_entries(claimed)
-            requeue_lines(queue_path, [raw for raw, _ in rows])
-            claimed.unlink(missing_ok=True)
+        # Queued pairs are ledger rows that stay queued until a resolution
+        # applies; there is nothing claimed to give back.
         print(json.dumps({'action': 'recovered'}, ensure_ascii=False))
         return 0
 
@@ -296,8 +376,7 @@ def main() -> int:
         print(json.dumps({"action": "rejected", "reason": "missing_delete_arg"}, ensure_ascii=False))
         return 1
 
-    # Resolve the journal-bound route before claiming or mutating a pair. A
-    # blocked Laya route must never fall through to the legacy QMD queue.
+    # Resolve the journal-bound route before reading or mutating a pair.
     laya_bound = wiki_selected_laya.selected(root)
     if laya_bound is not None:
         selected_wiki = next(item['sourceRoot'] for item in laya_bound[0]['collections']
@@ -305,46 +384,22 @@ def main() -> int:
         if selected_wiki != str(wiki_root.resolve()):
             raise ValueError('selected_dedup_wiki_root_changed')
 
-    claimed = claim_queue(queue_path)
-    if claimed is None:
+    rows = pipeline.dedup_queue(root)
+    if not rows:
         print(json.dumps({"action": "rejected", "reason": "queue_empty"}, ensure_ascii=False))
         return 1
-
-    rows = load_entries(claimed)
     if not (0 <= args.index < len(rows)):
-        requeue_lines(queue_path, [raw for raw, _ in rows])
-        claimed.unlink(missing_ok=True)
         print(json.dumps({"action": "rejected", "reason": "index_out_of_range"}, ensure_ascii=False))
         return 1
+    row = rows[args.index]
+    entry = {**row['payload'], 'pageA': row['pageA'], 'pageB': row['pageB'], 'score': row['score']}
 
-    raw, entry = rows[args.index]
-
-    if entry is None:
-        remaining_raw = [r for i, (r, _) in enumerate(rows) if i != args.index]
-        requeue_lines(queue_path, remaining_raw)
-        claimed.unlink(missing_ok=True)
-        print(json.dumps({"action": "rejected", "reason": "malformed_entry"}, ensure_ascii=False))
-        return 1
-
-    # Ordering invariant: resolve_entry() must complete BEFORE this entry is
-    # excluded from the requeue, so a crash never loses the entry.
-    try:
-        result = resolve_entry(root, wiki_root, compile_dir, entry, args.action, args.delete,
-                               laya_bound=laya_bound)
-    except Exception:
-        requeue_lines(queue_path, [r for r, _ in rows])
-        claimed.unlink(missing_ok=True)
-        raise
-
-    # A "rejected" outcome means the resolution did NOT apply (e.g. --delete
-    # failed re-validation) -- the entry must stay in the queue for a retry,
-    # unlike "deleted"/"skipped" which did apply and are done with.
-    if result.get("action") == "rejected":
-        requeue_lines(queue_path, [r for r, _ in rows])
-    else:
-        remaining_raw = [r for i, (r, _) in enumerate(rows) if i != args.index]
-        requeue_lines(queue_path, remaining_raw)
-    claimed.unlink(missing_ok=True)
+    # The row stays queued until resolve_entry() applies, so a crash never loses it.
+    result = resolve_entry(root, wiki_root, compile_dir, entry, args.action, args.delete,
+                           laya_bound=laya_bound)
+    # "rejected" did not apply (e.g. --delete failed re-validation) and stays queued.
+    if result.get("action") != "rejected":
+        pipeline.finish_dedup_pair(root, row['pairKey'])
 
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("action") != "rejected" else 1

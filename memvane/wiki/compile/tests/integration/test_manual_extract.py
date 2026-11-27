@@ -11,6 +11,7 @@ from memvane.wiki.compile import wiki_extract as extract
 from tests.support.case import FixtureCase
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
+from memvane.wiki.pipeline import api as pipeline
 
 
 class ManualExtract(FixtureCase):
@@ -50,18 +51,17 @@ class ManualExtract(FixtureCase):
         text = page.read_text()
         for name in ('SCHEMA.md', 'index.md', 'log.md'):
             self.assertFalse((self.project.wiki / name).exists())
-        manifest = self.project.root / '.memvane/compile/generated-manifest.jsonl'
-        row = json.loads(manifest.read_text().splitlines()[-1])
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.project.root, readonly=True) as store:
+            row = store.all_generations()[-1]
         self.assertEqual((row['action'], row['targetPath']), ('created', '.memvane/wiki/concepts/api-port.md'))
         self.assertIn('API alias', text)
         self.assertIn(hashlib.sha256(source.read_bytes()).hexdigest(), text)
         self.assertNotIn('decoy.md', text)
-        queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
-        self.assertFalse(queue.exists() and queue.read_bytes())
-        active, = (queue.parent / '.handoff/v1/hold').glob('*/work')
-        state = json.loads(active.read_bytes())
-        job = json.loads((active.parent / 'raw').read_bytes())
-        self.assertEqual((state['phase'], state['binding']['job']), ('held', job))
+        from tests.support.wiki_handoff import verify_rows
+        row, = verify_rows(self.project.root)
+        job = row['payload']
+        self.assertEqual((job['kind'], row['image']), ('review', None))
         self.assertEqual([x['path'] for x in job['authoritativeSources']], ['docs/api.md'])
         self.assertEqual(job['sourceRevisions'][0]['sha256'], hashlib.sha256(source.read_bytes()).hexdigest())
         bad = {'durable': {'title': 'Transcript', 'summary': 'User: private\nAssistant: reply',
@@ -72,7 +72,7 @@ class ManualExtract(FixtureCase):
         self.assertEqual(rejected.returncode, 0, rejected.stderr)
         self.assertEqual(json.loads(rejected.stdout)['action'], 'rejected')
         self.assertFalse((self.project.wiki / 'concepts/transcript.md').exists())
-        audit = (self.project.root / '.memvane/compile/candidates.jsonl').read_text()
+        audit = json.dumps(pipeline.log_rows(self.project.root, 'candidate'), ensure_ascii=False)
         self.assertNotIn('User: private', audit)
         self.assertIn('Transcript alias', audit)
         noop = subprocess.run([sys.executable, '-B', str(root / 'entry/run.py'), 'wiki-extract',

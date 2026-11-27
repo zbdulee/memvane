@@ -14,15 +14,17 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from memvane.wiki.workspace.handoff import api as queue_pass
-from memvane.kernel.paths import safe_managed_dir, read_jsonl
-from memvane.wiki.workspace.api import write_text_atomic, trim_jsonl, compact_manifest, find_wiki_collection
+from memvane.kernel.paths import safe_managed_dir
+from memvane.wiki.workspace.api import write_text_atomic, find_wiki_collection
 from memvane.wiki.workspace import api as workspace_files
-from memvane.wiki.workspace import api as cp, types as ct
-from memvane.wiki.workspace.types import MACHINE_DELETE_ACTION
+from memvane.wiki.workspace import api as cp
 from memvane.settings import api as qmd_config, types as settings_types
 from memvane.settings import api as source_text
+from memvane.wiki.card.types import (  # noqa: F401 - compile module surface
+    identity_keys, identity_values_from_meta, normalize_identity, slug_identity,
+)
 from memvane.wiki.dedup import api as wiki_dedup_judge
+from memvane.wiki.pipeline import api as pipeline
 from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.card.api import frontmatter_sections as _frontmatter_sections
 from memvane.wiki.card.api import parse_frontmatter, auto_writable_text
@@ -143,22 +145,6 @@ def existing_managed_dir(root: Path, rel: str) -> Path | None:
 
 
 
-def normalize_identity(value: object) -> str:
-    if not isinstance(value, str):
-        return ""
-    return re.sub(r"\s+", " ", value.strip().lower())
-
-
-def slug_identity(value: object) -> str:
-    if not isinstance(value, str):
-        return ""
-    return re.sub(r"[^A-Za-z0-9가-힣]+", "-", value.lower()).strip("-")
-
-
-def identity_keys(value: object) -> set[str]:
-    return {key for key in (normalize_identity(value), slug_identity(value)) if key}
-
-
 def clean_aliases(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -198,20 +184,6 @@ def clean_canonical_key(value: object) -> str:
 
 
 
-
-
-def identity_values_from_meta(meta: dict) -> list[str]:
-    values = []
-    for key in ("canonicalKey", "title"):
-        value = meta.get(key)
-        if isinstance(value, str) and value.strip():
-            values.append(value.strip())
-    aliases = meta.get("aliases")
-    if isinstance(aliases, list):
-        values.extend(alias.strip() for alias in aliases if isinstance(alias, str) and alias.strip())
-    elif isinstance(aliases, str) and aliases.strip():
-        values.append(aliases.strip())
-    return values
 
 
 def build_identity_index(wiki_root: Path) -> dict[str, set[Path]]:
@@ -418,29 +390,6 @@ def source_hash(candidate: dict) -> str:
     return hashlib.sha256(json.dumps(stable, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 
-def replacement_image(root, queue, target, base, old, candidate, summary, redactions):
-    """Choose a fresh, unreserved name; identical bytes alone cannot identify a writer."""
-    from memvane.wiki.verify.api import pending_name_reserved
-    marker = base
-    for slot in range(3):
-        if slot == 2:
-            marker = os.urandom(8).hex()
-        page = compose_generated_card(old, markdown_page(candidate, summary, 'generated', redactions, marker))
-        if page is None:
-            break
-        path = target.with_name('.' + target.name + '.pending-' + marker)
-        produced = page.encode('utf-8')
-        if not pending_name_reserved(queue, path.relative_to(root).as_posix(), fresh=slot == 2):
-            try:
-                path.lstat()
-            except FileNotFoundError:
-                return marker, path, page
-        # Includes the full rendered revision (mtime too), manual sections and
-        # this slot's marker. A preserved older image cannot block an A/B/A edit.
-        marker = hashlib.sha256(produced).hexdigest()[:16]
-    return None
-
-
 def lint_candidate(candidate: dict, target: Path | None, max_lines: int) -> dict:
     findings = []
     title = str(candidate.get("title") or "").strip()
@@ -461,7 +410,7 @@ def lint_candidate(candidate: dict, target: Path | None, max_lines: int) -> dict
 
 
 def public_history(record, **fields):
-    """Project only the displayed summary, then check the complete row as a 1.x compactor reads it."""
+    """Project only the displayed summary, then check the complete row survives one JSON line."""
     public = dict(record, **fields)
     public['summary'] = public['summary'].translate({0x85: '\n', 0x2028: '\n', 0x2029: '\n'})
     try:
@@ -473,30 +422,11 @@ def public_history(record, **fields):
     return None
 
 
-def append_jsonl(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
-
-
 def effort_audit(candidate: dict) -> dict:
     raw = candidate.get("_qmd") if isinstance(candidate.get("_qmd"), dict) else {}
     effort = raw.get("reasoningEffort") if isinstance(raw.get("reasoningEffort"), dict) else {}
     from memvane.wiki.engines import api as engines
     return {"reasoningEffort": engines.reasoning_effort_audit(effort)}
-
-
-def same_generated_identity(row: dict, record: dict) -> bool:
-    if row.get("targetPath") and row.get("targetPath") == record.get("targetPath"):
-        return True
-    if record.get("targetResolution") == "explicit":
-        return False
-    if row.get("sourceHash") and row.get("sourceHash") == record.get("sourceHash"):
-        return True
-    canonical_key = record.get("canonicalKey")
-    if canonical_key and row.get("canonicalKey") == canonical_key:
-        return True
-    return False
 
 
 def yaml_scalar(value) -> str:
@@ -735,12 +665,6 @@ def compose_generated_card(old_text: str, generated_page: str) -> str | None:
     return rewritten
 
 
-def write_pending_card(path: Path, text: str) -> bool:
-    """Durably stage private candidate bytes without replacing the live card."""
-    from memvane.wiki.verify.api import stage_candidate
-    return stage_candidate(path, text.encode('utf-8'))
-
-
 
 @workspace_files.guard_path
 @workspace_files.guard_path
@@ -898,7 +822,7 @@ def judge_new_page_duplicate(
 
 
 def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: Path,
-                   record: dict, candidate_path: Path, card_text: str,
+                   record: dict, candidate_log, card_text: str,
                    floor_text: str | None = None, final_reason: str | None = None) -> bool:
     """Whether to hold back a card whose selector body exceeds ``wiki_card_budget``.
 
@@ -953,7 +877,7 @@ def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: 
         return False
     record["action"] = "split-required"
     record["lint"] = {"verdict": "needs_split", "findings": [reason]}
-    append_jsonl(candidate_path, record)
+    candidate_log.append(record)
     emit_card_budget(root, "over_budget", bound=selected, path=rel, title=record["title"],
                      reason=reason, **fields, **failure)
     print(json.dumps({"action": "split-required", "reason": reason,
@@ -965,8 +889,8 @@ def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: 
 def _checked(outcome: str, findings=()) -> int:
     """``--check`` result: the outcome a real compile would reach, nothing written.
 
-    ``written`` (created or updated), ``candidate``, ``merge-needed``,
-    ``rejected``, ``suppressed`` or ``tombstoned``. The paid duplicate judge and
+    ``written`` (created or updated), ``candidate``, ``merge-needed``
+    or ``rejected``. The paid duplicate judge and
     selected-route pending-replacement checks do not run in a check.
     """
     print(json.dumps({"action": outcome, "findings": list(findings)}, ensure_ascii=False))
@@ -986,6 +910,7 @@ def is_auto_writable_page(path: Path) -> tuple[bool, list[str]]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", default=os.getcwd())
+    # Accepted for older callers; a missing card is always recreated.
     parser.add_argument("--regenerate", action="store_true")
     # The trusted final pass of the card body budget (wiki_card_budget): the
     # caller already made its one split attempt, so an over-budget card is
@@ -1012,25 +937,46 @@ def main() -> int:
         wiki_root = existing_managed_dir(root, wiki_rel)
         if wiki_root is None:
             return _checked("rejected", ["unsafe_managed_path"])
-        return _compile_locked(root, config, compile_cfg, wiki_root, candidate,
-                               args.regenerate, check=True)
+        return _compile_locked(root, config, compile_cfg, wiki_root, candidate, check=True)
     wiki_root = safe_managed_dir(root, wiki_rel)
     compile_dir = safe_managed_dir(root, settings_types.COMPILE_REL)
     if wiki_root is None or compile_dir is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_managed_path"}, ensure_ascii=False))
         return 1
 
+    if _migration_pending(root, wiki_root):
+        print(json.dumps({"action": "deferred", "reason": "pipeline_migration_pending"}, ensure_ascii=False))
+        return 0
     try:
         with cp.card_write_lock(root), workspace_files.mutation_lock(root):
             return _compile_locked(
-                root, config, compile_cfg, wiki_root, candidate, args.regenerate,
+                root, config, compile_cfg, wiki_root, candidate,
                 budget_final=args.budget_final)
     except OSError:
         print(json.dumps({"action": "rejected", "reason": "card_write_lock_unavailable"}, ensure_ascii=False))
         return 1
 
 
-def _verify_job(root, selected, candidate, record, pending_path=None, expected_target_hash=None):
+def _migration_pending(root: Path, wiki_root: Path) -> bool:
+    """Refuse writes until the compile worker has run the 1.x cutover, and wake it.
+
+    An unreadable ledger counts as pending: no card is written beside unmigrated state.
+    """
+    try:
+        if not pipeline.needs_v1_migration(root, wiki_root=wiki_root):
+            return False
+    except (OSError, ValueError, sqlite3.Error):
+        pass
+    try:
+        selected = workspace_files.selected(root)
+        if selected is not None:
+            workspace_files.request_compile(root, selected)
+    except Exception:
+        pass  # Best effort: a lost wake leaves the next SessionStart or edit to start the worker.
+    return True
+
+
+def _verify_job(root, selected, candidate, record, *, kind, expected_target_hash):
     # 실제 소스를 별도 필드로 넘긴다 — verifier가 `MAX_SOURCES` 상한과 무관하게
     # 반드시 읽어야 하는 근거다(모델이 준 `sources` 항목이 밀어낼 수 없다).
     authoritative = authoritative_sources(candidate)
@@ -1048,10 +994,9 @@ def _verify_job(root, selected, candidate, record, pending_path=None, expected_t
                                 'observedNs': first['observed_ns']}
     return {
         "ts": now_iso(),
+        "kind": kind,
         "targetPath": record["targetPath"],
-        **({'pendingPath': pending_path.relative_to(root).as_posix(),
-            'expectedTargetHash': expected_target_hash}
-           if pending_path is not None else {}),
+        "expectedTargetHash": expected_target_hash,
         "sources": record["sources"],
         "sourceRevisions": record["sourceRevisions"],
         **({"sourceFingerprints": fingerprints} if fingerprints is not None else {}),
@@ -1062,9 +1007,8 @@ def _verify_job(root, selected, candidate, record, pending_path=None, expected_t
     }
 
 
-@queue_pass.bounded
 def _compile_locked(root: Path, config: dict, compile_cfg: dict,
-                    wiki_root: Path, candidate: dict, regenerate: bool, *,
+                    wiki_root: Path, candidate: dict, *,
                     budget_final: str | None = None, check: bool = False) -> int:
     from memvane.wiki.workspace import api as wiki_selected_laya
     selected = wiki_selected_laya.selected(root)
@@ -1103,11 +1047,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
     summary, redactions = redact(str(candidate.get("summary") or "").strip())
     h = source_hash({**candidate, "summary": summary})
 
-    candidate_path = qmd_config.ledger(root, ct.CANDIDATES)
-    tombstone_path = qmd_config.ledger(root, ct.TOMBSTONES)
-    manifest_path = qmd_config.ledger(root, ct.MANIFEST)
-    merge_needed_path = qmd_config.ledger(root, ct.MERGE_NEEDED)
-    if candidate_path is None or tombstone_path is None or manifest_path is None or merge_needed_path is None:
+    # Log rows only (working-rules 3): a lost line costs a diagnostic, never a decision.
+    candidate_log = pipeline.audit_log(root, 'candidate')
+    merge_log = pipeline.audit_log(root, 'merge_needed')
+    if qmd_config.compile_dir(root) is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_compile_path"}, ensure_ascii=False))
         return 1
 
@@ -1132,15 +1075,9 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         "_qmd": effort_audit(candidate),
     }
 
-    missing = record if target is not None and not target.exists() else None
-    if yaml_scalars.unresolved_pending_refreshes_strict(root, before_ledger_write=True,
-                                                   missing_target=missing, append_for=missing, read_only=check) is None:
-        print(json.dumps({'action': 'deferred', 'reason': 'legacy_ledger_requires_reassessment'}))
+    if yaml_scalars.unresolved_pending_refreshes_strict(root) is None:
+        print(json.dumps({'action': 'deferred', 'reason': 'pending_refresh_unknown'}))
         return 1
-    if (not check and candidate_path.exists() and candidate_path.stat().st_size > ct.LOG_MAX_BYTES and
-            yaml_scalars.unresolved_pending_refreshes_strict(root, before_ledger_write=True,
-                                                           trimming_candidates=True) is not None):
-        trim_jsonl(candidate_path)
 
     if check and target_reason.startswith("ambiguous_"):
         return _checked("merge-needed", [target_reason])
@@ -1149,7 +1086,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
     if target_reason.startswith("ambiguous_"):
         record["action"] = "merge-needed"
         record["lint"] = {"verdict": "needs_review", "findings": [target_reason]}
-        append_jsonl(candidate_path, record)
+        candidate_log.append(record)
         print(json.dumps({"action": "merge-needed", "reason": target_reason, "targetMatches": record["targetMatches"]}, ensure_ascii=False))
         return 0
 
@@ -1158,48 +1095,13 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
             record["summary"] = "[REDACTED_TRANSCRIPT]"
             record["redactions"] = sorted(set(record.get("redactions", []) + ["transcript_like"]))
         record["action"] = "rejected"
-        append_jsonl(candidate_path, record)
+        candidate_log.append(record)
         print(json.dumps({"action": "rejected", "findings": lint["findings"]}, ensure_ascii=False))
         return 0
 
     if public_history(record) is None:
         print(json.dumps({'action': 'write-failed', 'reason': 'history_row_incompatible'}))
         return 1
-
-    tombstones = read_jsonl(tombstone_path)
-    if any(same_generated_identity(row, record) for row in tombstones) and not regenerate:
-        if check:
-            return _checked("suppressed")
-        record["action"] = "suppressed"
-        append_jsonl(candidate_path, record)
-        print(json.dumps({"action": "suppressed", "targetPath": record["targetPath"]}, ensure_ascii=False))
-        return 0
-
-    previous = [
-        row for row in read_jsonl(manifest_path)
-        if same_generated_identity(row, record)
-    ]
-    # Recover a proved prior retirement before any new generation. A forced
-    # creation can otherwise equal the predecessor row at the same timestamp.
-    if not target.exists() and (not previous or previous[-1].get("action") != MACHINE_DELETE_ACTION):
-        from memvane.wiki.verify.api import missing_retirement
-        retirement = missing_retirement(root, config, record['targetPath'], check=check)
-        if retirement == 'retry':
-            print(json.dumps({'action': 'deferred', 'reason': 'machine_deletion_unconfirmed'}))
-            return 1
-        if not regenerate and previous and retirement == 'manual':
-            if check:
-                return _checked("tombstoned")
-            tombstone = public_history(record, action='deleted', status='deleted',
-                                       previousStatus=previous[-1].get('status', 'generated'))
-            if tombstone is None:
-                print(json.dumps({'action': 'write-failed', 'reason': 'history_row_incompatible'}))
-                return 1
-            append_jsonl(tombstone_path, tombstone)
-            record["action"] = "tombstoned"
-            append_jsonl(candidate_path, record)
-            print(json.dumps({"action": "tombstoned", "targetPath": record["targetPath"]}, ensure_ascii=False))
-            return 0
 
     # Card body budget before the paid duplicate judge (wiki_card_budget): an
     # over-budget card is held back once for a split; the caller's trusted
@@ -1211,7 +1113,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         # caught after the real write.
         return _checked("written")
     if not target.exists() and budget_refused(
-            root, config, selected, wiki_root, target, record, candidate_path,
+            root, config, selected, wiki_root, target, record, candidate_log,
             markdown_page(candidate, summary, compile_cfg.get("defaultStatus", "generated"),
                           redactions, h), final_reason=final_reason):
         return 0
@@ -1254,9 +1156,9 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                 entry["producedBy"] = judge_info.get("producedBy", "")
                 entry["uniqueToCandidate"] = judge_info.get("uniqueToA", [])
                 entry["uniqueToMatched"] = judge_info.get("uniqueToB", [])
-            append_jsonl(merge_needed_path, entry)
+            merge_log.append(entry)
             record["action"] = "merge-needed"
-            append_jsonl(candidate_path, record)
+            candidate_log.append(record)
             print(json.dumps({
                 "action": "merge-needed",
                 "matchedPath": matched_path.relative_to(root).as_posix(),
@@ -1288,11 +1190,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                 "matchedScore": 0,
                 "reason": mismatch,
             }
-            if merge_needed_path is not None:
-                append_jsonl(merge_needed_path, entry)
+            merge_log.append(entry)
             record["action"] = "merge-needed"
             record["lint"] = {"verdict": "needs_review", "findings": [mismatch]}
-            append_jsonl(candidate_path, record)
+            candidate_log.append(record)
             print(json.dumps({
                 "action": "merge-needed",
                 "reason": mismatch,
@@ -1309,14 +1210,14 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         if not auto_writable:
             record["action"] = "merge-needed"
             record["lint"] = {"verdict": "needs_review", "findings": findings}
-            append_jsonl(candidate_path, record)
+            candidate_log.append(record)
             print(json.dumps({"action": "merge-needed", "targetPath": record["targetPath"], "findings": findings}, ensure_ascii=False))
             return 0
         page_block_match = AUTO_BLOCK_RE.search(page)
         if page_block_match is None:
             record["action"] = "merge-needed"
             record["lint"] = {"verdict": "needs_review", "findings": ["generated_section_missing"]}
-            append_jsonl(candidate_path, record)
+            candidate_log.append(record)
             print(json.dumps({"action": "merge-needed", "targetPath": record["targetPath"], "findings": ["generated_section_missing"]}, ensure_ascii=False))
             return 0
         # Every refreshed card re-enters verification regardless of a custom
@@ -1330,21 +1231,21 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
         # targets the budget like a new card (best effort).
         composed = compose_generated_card(old, page)
         floor = compose_generated_card(old, markdown_page(candidate, "", status, redactions, h))
-        if budget_refused(root, config, selected, wiki_root, target, record, candidate_path,
+        if budget_refused(root, config, selected, wiki_root, target, record, candidate_log,
                           composed if composed is not None else page, floor,
                           final_reason=final_reason):
             return 0
-    # The first card is exposed only after its review and manifest row are reserved.
-    # Existing cards stay visible until the native verifier promotes the replacement.
-    pending_path = None
-    expected_target_hash = None
+    # A first card is published as generated at once, after its review row is
+    # queued. An existing card stays visible until the verifier publishes the
+    # reviewed replacement carried by its replace row.
+    replacing = False
     verify_cfg = compile_cfg.get("verify") if isinstance(compile_cfg.get("verify"), dict) else {}
     wiki_selected_laya.recheck(selected)
-    verify_queue = qmd_config.ledger(root, ct.VERIFY_QUEUE)
     manifest = public_history(record, action=action, status=status)
     if manifest is None:
         print(json.dumps({'action': 'write-failed', 'reason': 'history_row_incompatible'}))
         return 1
+    from memvane.wiki.verify import api as verify_api
     if action == "updated":
         wiki_name = None if selected is None else next((item['name'] for item in selected[0]['collections']
                           if item['role'] == 'wiki' and
@@ -1353,60 +1254,49 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict,
             record['action'] = 'merge-needed'
             record['lint'] = {'verdict': 'needs_review',
                               'findings': ['selected_wiki_unresolved']}
-            append_jsonl(candidate_path, record)
+            candidate_log.append(record)
             return 0
-        if not verify_cfg.get("enabled", True) or verify_queue is None:
+        if not verify_cfg.get("enabled", True):
             record['action'] = 'merge-needed'
             record['lint'] = {'verdict': 'needs_review',
                               'findings': ['verified_replacement_requires_review']}
-            append_jsonl(candidate_path, record)
+            candidate_log.append(record)
             return 0
-        image = replacement_image(root, verify_queue, target, h, old, candidate, summary, redactions)
-        if image is None:
-            # A collision on the random final slot gets a fresh name on retry.
-            print(json.dumps({"action": "write-failed", "reason": "pending_replacement_conflict"}))
+        pending_page = compose_generated_card(old, markdown_page(candidate, summary, 'generated', redactions, h))
+        if pending_page is None:
+            print(json.dumps({"action": "write-failed", "reason": "replacement_render_failed"}))
             return 1
-        h, pending_path, pending_page = image
-        record["sourceHash"] = h
-        manifest["sourceHash"] = h
-        expected_target_hash = hashlib.sha256(original).hexdigest()
-        from memvane.wiki.verify.api import enqueue_replacement
-        job = _verify_job(root, selected, candidate, record, pending_path, expected_target_hash)
-        write_ok = enqueue_replacement(root, config, wiki_root, verify_queue,
-                                       job, selected, lambda: write_pending_card(pending_path, pending_page),
-                                       produced_bytes=pending_page.encode("utf-8"))
+        replacing = True
+        job = _verify_job(root, selected, candidate, record, kind='replace',
+                          expected_target_hash=hashlib.sha256(original).hexdigest())
+        write_ok = verify_api.enqueue_review(root, job, pending_page.encode("utf-8"), generation=manifest)
     else:
-        from memvane.wiki.verify.api import create_first_card
-        job = _verify_job(root, selected, candidate, record)
-        write_ok = create_first_card(root, wiki_root, verify_queue, job, page.encode("utf-8"), selected,
-                                     review=bool(verify_cfg.get("enabled", True) and status == "generated"),
-                                     manifest=manifest)
+        image = page.encode("utf-8")
+        job = _verify_job(root, selected, candidate, record, kind='review',
+                          expected_target_hash=hashlib.sha256(image).hexdigest())
+        write_ok = verify_api.publish_first_card(
+            root, wiki_root, job, image,
+            review=bool(verify_cfg.get("enabled", True) and status == "generated"), manifest=manifest)
     if not write_ok:
         record["action"] = "write-failed"
-        append_jsonl(candidate_path, record)
+        candidate_log.append(record)
         print(json.dumps({"action": "write-failed", "targetPath": record["targetPath"]}, ensure_ascii=False))
         return 1
 
     record["action"] = action
-    append_jsonl(candidate_path, record)
-    if pending_path is not None:
-        append_jsonl(manifest_path, manifest)
-    # manifest is read for delete-detection (previous lookup); compact by folding
-    # same-identity duplicates rather than size-trimming (which would drop a card's
-    # entry and break tombstoning). Threshold-gated + atomic inside.
-    compact_manifest(manifest_path)
+    candidate_log.append(record)
     # 활동 로그는 프로젝트 밖(설치 state root)에 남는다. 실패해도 카드 쓰기는 끝난 것이다.
-    if pending_path is None:
+    if not replacing:
         workspace_files.append_activity(root, action, target.relative_to(wiki_root).as_posix(),
                                  title, bound=selected, reason='compile')
 
     collection, collection_path = find_wiki_collection(config)
-    if pending_path is None and collection and collection_path and selected is not None:
+    if not replacing and collection and collection_path and selected is not None:
         wiki_selected_laya.request_sync(root, selected)
 
     # 기계 검수(auto-verify) enqueue: generated로 쓰인 카드만 대상. verify worker가
-    # 카드 주장 vs 원문을 대조해 verified 승격 또는 (onFail) 삭제한다.
-    verify_queued = pending_path is not None or (verify_cfg.get("enabled", True) and status == "generated")
+    # 카드 주장 vs 원문을 대조해 verified로 승격한다. 부정 판정은 카드를 지우지 않는다.
+    verify_queued = replacing or (verify_cfg.get("enabled", True) and status == "generated")
 
     result = {
         "action": action,

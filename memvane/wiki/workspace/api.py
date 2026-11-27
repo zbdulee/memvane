@@ -37,13 +37,9 @@ def validate_compile_run_lock(root, fd):
     return implementation(root, fd)
 
 
-def safe_queue_path(project_root, configured_path=None, *, native=False):
+def safe_queue_path(project_root, configured_path=None):
     from memvane.wiki.workspace.queue_paths import _safe_queue_path
-    path = _safe_queue_path(project_root, configured_path)
-    if native and path is not None:
-        from memvane.wiki.workspace.handoff.api import native_live
-        return native_live(path, create=True)
-    return path
+    return _safe_queue_path(project_root, configured_path)
 
 
 def queue_lock_path(path):
@@ -51,24 +47,14 @@ def queue_lock_path(path):
     return _queue_lock_path(path)
 
 
-def requeue_lines(path, raw_lines):
-    from memvane.wiki.workspace.queue_paths import requeue_lines as implementation
-    return implementation(path, raw_lines)
-
-
-def append_jsonl(path, payload):
-    from memvane.wiki.workspace.queue import append_jsonl as implementation
-    return implementation(path, payload)
-
-
 def read_queue(path):
     from memvane.wiki.workspace.queue import read_queue as implementation
     return implementation(path)
 
 
-def claim_queue(path, *, receipt_writer=None, before_claim=None, private=False):
+def claim_queue(path, *, receipt_writer=None):
     from memvane.wiki.workspace.queue import claim_queue as implementation
-    return implementation(path, receipt_writer=receipt_writer, before_claim=before_claim, private=private)
+    return implementation(path, receipt_writer=receipt_writer)
 
 
 def request_lifecycle(decision, trigger):
@@ -111,9 +97,9 @@ def schema3_checkout(bound):
     return implementation(bound)
 
 
-def queue_busy(queue, *, receipt_writer=None):
+def queue_busy(queue):
     from memvane.wiki.workspace.wiki_selected_laya import _queue_busy as implementation
-    return implementation(queue, receipt_writer=receipt_writer)
+    return implementation(queue)
 
 
 def deferred_result(exc):
@@ -139,13 +125,6 @@ def read_state(path):
 def write_state_atomic(path, snapshot):
     from memvane.wiki.workspace.scan_state import write_state_atomic as implementation
     return implementation(path, snapshot)
-
-
-def trim_jsonl(path, max_bytes=262144):
-    # max_bytes reaches the callee only when it differs from LOG_MAX_BYTES.
-    from memvane.wiki.workspace.atomic_io import trim_jsonl as implementation
-    given = (max_bytes,) if type(max_bytes) is not int or max_bytes != 262144 else ()
-    return implementation(path, *given)
 
 
 def mutation_lock(root, *, blocking=True):
@@ -174,13 +153,6 @@ def activity_tail(root, bound=object(), limit=8000):
     if type(limit) is not int or limit != 8000:
         given['limit'] = limit
     return implementation(root, **given)
-
-
-def compact_manifest(path, max_bytes=262144):
-    # max_bytes reaches the callee only when it differs from LOG_MAX_BYTES.
-    from memvane.wiki.workspace.manifest_ledger import compact_manifest as implementation
-    given = (max_bytes,) if type(max_bytes) is not int or max_bytes != 262144 else ()
-    return implementation(path, *given)
 
 
 def find_wiki_collection(config):

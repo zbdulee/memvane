@@ -23,8 +23,8 @@ class PosttoolEnqueue(FixtureCase):
         self.addCleanup(selected.stop)
         self.public_queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
         self.public_pending = self.root / workspace.rel(card_types.SOURCE_REFRESH_PENDING)
-        self.queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
-        self.pending = self.public_pending.parent / '.handoff' / 'v1' / 'refresh' / 'events.jsonl'
+        self.queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE))
+        self.pending = self.public_pending.with_name('edit-inbox.jsonl')
 
 
     def run_edit(self, path, **extra):
@@ -33,6 +33,8 @@ class PosttoolEnqueue(FixtureCase):
         return enqueue.enqueue_payload(payload)
 
     def rows(self, path):
+        if path.name == workspace_types.SOURCE_QUEUE:
+            return [job for _, job in workspace.read_queue(path)]
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def test_direct_append_skips_incompatible_sources_before_the_enqueue_limit(self):
@@ -45,7 +47,7 @@ class PosttoolEnqueue(FixtureCase):
         candidates = [(self.project.raw_name, job['source']['path'], job) for job in jobs]
         enqueue._append_unqueued(self.public_queue, candidates, 1)
         self.assertEqual([r['source']['path'] for r in self.rows(self.queue)], ['docs/source.md'])
-        self.assertEqual(self.rows(self.public_queue), [])
+        self.assertFalse(self.public_queue.exists())  # the ledger is the queue; no file is written
 
     def test_patch_and_edit_array_keep_each_original_path_until_admission(self):
         normal = self.project.write_note('docs/accepted.md', 'body\u2028only\n')
@@ -91,7 +93,7 @@ class PosttoolEnqueue(FixtureCase):
         self.source.write_text('source changed after compilation\n')
         outside = self.home / 'outside.jsonl'
         outside.write_text('untouched\n')
-        self.pending.parent.mkdir(parents=True)
+        self.pending.parent.mkdir(parents=True, exist_ok=True)
         self.pending.symlink_to(outside)
         self.assertEqual(self.run_edit(self.source), {'queued': 0, 'reason': 'no_sources'})
         self.assertEqual(self.rows(self.queue), [])
@@ -172,22 +174,31 @@ class PosttoolEnqueue(FixtureCase):
 
     def test_pending_only_multi_file_shares_single_lock_budget_and_reports_busy(self):
         import fcntl
-        import time
         extra_a = self.root / 'docs/a.md'
         extra_b = self.root / 'docs/b.md'
         extra_a.write_text('# a\n')
         extra_b.write_text('# b\n')
-        lock_path = self.public_pending.with_name(f'{self.public_pending.name}.lock')
+        lock_path = self.pending.with_name(f'{self.pending.name}.lock')
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             'hook_event_name': 'PostToolUse', 'cwd': str(self.root), 'engine': 'claude',
             'tool_name': 'apply_patch',
             'tool_input': {'patch': '*** Begin Patch\n*** Update File: docs/source.md\n*** Update File: docs/a.md\n*** Update File: docs/b.md\n*** End Patch'},
         }
-        with lock_path.open('a', encoding='utf-8') as lock:
+        timeouts = []
+        real_record = card.record_pending_refresh
+
+        def spy_record(*args, **kwargs):
+            timeouts.append(kwargs.get('lock_timeout'))
+            return real_record(*args, **kwargs)
+
+        with lock_path.open('a', encoding='utf-8') as lock, \
+             patch.object(card, 'record_pending_refresh', side_effect=spy_record):
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            started = time.monotonic()
             outcome = enqueue.enqueue_payload(payload, pending_only=True, selected_route=None)
-            elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 0.35)
+        self.assertEqual(len(timeouts), 3)
+        self.assertGreater(timeouts[0], 0.0)
+        self.assertLessEqual(timeouts[0], enqueue.HOOK_PENDING_LOCK_SECONDS)
+        self.assertLess(timeouts[1], timeouts[0])
+        self.assertLessEqual(timeouts[2], timeouts[1])
         self.assertEqual(outcome, {'queued': 0, 'failed': 3, 'failedReason': 'busy', 'reason': 'pending_busy'})

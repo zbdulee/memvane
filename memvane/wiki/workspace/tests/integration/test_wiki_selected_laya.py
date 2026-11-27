@@ -53,31 +53,27 @@ class SelectedWikiChecks(FixtureCase):
 
     def test_live_owner_claim_keeps_the_wake_pending(self):
         import os
+        from memvane.wiki.pipeline import api as pipeline
         queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
         queue.parent.mkdir(parents=True)
-        claim = queue.with_name(queue.name + '.claimed.%s.%s' % (os.getppid(), 'f' * 32))
-        claim.write_text('{"targetPath":"card.md"}\n', encoding='utf-8')
+        with pipeline.open_pipeline(self.project.root) as store:
+            store.append_jobs('verify', [{'targetPath': 'card.md'}])
+            store.claim_verify_batch(os.getppid(), 'live', budget=1)
         self.assertTrue(workspace.queue_busy(queue))
-        self.assertTrue(claim.exists())
         self.assertFalse(queue.exists())
 
-    def test_dead_owner_remains_pending_until_the_native_consumer_takes_its_original(self):
-        import os
-        from unittest.mock import patch
+    def test_a_dead_owners_row_stays_pending_until_the_next_verify_run_returns_it(self):
+        from memvane.wiki.pipeline import api as pipeline
         queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
         queue.parent.mkdir(parents=True)
-        pid = 4242421
-        claim = queue.with_name(queue.name + '.claimed.%s.%s' % (pid, 'f' * 32))
-        claim.write_text('{"targetPath":"card.md"}\n', encoding='utf-8')
-        with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(pid)}):
-            self.assertTrue(workspace.queue_busy(queue))
-            self.assertEqual(claim.read_bytes(), b'{"targetPath":"card.md"}\n')
-            self.assertFalse(queue.exists())
-            recovered = workspace.claim_queue(queue, private=True)
-        self.assertFalse(claim.exists())
-        self.assertNotEqual(recovered.parent, queue.parent)
-        rows = workspace.read_queue(recovered)
-        self.assertEqual(rows[0][1], {'targetPath': 'card.md', '_requeue_count': 1})
-        self.assertEqual(queue.read_bytes(), b'')
-        rows.finish(queue, recovered, [])
+        with pipeline.open_pipeline(self.project.root) as store:
+            store.append_jobs('verify', [{'targetPath': 'card.md'}])
+            store.claim_verify_batch(4242421, 'dead', budget=1)
+        self.assertTrue(workspace.queue_busy(queue))
+        with pipeline.open_pipeline(self.project.root) as store:
+            self.assertEqual(store.recover_dead_claims('verify', lambda pid: False)['requeued'], 1)
+            row = store.claim_verify_batch(1, 'next', budget=1)['claimed'][0]
+            self.assertEqual((row['payload'], row['attempts']), ({'targetPath': 'card.md'}, 2))
+            self.assertTrue(store.finish_verify_job(row['jobId'], 'next', 'done', 'verified'))
         self.assertFalse(workspace.queue_busy(queue))
+        self.assertFalse(queue.exists())

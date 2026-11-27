@@ -709,8 +709,9 @@ class FixtureOnboarding(FixtureCase):
                          lambda: workflow.plan_fresh_wiki_origin(self.project))
 
         changed = (('route.json', {**route, 'schema': 'memvane-route-v5'}, 'newer'),
-                   ('route.json', {**route, 'stateFormat': 2}, 'newer'),
-                   ('route.json', {**route, 'stateFormat': 2, 'storeFormat': 'v5'}, 'newer'),
+                   ('route.json', {**route, 'stateFormat': 3}, 'newer'),
+                   ('route.json', {**route, 'stateFormat': 3, 'storeFormat': 'v5'}, 'newer'),
+                   ('route.json', {**route, 'stateFormat': 1}, 'other'),
                    ('route.json', {**route, 'schema': 'laya-index-route-v1'}, 'other'),
                    ('selection.json', {**marker, 'schema': 'memvane-selection-v2'}, 'newer'))
         for name, record, kind in changed:

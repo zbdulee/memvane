@@ -46,7 +46,7 @@ class HostDiagnosticsTests(FixtureCase):
 
     def test_recall_trace_warnings_are_bounded_and_exception_is_preserved(self):
         self.consent(True)
-        proof = {'productRouteAllowed': True, 'stateFormat': 1, 'writerFloor': '1.0.0'}
+        proof = {'productRouteAllowed': True, 'stateFormat': 2, 'writerFloor': '1.0.0'}
         def serve(*args, **kwargs):
             trace = kwargs['trace']
             for _ in range(5):
@@ -70,7 +70,7 @@ class HostDiagnosticsTests(FixtureCase):
 
     def test_empty_recall_notes_do_not_produce_diagnostics(self):
         self.consent(True)
-        proof = {'productRouteAllowed': True, 'stateFormat': 1, 'writerFloor': '1.0.0'}
+        proof = {'productRouteAllowed': True, 'stateFormat': 2, 'writerFloor': '1.0.0'}
         def serve(*args, **kwargs):
             kwargs['trace'].note('no_candidates')
             kwargs['trace'].note('laya_selector_selected_zero')
@@ -102,7 +102,7 @@ class HostDiagnosticsTests(FixtureCase):
             return RecallAnswer(decision, rows=rows, selection_fallback='laya_selector_not_prepared',
                                 vector_fallback='selected_provider_preparing')
         prompt = 'private synthetic question'
-        proof = {'productRouteAllowed': True, 'stateFormat': 1, 'writerFloor': '1.0.0'}
+        proof = {'productRouteAllowed': True, 'stateFormat': 2, 'writerFloor': '1.0.0'}
         with patch('memvane.settings.api.diagnostic_enabled', return_value=False), \
              patch('memvane.journal.api.verify_selected_route', return_value=proof), \
              patch('memvane.recall.api.serve_endpoint_recall', side_effect=serve):
@@ -140,7 +140,7 @@ class HostDiagnosticsTests(FixtureCase):
         self.assertEqual(status, 'disabled')
 
     def test_successful_observer_actions_emit_one_event_each(self):
-        proof = {'productRouteAllowed': True, 'stateFormat': 1, 'writerFloor': '1.0.0'}
+        proof = {'productRouteAllowed': True, 'stateFormat': 2, 'writerFloor': '1.0.0'}
         payload = {'cwd': str(self.project), 'session_id': 'synthetic-session',
                    'tool_name': 'Edit', 'tool_input': {'file_path': 'note.md'}}
         with patch('memvane.journal.api.verify_selected_route', return_value=proof):

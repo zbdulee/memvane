@@ -23,7 +23,8 @@ class SelectedExecutionQueue(FixtureCase):
                       {'productRouteAllowed': True})
 
     def test_durable_worker_does_not_ack_pending_source(self):
-        self.source.write_text('{"source":"pending"}\n')
+        from tests.support.queue_files import pending_text, replace_queue
+        replace_queue(self.source, [{'source': 'pending'}])
         child = SimpleNamespace(returncode=0, stdout='{"processed":0,"remaining":1}', stderr='')
         with patch.object(execution, 'selected', return_value=self.bound), \
              patch.object(execution, 'recheck'), patch.object(workspace, 'claim_lifecycle', return_value=None), \
@@ -33,7 +34,7 @@ class SelectedExecutionQueue(FixtureCase):
         self.assertEqual(result['state'], 'pending')
         self.assertEqual(result['processed'], 0)
         self.assertIn('wiki-compile-worker', spawn.call_args.args[0])
-        self.assertIn('pending', self.source.read_text())
+        self.assertIn('pending', pending_text(self.source))
 
     def test_running_compile_worker_is_not_idle(self):
         held = workspace.try_compile_run_lock(self.root)
@@ -47,9 +48,11 @@ class SelectedExecutionQueue(FixtureCase):
             self.assertIs(execution._compile_idle(self.root, self.source, self.verify, self.bound), True)
 
     def test_orphan_claim_prevents_ack_until_native_consumer_finishes(self):
+        from tests.support.queue_files import replace_queue
+        from tests.support.wiki_handoff import claimed_jobs, hold_claimed
         pid = 4242421
-        claim = self.source.with_name(self.source.name + '.claimed.%s.%s' % (pid, 'f' * 32))
-        claim.write_text('{"source":"orphan"}\n')
+        replace_queue(self.source, [{'source': 'orphan'}])
+        hold_claimed(self.source, 1, pid)
         child = SimpleNamespace(returncode=0, stdout='{"processed":0,"remaining":1}', stderr='')
         with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(pid)}), \
              patch.object(execution, 'selected', return_value=self.bound), \
@@ -59,29 +62,31 @@ class SelectedExecutionQueue(FixtureCase):
             result = execution.run(self.root)
         self.assertEqual(result['state'], 'pending')
         spawn.assert_called_once()
-        self.assertEqual(claim.read_bytes(), b'{"source":"orphan"}\n')
+        self.assertEqual(claimed_jobs(self.source), [{'source': 'orphan'}])
         self.assertFalse(self.source.exists())
         with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(pid)}):
-            recovered = workspace.claim_queue(self.source, private=True)
-        self.assertFalse(claim.exists())
+            recovered = workspace.claim_queue(self.source)
         rows = workspace.read_queue(recovered)
-        self.assertEqual([job for _, job in rows], [{'source': 'orphan', '_requeue_count': 1}])
+        self.assertEqual([job for _, job in rows], [{'source': 'orphan'}])
         rows.finish(self.source, recovered, [])
         self.assertFalse(workspace.queue_busy(self.source))
 
     def test_live_verify_claim_prevents_idle(self):
-        claim = self.verify.with_name(self.verify.name + '.claimed.%s.%s' % (os.getppid(), 'f' * 32))
-        claim.write_text('{"targetPath":"card.md"}\n')
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.root) as store:
+            store.append_jobs('verify', [{'targetPath': 'card.md'}])
+            store.claim_verify_batch(os.getppid(), 'live', budget=1)
         with patch.object(card, 'unresolved_pending_refreshes_strict', return_value=[]):
             self.assertIs(execution._compile_idle(self.root, self.source, self.verify, self.bound), False)
-        self.assertTrue(claim.exists())
+        with pipeline.open_pipeline(self.root) as store:
+            self.assertEqual([row['state'] for row in store.open_verify_jobs()], ['claimed'])
 
     def test_claim_racing_idle_check_keeps_work_pending(self):
-        self.source.write_text('{"source":"pending"}\n')
-        claim = self.source.with_name(self.source.name + '.claimed.%s.%s' % (os.getpid(), 'f' * 32))
+        from tests.support.queue_files import replace_queue
+        replace_queue(self.source, [{'source': 'pending'}])
         def claim_while_checking(project):
-            os.replace(self.source, claim)
+            workspace.claim_queue(self.source)
             return []
         with patch.object(card, 'unresolved_pending_refreshes_strict', side_effect=claim_while_checking):
             self.assertIs(execution._compile_idle(self.root, self.source, self.verify, self.bound), False)
-        self.assertTrue(claim.exists())
+

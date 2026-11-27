@@ -24,13 +24,11 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from memvane.wiki.workspace.handoff import api as queue_pass
 from memvane.kernel.paths import now_iso
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.wiki.engines import api as engines_api
 from memvane.wiki.engines.api import (builtin_adapter_argv as _builtin_adapter_argv,
-    load_engine_cooldowns, cooling_engines,
     reasoning_effort_audit, resolve_extractor_argv, budget_of, decode_source_bounded)
 from memvane.settings import api as qmd_config, types as settings_types
 from memvane.kernel import cooldown as qmd_cooldown
@@ -39,7 +37,7 @@ from memvane.settings.api import select_collections
 from memvane.wiki.intake.api import append_source_jobs, coalesce_claimed_jobs as dedup_jobs
 from memvane.wiki.intake.api import source_record as _source_record
 from memvane.wiki.workspace.api import (queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path,
-                                        append_jsonl, read_queue, claim_queue,
+                                        read_queue, claim_queue,
                                         parse_ts as _parse_ts)
 from memvane.wiki.compile import backfill_work, wiki_compile as wc
 from memvane.wiki.verify import api as wiki_verify
@@ -86,35 +84,24 @@ import time
 
 
 
-def candidate_path(root: Path, compile_cfg: dict) -> Path:
-    # `cp.ledger`가 None을 내는 것은 파일 자체가 compile 디렉터리 밖을 가리키는
-    # symlink일 때뿐이다. 그때도 원장이 **한 줄도 남지 않는** 상태는 만들지 않는다
-    # (그것이 과금 루프의 입구였다) — 기본 위치로 떨어뜨려 흔적을 남긴다.
-    return qmd_config.ledger(root, ct.CANDIDATES) or cp.under(root, ct.CANDIDATES)
-
-
-def cooldown_path(root: Path) -> Path:
-    return cp.under(root, ct.COMPILE_COOLDOWN)
+def candidate_log(root: Path):
+    """Compile outcomes are log rows (working-rules 3): no decision reads them."""
+    from memvane.wiki.pipeline import api as pipeline
+    return pipeline.audit_log(root, 'candidate')
 
 
 def cooldown_active(root: Path) -> bool:
-    """판정은 `cooldown.expiry_active`가 SSOT다. `now < float(파일내용)`만 보면 오염된
-    만료값(`1e300`) 하나가 **영구 True**가 되어 이 프로젝트의 compile이 다시는 돌지
-    않는다 — `load_engine_cooldowns`가 4단계에 받은 상한 클램프와 같은 처방이다."""
-    path = cooldown_path(root)
-    try:
-        raw = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return False
-    return qmd_cooldown.expiry_active(raw, datetime.now(timezone.utc).timestamp())
+    """The compile-wide extractor pause (``compile`` cooldown row) is active.
+
+    ``kernel.cooldown.expiry_active`` judges it, so a corrupt expiry never stops
+    compile for good."""
+    from memvane.wiki.pipeline import api as pipeline
+    return pipeline.cooldown_active(root, 'compile')
 
 
-def set_cooldown(root: Path, seconds: int) -> None:
-    path = cooldown_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # 쓰기도 같은 상한으로 클램프한다 — 정상 경로가 절대 읽기 상한을 넘지 않게.
-    expiry = qmd_cooldown.expiry_value(datetime.now(timezone.utc).timestamp(), seconds)
-    path.write_text(f"{expiry}\n", encoding="utf-8")
+def set_cooldown(root: Path, seconds: int) -> bool:
+    from memvane.wiki.pipeline import api as pipeline
+    return pipeline.set_cooldown(root, 'compile', seconds)
 
 
 def gather_similar_pages(
@@ -214,10 +201,10 @@ def bounded_failure(action: str, job: dict, reason: str) -> dict:
 
 
 def verify_suppression_hash(root: Path, compile_cfg: dict, rel: str) -> str | None:
-    """Bounded-body hash recorded when this source last produced a card the
-    verifier could not adjudicate (deleted under verify.onInconclusive: delete).
+    """Bounded-body hash of a ``verify`` suppression for this source.
 
-    A match means re-extracting would almost certainly repeat that verdict, so the
+    The rows come from the 1.x ``verify-skipped.jsonl`` the cutover imports; the
+    current verifier keeps a negative verdict's card and records none. A match means re-extracting would almost certainly repeat that verdict, so the
     caller skips before spawning any host CLI — every retry bills the user's own
     account. Any failure returns None: a broken cost guard must fail OPEN and let
     the compile run rather than silently starve the wiki.
@@ -226,8 +213,8 @@ def verify_suppression_hash(root: Path, compile_cfg: dict, rel: str) -> str | No
     if not vcfg.get("enabled", True):
         return None
     try:
-        path = wiki_verify.verify_skipped_path(root, vcfg)
-        return wiki_verify.load_verify_suppressions(path).get(rel)
+        from memvane.wiki.pipeline import api as pipeline
+        return pipeline.suppressions(root, 'verify').get(rel)
     except Exception:
         return None
 
@@ -526,7 +513,6 @@ def compile_candidate(root: Path, candidate: dict, *, final_reason: str | None =
         input=json.dumps(candidate, ensure_ascii=False),
         text=True,
         capture_output=True,
-        **queue_pass.child_options(),
         shell=False,
     )
     if proc.returncode != 0:
@@ -705,7 +691,7 @@ def _reuse_source_revision(root, config, job, source_revision, selected_route, b
                 root, bound_pending, source_revision, [source_revision],
                 compiled_event_id=bound_pending["eventId"]):
             return True, True, []
-        append_jsonl(cpath, {
+        cpath.append({
             **bounded_failure("skipped", job, "already_compiled_revision"),
             "card": proof_card,
         })
@@ -713,7 +699,7 @@ def _reuse_source_revision(root, config, job, source_revision, selected_route, b
     pending_target, claimed = wiki_verify.pending_source_review(root, config, source_revision, reuse=reuse)
     if pending_target is not None:
         wiki_selected_laya.recheck(selected_route)
-        append_jsonl(cpath, bounded_failure('skipped', job, 'awaiting_pending_verification'))
+        cpath.append(bounded_failure('skipped', job, 'awaiting_pending_verification'))
         return True, False, []
     if claimed:
         # This source can produce a target the verifier holds. Keep the job until the claim returns.
@@ -727,7 +713,7 @@ def _bounded_candidates(candidates, max_cards, job, cpath):
             str(item.get("title") or "")[:120] for item in candidates[max_cards:]
             if isinstance(item, dict)
         ]
-        append_jsonl(cpath, {
+        cpath.append({
             **bounded_failure("skipped", job, "cards_per_source_cap"),
             "cardsReturned": len(candidates),
             "cardsCompiled": max_cards,
@@ -773,14 +759,14 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     job.pop('_backfillSkipped', None)
     from memvane.wiki.workspace import api as wiki_selected_laya
     selected_route = wiki_selected_laya.selected(root)
-    cpath = candidate_path(root, compile_cfg)
+    cpath = candidate_log(root)
     if selected_route is not None:
         if job.get('selectedRoute') != wiki_selected_laya.route_identity(selected_route):
-            append_jsonl(cpath, bounded_failure('skipped', job,
+            cpath.append(bounded_failure('skipped', job,
                                                'selected_route_identity_changed'))
             return False, True, []
     elif 'selectedRoute' in job:
-        append_jsonl(cpath, bounded_failure('skipped', job,
+        cpath.append(bounded_failure('skipped', job,
                                            'selected_route_unavailable'))
         return False, True, []
     frozen = _FROZEN_WORK.get()
@@ -788,25 +774,25 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     if job.get('initialBackfill') is not None and not continuing:
         from memvane.wiki.intake import api as laya_wiki_backfill
         if laya_wiki_backfill.settled_job(selected_route, job):
-            append_jsonl(cpath, bounded_failure('skipped', job, 'initial_backfill_already_settled'))
+            cpath.append(bounded_failure('skipped', job, 'initial_backfill_already_settled'))
             return True, False, []
     raw_source = job.get("source")
     source = raw_source if isinstance(raw_source, dict) else {}
     rel = source.get("path")
     if not isinstance(rel, str) or not rel:
-        append_jsonl(cpath, bounded_failure("extractor_failed", job, "missing_source_path"))
+        cpath.append(bounded_failure("extractor_failed", job, "missing_source_path"))
         return True, False, []
     src = (root / rel).resolve()
     try:
         src.relative_to(root)
     except ValueError:
-        append_jsonl(cpath, bounded_failure("extractor_failed", job, "unsafe_source_path"))
+        cpath.append(bounded_failure("extractor_failed", job, "unsafe_source_path"))
         return True, False, []
     if not source_text.is_source_text(src.name):
-        append_jsonl(cpath, bounded_failure("extractor_failed", job, "invalid_source_scope"))
+        cpath.append(bounded_failure("extractor_failed", job, "invalid_source_scope"))
         return True, False, []
     if is_hidden_source_path(rel):
-        append_jsonl(cpath, bounded_failure("extractor_failed", job, "invalid_source_scope"))
+        cpath.append(bounded_failure("extractor_failed", job, "invalid_source_scope"))
         return True, False, []
     if not card_sources_allowed({'path': rel}, report=True):
         return False, True, []
@@ -814,26 +800,26 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     if skip_paths is not None:
         from memvane.settings.api import excluded_source
         if excluded_source(rel, skip_paths):
-            append_jsonl(cpath, bounded_failure('skipped', job, 'source_folder_excluded'))
+            cpath.append(bounded_failure('skipped', job, 'source_folder_excluded'))
             return True, False, []
     selected = select_collections([str(src)], str(root), config) or {}
     collection = source.get("collection", "")
     if not collection or collection not in selected:
-        append_jsonl(cpath, bounded_failure("extractor_failed", job, "invalid_source_scope"))
+        cpath.append(bounded_failure("extractor_failed", job, "invalid_source_scope"))
         return True, False, []
     # enqueue와 **같은 판정**이어야 한다(config.COMPILE_SOURCE_ROLES) — 갈리면 큐에는
     # 들어가는데 worker가 매번 invalid_source_scope로 버리는 무한 왕복이 된다.
     # role `source`는 인덱싱되지 않을 뿐 compile 입력으로는 정상이다.
     roles = qmd_config.role_map(config)
     if qmd_config.collection_role(roles, collection) not in settings_types.COMPILE_SOURCE_ROLES:
-        append_jsonl(cpath, bounded_failure("extractor_failed", job, "invalid_source_scope"))
+        cpath.append(bounded_failure("extractor_failed", job, "invalid_source_scope"))
         return True, False, []
     if job.get('sourceDelete') is True:
         from memvane.wiki.lifecycle import api as wiki_source_retire
         revision = job.get('contentRevision')
         if (selected_route is None or not isinstance(revision, str)
                 or not re.fullmatch(r'[0-9a-f]{64}', revision)):
-            append_jsonl(cpath, bounded_failure('skipped', job, 'delete_proof_invalid'))
+            cpath.append(bounded_failure('skipped', job, 'delete_proof_invalid'))
             return True, False, []
         outcome = wiki_source_retire.retire_deleted_source(
             root, config, selected_route, collection, rel, revision)
@@ -875,9 +861,9 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
                 return False, True, []
             append_source_jobs(queue, records + [wait])
             wiki_selected_laya.request_compile(root, selected_route)
-            append_jsonl(cpath, bounded_failure('deferred', job, 'shared_refresh_queued'))
+            cpath.append(bounded_failure('deferred', job, 'shared_refresh_queued'))
             return True, False, []
-        append_jsonl(cpath, bounded_failure(
+        cpath.append(bounded_failure(
             'retired' if state == 'retired' else 'deferred', job, state))
         # held_branch: the source is only invisible on this branch/worktree.
         # The row is settled; the SessionStart lifecycle retires the card once
@@ -892,7 +878,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         except (OSError, RuntimeError, ValueError):
             # Unobservable checkout: no spec can bind this read. Keep the job
             # for a later pass instead of compiling without provenance.
-            append_jsonl(cpath, bounded_failure("deferred", job, "checkout_unavailable"))
+            cpath.append(bounded_failure("deferred", job, "checkout_unavailable"))
             return False, True, []
     # Bind the ledger's latest unresolved event immediately before the stable
     # source capture.  A queue token is only transport metadata and may be stale
@@ -903,7 +889,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     stable_source = wiki_freshness.snapshot_bytes(src)
     observed_ns = time.time_ns()
     if stable_source is None:
-        append_jsonl(cpath, bounded_failure("extractor_failed", job, "source_unreadable"))
+        cpath.append(bounded_failure("extractor_failed", job, "source_unreadable"))
         return True, False, []
     revision_snapshot, source_bytes = stable_source
     source_revision = {
@@ -920,10 +906,10 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
             fingerprint_spec = source_fingerprints(
                 root, checkout, checkout_capture, [source_revision], observed_ns)
         except CheckoutChanged:
-            append_jsonl(cpath, bounded_failure("deferred", job, "checkout_changed_during_read"))
+            cpath.append(bounded_failure("deferred", job, "checkout_changed_during_read"))
             return False, True, []
         except (OSError, RuntimeError, ValueError):
-            append_jsonl(cpath, bounded_failure("deferred", job, "checkout_unavailable"))
+            cpath.append(bounded_failure("deferred", job, "checkout_unavailable"))
             return False, True, []
     if (isinstance(previous_revision, str) and re.fullmatch(r'[a-f0-9]{64}', previous_revision)
             and previous_revision != source_revision['sha256']):
@@ -931,7 +917,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     job['_processedContentRevision'] = source_revision['sha256']
     if (job.get('initialBackfill') is not None
             and job.get('contentRevision') != source_revision['sha256']):
-        append_jsonl(cpath, bounded_failure('skipped', job, 'initial_backfill_source_changed'))
+        cpath.append(bounded_failure('skipped', job, 'initial_backfill_source_changed'))
         job['_backfillSkipped'] = True
         return True, False, []
     if frozen is not None and frozen.revision != source_revision['sha256']:
@@ -941,7 +927,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     max_chars = int(compile_cfg.get("maxSourceChars", 12000) or 12000)
     bounded = decode_source_bounded(source_bytes, max_chars)
     if bounded is None:
-        append_jsonl(cpath, bounded_failure("extractor_failed", job, "source_unreadable"))
+        cpath.append(bounded_failure("extractor_failed", job, "source_unreadable"))
         return True, False, []
     content, source_truncated = bounded
     # Cost guard, checked BEFORE any extractor spawn: this exact source content already
@@ -949,7 +935,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     # would reproduce the verdict and re-bill the user. Edit the source and the hash
     # changes, so the source is compiled again on its own.
     if not continuing and verify_suppression_hash(root, compile_cfg, rel) == wiki_verify.source_body_hash(content):
-        append_jsonl(cpath, bounded_failure("skipped", job, "verify_inconclusive_suppressed"))
+        cpath.append(bounded_failure("skipped", job, "verify_inconclusive_suppressed"))
         return True, False, []
     if selected_route is not None and not continuing:
         reuse = _reuse_source_revision(root, config, job, source_revision, selected_route,
@@ -977,7 +963,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
                 or any(not isinstance(item, str) or item not in engines for item in receipt['engines'])
                 or len(set(receipt['engines'])) != len(receipt['engines'])
                 or receipt['engines'] != sorted(receipt['engines'], key=engines.index)):
-            append_jsonl(cpath, bounded_failure('skipped', job, 'invalid_fallback_attempt_receipt'))
+            cpath.append(bounded_failure('skipped', job, 'invalid_fallback_attempt_receipt'))
             job['_backfillSkipped'] = True
             return True, False, []
         if receipt['revision'] == source_revision['sha256']:
@@ -986,10 +972,10 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
             job.pop('_fallbackAttempts', None)  # New bytes are a new extraction cycle.
     available = [(name, resolve_extractor_argv(compile_cfg, name)) for name in engines]
     if len(engines) == 1 and available[0][1] is None:
-        append_jsonl(cpath, bounded_failure("needs_extractor", job, "missing_extractor"))
+        cpath.append(bounded_failure("needs_extractor", job, "missing_extractor"))
         return (False, True, []) if selected_route is not None else (True, False, [])
     if cooldown_active(root):
-        append_jsonl(cpath, bounded_failure("needs_extractor", job, "cooldown_active"))
+        cpath.append(bounded_failure("needs_extractor", job, "cooldown_active"))
         return False, True, []
 
     wiki_root = (root / config.get("wikiPath", settings_types.WIKI_REL)).resolve()
@@ -1042,7 +1028,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
                         'revision': source_revision['sha256'], 'selectedRoute': job.get('selectedRoute'),
                         'engines': attempts,
                     }
-                append_jsonl(cpath, bounded_failure('deferred', job, 'extractor_budget_deferred'))
+                cpath.append(bounded_failure('deferred', job, 'extractor_budget_deferred'))
                 return False, True, []
             budget['remaining'] -= 1
         # Use the actual extraction as the trial. No extra paid health prompt,
@@ -1077,35 +1063,37 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
             job.pop('_fallbackAttempts', None)
             break
     if len(engines) > 1:
-        append_jsonl(cpath, {**bounded_failure('extractor_attempts', job,
+        cpath.append({**bounded_failure('extractor_attempts', job,
                      'selected' if reason is None else 'unknown_host_attempts'),
                      'attemptedEngines': attempts, 'selectedEngine': engine if reason is None else None})
     if reason == "resource_deferred":
         return False, True, []  # retain job; no failure cooldown or provider fallback
     freshness, _ = wiki_freshness.compare_revision(src, source_revision)
     if freshness != wiki_markers.FRESH:
-        append_jsonl(cpath, bounded_failure(
+        cpath.append(bounded_failure(
             "extractor_failed", job, "source_changed_during_extract"))
         return False, True, []
     if len(engines) > 1 and reason is not None:
-        append_jsonl(cpath, bounded_failure('skipped', job, 'unknown_host_exhausted'))
+        cpath.append(bounded_failure('skipped', job, 'unknown_host_exhausted'))
         job['_backfillSkipped'] = True
         return True, False, []
     if returncode == 127:
-        append_jsonl(cpath, bounded_failure("needs_extractor", job, "extractor_unavailable"))
+        cpath.append(bounded_failure("needs_extractor", job, "extractor_unavailable"))
         return False, True, []  # CLI absent: preserve for when it's installed
     if reason:
-        append_jsonl(cpath, bounded_failure("extractor_failed", job, reason))
+        cpath.append(bounded_failure("extractor_failed", job, reason))
         if reason in ("invalid_extractor_json", "missing_candidates"):
             job['_backfillSkipped'] = True
             return True, False, []  # permanent: drop
         cooldown_seconds = int(extractor.get("cooldownSeconds", 600) or 600)
-        set_cooldown(root, cooldown_seconds)
+        if not set_cooldown(root, cooldown_seconds):
+            # Working-rules 1: without the pause the next run re-bills the failing extractor.
+            cpath.append({**bounded_failure("extractor_failed", job, reason), "cooldownWriteFailed": True})
         return False, True, []  # transient: cooldown + preserve
 
     candidates = extracted.get("candidates") if isinstance(extracted, dict) else None
     if not isinstance(candidates, list):
-        append_jsonl(cpath, bounded_failure("extractor_failed", job, "missing_candidates"))
+        cpath.append(bounded_failure("extractor_failed", job, "missing_candidates"))
         job['_backfillSkipped'] = True
         return True, False, []  # permanent: drop
     # **모델 출력 순회에 상한을 둔다.** `candidates` 길이는 extractor(모델)가 정하고 예전에는
@@ -1277,7 +1265,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
                 rel=rel, max_cards=max(0, max_cards - used)):
             return False, True, verify_targets
     if failed_compile:
-        append_jsonl(cpath, bounded_failure("compile_failed", job, "writer_rejected"))
+        cpath.append(bounded_failure("compile_failed", job, "writer_rejected"))
         # Kept for retry with a marker: a card from this run may get verified
         # before the retry, and the revision guard must not read that as done.
         job["partialCompile"] = True
@@ -1311,7 +1299,7 @@ def _split_clean(outcomes: list[str], expected: str) -> bool:
                                   for item in outcomes)
 
 
-def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict],
+def _split_over_budget(root: Path, job: dict, cpath, splittable: list[dict],
                        compile_round, extracted_qmd, *, payload: dict, argv: list[str],
                        timeout: int, src: Path, source_revision: dict, selected_route,
                        rel: str, max_cards: int) -> bool:
@@ -1348,7 +1336,7 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
         wiki_selected_laya.recheck(selected_route)
         freshness, _ = wiki_freshness.compare_revision(src, source_revision)
         if freshness != wiki_markers.FRESH:
-            append_jsonl(cpath, bounded_failure(
+            cpath.append(bounded_failure(
                 'extractor_failed', job, 'source_changed_during_extract'))
             return False
         candidates = extracted.get('candidates') if isinstance(extracted, dict) else None
@@ -1380,7 +1368,7 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
         written_original, _, _ = compile_round([card['_candidate'] for card in splittable],
                                                extracted_qmd, final_reason=split_reason)
         written += written_original
-        append_jsonl(cpath, {**bounded_failure('skipped', job, split_reason),
+        cpath.append({**bounded_failure('skipped', job, split_reason),
                              'splitParts': parts,
                              'writtenOriginals': [str(card.get('title') or '')[:120]
                                                   for card in splittable][:20]})
@@ -1582,8 +1570,9 @@ def _busy_report(root: Path, queue: Path) -> dict:
     durable `laya-compile` wake already retries from its own queue check.
     """
     try:
-        waiting = queue.exists() and queue.stat().st_size > 0
-    except OSError:
+        from memvane.wiki.workspace import api as workspace
+        waiting = bool(workspace.read_queue(queue))
+    except Exception:
         waiting = True
     if not waiting:
         waiting = bool(_unsettled_refreshes(root))
@@ -1660,9 +1649,57 @@ def _main():
         if selected_route is not None:
             from memvane.diagnostics import api as event_log
             event_log.bind(decision=selected_route[0], host='worker')
+        migrated = migrate_v1_state(root, config)
+        if migrated is not True:
+            # 1.x state stays until a pass can import it; nothing is claimed before. The
+            # selected wake reads the backlog and keeps the project pending while 1.x files remain.
+            if args.json:
+                print(json.dumps({'processed': 0, 'remaining': 0, 'migration': migrated}, ensure_ascii=False))
+            return 0
         return _main_locked(args, root, config, compile_cfg, queue, selected_route)
     finally:
         os.close(run_lock)
+
+
+def migrate_v1_state(root: Path, config: dict):
+    """Run the one-time 1.x cutover under the run lock; True once it is complete, else the failure name.
+
+    The first pass of every project writes the marker, with or without 1.x files.
+
+    The card and mutation locks keep every 1.1.4 writer out while the 1.x files and
+    hidden wiki files are removed. A failure leaves the marker unset, so the next
+    wake retries and no job is claimed from a half-migrated project.
+    """
+    from memvane.wiki.pipeline import api as pipeline
+    wiki_root = (root / config.get('wikiPath', settings_types.WIKI_REL)).resolve()
+    try:
+        if pipeline.v1_migration_marked(root) and not pipeline.needs_v1_migration(root, wiki_root=wiki_root):
+            return True
+        with cp.card_write_lock(root), cp.mutation_lock(root):
+            counts = pipeline.migrate_from_v1(root, wiki_root=wiki_root)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        return 'failed:' + type(exc).__name__
+    # Log row only (working-rules 3): the marker, not this line, records the cutover.
+    pipeline.audit_log(root, 'migration').append(counts)
+    return True
+
+
+def _retention_pass(root: Path, config: dict, selected_route) -> dict:
+    """Bounded ledger retention under the run lock (pipeline/retention.py).
+
+    The report is deliberately not checked (working-rules 3): every step deletes in its own
+    transaction, so a failure leaves the rows for the next pass and costs nothing else.
+    """
+    from memvane.wiki.pipeline import api as pipeline
+    wiki_root = (root / config.get('wikiPath', settings_types.WIKI_REL)).resolve()
+    collections = selected_route[0].get('collections', []) if selected_route is not None else []
+    source_roots = [Path(item['sourceRoot']) for item in collections
+                    if isinstance(item, dict) and item.get('role') != 'wiki'
+                    and isinstance(item.get('sourceRoot'), str)]
+    try:
+        return pipeline.maintain(root, wiki_root=wiki_root, source_roots=source_roots)
+    except (OSError, ValueError, sqlite3.Error):
+        return {}
 
 
 def _claim_frozen_work(queue, claimed, rows, frozen_items):
@@ -1676,33 +1713,28 @@ def _claim_frozen_work(queue, claimed, rows, frozen_items):
         work = backfill_work.FrozenWork.open(queue, text, job, item, resume_only=resume_only)
         if work is not None:
             jobs[text] = work
-    if jobs:
-        # The snapshot covers all occurrences before any writer changes a card.
-        claimed = rows.privatize(queue, claimed)
     return claimed, jobs
 
 
-@queue_pass.bounded
 def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                  selected_route) -> int:
     recover_pending_refreshes(root, config, queue)
+    _retention_pass(root, config, selected_route)
 
     from memvane.wiki.intake import api as laya_wiki_backfill
-    claimed = wiki_verify.claim_source_queue(queue, selected_route, laya_wiki_backfill.write_discard_receipt, claim=claim_queue)
-    # Reaping holds the source-queue lock. ACK outside it to preserve discovery
-    # -> enqueue lock order, including the empty-queue/crash-recovery path.
+    try:
+        claimed = claim_queue(queue, receipt_writer=laya_wiki_backfill.write_discard_receipt)
+    except BlockingIOError:
+        claimed = None
     rows = read_queue(claimed) if claimed is not None else None
     frozen_items = laya_wiki_backfill.reconcile_discards(selected_route, claimed_rows=rows) or {}
     if claimed is None:
         if selected_route is not None:
             _run_verify_pass(root, config, compile_cfg)
         if args.json:
-            print(json.dumps({"processed": 0, "remaining": int(wiki_verify.queue_batch_pending(queue))}, ensure_ascii=False))
+            print(json.dumps({"processed": 0, "remaining": 0}, ensure_ascii=False))
         return 0
     if not rows:
-        if not hasattr(rows, 'finish'):
-            queue_pass.defer_unread(queue, claimed)
-            raise OSError('source claim unreadable')
         rows.finish(queue, claimed, [])
         _run_verify_pass(root, config, compile_cfg)
         if args.json:
@@ -1717,10 +1749,9 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
     claimed, frozen_jobs = _claim_frozen_work(queue, claimed, rows, frozen_items)
     try:
         rows, preserved, stale = _partition_selected_jobs(rows, selected_route)
-        # Audit before dropping; append success has no power-loss fsync guarantee.
+        # Log rows only (working-rules 3): a lost line never keeps or drops a job.
         for _, job in stale:
-            append_jsonl(candidate_path(root, compile_cfg),
-                         bounded_failure('skipped', job, 'selected_route_identity_changed'))
+            candidate_log(root).append(bounded_failure('skipped', job, 'selected_route_identity_changed'))
     except Exception:
         # No job has run yet. Return the exact original lines on proof/audit
         # failure so repeated owner_busy does not look like worker crashes.
@@ -1779,8 +1810,7 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                     try:
                         checkout = wiki_selected_laya.schema3_checkout(selected_route)
                     except (OSError, RuntimeError, ValueError, sqlite3.Error):
-                        append_jsonl(candidate_path(root, compile_cfg),
-                                     bounded_failure('deferred', job, 'checkout_unavailable'))
+                        candidate_log(root).append(bounded_failure('deferred', job, 'checkout_unavailable'))
                         processed, preserve, queued = False, True, []
                     else:
                         processed, preserve, queued = process_job_settled(

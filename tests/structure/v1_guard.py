@@ -240,7 +240,6 @@ _TEST_G1_EXEMPT_DIRS = ('tests/structure/',)
 # Each entry: (test file, dotted name it may name) -> reason. An entry whose file
 # exists but never names it is itself a finding (unused_exception).
 _TEST_G1_EXCEPTIONS = {
-    ('tests/support/wiki_handoff.py', 'memvane.wiki.verify.tests.support'): 'compiler tests drive verifier-owned claims and recovery copies',
     ('tests/e2e/handoff_four_processes.py', 'memvane.runtime.runtime_work'): 'two-bundle timer and worker handoff boundary',
     ('tests/e2e/handoff_four_processes.py', 'memvane.runtime.host_bundle'): 'synthetic installed bundle inventory',
     ('tests/e2e/handoff_four_processes.py', 'memvane.runtime.runtime_monitor'): 'two-bundle monitor handoff boundary',
@@ -250,6 +249,10 @@ _TEST_G1_EXCEPTIONS = {
     ('tests/e2e/checkout_cache_e2e.py', 'memvane.store.checkout.checkout_view'): 'records sealed under another boot device number',
     ('tests/e2e/sync_profile_scale.py', 'memvane.store.tests.support'): 'synthetic row store fixture',
     ('tests/e2e/sync_profile_scale.py', 'memvane.sync.product_sync_worker'): 'measured sync fill path',
+    # The 1.x -> 2.0 migration test feeds rows that a release tag's own writers produced.
+    ('memvane/wiki/pipeline/tests/tagged_v1_ledgers.py', 'memvane.wiki.compile.wiki_compile'): 'release-tag manifest writer',
+    ('memvane/wiki/pipeline/tests/tagged_v1_ledgers.py', 'memvane.wiki.dedup.wiki_dedup_resolve'): 'release-tag dedup-skipped writer',
+    ('memvane/wiki/pipeline/tests/tagged_v1_ledgers.py', 'memvane.wiki.verify.wiki_verify_worker'): 'release-tag verify-skipped writer',
     # The learning wake's transition table drives the queue and the dispatcher that own the row.
     ('memvane/learning/tests/statemachine/test_m09_wake.py', 'memvane.runtime.runtime_work'): 'the wake row writers of the learning kind',
     ('memvane/learning/tests/statemachine/test_m09_wake.py', 'memvane.runtime.runtime_wake_policy'): 'the retry cap of the learning kind',
@@ -284,6 +287,10 @@ _TEST_G1_EXCEPTIONS = {
     # Provenance E2E exercises worker entry and a real stamp failure boundary.
     ('tests/e2e/wiki_db_provenance.py', 'memvane.wiki.compile.wiki_compile_worker'): 'compile fingerprint producer',
     ('tests/e2e/wiki_db_provenance.py', 'memvane.wiki.verify.wiki_verify_worker'): 'verify worker and stamp fault',
+    # Wiki pipeline E2E: the worker entry in process, a kill inside the card exchange, Hermes hooks.
+    ('tests/e2e/wiki_pipeline_e2e.py', 'memvane.wiki.compile.wiki_compile_worker'): 'compile worker entry',
+    ('tests/e2e/wiki_pipeline_e2e.py', 'memvane.wiki.pipeline.publish'): 'worker killed inside the card exchange',
+    ('tests/e2e/wiki_pipeline_e2e.py', 'hermes_adapter.core_bridge'): 'Hermes plugin hooks in a child',
 }
 _EMBEDDED_FROM = re.compile(r'\bfrom[ \t]+([A-Za-z_][\w.]*)[ \t]+import[ \t]*(?:\(([^)]*)\)|([\w \t,]+))')
 _EMBEDDED_IMPORT = re.compile(r'(?<![\w.])import[ \t]+([A-Za-z_][\w.]*(?:[ \t]+as[ \t]+\w+)?'
@@ -446,11 +453,10 @@ _API_PARTS = ('api', 'types')
 # app, sync, wiki, journal and install; the QA ledger trio serves the wiki CLI).
 # The background-bundle handle also serves resident and app handoff. No two
 # names forward to the same callee, so no merge keeps behavior.
-# wiki/workspace excepted at its exact count: 35 functions, each one distinct
+# wiki/workspace excepted at its exact count: 31 functions, each one distinct
 # workspace implementation (card/run/mutation locks, queue paths, claims and job
 # timestamps, lifecycle requests, the selected-route proof and checkout, scan
-# cursors, atomic writes, generated-manifest compaction, the declared wiki
-# collection, the activity log) with a caller in wiki/compile, wiki/verify,
+# cursors, atomic writes, the declared wiki collection, the activity log) with a caller in wiki/compile, wiki/verify,
 # wiki/dedup, wiki/intake, wiki/lifecycle, host, sync or app; no two share a
 # callee.
 # wiki/card excepted at its exact count: 48 functions, each forwarding to a
@@ -460,7 +466,7 @@ _API_PARTS = ('api', 'types')
 # refreshes, source spans) and each called from wiki/compile, wiki/verify,
 # wiki/lifecycle, wiki/dedup, wiki/intake, store, sync, host or learning. Card is the stored
 # card contract every wiki writer and reader shares; no two names share a callee.
-_API_NAME_LIMITS = {'journal': 51, 'runtime': 42, 'wiki/workspace': 35, 'wiki/card': 48}
+_API_NAME_LIMITS = {'journal': 51, 'runtime': 42, 'wiki/workspace': 31, 'wiki/card': 48}
 _CREATE_TABLE = re.compile(r'\bCREATE\s+(?:TEMP(?:ORARY)?\s+|VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
                            r'(?!IF\b)["`\[]?(?:\w+\.)?(\w+)', re.I)
 _TABLE_USE = re.compile(r'\b(DELETE\s+FROM|FROM|INTO|UPDATE|JOIN)\s+["`\[]?(?:main\.)?(\w+)')
@@ -480,6 +486,7 @@ _HANDLE_SOURCES = {
     'memvane.runtime.api.supervisor': 'memvane.runtime.types.SupervisorHandle',
     'memvane.runtime.api.training_guard': 'memvane.runtime.types.TrainingGuardHandle',
     'memvane.provider.api.reviewed_provider': 'memvane.provider.types.ReviewedProviderHandle',
+    'memvane.wiki.pipeline.api.open_pipeline': 'memvane.wiki.pipeline.types.PipelineHandle',
 }
 _HANDLE_CLASSES = {
     'memvane.store.types.ViewStoreHandle': 'memvane.store.view.view_store.ViewStore',
@@ -490,6 +497,7 @@ _HANDLE_CLASSES = {
     'memvane.runtime.types.TrainingGuardHandle': 'memvane.runtime.resource_coordination.TrainingGuard',
     'memvane.provider.types.ReviewedProviderHandle':
         'memvane.provider.adapters.local_embed_provider.ReviewedLocalQmdProvider',
+    'memvane.wiki.pipeline.types.PipelineHandle': 'memvane.wiki.pipeline.store.PipelineStore',
 }
 # Value objects other domains read from an api result: the dataclass or
 # __slots__ class in the owner's types.py declares their fields, and only those
@@ -498,6 +506,7 @@ _VALUE_SOURCES = {
     'memvane.journal.api.resolve_endpoint': 'memvane.journal.types.VerifiedEndpoint',
     'memvane.journal.api.reader_selection': 'memvane.journal.types.ReaderSelection',
     'memvane.recall.api.query_endpoint': 'memvane.recall.types.ReaderResult',
+    'memvane.wiki.pipeline.api.publish_card': 'memvane.wiki.pipeline.types.PublishOutcome',
 }
 # Runtime surface (rereview 3.1): other domains call 58 runtime names, the 41
 # api names plus the 17 methods of its four handles (coordinator 9, wake queue 3,

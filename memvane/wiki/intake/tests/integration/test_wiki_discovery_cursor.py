@@ -5,6 +5,7 @@ from unittest.mock import patch
 from memvane.wiki.intake import wiki_discovery as discovery
 from memvane.wiki.workspace import api as workspace, types as workspace_types
 from tests.support.case import FixtureCase
+from tests.support.queue_files import pending_text
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
 
@@ -69,9 +70,9 @@ class DiscoveryCursor(FixtureCase):
         self.accept()
         result = self.drain('g2', {self.key: changed})
         self.assertEqual((result['state'], result['queued'], result['pending']), ('drained', 1, 0))
-        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
-        self.assertIn('docs/note.md', queue.read_text())
-        self.assertIn(changed, queue.read_text())
+        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE))
+        self.assertIn('docs/note.md', pending_text(queue))
+        self.assertIn(changed, pending_text(queue))
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])
 
     def test_post_tool_consent_does_not_authorize_session_grant(self):
@@ -154,12 +155,12 @@ class DiscoveryCursor(FixtureCase):
         with patch.object(discovery, '_write', side_effect=fail_ack):
             with self.assertRaisesRegex(OSError, 'ACK failure'):
                 self.drain('g2', {self.key: changed})
-        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
-        before = queue.read_bytes()
+        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE))
+        before = pending_text(queue)
         self.assertEqual(len(before.splitlines()), 1)
         result = self.drain('g2', {self.key: changed})
         self.assertEqual(result['state'], 'drained')
-        self.assertEqual(queue.read_bytes(), before)
+        self.assertEqual(pending_text(queue), before)
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])
 
     def test_fault_after_journal_keeps_pending_and_grant_for_retry(self):
@@ -174,10 +175,10 @@ class DiscoveryCursor(FixtureCase):
         state = discovery._read(discovery._paths(self.decision)[0])
         self.assertEqual((state['baseGen'], state['pending']), ('g2', {self.key: changed}))
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [grant])
-        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
-        self.assertFalse(queue.exists())
+        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE))
+        self.assertEqual(pending_text(queue), '')
         self.assertEqual(self.drain('g2', {self.key: changed})['queued'], 1)
-        self.assertEqual(len(queue.read_text().splitlines()), 1)
+        self.assertEqual(len(pending_text(queue).splitlines()), 1)
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])
 
     def test_route_change_before_enqueue_preserves_cursor_and_grant(self):
@@ -342,8 +343,8 @@ class DiscoveryCursor(FixtureCase):
                 with self.assertRaises(OSError):
                     discovery.drain_after_sync(self.decision, observed, recheck=lambda: None,
                                                view_generation='g2', raw_snapshot=snapshot)
-            queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
-            self.assertEqual(len(queue.read_text().splitlines()), 1)
+            queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE))
+            self.assertEqual(len(pending_text(queue).splitlines()), 1)
             state = discovery._read(discovery._paths(self.decision)[0])
             self.assertEqual(list(state['pending']), [self.project.raw_name + '/docs/second.md'])
             self.assertEqual(state['spentGrants'], [grant])
@@ -352,7 +353,7 @@ class DiscoveryCursor(FixtureCase):
             result = discovery.drain_after_sync(self.decision, retry, recheck=lambda: None,
                                                view_generation='g2', raw_snapshot=snapshot)
         self.assertEqual((result['state'], result['reason']), ('pending', 'no_accepted_grant'))
-        self.assertEqual(len(queue.read_text().splitlines()), 1)
+        self.assertEqual(len(pending_text(queue).splitlines()), 1)
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])
 
     def test_per_wake_cap_requires_a_fresh_grant_for_deferred_tail(self):
@@ -363,16 +364,16 @@ class DiscoveryCursor(FixtureCase):
         snapshot = {self.key: hashlib.sha256(self.source.read_bytes()).hexdigest(),
                     self.project.raw_name + '/docs/second.md': hashlib.sha256(second.read_bytes()).hexdigest()}
         self.accept()
-        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
+        queue = workspace.safe_queue_path(self.root, workspace.rel(workspace_types.SOURCE_QUEUE))
         with patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': '1'}):
             first = self.drain('g2', snapshot)
             self.assertEqual((first['queued'], first['pending']), (1, 1))
-            self.assertEqual(len(queue.read_text().splitlines()), 1)
+            self.assertEqual(len(pending_text(queue).splitlines()), 1)
             without_grant = self.drain('g2', snapshot)
             self.assertEqual((without_grant['reason'], without_grant['pending']),
                              ('no_accepted_grant', 1))
-            self.assertEqual(len(queue.read_text().splitlines()), 1)
+            self.assertEqual(len(pending_text(queue).splitlines()), 1)
             self.accept()
             resumed = self.drain('g2', snapshot)
         self.assertEqual((resumed['queued'], resumed['pending']), (1, 0))
-        self.assertEqual(len(queue.read_text().splitlines()), 2)
+        self.assertEqual(len(pending_text(queue).splitlines()), 2)

@@ -15,12 +15,24 @@ import sys
 import unittest
 from unittest import mock
 
+from memvane.wiki.pipeline import api as pipeline
+
 from memvane.wiki.dedup import wiki_dedup_resolve as resolve
 from memvane.wiki.dedup import wiki_dedup_scan as scan
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
 
 REPO = Path(__file__).resolve().parents[5]
+
+
+def skipped_rows(root):
+    """Payloads of the ledger's ``dedup`` suppressions."""
+    try:
+        with pipeline.open_pipeline(root, readonly=True) as store:
+            return [json.loads(row[0]) for row in store._conn.execute(
+                "SELECT payload_json FROM suppressions WHERE kind = 'dedup' ORDER BY key")]
+    except FileNotFoundError:
+        return []
 
 
 def jsonl(path):
@@ -37,7 +49,6 @@ class ResolveCase(FixtureCase):
         self.wiki = self.project.wiki
         self.compile = self.root / '.memvane' / 'compile'
         self.compile.mkdir(parents=True, exist_ok=True)
-        self.queue = self.compile / 'dedup-needed.jsonl'
 
     def page(self, rel, text):
         path = self.wiki / rel
@@ -46,7 +57,16 @@ class ResolveCase(FixtureCase):
         return path
 
     def enqueue(self, *entries):
-        self.queue.write_text(''.join(json.dumps(entry) + '\n' for entry in entries), encoding='utf-8')
+        """Make ``entries`` the whole queued dedup_pairs content, in this order."""
+        with pipeline.open_pipeline(self.root) as store:
+            store._conn.execute('DELETE FROM dedup_pairs')
+            for entry in entries:
+                store.enqueue_dedup_pair(entry['pageA'], entry['pageB'], entry.get('score'))
+
+    def queued(self):
+        return [{key: value for key, value in (('pageA', row['pageA']), ('pageB', row['pageB']),
+                                               ('score', row['score'])) if value is not None}
+                for row in pipeline.dedup_queue(self.root)]
 
     def run_main(self, *argv):
         out = io.StringIO()
@@ -92,14 +112,14 @@ class Merge(ResolveCase):
         self.assertEqual((code, out), (0, {'action': 'deleted', 'deletedPath': 'entities/loser.md'}))
         self.assertFalse(loser.exists())
         self.assertTrue(winner.exists())
-        deleted = jsonl(self.compile / 'dedup-deleted.jsonl')
+        deleted = pipeline.log_rows(self.root, 'dedup_deleted')
         self.assertEqual(len(deleted), 1)
         self.assertEqual({key: deleted[0][key] for key in ('deletedPath', 'pairedWith', 'score')},
                          {'deletedPath': 'entities/loser.md', 'pairedWith': 'entities/winner.md',
                           'score': 0.95})
         self.assertIn('Loser content.', deleted[0]['content'])
         self.assertTrue(deleted[0]['resolvedAt'])
-        self.assertEqual(jsonl(self.queue), [])
+        self.assertEqual(self.queued(), [])
         # No selected route: no recovery copy, nothing to wake.
         self.assertFalse((self.compile / 'dedup-recovery').exists())
 
@@ -119,8 +139,8 @@ class Merge(ResolveCase):
                 self.assertEqual((code, out), (1, {'action': 'rejected', 'reason': reason}))
                 self.assertTrue((self.wiki / 'entities/a.md').exists())
                 self.assertTrue((self.wiki / 'entities/b.md').exists())
-                self.assertEqual(jsonl(self.queue), [entry], 'a rejected resolution stays queued')
-        self.assertEqual(jsonl(self.compile / 'dedup-deleted.jsonl'), [])
+                self.assertEqual(self.queued(), [entry], 'a rejected resolution stays queued')
+        self.assertEqual(pipeline.log_rows(self.root, 'dedup_deleted'), [])
 
     def test_cli_rejections_before_a_claim(self):
         self.page('entities/a.md', 'a')
@@ -130,13 +150,8 @@ class Merge(ResolveCase):
                          (1, {'action': 'rejected', 'reason': 'missing_delete_arg'}))
         self.assertEqual(self.merge(3, 'entities/a.md'),
                          (1, {'action': 'rejected', 'reason': 'index_out_of_range'}))
-        self.assertEqual(jsonl(self.queue), [entry])
-        self.queue.write_text('not json\n' + json.dumps(entry) + '\n', encoding='utf-8')
-        self.assertEqual(self.skip(0), (1, {'action': 'rejected', 'reason': 'malformed_entry'}))
-        self.assertEqual(jsonl(self.queue), [entry], 'only the malformed row is dropped')
-        self.queue.write_text('', encoding='utf-8')
-        self.assertEqual(self.skip(0), (1, {'action': 'rejected', 'reason': 'index_out_of_range'}))
-        self.queue.unlink()
+        self.assertEqual(self.queued(), [entry])
+        self.enqueue()
         self.assertEqual(self.skip(0), (1, {'action': 'rejected', 'reason': 'queue_empty'}))
 
     def test_an_already_missing_loser_degrades_to_an_unrecorded_skip(self):
@@ -144,14 +159,14 @@ class Merge(ResolveCase):
         self.enqueue({'pageA': 'entities/already-gone.md', 'pageB': 'entities/winner.md', 'score': 0.95})
         self.assertEqual(self.merge(0, 'entities/already-gone.md'),
                          (0, {'action': 'skipped', 'reason': 'stale_target'}))
-        self.assertEqual(jsonl(self.queue), [])
-        self.assertEqual(jsonl(self.compile / 'dedup-skipped.jsonl'), [])
+        self.assertEqual(self.queued(), [])
+        self.assertEqual(skipped_rows(self.root), [])
 
     def test_a_crash_mid_resolve_leaves_the_queue_exactly_as_it_was(self):
         self.page('entities/loser.md', 'loser')
         self.page('entities/winner.md', 'winner')
         self.enqueue({'pageA': 'entities/loser.md', 'pageB': 'entities/winner.md', 'score': 0.95})
-        before = self.queue.read_text(encoding='utf-8')
+        before = self.queued()
         entities = self.wiki / 'entities'
         os.chmod(entities, 0o555)  # unlink raises while the file is present
         try:
@@ -159,9 +174,8 @@ class Merge(ResolveCase):
                 self.merge(0, 'entities/loser.md')
         finally:
             os.chmod(entities, 0o755)
-        self.assertEqual(self.queue.read_text(encoding='utf-8'), before)
+        self.assertEqual(self.queued(), before)
         self.assertTrue((entities / 'loser.md').exists())
-        self.assertEqual(list(self.compile.glob('dedup-needed.jsonl.claimed.*')), [])
 
 
 class Skip(ResolveCase):
@@ -173,8 +187,8 @@ class Skip(ResolveCase):
         self.assertEqual((code, out['action'], out['recorded']), (0, 'skipped', True))
         self.assertTrue((self.wiki / 'entities/a.md').exists())
         self.assertTrue((self.wiki / 'entities/b.md').exists())
-        self.assertEqual(jsonl(self.compile / 'dedup-deleted.jsonl'), [])
-        self.assertEqual(jsonl(self.queue), [])
+        self.assertEqual(pipeline.log_rows(self.root, 'dedup_deleted'), [])
+        self.assertEqual(self.queued(), [])
 
     def test_entries_around_the_resolved_index_keep_their_order(self):
         for name in ('p1', 'p2', 'p3', 'p4', 'p5', 'p6'):
@@ -184,14 +198,14 @@ class Skip(ResolveCase):
                    {'pageA': 'entities/p5.md', 'pageB': 'entities/p6.md', 'score': 0.92}]
         self.enqueue(*entries)
         self.skip(1)
-        self.assertEqual(jsonl(self.queue), [entries[0], entries[2]])
+        self.assertEqual(self.queued(), [entries[0], entries[2]])
 
     def test_skip_on_an_intact_pair_records_one_sorted_hashed_row(self):
         a = self.page('entities/a.md', '---\ntitle: A\n---\n\nA content.\n')
         b = self.page('entities/b.md', '---\ntitle: B\n---\n\nB content.\n')
         self.enqueue({'pageA': 'entities/b.md', 'pageB': 'entities/a.md', 'score': 0.91})
         self.assertEqual(self.skip(0)[1]['recorded'], True)
-        skipped = jsonl(self.compile / 'dedup-skipped.jsonl')
+        skipped = skipped_rows(self.root)
         self.assertEqual(len(skipped), 1)
         row = skipped[0]
         self.assertEqual((row['pageA'], row['pageB']), ('entities/a.md', 'entities/b.md'))
@@ -200,25 +214,26 @@ class Skip(ResolveCase):
                          (scan.body_hash(a.read_text(encoding='utf-8')),
                           scan.body_hash(b.read_text(encoding='utf-8'))))
         self.assertTrue(row['skippedAt'])
-        self.assertEqual(scan.load_skip_suppressions(self.compile / 'dedup-skipped.jsonl'),
+        self.assertEqual(scan.load_skip_suppressions(self.root),
                          {('entities/a.md', 'entities/b.md'): (row['pageAHash'], row['pageBHash'])})
 
     def test_a_stale_skip_records_nothing(self):
         self.page('entities/b.md', '---\ntitle: B\n---\n\nB content.\n')
         table = [{'pageA': 'entities/gone.md', 'pageB': 'entities/b.md'},
-                 {'pageA': 'entities/b.md', 'pageB': 'entities/b.md'},
                  {'pageA': '../outside.md', 'pageB': 'entities/b.md'}]
         for entry in table:
             with self.subTest(entry=entry):
                 self.enqueue(entry)
                 self.assertEqual(self.skip(0), (0, {'action': 'skipped', 'recorded': False}))
-                self.assertEqual(jsonl(self.queue), [])
-        self.assertEqual(jsonl(self.compile / 'dedup-skipped.jsonl'), [])
+                self.assertEqual(self.queued(), [])
+        self.assertEqual(skipped_rows(self.root), [])
 
     def test_an_unwritable_skip_ledger_is_reported_not_raised(self):
         self.page('entities/a.md', 'a')
         self.page('entities/b.md', 'b')
-        (self.compile / 'dedup-skipped.jsonl').mkdir()
+        with pipeline.open_pipeline(self.root) as store:
+            store._conn.execute("CREATE TRIGGER refuse_skip BEFORE INSERT ON suppressions "
+                                "BEGIN SELECT RAISE(ABORT, 'synthetic suppression refusal'); END")
         self.enqueue({'pageA': 'entities/a.md', 'pageB': 'entities/b.md'})
         self.assertEqual(self.skip(0), (0, {'action': 'skipped', 'recorded': False}))
 
@@ -258,8 +273,8 @@ class KeeperBudget(ResolveCase):
                                'keeper': 'entities/winner.md', 'kept': 'entities/loser.md',
                                'recorded': True, 'size': 900, 'budget': 512, 'method': 'tokenizer'})
         self.assertTrue(self.loser.exists())
-        self.assertEqual(len(jsonl(self.compile / 'dedup-skipped.jsonl')), 1)
-        self.assertEqual(jsonl(self.compile / 'dedup-deleted.jsonl'), [])
+        self.assertEqual(len(skipped_rows(self.root)), 1)
+        self.assertEqual(pipeline.log_rows(self.root, 'dedup_deleted'), [])
         self.assertFalse((self.compile / 'dedup-recovery').exists())
         events = [e for e in jsonl(state / 'events.jsonl') if e.get('event') == 'wiki.card']
         self.assertEqual([(e['outcome'], e['path'], e['kept']) for e in events],
@@ -280,10 +295,12 @@ class KeeperBudget(ResolveCase):
                     self.assertEqual(self.resolve_entry()['action'], 'deleted')
                 self.assertFalse(self.loser.exists())
 
-    def test_a_keeper_without_frontmatter_is_not_a_budget_case(self):
+    def test_a_keeper_without_frontmatter_cannot_take_the_losers_labels(self):
         self.keeper.write_text('winner\n', encoding='utf-8')
-        self.assertEqual(self.resolve_entry()['action'], 'deleted')
-        self.assertFalse(self.loser.exists())
+        self.assertEqual(self.resolve_entry(), {'action': 'rejected', 'reason': 'keeper_frontmatter_missing',
+                                                'kept': 'entities/loser.md'})
+        self.assertTrue(self.loser.exists())
+        self.assertEqual(self.keeper.read_text(encoding='utf-8'), 'winner\n')
 
 
 class SelectedRoute(ResolveCase):
@@ -342,18 +359,14 @@ class SelectedRoute(ResolveCase):
                 self.merge(0, 'entities/loser.md')
             self.assertFalse(loser.exists())
             self.assertTrue(winner.exists())
-            self.assertEqual(len(jsonl(self.queue)), 1, 'a failed wake requeues the pair')
-            # A hard crash leaves the claimed file instead of running the handler;
-            # the next resolver start reclaims it.
-            self.queue.rename(self.queue.with_name(self.queue.name + '.claimed.99999999.synthetic'))
-            self.queue.touch()
+            self.assertEqual(len(self.queued()), 1, 'a failed wake leaves the pair queued')
             self.assertEqual(self.run_main('--recover-queue'), (0, {'action': 'recovered'}))
-            self.assertEqual(len(jsonl(self.queue)), 1)
+            self.assertEqual(len(self.queued()), 1)
             # The agent retries the stale pair as a skip: wake first, then acknowledge.
             self.assertEqual(self.skip(0), (0, {'action': 'skipped', 'recorded': False}))
-        self.assertEqual(self.queue.read_text(encoding='utf-8'), '')
+        self.assertEqual(self.queued(), [])
         self.assertEqual(wakes, ['wake', 'wake'])
-        self.assertIn('Loser.', (self.compile / 'dedup-deleted.jsonl').read_text(encoding='utf-8'))
+        self.assertIn('Loser.', json.dumps(pipeline.log_rows(self.root, 'dedup_deleted')))
         recovery = list((self.compile / 'dedup-recovery').glob('*.json'))
         self.assertEqual(len(recovery), 1)
         saved = json.loads(recovery[0].read_text(encoding='utf-8'))
@@ -369,9 +382,75 @@ class SelectedRoute(ResolveCase):
         with mock.patch('memvane.wiki.workspace.api.selected', return_value=bound):
             with self.assertRaisesRegex(ValueError, 'selected_dedup_wiki_root_changed'):
                 self.skip(0)
-        self.assertEqual(jsonl(self.queue), [entry])
-        self.assertEqual(list(self.compile.glob('dedup-needed.jsonl.claimed.*')), [])
+        self.assertEqual(self.queued(), [entry])
 
+
+class LabelTransfer(ResolveCase):
+    """A merge moves the loser's labels and sources into the keeper before it deletes."""
+
+    KEEPER = ('---\ntitle: "Alpha Rule"\ncanonicalKey: alpha-rule\naliases: []\nstatus: generated\n'
+              'sources:\n  - {kind: file, path: docs/a.md}\n---\n\nAlpha.\n')
+    LOSER = ('---\ntitle: "Beta Rule"\ncanonicalKey: beta-rule\naliases:\n  - "beta alias"\n  - "Alpha Rule"\n'
+             'status: generated\nsources:\n  - {kind: file, path: docs/b.md}\n  - {kind: file, path: docs/a.md}\n'
+             '---\n\nBeta.\n')
+
+    def setUp(self):
+        super().setUp()
+        self.keeper = self.page('concepts/alpha.md', self.KEEPER)
+        self.loser = self.page('concepts/beta.md', self.LOSER)
+        self.enqueue({'pageA': 'concepts/alpha.md', 'pageB': 'concepts/beta.md', 'score': 0.9})
+
+    def test_merge_moves_labels_and_sources_once_then_deletes(self):
+        from memvane.wiki.card.api import parse_frontmatter
+        code, out = self.merge(0, 'concepts/beta.md')
+        self.assertEqual((code, out), (0, {'action': 'deleted', 'deletedPath': 'concepts/beta.md'}))
+        self.assertFalse(self.loser.exists())
+        meta, ok = parse_frontmatter(self.keeper.read_text(encoding='utf-8'))
+        self.assertTrue(ok)
+        self.assertEqual((meta['title'], meta['canonicalKey']), ('Alpha Rule', 'alpha-rule'))
+        self.assertEqual(meta['aliases'], ['beta-rule', 'Beta Rule', 'beta alias'])
+        self.assertEqual(meta['sources'], ['{kind: file, path: docs/a.md}', '{kind: file, path: docs/b.md}'])
+        self.assertTrue(self.keeper.read_text(encoding='utf-8').endswith('\n---\n\nAlpha.\n'))
+        self.assertEqual(self.queued(), [])
+
+    def test_a_label_another_card_already_names_refuses_the_merge(self):
+        # R3: moving "beta alias" would make it name two cards, so nothing moves or is deleted.
+        self.page('concepts/gamma.md', '---\ntitle: Gamma\naliases:\n  - "Beta Alias"\n---\n\nGamma.\n')
+        code, out = self.merge(0, 'concepts/beta.md')
+        self.assertEqual(out, {'action': 'rejected', 'reason': 'alias_conflict', 'kept': 'concepts/beta.md'})
+        self.assertEqual(self.keeper.read_text(encoding='utf-8'), self.KEEPER)
+        self.assertEqual(self.loser.read_text(encoding='utf-8'), self.LOSER)
+        self.assertEqual(len(self.queued()), 1)
+        self.assertEqual(pipeline.log_rows(self.root, 'dedup_deleted'), [])
+
+    def test_a_failed_keeper_write_keeps_the_loser_and_the_entry(self):
+        # R7: the keeper changed after it was read, so the publish refuses and nothing is deleted.
+        from memvane.wiki.pipeline import api as pipeline
+        real = pipeline.publish_card
+
+        def edited_meanwhile(*args, **kwargs):
+            self.keeper.write_text(self.KEEPER + 'Edited.\n', encoding='utf-8')
+            return real(*args, **kwargs)
+
+        with mock.patch.object(pipeline, 'publish_card', side_effect=edited_meanwhile):
+            code, out = self.merge(0, 'concepts/beta.md')
+        self.assertEqual(out, {'action': 'rejected', 'reason': 'label_transfer_failed', 'kept': 'concepts/beta.md'})
+        self.assertEqual(self.keeper.read_text(encoding='utf-8'), self.KEEPER + 'Edited.\n')
+        self.assertTrue(self.loser.exists())
+        self.assertEqual(len(self.queued()), 1)
+
+
+    def test_a_busy_ledger_during_the_keeper_write_keeps_the_loser_and_the_entry(self):
+        # N6: a ledger error is a failed transfer, not a traceback, and deletes nothing.
+        import sqlite3
+        from memvane.wiki.pipeline import api as pipeline
+        with mock.patch.object(pipeline, 'publish_card',
+                               side_effect=sqlite3.OperationalError('database is locked')):
+            code, out = self.merge(0, 'concepts/beta.md')
+        self.assertEqual(out, {'action': 'rejected', 'reason': 'label_transfer_failed', 'kept': 'concepts/beta.md'})
+        self.assertEqual(self.keeper.read_text(encoding='utf-8'), self.KEEPER)
+        self.assertEqual(self.loser.read_text(encoding='utf-8'), self.LOSER)
+        self.assertEqual(len(self.queued()), 1)
 
 class EntryProcess(ResolveCase):
     def test_wiki_dedup_resolve_entry_merges_one_pair(self):
@@ -386,7 +465,7 @@ class EntryProcess(ResolveCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(proc.stdout), {'action': 'deleted', 'deletedPath': 'entities/loser.md'})
         self.assertFalse((self.wiki / 'entities/loser.md').exists())
-        self.assertEqual(jsonl(self.queue), [])
+        self.assertEqual(self.queued(), [])
 
 
 if __name__ == '__main__':

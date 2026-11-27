@@ -86,7 +86,7 @@ class WikiDbProvenance(FixtureCase):
         self.fixture.write_card(ANCHOR_REL, title='Emerald heron', sources=[anchor_note],
                                 body='The emerald heron nests beside the north pond.\n')
         self.card = self.wiki / CARD_REL
-        self.log = self.home / 'verify-log.jsonl'
+        self.log = []  # any sink with append(); the worker logs verify rows into it
         self.engines = FakeEngines({'verify': VERDICT}).install(self)
         # Fixture runs queue no runtime wake (``runtime.api.request`` answers None there);
         # the verify worker's selected sync wake is recorded instead.
@@ -152,11 +152,21 @@ class WikiDbProvenance(FixtureCase):
         from memvane.wiki.verify import wiki_verify_worker as verifier
         config = settings.load_project_config(str(self.project))
         compile_cfg = config['compile']  # the verify worker's own inputs (``wiki_verify_worker.main``)
-        return verifier.process_verify_job(self.project, config, compile_cfg, compile_cfg.get('verify', {}),
-                                           copy.deepcopy(self.job), self.log)
+        from memvane.wiki.pipeline import api as pipeline
+        from memvane.wiki.workspace import api as workspace
+        with pipeline.open_pipeline(self.project) as store:
+            store.append_jobs('verify', [copy.deepcopy(self.job)])
+            row = store.claim_verify_batch(os.getpid(), 'e2e', budget=1)['claimed'][0]
+            try:
+                state, _reason, processed = verifier.process_row(
+                    self.project, config, compile_cfg, compile_cfg.get('verify', {}), store, 'e2e', row,
+                    self.log, workspace.selected(self.project))
+            finally:
+                store.release_verify_claim('e2e')
+        return processed, state == 'queued'
 
     def verify_log(self):
-        return self.log.read_text(encoding='utf-8') if self.log.exists() else ''
+        return json.dumps(self.log)
 
     def pending(self):
         if not self.intents.exists():
@@ -307,7 +317,7 @@ class WikiDbProvenance(FixtureCase):
     def test_intent_without_stamp_waits_without_store_write(self):
         self.compile_card()
         generated = self.card.read_bytes()
-        with mock.patch('memvane.wiki.verify.wiki_verify_worker.write_rendered_verification',
+        with mock.patch('memvane.wiki.pipeline.api.publish_card',
                         side_effect=_Crash('killed_before_stamp')):
             with self.assertRaises(_Crash):
                 self.verify()

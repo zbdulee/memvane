@@ -1,11 +1,12 @@
 """An old bundle's hooks beside this bundle's open learning states (design L-5).
 
-After the hooks of each of the three previous releases (recall, an edit with its
-capture and launch, selector maintenance) wrote on this install, this bundle's
-readers, hook and worker still answer, and the job rows this bundle left open
-are as they were. The other direction, an old worker on this bundle's open job
-states, needs real gold cases and is part of the end-to-end run
-(``test_lp1_e2e``).
+This bundle's install lives in the ``stateFormat`` 2 state base, which no 1.x
+bundle reads. After the hooks of each of the three previous releases (recall,
+an edit, selector maintenance) ran on this install, they answered empty and
+captured nothing, this bundle's readers, hook and worker still answer, and the
+job rows this bundle left open are as they were. The other direction, an old
+worker on this bundle's open job states, needs real gold cases and is part of
+the end-to-end run (``test_lp1_e2e``).
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from memvane.learning.tests.integration import test_old_bundle_121 as old_tests
 from memvane.learning.tests.old_bundle_121 import EDIT_FILE, EDIT_TEXT, PROMPT, TAGS, edit_payload, old_bundle
 from tests.support.install_builder import ROOT
 
-PREVIOUS = ('v1.0.24', 'v1.1.0', 'v1.1.1')
+PREVIOUS = ('v1.1.0', 'v1.1.1', 'v1.1.2')
 # (status, reason, attempts, failures, retry in the future): what 1.1.0 leaves open.
 OPEN_JOBS = (('blocked', 'trainer_failed', 3, 3, True),            # waits for its rearm time
              ('blocked', 'learning_cursor_changed', 1, 1, False),  # closed for good
@@ -57,18 +58,19 @@ class PreviousBundles(old_tests.OldBundles):
         for tag in PREVIOUS:
             with self.subTest(tag=tag):
                 bundle = old_bundle(tag)
-                code, out, err = self.hook(bundle, 'recall', {'session_id': 'old-recall-' + tag,
-                                                              'hook_event_name': 'UserPromptSubmit', 'prompt': PROMPT})
-                self.assertEqual(code, 0, err)
+                self.assertEqual(self.hook(bundle, 'recall', {'session_id': 'old-recall-' + tag,
+                                                              'hook_event_name': 'UserPromptSubmit',
+                                                              'prompt': PROMPT}), (0, '', ''))
                 self.fixture.write_note(EDIT_FILE, EDIT_TEXT)
                 before = len(self.events())
-                code, out, err = self.hook(bundle, 'posttool', edit_payload('old-edit-' + tag))
-                self.assertEqual(code, 0, err)
-                captured = self.wait_capture(before)
-                self.assertEqual([(row['outcome'], row['pluginVersion']) for row in captured], [('stored', tag[1:])])
-                self.assertEqual(self.entry(bundle, 'selector-maintenance', str(self.project), 'force'), (0, '', ''))
+                self.assertEqual(self.hook(bundle, 'posttool', edit_payload('old-edit-' + tag)), (0, '', ''))
+                code, out, err = self.entry(bundle, 'selector-maintenance', str(self.project), 'force')
+                self.assertEqual((code, out), (0, ''), err)
+                self.assertIn('JournalEvidenceError: ' + old_tests.REFUSED, err)
+                self.assertEqual([row for row in self.events()[before:] if row.get('event') == 'learning.capture'], [])
+                self.assertEqual(self.teacher_launches(), [])
                 # What the old hooks left is readable by this bundle: the worker request
-                # (none, or one this bundle accepts) and the rows. (A 1.0.24 capture starts that release's own teacher pass.)
+                # (none, or one this bundle accepts) and the rows.
                 request = shared._full_worker_request(self.root)
                 self.assertTrue(request is None or set(request) >= {'schema', 'nonce', 'job', 'afterIndex'})
                 self.assertEqual(self.open_rows(), rows)

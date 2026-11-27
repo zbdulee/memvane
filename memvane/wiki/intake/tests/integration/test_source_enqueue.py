@@ -16,32 +16,6 @@ from tests.support.project import make_project
 from tests.support.settings_fake import expanded
 
 
-def _crash_producer(queue, boundary, side):
-    """Use the real producer; stop at a named syscall boundary in this fixture child."""
-    module = enqueue.source_queue
-    entry = {
-        'reserve': (module.tempfile, 'NamedTemporaryFile'),
-        'file_sync': (os, 'fsync'),
-        'verify': (module, '_verify_image'),
-        'rename': (os, 'replace'),
-        'dir_sync': (module, 'fsync_dir'),
-    }
-    rows = [{'source': {'collection': 'docs', 'path': path}, 'contentRevision': 'new'}
-            for path in ('docs/a.md', 'docs/b.md')]
-    if boundary == 'replay':
-        enqueue._append_jsonl(Path(queue), rows)
-        return
-    owner, name = entry[boundary]
-    real = getattr(owner, name)
-    def cut(*args, **kwargs):
-        if side == 'before':
-            os._exit(91)
-        real(*args, **kwargs)
-        os._exit(91)
-    with patch.object(owner, name, side_effect=cut):
-        enqueue._append_jsonl(Path(queue), rows)
-
-
 class SourceEnqueue(FixtureCase):
     def setUp(self):
         super().setUp()
@@ -65,14 +39,22 @@ class SourceEnqueue(FixtureCase):
             'wiki': {'root': str(self.project.root / 'wiki'), 'created': ['w.md'], 'updated': [], 'deleted': []}}
     @property
     def queue(self):
-        return workspace.safe_queue_path(self.project.root, workspace.rel(workspace_types.SOURCE_QUEUE), native=True)
+        return workspace.safe_queue_path(self.project.root, workspace.rel(workspace_types.SOURCE_QUEUE))
 
     def run_enqueue(self, **kwargs):
         return enqueue.enqueue_changed_sources(str(self.project.root), self.config,
                                                copy.deepcopy(self.changed), engine='claude', **kwargs)
 
     def rows(self):
-        return [json.loads(line) for line in self.queue.read_text().splitlines()] if self.queue.exists() else []
+        return [job for _, job in workspace.read_queue(self.queue)]
+
+    def seed(self, jobs, *, replace=False):
+        """Queue rows as an earlier producer left them (no planning)."""
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline_dir(self.queue.parent) as store:
+            if replace:
+                store.plan_jobs('source', lambda rows: ([r['jobId'] for r in rows], [], None))
+            store.append_jobs('source', jobs)
 
     def test_session_and_post_sync_exclude_changes_and_deletions_before_selection(self):
         paths = ['a' + sep + '/x.md' for sep in ('\x85', '\u2028', '\u2029')]
@@ -120,10 +102,10 @@ class SourceEnqueue(FixtureCase):
             path = self.project.root / row['source']['path']
             self.assertEqual(row['contentRevision'], hashlib.sha256(original[str(path)]).hexdigest())
             self.assertEqual(path.read_bytes(), original[str(path)])
-        queued = self.queue.read_bytes()
+        queued = self.rows()
         self.assertEqual(enqueue.enqueue_changed_sources(str(self.project.root), self.config,
                                                          changed, engine='claude')['queued'], 0)
-        self.assertEqual(self.queue.read_bytes(), queued)
+        self.assertEqual(self.rows(), queued)
 
     def test_manual_sync_queue_record_preserves_fields_and_revision(self):
         import hashlib
@@ -145,7 +127,7 @@ class SourceEnqueue(FixtureCase):
         with patch.object(enqueue, '_utc_now', return_value='2026-10-17T00:00:00Z'):
             self.assertEqual(self.run_enqueue(session_start=True)['queued'], 4)
             without_revision = self.rows()
-            self.queue.unlink()
+            self.seed([], replace=True)
             expected = {}
             for entry in self.changed.values():
                 entry['revisions'] = {}
@@ -198,27 +180,13 @@ class SourceEnqueue(FixtureCase):
         self.assertEqual(self.run_enqueue()['reason'], 'queue_path_rejected')
         self.assertEqual(list(outside.iterdir()), [])
 
-    def test_existing_rows_are_preserved_and_new_rows_append(self):
-        self.queue.parent.mkdir(parents=True, exist_ok=True)
-        self.queue.write_text('not json\n{"prior": true}\n')
-        self.assertEqual(self.run_enqueue()['queued'], 4)
-        lines = self.queue.read_text().splitlines()
-        self.assertEqual(lines[0], 'not json')
-        rows = [json.loads(line) for line in lines[1:]]
-        self.assertEqual(rows[0], {'prior': True})
-        self.assertEqual(len(rows), 5)
-        before = self.queue.read_bytes()
-        self.assertEqual(self.run_enqueue()['queued'], 0)
-        self.assertEqual(self.queue.read_bytes(), before)
-
     def test_claimed_rows_are_not_suppressed_by_old_queue_keys(self):
         self.assertEqual(self.run_enqueue()['queued'], 4)
-        claimed = self.queue.with_name(self.queue.name + '.claimed.synthetic')
-        self.queue.rename(claimed)
-        before = claimed.read_bytes()
+        claimed = workspace.claim_queue(self.queue)
+        before = [job for _, job in workspace.read_queue(claimed)]
         self.assertEqual(self.run_enqueue()['queued'], 4)
-        self.assertEqual(len(self.rows()), 4)
-        self.assertEqual(claimed.read_bytes(), before)
+        self.assertEqual(len(self.rows()), 8)  # four claimed plus four queued again
+        self.assertEqual([job for _, job in workspace.read_queue(claimed)], before)
 
     def test_invalid_cap_falls_back_to_default(self):
         with patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': 'many'}):
@@ -240,138 +208,6 @@ class SourceEnqueue(FixtureCase):
                          (1, 2, True))
         self.assertEqual(result['deferredFiles'], [('docs', 'c.md'), ('src', 's.md')])
         self.assertEqual([r['source']['path'] for r in self.rows()], ['docs/a.md', 'docs/b.md'])
-
-    def test_oversized_queue_defers_without_reading_or_acknowledging(self):
-        self.assertEqual(enqueue.QUEUE_SCAN_MAX_BYTES, 8 * 1024 * 1024)
-        self.assertEqual(self.run_enqueue()['queued'], 4)
-        size = self.queue.stat().st_size
-        self.assertEqual(len(enqueue._queued_revision_keys(self.queue, limit=size)), 4)
-        self.assertEqual(enqueue._queued_revision_keys(self.queue, limit=size - 1), set())
-        with self.queue.open('r+b') as handle:
-            handle.truncate(enqueue.QUEUE_SCAN_MAX_BYTES + 1)
-        before = self.queue.stat()
-        with patch.object(enqueue.source_queue, '_open_read', side_effect=AssertionError('read')):
-            with self.assertRaisesRegex(OSError, 'read_limit'):
-                self.run_enqueue()
-        after = self.queue.stat()
-        self.assertEqual((before.st_ino, before.st_mtime_ns), (after.st_ino, after.st_mtime_ns))
-
-    def test_incomplete_tail_and_row_limits_leave_raw_bytes_at_their_original_name(self):
-        self.queue.parent.mkdir(parents=True, exist_ok=True)
-        for raw, reason in ((b'{}\n{"cut":', 'incomplete'), (b'{"valid":true}', 'incomplete'),
-                            (b'x' * 65536 + b'\n', 'oversized'), (b'{}\n' * 4097, 'row_limit'),
-                            (b'{}\n' * 4096, 'row_limit')):
-            with self.subTest(reason=reason):
-                self.queue.write_bytes(raw)
-                inode = self.queue.stat().st_ino
-                with self.assertRaisesRegex(enqueue.source_queue.HandoffRequired, reason):
-                    self.run_enqueue()
-                self.assertEqual((self.queue.stat().st_ino, self.queue.read_bytes()), (inode, raw))
-
-    def test_only_lf_separates_raw_rows_and_ambiguous_rows_stay_opaque(self):
-        self.run_enqueue()
-        first, *_ = self.rows()
-        encoded = json.dumps(first).encode()
-        duplicates = b'{"trigger":"extra",' + encoded[1:]
-        raw = b'broken\r' + encoded + b'\n' + duplicates + b'\n'
-        other = dict(first, selectedRoute={'installId': 'other', 'scopeId': 'scope'})
-        raw += json.dumps(other, indent=None, separators=(', ', ' : ')).encode() + b'\r\n'
-        self.queue.write_bytes(raw)
-        self.assertEqual(self.run_enqueue()['queued'], 4)
-        self.assertTrue(self.queue.read_bytes().startswith(raw))
-        self.assertEqual(len(self.queue.read_bytes().split(b'\n')) - 1, 7)
-
-    def test_contended_claim_lock_refuses_publication_without_blocking(self):
-        self.run_enqueue()
-        before = self.queue.read_bytes()
-        self.project.write_note('docs/a.md', 'other bytes')
-        lock_path = workspace.queue_lock_path(self.queue)
-        with lock_path.open('a') as other:
-            fcntl.flock(other, fcntl.LOCK_EX)
-            flock = fcntl.flock
-            def nonblocking(fd, flags):
-                self.assertEqual(flags, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return flock(fd, flags)
-            with patch.object(fcntl, 'flock', side_effect=nonblocking):
-                with self.assertRaises(BlockingIOError):
-                    self.run_enqueue()
-        self.assertEqual(self.queue.read_bytes(), before)
-        self.assertEqual(self.run_enqueue()['queued'], 1)
-
-    def test_concurrent_claim_and_new_producer_do_not_get_overwritten(self):
-        self.run_enqueue()
-        prior = self.queue.read_bytes()
-        self.project.write_note('docs/a.md', 'next')
-        other = b'{"other":"producer"}\n'
-        claimed = self.queue.with_name(self.queue.name + '.claimed.9999.fixture')
-        publish = enqueue.source_queue.publish
-        def race(path, original, image, verified):
-            path.rename(claimed)
-            path.write_bytes(other)
-            return publish(path, original, image, verified)
-        with patch.object(enqueue.source_queue, 'publish', side_effect=race):
-            with self.assertRaisesRegex(BlockingIOError, 'changed'):
-                self.run_enqueue()
-        self.assertEqual(claimed.read_bytes(), prior)
-        self.assertEqual(self.queue.read_bytes(), other)
-        self.assertEqual(self.run_enqueue()['queued'], 4)
-        self.assertTrue(self.queue.read_bytes().startswith(other))
-
-    def test_process_exit_before_and_after_each_image_boundary_replays_a_whole_batch(self):
-        self.queue.parent.mkdir(parents=True, exist_ok=True)
-        old = b'{"source":{"collection":"docs","path":"docs/a.md"},"contentRevision":"old"}\n'
-        raw = b'opaque\xff\r\n'
-        args = [sys.executable, '-B', '-c',
-                'from memvane.wiki.intake.tests.integration.test_source_enqueue import _crash_producer; '
-                'import sys; _crash_producer(*sys.argv[1:])', str(self.queue)]
-        for boundary in ('reserve', 'file_sync', 'verify', 'rename', 'dir_sync'):
-            for side in ('before', 'after'):
-                with self.subTest(boundary=boundary, side=side):
-                    self.queue.write_bytes(raw + old)
-                    result = subprocess.run(args + [boundary, side], capture_output=True, timeout=20)
-                    self.assertEqual(result.returncode, 91, result.stderr)
-                    published = boundary == 'dir_sync' or (boundary == 'rename' and side == 'after')
-                    after_crash = self.queue.read_bytes()
-                    self.assertTrue(after_crash.startswith(raw))
-                    if published:
-                        rows = [json.loads(line) for line in after_crash[len(raw):].split(b'\n') if line]
-                        self.assertEqual([r['contentRevision'] for r in rows], ['new', 'new'])
-                    else:
-                        self.assertEqual(after_crash, raw + old)
-                    subprocess.run(args + ['replay', ''], check=True, timeout=20)
-                    stable = self.queue.read_bytes()
-                    subprocess.run(args + ['replay', ''], check=True, timeout=20)
-                    self.assertEqual(self.queue.read_bytes(), stable)
-                    rows = [json.loads(line) for line in stable[len(raw):].split(b'\n') if line]
-                    self.assertEqual([(r['source']['path'], r['contentRevision']) for r in rows],
-                                     [('docs/a.md', 'new'), ('docs/b.md', 'new')])
-
-    def test_corrupted_prepared_image_is_rejected_before_rename(self):
-        self.run_enqueue()
-        before = self.queue.read_bytes()
-        self.project.write_note('docs/a.md', 'next')
-        verify = enqueue.source_queue._verify_image
-        def corrupt(image, size, digest):
-            image.seek(0)
-            image.write(b'!')
-            image.flush()
-            return verify(image, size, digest)
-        with patch.object(enqueue.source_queue, '_verify_image', side_effect=corrupt):
-            with self.assertRaisesRegex(OSError, 'image_mismatch'):
-                self.run_enqueue()
-        self.assertEqual(self.queue.read_bytes(), before)
-
-    def test_dirsync_failure_retries_without_duplicating_any_published_row(self):
-        with patch.object(enqueue.source_queue, 'fsync_dir', side_effect=OSError('directory_failure')):
-            with self.assertRaisesRegex(OSError, 'directory_failure'):
-                self.run_enqueue()
-            # A retry that recognizes all rows has the same durability obligation.
-            with self.assertRaisesRegex(OSError, 'directory_failure'):
-                self.run_enqueue()
-        before = self.queue.read_bytes()
-        self.assertEqual(len(self.rows()), 4)
-        self.assertEqual(self.run_enqueue()['queued'], 0)
-        self.assertEqual(self.queue.read_bytes(), before)
 
     def test_same_content_is_queued_once_per_trigger(self):
         import hashlib
@@ -398,13 +234,9 @@ class SourceEnqueue(FixtureCase):
             {'sourceDelete': True}, {'forceRecompile': True},
             {'sourceDelete': True, 'sharedEnqueued': True}, {'initialBackfill': 'a' * 32},
             {'trigger': 'session_start_source'}, {'selectedRoute': {'installId': 'other', 'scopeId': 'scope'}})]
-        opaque = b'not JSON: \xff\n'
-        payload = b''.join((json.dumps(row) + '\n').encode() for row in [old, current, *separate])
-        self.queue.write_bytes(opaque + payload)
+        self.seed([old, current, *separate], replace=True)
         self.assertEqual(self.run_enqueue()['queued'], 1)
-        raw = self.queue.read_bytes()
-        self.assertTrue(raw.startswith(opaque))
-        rows = [json.loads(line) for line in raw[len(opaque):].splitlines()]
+        rows = self.rows()
         self.assertEqual(rows[0]['contentRevision'], current['contentRevision'])
         self.assertEqual(rows[1:], separate)
 
@@ -462,16 +294,16 @@ class SourceEnqueue(FixtureCase):
         older = dict(first, contentRevision='older')
         enqueue._append_jsonl(self.queue, [older, first])
         self.assertEqual(self.rows(), [first, *others])
-        self.queue.unlink()
+        self.seed([], replace=True)
         enqueue._append_jsonl(self.queue, [older, *others, first])
         self.assertEqual(self.rows(), [first, *others])
 
     def test_failed_atomic_replacement_keeps_original_and_propagates_to_sync(self):
         self.run_enqueue()
-        before = self.queue.read_bytes()
+        before = self.rows()
         self.project.write_note('docs/a.md', 'replacement')
-        with patch.object(os, 'replace', side_effect=OSError('fixture_write_failure')):
+        with patch.object(enqueue.source_queue.intent, 'plan_source_batch',
+                          side_effect=OSError('fixture_write_failure')):
             with self.assertRaisesRegex(OSError, 'fixture_write_failure'):
                 self.run_enqueue()
-        self.assertEqual(self.queue.read_bytes(), before)
-        self.assertEqual(list(self.queue.parent.glob('.source-queue-*')), [])
+        self.assertEqual(self.rows(), before)

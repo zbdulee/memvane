@@ -3,7 +3,7 @@
 The provider review reads its executable inventory from here. Layout, all
 owner-only (0700 directories, 0600/0700 files), no symlinks::
 
-    ~/.local/state/memvane/v1/embed-runtime/
+    ~/.local/state/memvane/v2/embed-runtime/
       .lock                  provisioning lock
       active.json            {"schema", "generation"}
       previous.json          the generation active.json named before the last switch

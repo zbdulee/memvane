@@ -33,10 +33,10 @@ def writer_floor_allows(floor):
 
 
 def same_major(state_format):
-    """The on-disk state format is the plugin's major version."""
+    """Whether ``state_format`` matches the executing bundle's ``STATE_FORMAT``."""
     if type(state_format) is not int or state_format < 1:
         raise ValueError('invalid_state_format')
-    running = version_key(plugin_version())
-    if running is None:
+    if version_key(plugin_version()) is None:
         raise ValueError('invalid_plugin_version')
-    return running[0] == state_format
+    from memvane.kernel.memvane_paths import STATE_FORMAT
+    return state_format == STATE_FORMAT

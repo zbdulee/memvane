@@ -64,3 +64,51 @@ def registry():
         return 2
     print(json.dumps(snapshot(reconcile=False), sort_keys=True, ensure_ascii=False))
     return 0
+
+
+LEDGER_VIEWS = ('dedup-pairs', 'dedup-skip', 'verify-log', 'audit')
+
+
+def wiki_ledger():
+    """Read-only view of a project's ``wiki-pipeline.sqlite3`` (public output keys, release.md).
+
+    ``dedup-pairs`` lists queued pairs with the ``index`` the resolver's ``--index`` takes.
+    A project without a ledger prints an empty list.
+    """
+    import argparse
+    from memvane.settings import api as settings
+    from memvane.wiki.pipeline import api as pipeline
+    from memvane.wiki.pipeline.types import AUDIT_KINDS
+    parser = argparse.ArgumentParser(prog='wiki-ledger')
+    parser.add_argument('view', choices=LEDGER_VIEWS)
+    parser.add_argument('kind', nargs='?', choices=AUDIT_KINDS)
+    parser.add_argument('--cwd', default='.')
+    parser.add_argument('--limit', type=int, default=50, help='newest log rows (verify-log, audit)')
+    parser.add_argument('--json', action='store_true')
+    args = parser.parse_args(sys.argv[1:])
+    if (args.view == 'audit') != (args.kind is not None):
+        parser.error('audit takes exactly one kind; other views take none')
+    found = settings.find_project_config(args.cwd)
+    root = found['projectRoot']
+    try:
+        if args.view == 'dedup-pairs':
+            rows = [{'index': i, 'pageA': row['pageA'], 'pageB': row['pageB'], 'score': row['score']}
+                    for i, row in enumerate(pipeline.dedup_queue(root))]
+        elif args.view == 'dedup-skip':
+            rows = []
+            for key, hashes in sorted(pipeline.suppressions(root, 'dedup').items()):
+                page_a, _, page_b = key.partition('\n')
+                rows.append({'pageA': page_a, 'pageB': page_b, 'hashes': hashes})
+        else:
+            kind = 'verify_log' if args.view == 'verify-log' else args.kind
+            limit = max(0, args.limit)
+            rows = pipeline.log_rows(root, kind)[-limit:] if limit else []
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        print(json.dumps({'error': 'ledger_unreadable', 'detail': type(exc).__name__}), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, sort_keys=True))
+    else:
+        for row in rows:
+            print(json.dumps(row, ensure_ascii=False, sort_keys=True))
+    return 0

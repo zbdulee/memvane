@@ -42,7 +42,7 @@ class InitialBuildV1(unittest.TestCase):
         path.chmod(0o600)
 
     def pointers(self):
-        directory = self.home.joinpath('.local', 'state', 'memvane', 'v1', build.POINTERS)
+        directory = self.home.joinpath('.local', 'state', 'memvane', 'v2', build.POINTERS)
         return sorted(directory.iterdir()) if directory.exists() else []
 
     def refused(self, reason, call, *args):

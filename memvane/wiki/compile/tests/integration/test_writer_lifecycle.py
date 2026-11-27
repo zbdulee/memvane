@@ -1,4 +1,4 @@
-"""Writer decisions are reflected in durable audit and tombstone records."""
+"""Writer decisions are reflected in durable audit records."""
 from contextlib import redirect_stdout
 import io
 import json
@@ -39,27 +39,65 @@ class WriterFixture(FixtureCase):
              patch.object(workspace, 'recheck'), patch.object(workspace, 'request_sync'), \
              patch.object(workspace, 'append_activity'), redirect_stdout(output):
             compiler._compile_locked(self.project.root, self.config, self.config['compile'],
-                                     self.project.wiki, candidate, False)
+                                     self.project.wiki, candidate)
         text = output.getvalue().strip()
         return json.loads(text) if text else {}
 
     def audit(self, name):
+        if name == 'candidates.jsonl':
+            from memvane.wiki.pipeline import api as pipeline
+            return pipeline.log_rows(self.project.root, 'candidate')
+        if name == 'card_generations':
+            from memvane.wiki.pipeline import api as pipeline
+            with pipeline.open_pipeline(self.project.root, readonly=True) as store:
+                return store.all_generations()
         path = self.project.root / '.memvane/compile' / name
         return [json.loads(line) for line in path.read_text().splitlines()]
 
 
 class WriterLifecycle(WriterFixture):
-    def test_deleted_generated_identity_is_tombstoned_then_suppressed(self):
+    def test_human_deleted_card_regenerates_on_the_next_compile(self):
+        # R1: a person removes a card by deleting its source; a deleted card alone comes back.
         first = self.compile()
         self.assertEqual(first['action'], 'created')
         self.assertFalse((self.project.root / '.memvane/compile/verify-queue.jsonl').exists())
         target = self.project.root / first['targetPath']
         target.unlink()
-        self.assertEqual(self.compile(title='Renamed rule')['action'], 'tombstoned')
-        self.assertEqual(self.compile(title='Another label')['action'], 'suppressed')
-        self.assertFalse(target.exists())
-        self.assertEqual(self.audit('tombstones.jsonl')[-1]['canonicalKey'], 'signal-rule')
-        self.assertEqual(self.audit('candidates.jsonl')[-1]['action'], 'suppressed')
+        again = self.compile(summary='Changed synthetic decision.')
+        self.assertEqual((again['action'], again['targetPath']), ('created', first['targetPath']))
+        self.assertTrue(target.is_file())
+        self.assertFalse((self.project.root / '.memvane/compile/tombstones.jsonl').exists())
+        self.assertEqual([row['action'] for row in self.audit('card_generations')], ['created', 'created'])
+        self.assertFalse((self.project.root / '.memvane/compile/generated-manifest.jsonl').exists())
+
+    def test_a_merged_cards_source_update_goes_to_the_keeper(self):
+        # R2: the merge moves the loser's labels, so compiling the loser's identity updates the keeper.
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+        keeper = self.compile()
+        loser = self.compile(title='Noise Rule', canonicalKey='noise-rule', summary='Another synthetic fact.')
+        self.assertEqual((keeper['action'], loser['action']), ('created', 'created'))
+        wiki = self.project.root / '.memvane/wiki'
+        pair = {'pageA': str((self.project.root / keeper['targetPath']).relative_to(wiki)),
+                'pageB': str((self.project.root / loser['targetPath']).relative_to(wiki))}
+        from memvane.wiki.pipeline import api as pipeline
+        pipeline.queue_dedup_pairs(self.project.root, [pair])
+        repo = Path(__file__).resolve().parents[5]
+        merge = subprocess.run([sys.executable, '-B', str(repo / 'entry/run.py'), 'wiki-dedup-resolve',
+                                '--cwd', str(self.project.root), '--index', '0', '--action', 'merge',
+                                '--delete', pair['pageB']], capture_output=True, text=True, timeout=60,
+                               env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}, cwd=str(self.project.root))
+        self.assertEqual(json.loads(merge.stdout).get('action'), 'deleted', merge.stdout + merge.stderr)
+        self.compile(title='Noise Rule', canonicalKey='noise-rule', summary='Updated synthetic fact.')
+        row = self.audit('candidates.jsonl')[-1]
+        # Verify is off in this fixture, so the keeper's replacement waits for review (V19).
+        self.assertEqual((row['targetPath'], row['targetResolution'], row['action']),
+                         (keeper['targetPath'], 'canonicalKey', 'merge-needed'))
+        self.assertFalse((self.project.root / loser['targetPath']).exists())
+        self.assertEqual([r['targetPath'] for r in self.audit('card_generations')],
+                         [keeper['targetPath'], loser['targetPath']])
 
     def test_transcript_and_secret_are_rejected_without_persisting_raw_content(self):
         secret = 'sk-' + '1234567890abcdef' * 2
@@ -90,10 +128,10 @@ class WriterLifecycle(WriterFixture):
         directory.mkdir()
         outside = self.home / 'outside.jsonl'
         outside.write_text('unchanged')
-        (directory / workspace_types.VERIFY_DELETED).symlink_to(outside)
-        self.assertIsNone(settings.ledger(self.project.root, workspace_types.VERIFY_DELETED))
-        self.assertEqual(settings.ledger(self.project.root, workspace_types.VERIFY_SKIPPED),
-                         directory / workspace_types.VERIFY_SKIPPED)
+        (directory / 'escaping.jsonl').symlink_to(outside)
+        self.assertIsNone(settings.ledger(self.project.root, 'escaping.jsonl'))
+        self.assertEqual(settings.ledger(self.project.root, workspace_types.SOURCE_QUEUE),
+                         directory / workspace_types.SOURCE_QUEUE)
         self.assertEqual(outside.read_text(), 'unchanged')
 
     def test_selected_verified_replacement_is_staged_for_review(self):
@@ -105,14 +143,15 @@ class WriterLifecycle(WriterFixture):
             result = self.compile(summary='Replacement fact for review.')
         self.assertEqual(result['action'], 'updated')
         self.assertEqual(target.read_bytes(), original)
-        from tests.support.wiki_handoff import waiting_reviews as waiting
-        queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
-        job, = [json.loads(work.read('raw')) for work in waiting(queue)
-                if work.state['binding']['job'].get('pendingPath')]
-        self.assertFalse(queue.exists() and queue.read_bytes())
+        from tests.support.wiki_handoff import verify_rows
+        row, = [row for row in verify_rows(self.project.root) if row['payload']['kind'] == 'replace']
+        job = row['payload']
         self.assertEqual(job['expectedTargetHash'], hashlib.sha256(original).hexdigest())
-        self.assertTrue(job['pendingPath'].endswith('.pending-' + job['sourceHash']))
-        self.assertIn('Replacement fact for review.', (self.project.root / job['pendingPath']).read_text())
+        self.assertIn('sourceHash="' + job['sourceHash'] + '"', row['image'].decode())
+        self.assertIn('Replacement fact for review.', row['image'].decode())
+        # The replacement's history row is committed with its verify row.
+        self.assertEqual([(r['action'], r['targetPath']) for r in self.audit('card_generations')],
+                         [('created', first['targetPath']), ('updated', first['targetPath'])])
 
     def test_selected_replacement_refuses_unmatched_wiki_collection(self):
         first = self.compile()

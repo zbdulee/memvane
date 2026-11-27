@@ -24,7 +24,7 @@ test("wiki-dedup-resolver agent: metadata has no tool/permission restriction, hi
   const agent = readFileSync("agents/wiki-dedup-resolver.md", "utf8");
   const meta = frontmatter(agent);
   assert.equal(meta.name, "wiki-dedup-resolver");
-  assert.match(meta.description, /dedup-needed\.jsonl/);
+  assert.match(meta.description, /wiki-ledger dedup-pairs/);
   assert.doesNotMatch(meta.description, /해줘/, "should not be phrased as a user trigger-phrase agent");
   assert.equal(meta.tools, undefined, "must not restrict tools");
   assert.equal(meta.disallowedTools, undefined, "must not restrict tools");

@@ -5,6 +5,7 @@ from memvane.wiki.card import api as card
 from memvane.wiki.workspace import api as workspace
 from memvane.wiki.compile import wiki_compile_worker as worker
 from tests.support.case import FixtureCase
+from tests.support.queue_files import pending_text
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded
 
@@ -17,10 +18,11 @@ class PendingRecovery(FixtureCase):
         pending = card.record_pending_refresh(project.root, 'docs/source.md', 'claude')
         queue = project.root / '.memvane/compile/source-queue.jsonl'
         self.assertEqual(worker.recover_pending_refreshes(project.root, config, queue), 1)
-        self.assertEqual(worker.recover_pending_refreshes(project.root, config, queue), 1)
+        # The queued row already carries this edit's receipt, so a replay adds nothing.
+        self.assertEqual(worker.recover_pending_refreshes(project.root, config, queue), 0)
         self.assertFalse(queue.exists())
-        native = workspace.safe_queue_path(project.root, native=True)
-        lines = native.read_text().splitlines()
+        native = workspace.safe_queue_path(project.root)
+        lines = pending_text(native).splitlines()
         kept, _dropped = worker.dedup_jobs([(line, json.loads(line)) for line in lines])
         self.assertEqual(len(kept), 1)
         row = kept[0][1]
@@ -40,7 +42,7 @@ class PendingRecovery(FixtureCase):
         refresh_settlement.settle(project.root, pending, captured_v2['sha256'], 'failed_resolve')
         queue = project.root / '.memvane/compile/source-queue.jsonl'
         self.assertEqual(worker.recover_pending_refreshes(project.root, config, queue), 1)
-        native = workspace.safe_queue_path(project.root, native=True)
-        rows = [json.loads(line) for line in native.read_text().splitlines()]
+        native = workspace.safe_queue_path(project.root)
+        rows = [json.loads(line) for line in pending_text(native).splitlines()]
         self.assertEqual(rows[-1]['source']['path'], 'docs/source.md')
         self.assertEqual(rows[-1]['pendingRefresh']['eventId'], pending['eventId'])

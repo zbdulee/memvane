@@ -1,5 +1,5 @@
 name: memvane
-version: "1.1.2"
+version: "1.1.4"
 description: "MemVane automatic context injection for Hermes Agent sessions"
 author: "zbdulee"
 kind: standalone

@@ -153,34 +153,31 @@ class SelectedActions(HostInstallCase):
             self.wakes.status = None
             before = len(self.wakes.calls)
             self.serve('update-queued', {'hook_event_name': 'SessionStart'})
-            # The same two sync requests as a queued SessionStart: the deferred
-            # wake, then the one that follows the activated discovery grant.
+            # The same requests as a queued SessionStart: the deferred sync and compile
+            # wakes, then the sync that follows the activated discovery grant.
             root = str(self.project)
             self.assertEqual(self.wakes.calls[before:], [('laya-sync', root, {'start': False}),
+                                                        ('laya-compile', root, {'start': False}),
                                                         ('laya-sync', root, {})])
         self.wakes.status = 'deferred_queue_capacity_retained'
         self.serve('update-queued', {'hook_event_name': 'SessionStart'})
 
-    def test_session_start_wakes_compile_for_a_pending_refresh(self):
-        # The first SessionStart also records the coalesced lifecycle request.
+    def test_every_session_start_wakes_compile_without_opening_the_ledger(self):
+        import sqlite3
         self.serve('update', {'hook_event_name': 'SessionStart'}, 'codex')
-        self.wakes.calls.clear()
-        self.serve('update', {'hook_event_name': 'SessionStart'}, 'codex')
-        self.assertNotIn('laya-compile', self.wakes.kinds())
-        self.wakes.calls.clear()
-        with mock.patch('memvane.wiki.card.api.unresolved_pending_refreshes_strict',
-                        return_value=[{'sourcePath': 'notes/heron.md'}]):
-            self.serve('update', {'hook_event_name': 'SessionStart'}, 'codex')
-        self.assertIn('laya-compile', self.wakes.kinds())
-        self.assert_sync_woken()
         self.wakes.calls.clear()
         before = len(self.install.events())
-        with mock.patch('memvane.wiki.card.api.unresolved_pending_refreshes_strict', return_value=None):
+        connect = sqlite3.connect
+        def refuse_pipeline(path, *args, **kwargs):
+            if 'wiki-pipeline' in str(path):
+                raise AssertionError('hook opened the wiki pipeline ledger')
+            return connect(path, *args, **kwargs)
+        with mock.patch.object(sqlite3, 'connect', refuse_pipeline):
             self.serve('update', {'hook_event_name': 'SessionStart'}, 'codex')
         self.assertIn('laya-compile', self.wakes.kinds())
         self.assert_sync_woken()
         row = [event for event in self.install.events()[before:] if event.get('event') == 'update'][-1]
-        self.assertEqual(row.get('pendingRefresh'), 'unknown')
+        self.assertEqual(row.get('editInbox'), 0)
 
     def test_a_successful_bash_wakes_the_full_scan_owner_only(self):
         bash = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
@@ -331,7 +328,7 @@ class SelectedActions(HostInstallCase):
 
 
 def proof(epoch=3, **changes):
-    return {'productRouteAllowed': True, 'selectionEpoch': epoch, 'stateFormat': 1,
+    return {'productRouteAllowed': True, 'selectionEpoch': epoch, 'stateFormat': 2,
             'writerFloor': '1.0.0', **changes}
 
 

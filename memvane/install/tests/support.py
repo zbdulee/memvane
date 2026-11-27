@@ -67,7 +67,7 @@ class InstallCase(FixtureCase):
                   'settingsSha256': '0' * 64, 'stateRoot': str(state), 'stateNode': [1, 2],
                   'storePath': str(state / 'store.sqlite'), 'storeNode': [1, 3],
                   'storeIncarnation': 'b' * 32, 'installId': install_id, 'scopeId': 'c' * 32,
-                  'stateFormat': 1, 'collections': [], 'vectorProfile': {}}
+                  'stateFormat': 2, 'collections': [], 'vectorProfile': {}}
         record.update(overrides)
         return record
 

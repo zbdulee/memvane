@@ -95,9 +95,9 @@ flowchart TD
     Wakes[runtime wake queue memvane/runtime/runtime_work.py]
     Sync[memvane/sync/product_sync_worker.py]
     Resident[memvane/resident/resident_service.py]
-    Embed[~/.local/state/memvane/v1/embed-runtime]
+    Embed[~/.local/state/memvane/v2/embed-runtime]
     Index[(memvane-db, published generations)]
-    CompileQ[.memvane/compile/source-queue.jsonl]
+    CompileQ[(.memvane/compile/wiki-pipeline.sqlite3)]
     Wiki[.memvane/wiki]
 
     User --> Claude
@@ -142,7 +142,7 @@ sandbox/headless no-op guards, and classifies the event cwd with
 | Route state | Behavior |
 |---|---|
 | `candidate`, `preview`, `worktree` | `exec memvane/host/host_response.py serve-stdin` |
-| `legacy` (no route) | No work, exit 0. On `update-queued` only, one short onboarding notice line for a project with `.memvane/settings.json` (Codex receives it as SessionStart JSON). A second `[memvane] onboarding-answer <JSON>` line gives the agent the exact `setup_entry.py onboarding-skip` (payload session id, kept 30 days) and `onboarding-never` commands as argv and shell strings; a recorded answer (`~/.local/state/memvane/v1/onboarding/<sha256(canonical project root)>.json`, case aliases share one record) hides both lines. |
+| `legacy` (no route) | No work, exit 0. On `update-queued` only, one short onboarding notice line for a project with `.memvane/settings.json` (Codex receives it as SessionStart JSON). A second `[memvane] onboarding-answer <JSON>` line gives the agent the exact `setup_entry.py onboarding-skip` (payload session id, kept 30 days) and `onboarding-never` commands as argv and shell strings; a recorded answer (`~/.local/state/memvane/v2/onboarding/<sha256(canonical project root)>.json`, case aliases share one record) hides both lines. |
 | `blocked` | exit 3, no fallback |
 | `error` (route lookup failure) | recall exits 0 without context; SessionStart reports the lookup failure and does not offer onboarding |
 
@@ -386,9 +386,9 @@ equivalent persistence-off flag.
 - refuses a card whose body does not fit the local selector budget
   (`memvane/learning/wiki_card_budget.py`, below) and reports `split-required`;
 - enqueues successful generated writes to the auto-verify queue;
-- logs merge-needed or rejected candidates under `.memvane/compile`.
+- logs merge-needed or rejected candidates as `audit_events` rows of `.memvane/compile/wiki-pipeline.sqlite3`.
 
-Compiler create/update, verifier stamp/delete, source retirement and dedup merge
+Compiler create/update, verifier stamp, source retirement and dedup merge
 share one project `CARD_WRITE_LOCK`. Each holds it
 from the card state read through the decision and atomic replace/unlink, so
 their individually atomic writes cannot be composed from stale revisions.
@@ -415,7 +415,7 @@ excluded. A provenance-free legacy `verified` is `unknown` and drops. Foreign
 cards are never trusted or injected, even with `recallVerifiedOnly: false`.
 There is no human wiki lifecycle: automatic cards
 do not use `reviewed:` or human statuses, and no `wiki-review` UI, skill, or
-agent exists. The `merge-needed.jsonl` ledger is only a bounded non-trusted
+agent exists. The `merge_needed` audit log is only a bounded non-trusted
 collision diagnostic: no candidate is auto-merged, trusted, or queued for human
 approval.
 
@@ -427,7 +427,7 @@ They are intentionally fail-open so wiki maintenance does not break normal agent
 turns. After each wiki lifecycle run, the same child runs the retroactive dedup
 scan (`memvane/wiki/dedup/wiki_dedup_scan.py`): it compares the stored memvane-db chunk-vector
 centroids of the sealed head's wiki cards and queues pairs at cosine 0.9 or
-above to `.memvane/compile/dedup-needed.jsonl` for the `wiki-dedup`
+above to the ledger's `dedup_pairs` queue for the `wiki-dedup`
 resolver. It makes no model or paid call.
 
 #### Card Body Budget
@@ -483,8 +483,8 @@ writes the card anyway and logs `wiki.card` `over_budget_written` (`reason` = wh
 it is final, `overflow`, `size`, `budget`, `method`). A card no selector runtime
 can count is written with `wiki.card` `measure_failed`, and on a machine with no
 selector tokenizer at all with `unmeasured`. `--check` predicts the outcome a real
-compile would reach (`written`, `candidate`, `merge-needed`, `rejected`,
-`suppressed`, `tombstoned`) with no side effect at all: no directory, lock or
+compile would reach (`written`, `candidate`, `merge-needed`, `rejected`)
+with no side effect at all: no directory, lock or
 ledger is created or touched, so a read-only project can be checked. The paid
 duplicate judge and the selected-route pending-replacement checks do not run in a
 check. Longer cards are not split
@@ -530,10 +530,10 @@ the loser stays, the pair is recorded as skipped and the CLI returns
 
 `memvane/resident/resident_service.py` is one per-user process that owns the local
 embedding worker for each vector profile and serves every adopted
-install through its sealed socket under `<state base v1>/run/`.
+install through its sealed socket under `~/.local/state/memvane/v2/run/`.
 Hooks never load a model.
 
-The embedding runtime lives in `~/.local/state/memvane/v1/embed-runtime`
+The embedding runtime lives in `~/.local/state/memvane/v2/embed-runtime`
 (`memvane/provider/embed_runtime.py`): `active.json`, `previous.json` and immutable
 generations holding Node, node-llama-cpp, the native build and the GGUF model.
 A generation comes from an explicit provisioning action. Maintainer
@@ -585,7 +585,7 @@ The Laya repository, release and commit in
 not fetched. Learning and inference processes run with `HF_HUB_OFFLINE` and
 `TRANSFORMERS_OFFLINE` set, and tokenizers load with `local_files_only`. GC lists
 generations and, with approval, removes those that are neither active, previous,
-nor named by any `provider-attestation.json` under `~/.local/state/memvane/v1/installs/*/`
+nor named by any `provider-attestation.json` under `~/.local/state/memvane/v2/installs/*/`
 (historical `profileDependencyClosure` rows are ignored). `generations` must be a
 real private directory of the user inside the runtime, and GC enumerates and
 deletes through its directory descriptor without following links. A generation
@@ -632,7 +632,7 @@ worker's contract.
 
 Cards start as `generated`; automatic source-consistency verification promotes
 good cards to `verified`. Ambiguous collisions are recorded passively in
-`merge-needed.jsonl` and never become a promotion or human-review state.
+the `merge_needed` audit log and never become a promotion or human-review state.
 
 ## Release Surface
 
@@ -839,9 +839,9 @@ The only code path that reads the log back is the compile worker's
 | Log | Location |
 |---|---|
 | install event log | `<state root>/events.jsonl` (+ `.1`, `.2`) |
-| wiki lifecycle | `~/.local/state/memvane/v1/auto-context/logs/wiki-lifecycle.log` (`QMD_WIKI_LIFECYCLE_LOG`) |
-| wiki dedup scan | `~/.local/state/memvane/v1/auto-context/logs/wiki-dedup.log` (`QMD_WIKI_DEDUP_LOG`) |
-| compile ledgers | `.memvane/compile/` (`candidates.jsonl`, `verify-log.jsonl`, `merge-needed.jsonl`, `verify-deleted.jsonl`, `dedup-deleted.jsonl`, `discard-ledger.jsonl`, queues) |
+| wiki lifecycle | `~/.local/state/memvane/v2/auto-context/logs/wiki-lifecycle.log` (`QMD_WIKI_LIFECYCLE_LOG`) |
+| wiki dedup scan | `~/.local/state/memvane/v2/auto-context/logs/wiki-dedup.log` (`QMD_WIKI_DEDUP_LOG`) |
+| compile ledger | `.memvane/compile/wiki-pipeline.sqlite3` (`audit_events`: `candidate`, `verify_log`, `merge_needed`, `dedup_deleted`, `discard`, `migration`; read with `entry/run.py wiki-ledger`), hook inbox `edit-inbox.jsonl` |
 | context learning jobs | per-user learning state `job-telemetry.jsonl`, `worker.log` |
 
 ## Test Strategy

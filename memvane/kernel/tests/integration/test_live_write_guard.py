@@ -24,7 +24,7 @@ class LiveWriteGuard(unittest.TestCase):
             self.addCleanup(patcher.stop)
         for variable in RELOCATIONS:
             os.environ.pop(variable, None)  # restored by the patch.dict above
-        self.live = self.account.joinpath('.local', 'state', 'memvane', 'v1')
+        self.live = self.account.joinpath('.local', 'state', 'memvane', 'v2')
 
     def elsewhere(self):
         path = Path(os.path.realpath(tempfile.mkdtemp(prefix='mvg-host-', dir='/tmp')))

@@ -1,6 +1,7 @@
 import json
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
+from tests.support.queue_files import replace_queue
 from tests.support.settings_fake import expanded
 from tests.support.engines_fake import FakeEngines
 from memvane.wiki.verify import api as verify
@@ -22,7 +23,7 @@ class VerifyEffortRouteTests(FixtureCase):
                'sources': [{'kind': 'file', 'path': 'docs/source.md', 'collection': project.raw_name}],
                'sourceRevisions': [project.revision(source)], 'sourceHash': 'abc123',
                'engine': 'claude', 'trigger': 'post_tool_source'}
-        queue.write_text(json.dumps(job) + '\n', encoding='utf-8')
+        replace_queue(queue, [job])
         cfg = expanded(project)
         cfg['compile']['extractor']['builtins'] = ['claude']
         seen = []

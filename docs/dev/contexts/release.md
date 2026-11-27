@@ -3,14 +3,14 @@
 ### 버전 bump 체크리스트
 릴리스 버전을 올릴 때는 모든 host manifest와 테스트 기대값을 같은 버전으로 맞춘다.
 
-1.x에서는 다음 영속 계약을 유지한다. 모양을 바꾸려면 메이저 버전을 올린다.
+1.x의 `stateFormat` 2는 다음 영속 계약을 유지한다. 모양을 바꾸려면 메이저 버전이나 `stateFormat`을 올린다. 아래의 `<state base>`는 `~/.local/state/memvane/v2`(`memvane/kernel/memvane_paths.py`의 `STATE_PARTS`)다.
 
 - store·journal DDL, application id와 `user_version`.
 - route·ledger·build·attestation JSON의 키 집합과 schema id.
 - 프로젝트 settings 허용 키: `name`(필수), `skipPaths`, `diagnostics`, `contextLearning`, `sharedLearning`. `contextLearning`: `capture`(bool), `autoCycle`(bool). `sharedLearning`: `enabled`(bool), `root`(절대 경로 문자열), `profile`(`qmd-local-learning-profile-v1`만), `autoApply`(bool). 학습 블록 모양이 틀리면 capture·autoCycle·shared를 끄고, 그 밖의 키가 하나라도 있으면 설정 전체를 빈 설정으로 본다.
 - plan `scopeId`: 배열(`"fresh-wiki-only"`, 프로젝트 경로, 프로젝트 `st_ino`, settings 파일 sha256)의 compact JSON을 sha256한 값의 앞 32 hex. `st_dev`는 넣지 않는다(APFS는 부팅마다 장치 번호를 바꿀 수 있다). 재실행한 plan과 prepare가 기록된 `scopeId`와 같은 값을 내야 한다.
-- initial build 기록 `build.json`(`memvane-initial-build-v1`)과 프로젝트 포인터 `<state base v1>/initial-builds/<프로젝트 루트 SHA-256 앞 32 hex>.json` 및 그 보관본 `retired-build-pointer.json`(`memvane-initial-build-pointer-v1`, 키 `schema`·`projectRoot`·`stateRoot`·`installId`).
-- sync owner·`sync.lock`·wiki mutation lock 및 socket의 이름과 위치. 설치별 socket은 `<state base v1>/run/<설치 id의 SHA-256 앞 16 hex>.sock`이다.
+- initial build 기록 `build.json`(`memvane-initial-build-v1`)과 프로젝트 포인터 `<state base>/initial-builds/<프로젝트 루트 SHA-256 앞 32 hex>.json` 및 그 보관본 `retired-build-pointer.json`(`memvane-initial-build-pointer-v1`, 키 `schema`·`projectRoot`·`stateRoot`·`installId`).
+- sync owner·`sync.lock`·wiki mutation lock 및 socket의 이름과 위치. 설치별 socket은 `<state base>/run/<설치 id의 SHA-256 앞 16 hex>.sock`이다.
 - wake kind 집합(`laya-sync`·`laya-compile`·`learning`·`auto`)과 target 모양(절대 경로), `recipe_id`·`profile_id` 입력. 1.x 호스트는 모르는 kind의 행을 남겨 두고, 출시 전 빌드가 남긴 `index`·`update`·`cleanup` 행만 `retired_kind` 사유로 지운다.
 - vector recipe의 chunker 입력(`laya_qmd_chunking.mjs` 바이트와 `CHUNK_RULES`).
 - 모듈 이름에서 `laya_` 접두를 제거하는 규칙의 예외로, 보호 파일·attestation에 기록된 `laya_local_embed_worker.mjs`와 vector recipe에 묶인 `laya_qmd_chunking.mjs`는 파일 이름을 유지한다.
@@ -18,14 +18,17 @@
 - wake 큐 `runtime-wakes.sqlite3`의 위치·DDL과 `runtime-worker.lock`·`runtime-worker-handoff.lock`·`runtime-wake-timer.lock`.
 - journal reader record의 필수 키 집합과 `store_format: schema3`·`schema3-ro-v1`·`selected-main-schema3-v1`.
 - 프로젝트 포인터 `.memvane/route.json`·`.memvane/selection.json`, marker schema `memvane-selection-v1`.
-- 프로젝트·설치 lock `.topical-publish.lock`·`laya-install.lock`·`.install-update.lock`·`initial-build.lock`, `reader-locks/<install>/reader-lifetime.lock`.
-- state base의 `layout.json` 바이트 `{"stateFormat":1}\n`과 state major·단조 증가하는 `writer_floor`·최고 plugin 버전의 비교 규칙.
-- 카드 frontmatter 필드와 `.memvane/compile/*.jsonl` 행 모양.
+- 프로젝트·설치 lock `.topical-publish.lock`·`laya-install.lock`·`.install-update.lock`·`initial-build.lock`, `reader-locks/<install>/reader-lifetime.lock`, 프로젝트 `.memvane/compile/`의 `.compile-run.lock`·`.card-write.lock`·`edit-inbox.jsonl.lock`.
+- `<state base>`의 `layout.json` 바이트 `{"stateFormat":2}\n`과 `STATE_FORMAT` 기반 `same_major`·단조 증가하는 `writer_floor`·최고 plugin 버전의 비교 규칙.
+- 카드 frontmatter 필드.
+- 위키 파이프라인 원장 `.memvane/compile/wiki-pipeline.sqlite3`: application id `0x4D565750`, `user_version` 1, `auto_vacuum=INCREMENTAL`, 테이블 DDL(`pipeline_meta`·`refresh_events`·`compile_jobs`·`verify_jobs`·`audit_events`·`cooldowns`·`pipeline_fences`·`publish_txns`·`card_generations`·`suppressions`·`dedup_pairs`·`backfill_checkpoints`)과 1.x cutover 마커 키 `migrated_from_v1_at`. 훅은 이 파일을 열지 않는다.
+- 훅 편집 inbox `.memvane/compile/edit-inbox.jsonl`의 행 모양 `memvane-edit-inbox-v1`: 한 줄에 JSON 객체 하나이고 키가 중복되면 그 줄을 버린다. 필수 키는 `schema`(`"memvane-edit-inbox-v1"`)·`state`(`"pending_refresh"`)·`eventId`(비어 있지 않은 문자열, 흡수의 멱등 키. 제품 writer는 32 hex를 쓴다)·`sourcePath`(프로젝트 상대 경로, 절대 경로와 `..` 금지)·`ts`(시간대가 있는 ISO 8601 시각. 제품 writer는 UTC `Z`를 쓴다)·`engine`(비어 있지 않은 문자열)이다. 그 밖의 키(1.1.2 private refresh 행의 키 포함)는 읽지 않는다. 조건에 맞지 않는 줄은 malformed로 세고 건너뛴다. worker가 흡수 중에 쓰는 이름 `edit-inbox.jsonl.consuming-<token>`, 카드 게시 temp 이름 `.publish-<txid>.tmp`.
+- 조회 CLI `entry/run.py wiki-ledger <dedup-pairs|dedup-skip|verify-log|audit <kind>> [--json]`의 출력 키(wiki-dedup skill·resolver agent·logs skill이 읽는다): `dedup-pairs` `{index, pageA, pageB, score}`(`index`는 `wiki-dedup-resolve --index`), `dedup-skip` `{pageA, pageB, hashes}`, `verify-log`·`audit`는 로그 payload.
 - attestation `providerRelativePath`와 onboarding artifact sha map에 기록되는 provider 파일 상대 경로(`memvane/provider/adapters/local_embed_provider.py`·`laya_local_embed_worker.mjs`)와 접두사 `memvane/provider/adapters/`. 정의는 `memvane/kernel/bundle_paths.py` 한 곳이다.
 - 재봉인 호환 기록 `provider-reattest.json`: schema `memvane-provider-reattest-v1`, 키 `schema`·`attested`·`current`·`attestedIdentity`·`currentIdentity`·`outcome`·`timeNs`. 정체성 키는 `modelSha256`·`tokenizer`·`chunkerSha256`·`chunkRules`·`dimension`·`metric`·`pooling`·`normalization`·`maxTokens`다. 쌍별 기록 `provider-reattest-pairs.json`: schema `memvane-provider-reattest-pairs-v1`, 최상위 키 `schema`·`records`, 각 행 키 `attested`·`current`·`attestedIdentity`·`currentIdentity`·`outcome`·`timeNs`. 쌍별 정체성은 v1 키에 `queryTemplate`·`documentTemplate`·`contextMargin`을 더한다. 각 쌍은 `worker`·`provider` SHA를 담고 최대 16행이다.
 - compile intent(`<install state root>/provenance-intents/`)의 필수 키 집합(`kind`·`viewId`·`targetPath`·`cardSha`·`expectedTargetHash`·`sourceFingerprints`·`sourceSpans`·`verifiedMode`·`verifyEngine`·`producingEngine`·`verdict_digest`·`result_digest`), 이름의 id 입력, 결과 접미사(`.consumed`·`.rejected`·`.superseded`). 추가 키는 허용한다: consumer는 필수 키만 읽고 나머지는 무시하며, `result_digest`는 필수 키로만 계산한다. 한 호스트의 verify worker가 쓴 intent를 다른 1.x 호스트의 sync가 소비한다.
 
-계약 밖의 파생물(없거나 깨지면 다시 만들거나 0부터 세고, 지워도 된다): `<install state root>/vector-cache/`(vector arena. 레코드·헤더 모양을 바꾸면 `vectorcache.types.FORMAT`을 올리고 같은 번호로 모양을 바꾸지 않는다. 더 높은 번호의 arena는 건드리지 않는다), `<install state root>/linked-reoffer.json`, 프로젝트의 `.memvane/compile/source-refresh-settled.json`, 학습 namespace의 `apply-failures.json`·`worker-retry.json`.
+계약 밖의 파생물(없거나 깨지면 다시 만들거나 0부터 세고, 지워도 된다): `<install state root>/vector-cache/`(vector arena. 레코드·헤더 모양을 바꾸면 `vectorcache.types.FORMAT`을 올리고 같은 번호로 모양을 바꾸지 않는다. 더 높은 번호의 arena는 건드리지 않는다), `<install state root>/linked-reoffer.json`, 프로젝트의 `.memvane/compile/wiki-retrieval/cards.sqlite`(카드 FTS 캐시), 학습 namespace의 `apply-failures.json`·`worker-retry.json`.
 
 임베딩 정체성(모델·토크나이저·chunker·차원·pooling·정규화·최대 토큰 길이·질의 및 문서 템플릿·context 여유)이 바뀌면 재빌드가 필요하다. 실행 방식만 바뀌면 백그라운드 sync owner가 정체성을 확인하고 재봉인한다.
 

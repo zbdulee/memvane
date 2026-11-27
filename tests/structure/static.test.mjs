@@ -194,7 +194,7 @@ test('product modules satisfy structure rules G1 to G7 and strict G1, G5, G9', t
   }
   // Each api name limit exception is pinned at the domain's exact count.
   const {api_attributes: names, api_name_limits: limits} = report.strict_metrics;
-  assert.deepEqual(limits, {journal: 51, runtime: 42, 'wiki/workspace': 35, 'wiki/card': 48});
+  assert.deepEqual(limits, {journal: 51, runtime: 42, 'wiki/workspace': 31, 'wiki/card': 48});
   for (const [domain, limit] of Object.entries(limits)) {
     assert.equal(names[`memvane/${domain}/api.py`], limit, domain);
   }
@@ -320,8 +320,6 @@ const PERSISTED = [
     /'seal': seal, 'database': node\}\s*return/],
   ['memvane/wiki/compile/wiki_compile_retrieval.py', /_stored_equal\(previous\[0\], identity, IDENTITY_DEVICE_INDEX\)/,
     /previous\[0\] != identity|stored\.get\(rel\) != stamp/],
-  ['memvane/wiki/verify/wiki_verify_worker.py', /persistent_identity_equal\(fingerprint, live, device_index=0\)/,
-    /fingerprint = tuple\(marker\['fingerprint'\]\)\n\s+else:/],
 ];
 const WHOLE = ['store/view/view_rows.py', 'view_store.py', 'view_reader.py'];
 
@@ -520,4 +518,26 @@ test('every call that can download is a listed, pinned call', () => {
       assert.match(call, /local_files_only=True/, `${file}: ${call.slice(0, 80)}`);
     }
   }
+});
+
+test('documents and instructions name the state base the product writes', () => {
+  // memvane_paths.STATE_PARTS; setup refuses a new install root outside it (unsupported_state_root_creation).
+  const paths = readFileSync('memvane/kernel/memvane_paths.py', 'utf8');
+  const parts = paths.match(/^STATE_PARTS = \(([^)]*)\)/m)[1];
+  const format = parts.match(/'(v\d+)'\s*$/)[1];
+  const listed = spawnSync('git', ['ls-files', '-z'], {encoding: 'utf8'}).stdout.split('\0').filter(Boolean);
+  // Dated design records and the 1.1.4 progress log describe earlier layouts on purpose.
+  const history = [/^docs\/design-local-web-ui\.md$/, /^docs\/mockups\//, /^docs\/reviews\//, /^docs\/dev\/progress-/];
+  const stale = [];
+  for (const file of listed) {
+    if (history.some(re => re.test(file)) || !/\.(md|py|mjs|sh|json|yaml)$/.test(file) || file.startsWith('.memvane/')) continue;
+    if (file.includes('/tests/') || file.startsWith('tests/')) continue;
+    if (!existsSync(file)) continue;
+    readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+      for (const match of line.matchAll(/\.local\/state\/memvane\/(v\d+)/g)) {
+        if (match[1] !== format) stale.push(`${file}:${index + 1}`);
+      }
+    });
+  }
+  assert.deepEqual(stale, []);
 });

@@ -46,7 +46,6 @@ class ScanCase(FixtureCase):
         self.project = make_project(self.home, git=False)
         self.root = self.project.root
         self.wiki = self.project.wiki
-        self.queue = self.root / '.memvane' / 'compile' / 'dedup-needed.jsonl'
         self.state_dir = self.home / 'scan-state'
         patcher = mock.patch.dict(os.environ, {'QMD_SYNC_STATE_DIR': str(self.state_dir),
                                                'QMD_WIKI_DEDUP_LOG': str(self.tmp / 'wiki-dedup.log')})
@@ -85,10 +84,9 @@ class ScanCase(FixtureCase):
                 mock.patch('memvane.wiki.workspace.api.recheck', return_value=None):
             return dedup.run(str(self.root))
 
-    def queued(self):
-        if not self.queue.exists():
-            return []
-        return [json.loads(line) for line in self.queue.read_text(encoding='utf-8').splitlines() if line]
+    def queued(self, root=None):
+        from memvane.wiki.pipeline import api as pipeline
+        return pipeline.dedup_queue(root or self.root)
 
     def pairs(self):
         return [{row['pageA'], row['pageB']} for row in self.queued()]
@@ -110,7 +108,9 @@ class Queueing(ScanCase):
     def test_resolved_queue_is_not_refilled_until_a_card_changes(self):
         self.publish(standard())
         self.run_scan()
-        self.queue.write_text('', encoding='utf-8')
+        from memvane.wiki.pipeline import api as pipeline
+        for row in self.queued():
+            pipeline.finish_dedup_pair(self.root, row['pairKey'])
         self.assertEqual(self.run_scan()['queued'], 0)
         changed = standard()
         changed['entities/alpha-copy.md'] = (ALPHA_COPY + '\nAdded detail.\n', [0.98, 0.12])
@@ -118,22 +118,20 @@ class Queueing(ScanCase):
         result = self.run_scan()
         self.assertEqual((result['compared'], result['queued']), (1, 1), result)
 
-    def test_pair_held_by_a_running_resolver_is_not_queued_again(self):
+    def test_a_pair_still_queued_is_not_queued_again(self):
+        from memvane.wiki.pipeline import api as pipeline
         self.publish(standard())
-        claimed = self.queue.with_name(self.queue.name + '.claimed.4242.' + 'a' * 32)
-        claimed.parent.mkdir(parents=True, exist_ok=True)
-        claimed.write_text(json.dumps({'pageA': 'entities/alpha-copy.md', 'pageB': 'entities/alpha.md',
-                                       'score': 0.99}) + '\n', encoding='utf-8')
+        pipeline.queue_dedup_pairs(self.root, [{'pageA': 'entities/alpha-copy.md', 'pageB': 'entities/alpha.md',
+                                                'score': 0.99}])
         self.assertEqual(self.run_scan()['queued'], 0)
-        self.assertEqual(self.queued(), [])
+        self.assertEqual([row['score'] for row in self.queued()], [0.99])
 
     def test_skip_ledger_suppresses_unchanged_bodies_only(self):
         self.publish(standard())
-        ledger = self.queue.with_name('dedup-skipped.jsonl')
-        ledger.parent.mkdir(parents=True, exist_ok=True)
-        ledger.write_text(json.dumps({'pageA': 'entities/alpha-copy.md', 'pageB': 'entities/alpha.md',
-                                      'pageAHash': scan.body_hash(ALPHA_COPY),
-                                      'pageBHash': scan.body_hash(ALPHA)}) + '\n', encoding='utf-8')
+        from memvane.wiki.pipeline import api as pipeline
+        self.assertTrue(pipeline.set_suppression(
+            self.root, 'dedup', 'entities/alpha-copy.md\nentities/alpha.md',
+            scan.body_hash(ALPHA_COPY) + ':' + scan.body_hash(ALPHA), {}))
         result = self.run_scan()
         self.assertEqual(result['queued'], 0, result)
         self.assertGreaterEqual(result['suppressed'], 1)
@@ -199,7 +197,7 @@ class NotScanned(ScanCase):
                         mock.patch('memvane.wiki.workspace.api.selected',
                                    return_value=(self.decision, {})):
                     self.assertEqual(dedup.run(str(self.root))['state'], 'deferred')
-        self.assertFalse(self.queue.exists())
+        self.assertEqual(self.queued(), [])
         self.assertFalse(self.state_dir.exists())
 
     def test_skips_without_a_route_compile_dedup_or_vectors(self):
@@ -219,7 +217,7 @@ class NotScanned(ScanCase):
                 mock.patch('memvane.wiki.workspace.api.selected', return_value=(self.decision, {})):
             result = dedup.run(str(self.root))
         self.assertEqual((result['state'], result['reason']), ('skipped', scan.SCHEMA3_VECTORS_UNAVAILABLE))
-        self.assertFalse(self.queue.exists())
+        self.assertEqual(self.queued(), [])
         self.assertFalse(self.state_dir.exists())
 
     def test_a_wiki_root_other_than_the_selected_one_aborts(self):
@@ -227,7 +225,7 @@ class NotScanned(ScanCase):
         self.decision['collections'][1]['sourceRoot'] = str(self.home / 'elsewhere')
         self.assertEqual(self.run_scan()['state'], 'skipped')
         self.assertEqual(self.reads, [])
-        self.assertFalse(self.queue.exists())
+        self.assertEqual(self.queued(), [])
 
 
 class SelectedStore(FixtureCase):
@@ -247,8 +245,8 @@ class SelectedStore(FixtureCase):
                                           'QMD_WIKI_DEDUP_LOG': str(self.tmp / 'wiki-dedup.log')}):
             result = dedup.run(str(project.root))
             self.assertEqual((result['state'], result['cards'], result['queued']), ('scanned', 2, 1), result)
-            queue = project.root / '.memvane' / 'compile' / 'dedup-needed.jsonl'
-            rows = [json.loads(line) for line in queue.read_text(encoding='utf-8').splitlines()]
+            from memvane.wiki.pipeline import api as pipeline
+            rows = pipeline.dedup_queue(project.root)
             self.assertEqual([{row['pageA'], row['pageB']} for row in rows],
                              [{'entities/alpha.md', 'entities/alpha-copy.md'}])
             self.assertEqual(dedup.run(str(project.root))['queued'], 0)

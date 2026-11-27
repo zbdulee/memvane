@@ -119,7 +119,7 @@ an unsafe file was skipped, in a pass that finished publishing. Recorded evidenc
 which cards recall serves or their trust. The verify side's provenance reasons
 (`provenance_checkout_unavailable`, `provenance_checkout_changed`,
 `provenance_value_invalid`, `provenance_intent_write_failed`) are in the
-project's `verify-log.jsonl`, not in this log.
+project ledger (`entry/run.py wiki-ledger verify-log --cwd <project>`), not in this log.
 
 ## Detailed diagnostics
 

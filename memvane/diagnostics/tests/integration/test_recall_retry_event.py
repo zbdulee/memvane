@@ -20,7 +20,7 @@ class RecallRetryEventTests(FixtureCase):
         for key in ('state', 'projectRoot', 'installId', 'scopeId', 'journalPath', 'storePath', 'storeIncarnation'):
             self.assertEqual(fresh.get(key), decision.get(key), (key, fresh, decision))
         before = len([r for r in install.events() if r.get('event') == 'recall'])
-        proof = {'productRouteAllowed': True, 'stateFormat': 1, 'writerFloor': '1.0.0'}
+        proof = {'productRouteAllowed': True, 'stateFormat': 2, 'writerFloor': '1.0.0'}
         with patch.object(hook_budget, '_deadline', None), \
              patch.dict(os.environ, {'QMD_HOOK_DEADLINE_MONO': ''}), \
              patch('memvane.journal.api.verify_selected_route',
@@ -49,7 +49,7 @@ class RecallRetryEventTests(FixtureCase):
         self.assertEqual(decision['state'], 'worktree', decision)
         main = decision['mainRoute']
         before = len([r for r in install.events() if r.get('event') == 'recall'])
-        proof = {'productRouteAllowed': True, 'stateFormat': 1, 'writerFloor': '1.0.0'}
+        proof = {'productRouteAllowed': True, 'stateFormat': 2, 'writerFloor': '1.0.0'}
         with patch('memvane.journal.api.verify_selected_route', return_value=proof), \
              patch('memvane.recall.api.serve_endpoint_recall', return_value=RecallAnswer(main)):
             host.serve_selected('recall', 'claude', decision,

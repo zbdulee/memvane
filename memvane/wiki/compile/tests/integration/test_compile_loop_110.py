@@ -25,7 +25,7 @@ from memvane.wiki.compile import wiki_compile_worker as worker
 from memvane.wiki.engines import api as engines
 from memvane.wiki.workspace import api as workspace
 from tests.support.case import FixtureCase
-from tests.support.queue_files import pending_text
+from tests.support.queue_files import pending_text, replace_queue
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
@@ -33,6 +33,30 @@ from tests.support.settings_fake import expanded, use_config
 SOURCE = 'docs/canoe-route.md'
 PASSES = 4
 
+
+
+def _settled(root):
+    from memvane.wiki.pipeline import api as pipeline
+    if not pipeline.pipeline_db_path(root).exists():
+        return {}
+    with pipeline.open_pipeline(root, readonly=True) as store:
+        return store.settled_refreshes()
+
+
+def _event_ids(root):
+    from memvane.wiki.pipeline import api as pipeline
+    if not pipeline.pipeline_db_path(root).exists():
+        return []
+    with pipeline.open_pipeline(root, readonly=True) as store:
+        return [(row['event_id'], row['source_path']) for row in store.refresh_rows()]
+
+
+def _age_settlements(root, seconds):
+    import sqlite3
+    import time
+    from memvane.wiki.pipeline.types import DB_NAME
+    with sqlite3.connect(str(root / '.memvane/compile' / DB_NAME)) as db:
+        db.execute("UPDATE refresh_events SET settled_at = ? WHERE state = 'settled'", (time.time() - seconds,))
 
 class CompileLoop(FixtureCase):
     def setUp(self):
@@ -106,21 +130,19 @@ class CompileLoop(FixtureCase):
 
     # -- observation ----------------------------------------------------------------
     def audit(self, reason=None):
-        path = self.compile_dir / 'candidates.jsonl'
-        rows = ([json.loads(line) for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
-                if path.exists() else [])
+        from memvane.wiki.pipeline import api as pipeline
+        rows = pipeline.log_rows(self.project.root, 'candidate')
         return [row for row in rows if reason is None or row.get('reason') == reason]
 
     def queued(self):
         return [line for line in pending_text(self.queue).splitlines() if line.strip()]
 
     def settled(self):
-        path = self.compile_dir / refresh_settlement.SETTLED_NAME
-        return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+        return _settled(self.root)
 
     def assert_attempted_once(self, event, *, calls, reason):
         """After several more passes nothing is attempted again and the wake drains."""
-        ledger = (self.compile_dir / '.handoff/v1/refresh/events.jsonl').read_bytes()
+        ledger = _event_ids(self.root)
         states = [self.selected_pass()['state'] for _ in range(PASSES)]
         self.assertEqual(states, ['drained'] * PASSES)
         self.assertEqual(len(self.calls), calls)
@@ -130,7 +152,7 @@ class CompileLoop(FixtureCase):
         # Recall freshness still reads the event as unresolved, and the ledger bytes are as they were.
         self.assertEqual([item['eventId'] for item in wiki_freshness.unresolved_pending_refreshes_strict(self.root)],
                          [event['eventId']])
-        self.assertEqual((self.compile_dir / '.handoff/v1/refresh/events.jsonl').read_bytes(), ledger)
+        self.assertEqual(_event_ids(self.root), ledger)
 
     # -- the four endings -----------------------------------------------------------
     def test_an_extractor_answer_with_no_candidate_is_paid_for_once(self):
@@ -283,44 +305,39 @@ class CompileLoop(FixtureCase):
 
 
     def test_a_settlement_that_cannot_be_written_leaves_counted_retries_not_progress(self):
-        """The record is a cache: when it cannot be kept the attempt repeats, but
-        each pass ends as plain ``pending`` (a counted retry with backoff and the
-        retry cap), never as ``compile_progress``."""
+        """When the settlement cannot be kept the attempt repeats, but each pass ends as
+        plain ``pending`` (a counted retry with backoff and the retry cap), never as
+        ``compile_progress``."""
+        from tests.support.wiki_handoff import failing_ledger_method
         self.edit()
-        blocked = self.compile_dir / refresh_settlement.SETTLED_NAME
-        blocked.mkdir()
-        results = [self.selected_pass() for _ in range(PASSES)]
+        with failing_ledger_method('settle_event', OSError('read-only ledger')):
+            results = [self.selected_pass() for _ in range(PASSES)]
         self.assertEqual([(r['state'], r.get('reason')) for r in results], [('pending', None)] * PASSES)
         self.assertEqual(len(self.calls), PASSES)
-        self.assertTrue(blocked.is_dir())
         # Once the record can be written again one more attempt settles it.
-        blocked.rmdir()
         self.assertEqual(self.selected_pass()['state'], 'drained')
         self.assertEqual(self.selected_pass()['state'], 'drained')
         self.assertEqual(len(self.calls), PASSES + 1)
 
-    def test_a_damaged_settlement_file_is_read_as_empty_and_replaced_by_the_next_write(self):
+    def test_a_lost_settlement_costs_exactly_one_more_attempt(self):
+        import sqlite3
+        from memvane.wiki.pipeline.types import DB_NAME
         event = self.edit()
         self.selected_pass()
-        path = self.compile_dir / refresh_settlement.SETTLED_NAME
-        for damaged in ('{broken', '[1, 2]', ''):
-            with self.subTest(damaged=damaged):
-                before = len(self.calls)
-                path.write_text(damaged, encoding='utf-8')
-                # Nothing is read as settled: the source is attempted once more...
-                self.assertEqual(self.selected_pass()['state'], 'drained')
-                self.assertEqual(len(self.calls), before + 1)
-                # ...and that attempt's write puts a well-formed record back.
-                self.assertEqual(list(self.settled()), [event['eventId']])
-                self.assertEqual(self.selected_pass()['state'], 'drained')
-                self.assertEqual(len(self.calls), before + 1)
-        self.assertEqual([name for name in sorted(p.name for p in self.compile_dir.iterdir())
-                          if name.startswith('.write-')], [])
+        before = len(self.calls)
+        with sqlite3.connect(str(self.compile_dir / DB_NAME)) as db:
+            db.execute("UPDATE refresh_events SET state = 'pending', settled_sha = NULL WHERE state = 'settled'")
+        # Nothing is read as settled: the source is attempted once more...
+        self.assertEqual(self.selected_pass()['state'], 'drained')
+        self.assertEqual(len(self.calls), before + 1)
+        # ...and that attempt's settlement is kept.
+        self.assertEqual(list(self.settled()), [event['eventId']])
+        self.assertEqual(self.selected_pass()['state'], 'drained')
+        self.assertEqual(len(self.calls), before + 1)
 
 
 class Progress(FixtureCase):
     """``compile_progress`` means the backlog got smaller, whatever the worker counted."""
-
     def setUp(self):
         super().setUp()
         self.project = make_project(self.home, git=False)
@@ -331,16 +348,14 @@ class Progress(FixtureCase):
                       {'productRouteAllowed': True})
 
     def rows(self, count):
-        self.queue.write_text(''.join(json.dumps({'n': n}) + '\n' for n in range(count)), encoding='utf-8')
+        replace_queue(self.queue, ''.join(json.dumps({'n': n}) + '\n' for n in range(count)))
 
     def result(self, before, after, report, *, claimed=0):
         self.rows(before)
         def child(argv, **_kwargs):
-            self.rows(after)
-            claim = self.queue.with_name(self.queue.name + '.claimed.1.x')
-            claim.unlink(missing_ok=True)
-            if claimed:
-                claim.write_text('{}\n' * claimed, encoding='utf-8')
+            from tests.support.wiki_handoff import hold_claimed
+            replace_queue(self.queue, ''.join(json.dumps({'n': n}) + '\n' for n in range(after + claimed)))
+            hold_claimed(self.queue, claimed)
             return SimpleNamespace(returncode=0, stdout=json.dumps({'processed': 1, **report}), stderr='')
         with patch.object(execution, 'selected', return_value=self.bound), \
                 patch.object(execution, 'recheck'), \
@@ -377,7 +392,8 @@ class Progress(FixtureCase):
         self.assertTrue(execution._idle_locked(self.root, self.queue,
                                                self.queue.with_name('verify-queue.jsonl'), self.bound))
         # An unreadable ledger is unknown, not empty.
-        (self.queue.parent / 'source-refresh-pending.jsonl').write_text('{broken\n', encoding='utf-8')
+        wiki_freshness.unresolved_pending_refreshes(self.root, compact=True)
+        (self.queue.parent / 'edit-inbox.jsonl').symlink_to(self.home / 'elsewhere.jsonl')
         self.assertIsNone(execution._backlog(self.root, self.queue, self.bound))
 
 
@@ -388,7 +404,6 @@ class Settlement(FixtureCase):
         self.root = self.project.root
         for name in ('a', 'b'):
             self.project.write_note('docs/%s.md' % name, name + '\n')
-        self.path = self.root / '.memvane/compile' / refresh_settlement.SETTLED_NAME
 
     def event(self, name):
         return wiki_freshness.record_pending_refresh(self.root, 'docs/%s.md' % name, 'claude')
@@ -404,10 +419,10 @@ class Settlement(FixtureCase):
         outside = self.home / 'outside.md'
         outside.write_text('outside\n', encoding='utf-8')
         (self.root / 'docs/out.md').symlink_to(outside)
-        event = {**self.event('a'), 'sourcePath': 'docs/out.md'}
+        event = wiki_freshness.record_pending_refresh(self.root, 'docs/out.md', 'claude')
         self.assertEqual(self.open_ids([event]), [event['eventId']])
         worker._settle_unrecoverable(self.root, event)
-        entry = json.loads(self.path.read_text(encoding='utf-8'))[event['eventId']]
+        entry = _settled(self.root)[event['eventId']]
         self.assertEqual((entry['sourceSha256'], entry['reason']), (None, 'not_a_compile_source'))
         self.assertEqual(self.open_ids([event]), [])
         # One inside the root is settled for its content.
@@ -420,7 +435,7 @@ class Settlement(FixtureCase):
     def test_an_entry_holds_only_for_its_event_and_the_settled_content(self):
         a, b = self.event('a'), self.event('b')
         self.assertEqual(self.open_ids([a, b]), [a['eventId'], b['eventId']])
-        self.assertFalse(self.path.exists())
+        self.assertEqual(_settled(self.root), {})
         self.assertTrue(refresh_settlement.settle(self.root, a, self.sha('a'), 'not_refreshed'))
         self.assertEqual(self.open_ids([a, b]), [b['eventId']])
         (self.root / 'docs/a.md').write_text('other bytes\n', encoding='utf-8')
@@ -437,19 +452,14 @@ class Settlement(FixtureCase):
         self.assertTrue(refresh_settlement.settle(self.root, a, self.sha('a'), 'unknown_host_exhausted'))
         self.assertTrue(refresh_settlement.settle(self.root, b, self.sha('b'), 'not_refreshed'))
         self.assertEqual(self.open_ids([a, b]), [])
-        stored = json.loads(self.path.read_text(encoding='utf-8'))
 
-        def aged(seconds=None, ts=None):
-            when = datetime.now(timezone.utc) - timedelta(seconds=seconds or 0)
-            stamp = ts if ts is not None else when.isoformat().replace('+00:00', 'Z')
-            self.path.write_text(json.dumps({key: dict(value, ts=stamp) for key, value in stored.items()}),
-                                 encoding='utf-8')
+        def aged(seconds):
+            _age_settlements(self.root, seconds)
             return self.open_ids([a, b])
         day = refresh_settlement.EXPIRY_SECONDS
         self.assertEqual(aged(day - 600), [])
         self.assertEqual(aged(day + 600), [a['eventId']])
-        # A time that cannot be read, or one in the future, does not hold an outage settlement.
-        self.assertEqual(aged(ts='yesterday'), [a['eventId']])
+        # A time in the future does not hold an outage settlement.
         self.assertEqual(aged(-3600), [a['eventId']])
         # The retry that fails again settles it for another day.
         self.assertTrue(refresh_settlement.settle(self.root, a, self.sha('a'), 'unknown_host_exhausted'))
@@ -463,22 +473,17 @@ class Settlement(FixtureCase):
         # An event that is not the source's latest unresolved one is not recorded.
         stale = dict(a, eventId='0' * 32)
         self.assertFalse(refresh_settlement.settle(self.root, stale, self.sha('a'), 'x'))
-        self.assertFalse(self.path.exists())
+        self.assertEqual(_settled(self.root), {})
         self.assertTrue(refresh_settlement.settle(self.root, a, self.sha('a'), 'x' * 200))
-        self.assertEqual(len(json.loads(self.path.read_text(encoding='utf-8'))[a['eventId']]['reason']), 80)
-        for broken in ('{broken', '[]', json.dumps({a['eventId']: {'sourcePath': 3}}),
-                       json.dumps({a['eventId']: {'sourcePath': 'docs/a.md', 'sourceSha256': 'zz'}})):
-            self.path.write_text(broken, encoding='utf-8')
-            self.assertEqual(self.open_ids([a]), [a['eventId']], broken)
+        self.assertEqual(len(_settled(self.root)[a['eventId']]['reason']), 80)
 
     def test_a_write_keeps_only_events_that_are_still_unresolved(self):
         a, b = self.event('a'), self.event('b')
         self.assertTrue(refresh_settlement.settle(self.root, a, self.sha('a'), 'x'))
         self.assertTrue(refresh_settlement.settle(self.root, b, self.sha('b'), 'x'))
-        self.assertEqual(sorted(json.loads(self.path.read_text(encoding='utf-8'))),
-                         sorted([a['eventId'], b['eventId']]))
+        self.assertEqual(sorted(_settled(self.root)), sorted([a['eventId'], b['eventId']]))
         newer = self.event('a')  # the source's latest event replaces the older one
         self.assertTrue(refresh_settlement.settle(self.root, newer, self.sha('a'), 'x'))
-        self.assertEqual(sorted(json.loads(self.path.read_text(encoding='utf-8'))),
-                         sorted([newer['eventId'], b['eventId']]))
-        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        # The worker's next absorption prunes the superseded event with its settlement.
+        wiki_freshness.unresolved_pending_refreshes(self.root, compact=True)
+        self.assertEqual(sorted(_settled(self.root)), sorted([newer['eventId'], b['eventId']]))

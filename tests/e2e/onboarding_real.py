@@ -100,7 +100,7 @@ def onboard(project):
     plan = setup('plan-fresh-wiki-origin', '--project', str(project))
     need(plan.get('proposalSha256'), 'plan_without_proposal', plan=plan)
     install = secrets.token_hex(16)
-    state = HOME / '.local/state/memvane/v1/installs' / install
+    state = HOME / '.local/state/memvane/v2/installs' / install
     review = setup('review-index-provider', '--project', str(project), '--state-root', str(state),
                    '--provider-dimension', DIMENSION)
     need(review.get('proposalSha256'), 'review_without_proposal', review=review)

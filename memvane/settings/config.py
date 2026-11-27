@@ -478,7 +478,7 @@ def compile_active(compile_cfg):
 
 def compile_config(value):
     """정규화된 compile 블록. 선택지가 있는 값(`defaultStatus`, `extractor.backends`,
-    `verify.onFail`·`onInconclusive`·`crossEngine`, `semanticDedup.judge.crossEngine`)은
+    `verify.crossEngine`, `semanticDedup.judge.crossEngine`)은
     settings로 고를 수 없으므로 읽지 않고 기본값을 쓴다(결정 8)."""
     if not isinstance(value, dict):
         value = {}
@@ -595,8 +595,6 @@ def compile_config(value):
     result["verify"] = {
         "enabled": verify.get("enabled") if isinstance(verify.get("enabled"), bool) else default_verify["enabled"],
         "timeout": coerce_int(verify.get("timeout", default_verify["timeout"]), default_verify["timeout"]),
-        "onFail": default_verify["onFail"],
-        "onInconclusive": default_verify["onInconclusive"],
         "crossEngine": default_verify["crossEngine"],
         # 심볼릭 엔진 이름만 받는다(adapter 경로 금지). 빈 목록 = extractor 풀 상속.
         "builtins": string_list(verify.get("builtins"), default_verify["builtins"]),

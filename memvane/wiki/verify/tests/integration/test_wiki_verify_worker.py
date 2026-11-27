@@ -1,14 +1,15 @@
 """The verify worker run in process over a fake host CLI.
 
-Verdicts and their ledgers (audit before suppression before delete; a ledger
-that cannot be written blocks the delete), transient failures that are never a
-verdict, the producing-engine policy and per-engine cooldowns, the run budget,
-and the source snapshot a verifier is shown.
+Verdicts (a negative verdict keeps the card), the recorded verdict reused after
+an interrupted publish, transient failures that are never a verdict, the
+producing-engine policy and per-engine cooldowns, the run budget, and the
+source snapshot a verifier is shown.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -18,7 +19,7 @@ from memvane.wiki.engines import api as engines
 from memvane.wiki.verify import api as verify
 from memvane.wiki.verify import wiki_verify_worker as worker
 from memvane.wiki.verify.tests.support import (
-    CARD_REL, CLAIM, FAIL, HASH, INCONCLUSIVE, PASS, SOURCE, SOURCE_REL, VerifyCase, card_text, jsonl)
+    CARD_REL, CLAIM, FAIL, HASH, INCONCLUSIVE, PASS, SOURCE, SOURCE_REL, VerifyCase, card_text)
 
 
 class Pass(VerifyCase):
@@ -66,7 +67,7 @@ class Pass(VerifyCase):
         self.setup(extra_fm='reviewed: true')
         self.fake(INCONCLUSIVE)
         self.run_verify()
-        self.assertFalse(self.card.exists())
+        self.assert_status('generated')
 
     def test_a_verified_card_is_never_reverified(self):
         self.setup(card_status='verified')
@@ -93,23 +94,18 @@ class Pass(VerifyCase):
                 self.assertEqual(self.card_now(), before)
                 self.assertEqual(self.queued(), '')
 
-    def test_released_rows_with_missing_or_unsafe_targets_keep_their_original_bytes(self):
+    def test_rows_with_missing_or_unsafe_targets_close_without_a_call(self):
         fake = self.fake()
-        expected = []
-        for target in ('', SOURCE_REL):
+        for target in ('', SOURCE_REL, '/abs.md'):
             with self.subTest(target=target):
                 before = self.setup(targetPath=target)
                 source = self.source.read_bytes()
-                expected.append(self.queue.read_bytes())
-                for _ in range(2):
-                    self.assertEqual(self.run_verify()['processed'], 0)
-                    self.assertEqual(self.queued(), '')
-                    private = self.compile_dir / '.handoff/v1/returns'
-                    self.assertCountEqual([p.read_bytes() for p in private.rglob('fragment-*')], expected)
-                    self.assertEqual(fake.calls, [])
-                    self.assertEqual(self.log(), [])
-                    self.assertEqual(self.card_now(), before)
-                    self.assertEqual(self.source.read_bytes(), source)
+                self.assertEqual(self.run_verify()['processed'], 1)
+                self.assertEqual(self.queued(), '')
+                self.assertEqual(self.rows()[-1]['reason'], 'unsafe_target_path')
+                self.assertEqual(fake.calls, [])
+                self.assertEqual(self.card_now(), before)
+                self.assertEqual(self.source.read_bytes(), source)
 
     def test_a_card_without_any_readable_source_stays_generated(self):
         before = self.setup(with_source=False)
@@ -134,96 +130,31 @@ class Pass(VerifyCase):
 
 
 class NegativeVerdicts(VerifyCase):
-    def test_fail_deletes_with_an_audit_row_and_no_suppression_or_tombstone(self):
-        self.setup()
-        self.fake(FAIL)
-        self.run_verify()
-        self.assertFalse(self.card.exists())
-        self.assertEqual(self.ledger('tombstones.jsonl'), [])
-        row = self.log()[0]
-        self.assertEqual((row['result'], row['reasons']), ('deleted', ['source contradicts claim']))
-        deleted = self.ledger('verify-deleted.jsonl')
-        self.assertEqual(len(deleted), 1)
-        self.assertEqual({key: deleted[0][key] for key in ('targetPath', 'verdict', 'engine', 'verifiedMode',
-                                                             'producedBy', 'reasons', 'sourcePaths', 'claims')},
-                         {'targetPath': CARD_REL, 'verdict': 'fail', 'engine': 'claude', 'verifiedMode': 'self',
-                          'producedBy': 'claude', 'reasons': ['source contradicts claim'],
-                          'sourcePaths': [SOURCE_REL], 'claims': 1})
-        self.assertTrue(deleted[0]['deletedAt'])
-        self.assertNotIn('Durable claim', json.dumps(deleted[0]), 'no source body in the ledger')
-        self.assertEqual(self.ledger('verify-skipped.jsonl'), [], 'fail leaves no suppression marker')
-        manifest = self.ledger('generated-manifest.jsonl')
-        self.assertEqual([(r['action'], r['targetPath'], r['verdict']) for r in manifest],
-                         [('verify-deleted', CARD_REL, 'fail')])
+    def test_fail_and_inconclusive_keep_the_card_generated_without_any_deletion_ledger(self):
+        for answer, result in ((FAIL, 'kept'), (INCONCLUSIVE, 'inconclusive')):
+            with self.subTest(verdict=answer['verdict']):
+                before = self.setup()
+                fake = self.fake(answer)
+                self.assertEqual(self.run_verify()['processed'], 1)
+                self.assertEqual(len(fake.calls), 1)
+                self.assertEqual(self.card_now(), before)
+                row = self.log()[-1]
+                self.assertEqual((row['result'], row['verdict']), (result, answer['verdict']))
+                self.assertEqual((self.rows()[-1]['state'], self.rows()[-1]['reason']), ('done', 'kept'))
+                # The same row is never paid for again.
+                self.assertEqual(self.run_verify()['processed'], 0)
+                self.assertEqual(len(fake.calls), 1)
+        for name in ('verify-deleted.jsonl', 'verify-skipped.jsonl', 'tombstones.jsonl',
+                     'generated-manifest.jsonl'):
+            self.assertEqual(self.ledger(name), [], name)
+        self.assertEqual(self.suppressed(), {})
 
-    def test_a_machine_delete_leaves_index_and_log_pages_alone(self):
-        self.setup()
-        index = self.project.wiki / 'index.md'
-        leftover = '# Wiki Index\n\n- concepts/test-card.md - Test Card\n'
-        index.write_text(leftover, encoding='utf-8')
-        self.fake(FAIL)
-        self.run_verify()
-        self.assertFalse(self.card.exists())
-        self.assertEqual(index.read_text(encoding='utf-8'), leftover)
-        self.assertFalse((self.project.wiki / 'log.md').exists())
-
-    def test_the_deletion_ledger_is_never_trimmed_while_the_log_is(self):
-        self.setup()
-        bulk = lambda tag: ''.join(json.dumps({'i': i, 'tag': tag, 'pad': 'x' * 700}) + '\n' for i in range(400))
-        (self.compile_dir / 'verify-deleted.jsonl').write_text(bulk('old-deletion'), encoding='utf-8')
-        (self.compile_dir / 'verify-log.jsonl').write_text(bulk('old-verdict'), encoding='utf-8')
-        self.fake({'verdict': 'fail', 'claims': [], 'reasons': ['contradiction']})
-        self.run_verify()
-        deleted = self.ledger('verify-deleted.jsonl')
-        self.assertEqual((len(deleted), deleted[0]['i'], deleted[400]['verdict']), (401, 0, 'fail'))
-        log = self.log()
-        self.assertEqual((len(log), log[0]['i']), (201, 200), 'the verdict log keeps its newest half')
-
-    def test_inconclusive_deletes_after_a_suppression_marker_for_each_source(self):
-        self.setup()
-        self.fake(INCONCLUSIVE)
-        self.run_verify()
-        self.assertFalse(self.card.exists())
-        self.assertEqual(self.ledger('tombstones.jsonl'), [])
-        row = self.log()[0]
-        self.assertEqual((row['result'], row['verdict'], row['reasons'], row['suppressedSources']),
-                         ('deleted', 'inconclusive', ['verifier could not adjudicate'], 1))
-        skipped = self.ledger('verify-skipped.jsonl')
-        self.assertEqual(len(skipped), 1)
-        self.assertEqual((skipped[0]['sourcePath'], skipped[0]['verdict'], skipped[0]['targetPath']),
-                         (SOURCE_REL, 'inconclusive', CARD_REL))
-        # The marker hashes the bounded text the extractor saw: unchanged source, no recompile.
-        self.assertEqual(skipped[0]['sourceBodyHash'], verify.source_body_hash(SOURCE))
-        self.assertRegex(skipped[0]['sourceBodyHash'], '^[0-9a-f]{32}$')
-        self.assertTrue(skipped[0]['deletedAt'])
-        self.assertEqual(verify.load_verify_suppressions(verify.verify_skipped_path(self.root, {})),
-                         {SOURCE_REL: verify.source_body_hash(SOURCE)})
-        deleted = self.ledger('verify-deleted.jsonl')
-        self.assertEqual([(d['verdict'], d['reasons']) for d in deleted],
-                         [('inconclusive', ['verifier could not adjudicate'])])
-
-    def test_a_changed_source_gets_a_new_marker_and_the_last_marker_wins(self):
-        self.setup()
-        self.fake(INCONCLUSIVE)
-        self.run_verify()
-        changed = SOURCE.replace('cite markdown', 'retry when the body changes')
-        self.project.write_note(SOURCE_REL, changed)
-        self.card.write_text(card_text(), encoding='utf-8')
-        self.write_queue(self.job())
-        self.run_verify()
-        hashes = [row['sourceBodyHash'] for row in self.ledger('verify-skipped.jsonl')]
-        self.assertEqual(hashes, [verify.source_body_hash(SOURCE), verify.source_body_hash(changed)])
-        self.assertEqual(verify.load_verify_suppressions(verify.verify_skipped_path(self.root, {})),
-                         {SOURCE_REL: verify.source_body_hash(changed)})
-
-    def test_suppressions_ignore_malformed_rows_and_a_missing_ledger(self):
-        path = self.compile_dir / 'verify-skipped.jsonl'
-        path.write_text('\n'.join(['not json', '{"sourcePath":"a.md"}', '{"sourcePath":"","sourceBodyHash":"x"}',
-                                   '{"sourcePath":"a.md","sourceBodyHash":"h1"}',
-                                   '{"sourcePath":"a.md","sourceBodyHash":"h2"}']) + '\n', encoding='utf-8')
-        self.assertEqual(verify.load_verify_suppressions(path), {'a.md': 'h2'})
-        self.assertEqual(verify.load_verify_suppressions(None), {})
-        self.assertEqual(verify.load_verify_suppressions(self.compile_dir / 'absent.jsonl'), {})
+    def test_suppressions_keep_the_last_hash_and_a_missing_ledger_is_empty(self):
+        from memvane.wiki.pipeline import api as pipeline
+        self.assertEqual(self.suppressed(), {})
+        for body in ('h1', 'h2'):
+            self.assertTrue(pipeline.set_suppression(self.root, 'verify', 'a.md', body, {'sourcePath': 'a.md'}))
+        self.assertEqual(self.suppressed(), {'a.md': 'h2'})
 
     def test_a_selected_route_keeps_every_card_and_wakes_sync_after_a_pass(self):
         from memvane.wiki.card import api as cards
@@ -249,73 +180,112 @@ class NegativeVerdicts(VerifyCase):
                 self.assertGreater(recheck.call_count, 0)
                 self.assertEqual(wake.call_count, 1 if expected == 'verified' else 0)
         self.assertEqual(self.ledger('verify-deleted.jsonl'), [])
-        self.assertEqual(self.ledger('verify-skipped.jsonl'), [])
+        self.assertEqual(self.suppressed(), {})
 
 
-class LedgerWrites(VerifyCase):
-    """A deletion that cannot be recorded does not happen (write-return classification)."""
+class RecordedVerdict(VerifyCase):
+    """A paid verdict is recorded on its row before publishing (V12)."""
 
-    def test_record_functions_fold_a_failed_write_into_false(self):
+    def test_a_failed_publish_keeps_the_row_and_reuses_the_recorded_verdict(self):
+        from memvane.wiki.pipeline import api as pipeline
         self.setup()
-        (self.compile_dir / 'verify-deleted.jsonl').mkdir()
-        (self.compile_dir / 'verify-skipped.jsonl').mkdir()
-        sources = [{'path': SOURCE_REL, 'content': SOURCE}]
-        self.assertIs(worker.record_verify_deletion(self.root, {}, sources, {}, 'fail'), False)
-        self.assertEqual(worker.record_verify_suppression(self.root, {}, sources, {}, 'inconclusive'), (0, False))
-        self.assertEqual(worker.record_verify_suppression(self.root, {}, [], {}, 'inconclusive'), (0, True),
-                         'nothing to write is not a failure')
-
-    def test_an_unwritable_ledger_blocks_paid_calls_before_the_claim(self):
-        for name, reason in (('verify-deleted.jsonl', 'audit_ledger_unwritable'),
-                             ('verify-skipped.jsonl', 'suppression_ledger_unwritable')):
-            with self.subTest(ledger=name):
-                before = self.setup()
-                blocker = self.compile_dir / name
-                blocker.mkdir()
-                fake = self.fake(INCONCLUSIVE)
-                result = self.run_verify()
-                self.assertEqual((result['processed'], result.get('reason')), (0, reason))
-                self.assertEqual(fake.calls, [])
-                self.assertEqual(self.card_now(), before)
-                self.assertIn('test-card.md', self.queued())
-                self.assertEqual(list(self.compile_dir.glob('verify-queue.jsonl.claimed.*')), [])
-                blocker.rmdir()
-
-    def test_suppression_is_checked_only_when_inconclusive_deletes(self):
-        self.setup()
-        (self.compile_dir / 'verify-skipped.jsonl').mkdir()
-        fake = self.fake(PASS)
-        self.assertEqual(self.run_verify(verify={'onInconclusive': 'none'})['processed'], 1)
-        self.assertEqual(len(fake.calls), 1)
-
-    def test_a_ledger_failing_after_the_verdict_blocks_the_delete_and_keeps_the_job(self):
-        for name, verdict in (('verify-deleted.jsonl', FAIL), ('verify-skipped.jsonl', INCONCLUSIVE)):
-            with self.subTest(ledger=name):
-                self.setup()
-                blocker = self.compile_dir / name
-                blocker.mkdir()
-                self.fake(verdict)
-                with mock.patch.object(worker, 'preflight_block_reason', return_value=''):
-                    result = self.run_verify()
-                self.assertEqual(result['processed'], 0)
-                self.assertTrue(self.card.exists(), 'no unexplained deletion')
-                self.assertIn('test-card.md', self.queued())
-                row = self.log()[-1]
-                self.assertEqual(row['result'], 'delete_blocked')
-                self.assertIn(row['reason'], ('audit_ledger_unwritable', 'suppression_ledger_unwritable'))
-                blocker.rmdir()
-        # The audit row is written before the marker: a blocked marker never strands a source.
-        self.assertEqual([d['verdict'] for d in self.ledger('verify-deleted.jsonl')], ['inconclusive'])
-
-    def test_a_failed_stamp_keeps_the_card_generated_and_the_job_queued(self):
-        self.setup()
-        self.fake()
-        with mock.patch.object(worker, 'stamp_verification', return_value=False):
+        fake = self.fake()
+        with mock.patch.object(pipeline, 'publish_card', side_effect=OSError('disk full')):
             result = self.run_verify()
         self.assertEqual(result['processed'], 0)
         self.assert_status('generated')
         self.assertIn('test-card.md', self.queued())
-        self.assertEqual((self.log()[-1]['result'], self.log()[-1]['stampStatus']), ('stamp_failed', 'verified'))
+        self.assertEqual((self.log()[-1]['result'], self.log()[-1]['reason']), ('publish_pending', 'write_failed'))
+        self.assertEqual(self.rows()[-1]['payload']['_verdict']['verdict'], 'pass')
+        self.assertEqual(self.run_verify()['processed'], 1)
+        self.assertEqual(len(fake.calls), 1, 'the recorded verdict is reused, not paid again')
+        self.assert_status('verified')
+
+    def test_a_file_system_without_exchange_keeps_the_card_and_the_row_without_paying_again(self):
+        """``exchange_unsupported``: the card stays, the row stays queued, every pass reuses the verdict."""
+        import errno
+        from memvane.kernel import atomic_rename
+        from memvane.wiki.pipeline import api as pipeline
+        before = self.setup()
+        fake = self.fake()
+        real = atomic_rename._rename
+
+        def no_exchange(*args, exchange, **kwargs):
+            if exchange:
+                raise OSError(errno.ENOTSUP, 'exchange not supported')
+            return real(*args, exchange=exchange, **kwargs)
+        with mock.patch.object(atomic_rename, '_rename', no_exchange):
+            for _ in range(3):
+                self.assertEqual(self.run_verify()['processed'], 0)
+        self.assertEqual(len(fake.calls), 1, 'the recorded verdict is reused on every pass')
+        self.assertEqual(self.card_now(), before, 'the card keeps its bytes')
+        row = self.rows()[-1]
+        self.assertEqual((row['state'], row['reason']), ('queued', 'publish_exchange_unsupported'))
+        self.assertEqual(row['payload']['_verdict']['verdict'], 'pass')
+        self.assertEqual((self.log()[-1]['result'], self.log()[-1]['reason']),
+                         ('publish_pending', 'exchange_unsupported'))
+        self.assertEqual(list(self.card.parent.glob('.publish-*.tmp')), [])
+        with pipeline.open_pipeline(self.root, readonly=True) as store:
+            self.assertEqual(store.open_publish_txns(), [])
+            self.assertEqual(len(store.open_publish_txns(state='aborted')), 3)
+        self.assertEqual(self.run_verify()['processed'], 1)
+        self.assertEqual(len(fake.calls), 1, 'a file system that exchanges again publishes without paying')
+        self.assert_status('verified')
+
+    def test_a_dead_claim_after_the_verdict_is_reused_and_a_fourth_claim_drops_the_row(self):
+        from memvane.wiki.pipeline import api as pipeline
+        self.setup()
+        fake = self.fake()
+        crash = RuntimeError('worker killed between the verdict and the publish')
+        with mock.patch.object(worker, 'source_freshness', side_effect=crash), \
+                mock.patch.object(worker.os, 'getpid', return_value=999999):
+            with self.assertRaises(RuntimeError):
+                self.run_verify()
+        with pipeline.open_pipeline(self.root) as store:  # the crashed run never released its claim
+            store._conn.execute("UPDATE verify_jobs SET state='claimed', claim_pid=999999")
+            store._conn.commit()
+        with mock.patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': '999999'}):
+            self.assertEqual(self.run_verify()['processed'], 1)
+        self.assertEqual(len(fake.calls), 1)
+        self.assert_status('verified')
+        self.setup()
+        with pipeline.open_pipeline(self.root) as store:
+            store._conn.execute("UPDATE verify_jobs SET state='claimed', claim_pid=999999, attempt_count=4")
+            store._conn.commit()
+        with mock.patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': '999999'}):
+            self.assertEqual(self.run_verify()['processed'], 0)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual((self.rows()[-1]['state'], self.rows()[-1]['reason']), ('dropped', 'requeue_exhausted'))
+        self.assertEqual(self.log()[-1]['reason'], 'requeue_exhausted')
+
+
+class PublishRecovery(VerifyCase):
+    def test_an_unrecoverable_interrupted_publish_does_not_stop_the_verify_pass(self):
+        """I1: the txn closes ``aborted`` and the queued row is still claimed and verified."""
+        from memvane.wiki.pipeline import api as pipeline
+        self.setup()
+        wiki = self.root / '.memvane/wiki'
+
+        class Crash(Exception):
+            pass
+
+        def crash():
+            raise Crash
+        (wiki / 'poisoned').mkdir()
+        with self.assertRaises(Crash):
+            pipeline.publish_card(self.root, wiki, 'poisoned/a.md', '# A\n', lock_context=crash)
+        os.rename(wiki / 'poisoned', self.root / 'moved')
+        os.symlink(self.root / 'moved', wiki / 'poisoned')
+        fake = self.fake()
+        for _ in range(2):
+            result = self.run_verify()
+            self.assertNotEqual(result.get('reason'), 'publish_recovery_unavailable')
+        self.assertEqual(len(fake.calls), 1)
+        self.assert_status('verified')
+        with pipeline.open_pipeline(self.root, readonly=True) as store:
+            self.assertEqual(store.open_publish_txns(), [])
+            self.assertEqual(len(store.open_publish_txns(state='aborted')), 1)
+        self.assertEqual(len(list((self.root / 'moved').glob('.publish-*.tmp'))), 1)
 
 
 class Transient(VerifyCase):
@@ -331,25 +301,25 @@ class Transient(VerifyCase):
         self.assertEqual((row['result'], row['reason'], row['enginesAttempted']),
                          ('deferred', 'extractor_unavailable', ['claude']))
         self.assertEqual(self.engine_cooldown(), {})
-        self.assertEqual(self.ledger('verify-skipped.jsonl'), [])
+        self.assertEqual(self.suppressed(), {})
 
     def test_a_paid_failure_cools_only_its_engine_and_is_never_a_verdict(self):
         for kwargs, reason in (({'timeout': True}, 'extractor_timeout'), ({'returncode': 1}, 'extractor_failed')):
             with self.subTest(reason=reason):
-                (self.compile_dir / 'verify-engine-cooldown.json').unlink(missing_ok=True)
                 self.setup()
+                self.clear_engine_cooldown()
                 fake = self.fake(**kwargs)
                 self.assertEqual(self.run_verify()['processed'], 0)
                 self.assertEqual(len(fake.calls), 1)
                 self.assertTrue(self.card.exists())
                 self.assertIn('test-card.md', self.queued())
                 self.assertEqual(list(self.engine_cooldown()), ['claude'])
-                self.assertFalse((self.compile_dir / 'cooldown').exists(), 'the compile cooldown is separate')
+                self.assertEqual(self.engine_cooldown('compile'), {}, 'the compile cooldown is separate')
                 row = self.log()[-1]
                 self.assertEqual((row['result'], row['reason'], row['cooledKey'], row['attemptedMode']),
                                  ('deferred', reason, 'claude', 'self'))
                 self.assertNotIn('verifiedMode', row, 'a failed attempt achieved no mode')
-                self.assertEqual(self.ledger('verify-skipped.jsonl'), [])
+                self.assertEqual(self.suppressed(), {})
                 self.assertEqual(self.ledger('verify-deleted.jsonl'), [])
 
     def test_a_cooled_producer_spends_nothing_until_its_cooldown_ends(self):
@@ -366,7 +336,9 @@ class Transient(VerifyCase):
 
     def test_an_unbounded_cooldown_value_does_not_exclude_the_engine(self):
         self.setup()
-        (self.compile_dir / 'verify-engine-cooldown.json').write_text(json.dumps({'claude': 9e18}), encoding='utf-8')
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.root) as store:
+            store.set_cooldown('verify_engine', 'claude', 9e18)
         fake = self.fake()
         self.assertEqual(self.run_verify()['processed'], 1)
         self.assertEqual(len(fake.calls), 1)
@@ -374,7 +346,10 @@ class Transient(VerifyCase):
 
     def test_a_failed_cooldown_write_is_surfaced(self):
         self.setup()
-        (self.compile_dir / 'verify-engine-cooldown.json').mkdir()
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.root) as store:
+            store._conn.execute("CREATE TRIGGER refuse_cooldown BEFORE INSERT ON cooldowns "
+                                "BEGIN SELECT RAISE(ABORT, 'synthetic cooldown refusal'); END")
         self.fake(timeout=True)
         self.run_verify()
         row = self.log()[0]
@@ -409,15 +384,6 @@ class Transient(VerifyCase):
         self.assertEqual((self.log()[0]['result'], self.log()[0]['reason']), ('deferred', 'resource_deferred'))
         self.assertEqual(self.engine_cooldown(), {})
         self.assertIn('test-card.md', self.queued())
-
-    def test_the_retired_global_cooldown_file_is_removed(self):
-        self.setup()
-        stale = self.compile_dir / 'verify-cooldown'
-        stale.write_text('99999999999\n', encoding='utf-8')
-        self.fake(returncode=127)
-        self.run_verify()
-        self.assertFalse(stale.exists())
-
 
 class Budget(VerifyCase):
     def cards(self, names):
@@ -468,33 +434,38 @@ class Budget(VerifyCase):
         self.assertEqual(len(fake.calls), settings_types.MAX_VERIFY_PER_RUN)
         self.assertNotIn('producedCapped', result)
 
-    def test_the_latest_job_per_card_wins_and_malformed_lines_stay(self):
+    def test_the_latest_row_per_card_wins_even_after_a_dead_claim_returns_an_older_one(self):
         self.project.write_note(SOURCE_REL, SOURCE)
         self.card.parent.mkdir(parents=True, exist_ok=True)
         self.card.write_text(card_text(source_hash='def456'), encoding='utf-8')
         older = self.job(sourceHash='abc123', ts='2026-07-04T00:00:00Z')
         newer = self.job(sourceHash='def456', ts='2026-07-05T00:00:00Z')
-        self.write_queue(older, newer, raw=['{malformed'])
+        self.write_queue(older, newer)
         fake = self.fake()
         result = self.run_verify()
-        self.assertEqual((result['processed'], len(fake.calls)), (1, 1))
+        self.assertEqual((result['processed'], len(fake.calls), result['superseded']), (1, 1, 1))
         self.assert_status('verified')
         self.assertEqual(self.queued(), '')
+        self.assertEqual([(r['payload']['sourceHash'], r['reason']) for r in self.rows()],
+                         [('abc123', 'superseded'), ('def456', 'verified')])
+        from memvane.wiki.pipeline import api as pipeline
+        with pipeline.open_pipeline(self.root) as store:  # a dead claim returns the older row
+            store._conn.execute("UPDATE verify_jobs SET state='queued', reason=NULL WHERE reason='superseded'")
+            store._conn.commit()
         self.assertEqual(self.run_verify()['processed'], 0)
         self.assertEqual(len(fake.calls), 1)
-        private = self.compile_dir / '.handoff/v1/returns'
-        self.assertEqual([p.read_bytes() for p in private.rglob('fragment-*')], [b'{malformed\n'])
 
 
 class SourceSnapshot(VerifyCase):
-    def test_a_source_changed_before_the_call_defers_without_paying(self):
+    def test_a_source_changed_before_the_call_closes_the_row_without_paying(self):
         self.setup()
         self.project.write_note(SOURCE_REL, '# Changed before verify\n')
         fake = self.fake()
-        self.assertEqual(self.run_verify()['processed'], 0)
+        self.assertEqual(self.run_verify()['processed'], 1)
         self.assertEqual(fake.calls, [])
         self.assert_status('generated')
-        self.assertIn('test-card.md', self.queued())
+        self.assertEqual(self.queued(), '')
+        self.assertEqual(self.rows()[-1]['reason'], 'stale_revision')
         self.assertEqual(self.log()[-1]['reason'], 'source_changed_before_verify')
 
     def test_empty_source_revisions_fail_closed(self):
@@ -513,11 +484,14 @@ class SourceSnapshot(VerifyCase):
         def edit_then_pass(payload, argv):
             Path(payload['cwd'], SOURCE_REL).write_text('# Changed during verify\n', encoding='utf-8')
             return PASS
-        self.fake(edit_then_pass)
-        self.assertEqual(self.run_verify()['processed'], 0)
+        fake = self.fake(edit_then_pass)
+        self.assertEqual(self.run_verify()['processed'], 1)
         self.assertNotRegex(self.card_now(), '(?m)^status: verified$')
-        self.assertIn('test-card.md', self.queued())
+        self.assertEqual(self.queued(), '')
+        self.assertEqual(self.rows()[-1]['reason'], 'stale_revision')
         self.assertEqual(self.log()[-1]['reason'], 'source_changed_during_verify')
+        self.assertEqual(self.run_verify()['processed'], 0)
+        self.assertEqual(len(fake.calls), 1)
 
     def test_a_card_changed_during_the_call_is_not_stamped(self):
         self.setup()
@@ -657,12 +631,11 @@ class SourceSpans(VerifyCase):
             return {'verdict': 'pass', 'claims': [{**CLAIM, 'quote': 'the source documents cite'}], 'reasons': []}
         self.fake(edit)
         self.bind()
-        self.assertEqual(self.run_verify()['processed'], 0)
+        self.assertEqual(self.run_verify()['processed'], 1)
         frontmatter = self.frontmatter()
         self.assertRegex(frontmatter, '(?m)^status: generated$')
         self.assertNotIn('sourceSpans', frontmatter)
         self.assertEqual(self.log()[-1]['reason'], 'source_changed_during_verify')
-
 
 if __name__ == '__main__':
     unittest.main()
