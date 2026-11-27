@@ -47,8 +47,12 @@ def profile(spec):
 
 
 def regular(root, relative, limit):
-    from memvane.store.blob.blob_store import _regular as implementation
-    return implementation(root, relative, limit)
+    """One file's ``(bytes, node, root node)``; a list of paths gives ``{path: ...}`` below one root."""
+    from memvane.store.blob import blob_store as implementation
+    from memvane.store.view.view_store import _each_below
+    if isinstance(relative, list):
+        return _each_below(root, relative, lambda fd, path: implementation._regular(fd, path, limit))
+    return implementation._regular(root, relative, limit)
 
 
 def digest(domain, value):

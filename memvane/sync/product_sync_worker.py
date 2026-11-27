@@ -59,15 +59,12 @@ def _profile_call(profile, stage, function, *args, **kwargs):
 
 
 def _profile_read_cards(profile, root, paths, regular):
-    current = {}
     with _profile_phase(profile, 'scan'):
-        for path in paths:
-            try:
-                raw, _node, _root = regular(root, path, store_types.MAX_BODY)
-            except OSError:
-                raise store_types.BlobStoreError('wiki_card_unavailable')
-            current[path] = (hashlib.sha256(raw).hexdigest(), raw)
-    return current
+        try:
+            read = regular(root, list(paths), store_types.MAX_BODY)  # One root descriptor for every card.
+        except OSError:
+            raise store_types.BlobStoreError('wiki_card_unavailable')
+        return {path: (hashlib.sha256(raw).hexdigest(), raw) for path, (raw, _node, _root) in read.items()}
 
 
 def _deferred(exc):

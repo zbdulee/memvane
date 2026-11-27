@@ -215,20 +215,28 @@ def prepublish_targets(store, handle, manifest, expected_head, changed_blobs, de
     with store._session() as db:
         if store._rows_head(db, handle) != base:
             raise store_types.BlobStoreError('view_head_conflict')
-        plan = store._derive(handle, manifest, _skip_patterns(saved), retain_bodies=False, deadline=deadline)
+        plan = store._derive(handle, manifest, _skip_patterns(saved), retain_bodies=False, deadline=deadline,
+                             only=set(changed_blobs))
         return sorted({member['blob_sha'] for member in plan['members']
                        if member['eligible'] and member['blob_sha'] in changed_blobs})
 
 
 def put_source_fingerprints(store, handle, scan, observed):
-    """Record this scan's observed fingerprints in one write; returns the manifest sources."""
+    """Record this scan's observed fingerprints in one write; returns the manifest sources.
+
+    An unchanged observation reuses its stored row, so rows grow only when an observation does."""
     sources = []
     with store._session(write=True) as db:
         for path in sorted(observed):
             sha, length, tracked = observed[path]
-            fingerprint = store._put_fingerprint(db, dict(
-                worktree_id=handle.worktree_id, branch_key=handle.branch_key, path=path,
-                source_sha=sha, byte_length=length, head_oid=handle.head_oid, tracked_state=tracked,
-                binding_state='observed', scan_id=scan['id'], observed_ns=scan['observed_ns']))
+            known = db.execute("SELECT fingerprint_id FROM source_fingerprints WHERE worktree_id=? AND branch_key=? "
+                               "AND path=? AND source_sha=? AND byte_length=? AND tracked_state=? AND "
+                               "binding_state='observed' ORDER BY observed_ns DESC LIMIT 1",
+                               (handle.worktree_id, handle.branch_key, path, sha, length, tracked)).fetchone()
+            # A reused row's digest is re-checked: a damaged row refuses the pass.
+            fingerprint = (known[0] if known is not None and store._fingerprint(known[0]) else store._put_fingerprint(
+                db, dict(worktree_id=handle.worktree_id, branch_key=handle.branch_key, path=path,
+                         source_sha=sha, byte_length=length, head_oid=handle.head_oid, tracked_state=tracked,
+                         binding_state='observed', scan_id=scan['id'], observed_ns=scan['observed_ns'])))
             sources.append({'path': path, 'fingerprint_id': fingerprint, 'presence': 'present'})
     return sources

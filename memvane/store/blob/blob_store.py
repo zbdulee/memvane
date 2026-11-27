@@ -151,8 +151,8 @@ def _db_file(path):
 
 
 def _regular(root, relative, limit):
-    """Read from a fixed descriptor chain, then re-resolve its path identity."""
-    rootfd = _dirfd(root)
+    """Read from a fixed descriptor chain, then re-resolve its path identity (``root``: path or open root fd)."""
+    rootfd = root if isinstance(root, int) else _dirfd(root)
     parent = os.dup(rootfd)
     leaf = None
     try:
@@ -189,11 +189,12 @@ def _regular(root, relative, limit):
     finally:
         if leaf is not None:
             os.close(leaf)
-        os.close(parent); os.close(rootfd)
+        os.close(parent)
+        if rootfd is not root: os.close(rootfd)
 
 
 def _current_file_node(root, relative):
-    fd = _dirfd(root)
+    fd = os.dup(root) if isinstance(root, int) else _dirfd(root)  # ``root``: path or open root fd
     try:
         parts = relative.split('/')
         for part in parts[:-1]:

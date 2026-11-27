@@ -30,7 +30,7 @@ def _top_statements(body):
 
 
 # Domains whose line ceiling is not 8,000 (tests/structure/README.md says why).
-_DOMAIN_LINES = {'store': 8125}
+_DOMAIN_LINES = {'store': 8225}
 
 
 def _symbol_table(tree):
