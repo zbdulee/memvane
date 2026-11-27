@@ -557,6 +557,13 @@ class Project(Restore):
                 again, events, requests = self.call(case)
                 self.assertEqual((again['status'], events, requests), ('already_restored', [], []))
 
+    def test_a_marker_that_cannot_be_written_does_not_stop_the_restore(self):
+        case = self.applied()
+        (case.root / R.ANNOUNCE).mkdir()  # Something else sits where the file belongs.
+        result, events, requests = self.call(case)
+        self.restored(case, result)
+        self.assertEqual([fields['outcome'] for _event, fields in events], ['rolled_back'])
+
     def test_a_pending_restore_names_a_code_and_never_a_message(self):
         # 1.1.x: an error message (with a path) was the reason, logged as unlabeled.
         from memvane.diagnostics.api import code
