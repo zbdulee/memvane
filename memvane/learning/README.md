@@ -152,7 +152,7 @@ pass), `shared_dispatch.py`(durable worker 요청과 dispatcher step)다. 호출
 트랜잭션 없이 읽어 hook의 capture 쓰기를 기다리게 하지 않고, 삭제만 짧은 쓰기 트랜잭션
 하나로 한다. 지울 것이 없으면(`nothing_closed`) 계획이 의존하는 개수와 상태의 서명을
 namespace의 `case-rotation-status.json`에 남기고, 서명이 같은 동안은 다시 계획하지 않는다.
-`nothing_closed`와 계획 실패(`deferred`)도 `learning.rotation` 이벤트로 남는다. 지우지
+`nothing_closed`와 계획 실패(`deferred`)도 `learning.rotation` 이벤트로 남는다. 기본 모델 파일이 활성 artifact인데 그 바이트가 바뀌면 scope 권한 검사가 grant를 거절하고, worker pass는 `incumbent_damaged` 결과(`held`, `apply_incumbent_artifact_changed`)를 `project-last-status.json`에 남기며 처음 그렇게 끝난 pass가 `learning.cycle` `held` 행을, default-teacher 프로필이면 `learning.score` 집계도 남긴다. 지우지
 않는 것은 종결되지 않은 사례, 최근 gold 128건과 최근 소비 gold 128건, 어느 학습 job도
 소비하지 않은 gold, 판정 전 job(미학습, 열린 후보, apply journal의 cycle, 가장 새 적용
 후보)의 구성원과 평가 사례, 활성 checkpoint cycle과 가장 새 job의 구성원, 다른 프로젝트의
@@ -283,10 +283,10 @@ namespace의 `apply-failures.json`(cycle별 연속 횟수와 마지막 사유)�
 유지보수 명령 하나뿐이다(`candidate_rollback.restore`, setup action `restore-previous-model`). 대상은 포인터의 적용 표식이
 가리키는 journal이다(살아 있는 것, 또는 뒤 후보의 intent가 서면서 `candidate-applications/`로 옮겨진 것). 그 journal이
 `activated`이거나 `pointer_committed`에서 멈췄고 포인터가 그 `new_pointer`일 때, 적용의 두 잠금 아래에서 먼저 journal을
-`rejected`(`reason` `rolled_back`)로 닫고 receipt → binding → 포인터를 이전 값으로 쓴다. 뒤 후보의 적용이 archive에 복사해 둔 채 살아 있는 journal은 두 곳에 있으므로 두 사본을 모두 닫는다(archive 먼저). 닫힌 journal의 후보는 다시 적용되지
+`rejected`(`reason` `rolled_back`)로 닫고 receipt → binding → 포인터를 이전 값으로 쓴다. 포인터 직전에 namespace의 `rollback-announce.json`(계약 밖 파생물)에 그 적용을 적어 두고, `rolled_back` 행을 남긴 요청이나 worker pass가 지운다. 포인터를 쓴 직후 멈춘 되돌리기도 다음 요청이나 pass가 그 행을 한 번 남긴다. 뒤 후보의 적용이 archive에 복사해 둔 채 살아 있는 journal은 두 곳에 있으므로 두 사본을 모두 닫는다(archive 먼저). 닫힌 journal의 후보는 다시 적용되지
 않고 worker pass도 그 적용을 재개하지 않으며, cycle 행은 `applied`로 남는다. 따로 기록을 두지 않는다: 중단된 되돌리기는
 `rolled_back` journal인데 포인터가 아직 그 `new_pointer`인 상태로 알아보고, 같은 요청이나 다음 worker pass
-(`candidate_rollback.resume`)가 이어서 끝낸다. worker가 끝낸 되돌리기도 `learning.promotion` `rolled_back` 행과 유지보수 요청을 내고, 끝내지 못한 pass는 `rollback_pending` 행에 사유를 남긴다. 그 사이 selector 추론은 거절된다. 요청 한 번은 적용 하나를 되돌린다: 복원된 모델이 앞 적용의 것이면 같은 요청을 다시 보낼 때 그 적용도 되돌린다. 뒤 후보의 미커밋 journal(`intent`·`prepared`)은
+(`candidate_rollback.resume`)가 이어서 끝낸다. worker가 끝낸 되돌리기도 `learning.promotion` `rolled_back` 행과 유지보수 요청을 내고, 끝내지 못한 pass는 `rollback_pending` 행에 사유(오류의 고정 코드, 없으면 예외 종류 이름)를 남긴 뒤 평가·학습·적용 없이 `rollback_pending` 결과(`held`)로 끝난다. 그 사이 selector 추론은 거절된다. 같은 포인터로 되돌린 적용이 여럿이면 `already_restored`는 적용 시각이 가장 늦은 것을 고른다. 요청 한 번은 적용 하나를 되돌린다: 복원된 모델이 앞 적용의 것이면 같은 요청을 다시 보낼 때 그 적용도 되돌린다. 뒤 후보의 미커밋 journal(`intent`·`prepared`)은
 사라지는 포인터를 전제로 한 것이라 결정을 쓴 직후(포인터를 바꾸기 전에) 지우고, 그 후보는 `apply_incumbent_changed`로 재평가에 돌아가 복원된 모델과 다시
 비교된다. resident는 다음 요청에서 포인터가 가리키는 세대를 올린다. `candidate_apply.readable`은 적용된 포인터에서 표식의 journal(살아 있는 것, 없거나 다른 후보의 것이면 archive의 것)이 `activated`이고
 지금 묶인 receipt가 그 포인터를 가리키는지를 본다(플러그인 갱신 뒤 다시 준비된 receipt도 같은 포인터의 것이면 읽힌다). journal이 생기기 전의 실패는 그 후보의 `completed` 평가에

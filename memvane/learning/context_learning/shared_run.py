@@ -323,7 +323,12 @@ def run_training_pending(root,project):
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return {'status':'busy'}
         if selected_profile:
-            from . import candidate_apply,candidate_rollback;candidate_rollback.resume(root)  # An owner's restore that stopped.
+            from . import candidate_apply,candidate_rollback
+            restore=candidate_rollback.resume(root)  # An owner's restore that stopped.
+            if restore is not None and restore.get('status')!='restored':
+                # Not finished: the pointer is still the model being undone, so nothing is
+                # evaluated or applied over it. The owner's request or a later pass finishes it.
+                return {'status':'rollback_pending','reason':restore.get('reason')}
             path=root/candidate_apply.JOURNAL
             if path.exists() or path.is_symlink():
                 intent=candidate_apply.read_journal(root)
