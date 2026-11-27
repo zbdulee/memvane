@@ -47,6 +47,7 @@
 | 1.1.0 | 재부팅 내성(장치 번호 비교 제거), sync의 main 게시와 연결 view 대기 분리, SLO 요약, 긴 프롬프트 4조각과 세션 기주입 카드 제외, vector arena(대형 프로젝트 semantic 읽기), hook 고정비 축소, selector 정체성 재사용, 학습 상태 기계와 승격 규칙·재시도 상한, 학습 모델 되돌리기, 번들 없음 종료와 state 정리, 모듈 단위 검사 러너와 macOS CI, 출시 smoke 도구 |
 | 1.1.1 | 설치별 provider 증명 실패 분류와 재시도, 1시간 뒤 재증명, provider 기동 실패 시 lexical recall, 부분 vector 검색, 같은 원문의 compile·pending 검수 중복 제거 |
 | 1.1.2 | 구조적 식별자 단독 어휘 검색, resident 증명 EIO 훅 보호·냉기동·반복 adopt 진단 정리, discovery lock 경합 grant 건너뛰기와 번들 조회 재시도, 예약 실패 롤백·고아 hold 회수·hold 스캔 상한(첫 카드 게시 정체 복구), 출시 smoke 도구와 shim 예열 보강 |
+| 1.1.4 | 위키 파이프라인 v2(`stateFormat` 2, `~/.local/state/memvane/v2` 0700 생성·넓은 권한 복구), 훅 경량화(`edit-inbox.jsonl` 단일 append·discovery 중복 스킵), 단일 SQLite 원장(`.memvane/compile/wiki-pipeline.sqlite3`·큐/검수/게시/억제/쿨다운/dedup/생성 이력/보존 정리), 단일 교환 게시·행 단위 복구·교환 미지원 파일시스템 보호, tombstone 제거와 dedup 이름표 이전, 1.x 일회성 마이그레이션, `entry/run.py wiki-ledger` 조회 CLI |
 
 ## 한눈에
 
@@ -54,7 +55,7 @@
 |---|---|---|---|
 | 1.1.x | L3 검색 필요 판단기 | M | 없음 |
 | 1.1.x | 1.1.0 이월 항목 | S~M | 확인 |
-| 1.1.2~1.1.3 | 로컬 웹 대시보드(UI) ([설계](design-local-web-ui.md)) | L | 없음 |
+| 1.1.x | 로컬 웹 대시보드(UI) ([설계](design-local-web-ui.md)) | L | 없음 |
 | 1.0.x | 1 연결 worktree view 대기의 실패 기록 | S | 없음 |
 | 1.0.x | 2 resident 선행 요청 | M | 없음 |
 | 1.0.x | 3 ingest delta화와 원문 지문 누적 정지 | M | 확인 |
@@ -66,7 +67,6 @@
 | 1.0.x | 9 시험 기반 | M | 없음 |
 | 1.0.x | 10 문서와 릴리스 절차 정합 | S | 없음 |
 | 1.0.x | 11 방어 심화, 세션당 고정비 | S | 없음 |
-| 1.0.x | 12 검증 job 없는 교체 pending 정리 | S | 확인 |
 | 1.0.x | 13 setup gitignore 안내 보강 | S | 없음 |
 | 1.0.x | 14 머신 간 중복 카드 정리 | M | 확인 |
 | 1.0.x | 15 학습 유지보수의 전체 시간 상한 | S | 없음 |
@@ -101,12 +101,12 @@ L2 후속 ── L3
 
 ## 1.1.x 열린 항목 (1.1.0 이월)
 
-### 로컬 웹 대시보드(UI) (1.1.2~1.1.3)
+### 로컬 웹 대시보드(UI) (1.1.x)
 
 - **목표.** 멀티 프로젝트·연결 git worktree를 한 창에서 통합 조회하는 로컬 웹 대시보드(Preact + TypeScript + Vite 사전 빌드 `ui/dist/` + Python `memvane/ui/` 온디맨드 싱글톤 서버)와 `memvane:ui` 스킬을 제공한다.
-- **설계 · 리뷰.** [설계 문서(r4)](design-local-web-ui.md), [독립 리뷰](reviews/2026-11-24-local-web-ui-design-review.md), [UI 가안 프로토타입](mockups/local-web-ui-prototype.html).
-- **범위.** Phase 1(1.1.2~1.1.3 목표, 읽기 전용 4개 화면 전체 — 좌측 오르카 스타일 프로젝트·worktree 트리, Overview, Recall 인스펙터·무오염 4단계 Query Playground, Wiki Browser·원문 대조, Runtime·Learning 모니터·opt-in `onboarded_sessions` SessionStart 자동 오픈)을 M0(기반 정리: `diagnostics` 로그·SLO 승격, `recall.dry_run_recall` `partial` 지원, `learning.inspect_project` 슬롯 확보, `resident` read-only 상태 파사드, `wiki/verify` private handoff 요약, `runtime_main(['snapshot-readonly'])`) → M1a(보안 서버·Overview·`skills/ui`) → M1b(Wiki Browser) → M1c(Recall·Playground) → M1d(Runtime·Learning·SessionStart opt-in)로 분할 구현한다. Phase 2(제어 액션, M2)는 기존 `entry/setup.py` `previewSha256` 승인 계약을 래핑해 후속 진행한다.
-- **의존.** `1.1.1` 출시 완료(현행 기준 반영); 1.1.x 이월의 `shared.py`·`checkout_view.py` 분해 전이라도 M0 우회 경로로 착수 가능. **크기.** L.
+- **설계 · 리뷰.** [설계 문서(r5)](design-local-web-ui.md), [독립 리뷰](reviews/2026-11-24-local-web-ui-design-review.md), [UI 가안 프로토타입](mockups/local-web-ui-prototype.html).
+- **범위.** Phase 1(1.1.x 목표, 읽기 전용 4개 화면 전체 — 좌측 오르카 스타일 프로젝트·worktree 트리, Overview, Recall 인스펙터·무오염 4단계 Query Playground, Wiki Browser·원문 대조, Runtime·Learning 모니터·opt-in `onboarded_sessions` SessionStart 자동 오픈)을 M0(기반 정리: `diagnostics` 로그·SLO 승격, `recall.dry_run_recall` `partial` 지원, `learning.inspect_project` 슬롯 확보, `resident` read-only 상태 파사드, `wiki/pipeline` 원장 요약, `runtime_main(['snapshot-readonly'])`) → M1a(보안 서버·Overview·`skills/ui`) → M1b(Wiki Browser) → M1c(Recall·Playground) → M1d(Runtime·Learning·SessionStart opt-in)로 분할 구현한다. Phase 2(제어 액션, M2)는 기존 `entry/setup.py` `previewSha256` 승인 계약을 래핑해 후속 진행한다.
+- **의존.** `1.1.4` 출시 완료(현행 기준 반영); 1.1.x 이월의 `shared.py`·`checkout_view.py` 분해 전이라도 M0 우회 경로로 착수 가능. **크기.** L.
 - **불변.** 없음(1.x 영속 계약·`.memvane/settings.json` 5키·`hook_closures` 무변경, `$HOME/.local/state/memvane/v2/ui/`만 계약 밖 파생물로 등재; `manual-skills.test.mjs`·5개 매니페스트·`context-map.json`·`ui/` 정적 가드 갱신).
 - **합격(live).** `v1_guard.py --strict`, `static.test.mjs`(외부 URL 금지·`ui/dist/` drift·번들 100KB gzip 이하), `/usr/bin/python3`(3.9) import, 보안·무오염 테스트를 통과한다. `skills/ui`로 열어 카나리·service-engineering 및 연결 worktree를 4개 화면에서 조회할 때 `events.jsonl`·`edit-recall-sessions/`·학습 DB 무변경, `activeClients == 0` 유휴 30분 뒤 서버 자동 종료.
 
@@ -122,7 +122,6 @@ L2 후속 ── L3
 - **세션 밖 변경의 즉시 반영.** 세션 밖 변경(에디터 편집, 터미널의 `git pull`·checkout)은 다음 SessionStart, 프로젝트 안 편집(`index`), Claude의 성공한 Bash(`file-change-event`) 때 full-scan sync로 반영된다. 프롬프트(UserPromptSubmit)는 sync를 깨우지 않아서, 열린 세션에서 에이전트가 편집·Bash를 하기 전까지 색인이 옛 상태로 남는다. 후보는 셋이다. (A) resident가 선택된 프로젝트를 OS 파일 이벤트(macOS FSEvents)로 감시해 sync를 깨운다. (B) recall hook이 sync 요청을 함께 남기고 짧은 간격의 중복은 합친다. (C) resident의 주기 점검. A를 기본, B를 보조로 검토한다.
 - **resident 상시 기동(OS 로그인 항목).** 지금 resident는 hook이 처음 필요할 때 띄우고, 재부팅 뒤 첫 프롬프트가 기동과 모델 로드를 기다리며, 죽거나 영구 실패에 빠지면 다음 hook 전까지 되살리는 주체가 없다. OS 로그인 항목으로 상시 기동하는 안을 위 감시 항목과 함께 검토한다. macOS는 launchd 사용자 agent(`~/Library/LaunchAgents`, KeepAlive), Windows는 작업 스케줄러 로그온 작업 또는 시작 프로그램, Linux는 systemd `--user` unit이다(Windows·Linux는 지원 플랫폼이 되면 적용). 검토할 것: 등록·해제를 setup의 명시 승인으로만 하고 플러그인 제거 때 함께 지우는 방법, 플러그인 버전이 바뀔 때 실행 경로를 갱신하는 방법(지금의 번들 인계와의 관계), 쓰지 않는 날의 메모리(resident 약 350MB, 학습 resident는 수 GB), hook 기동 방식과의 공존. 새 로그인 항목과 설정 키는 사용자 결정 사항이다.
 - **학습 되돌리기 사유.** `candidate_rollback.resume`의 `rollback_pending` 사유가 `unlabeled`로 남는다. compile 진척 streak은 상태 파일을 쓰지 못하는 동안 쌓이지 않는다.
-- **문서.** `release.md`의 계약 밖 파생물 목록에 `runtime-wake-progress.json`, 세션 reset 마커가 없다.
 - **시험 격리.** `test_setup_entry_inventory_119`가 Claude Code 안에서 돌면 `CLAUDECODE`·`CLAUDE_CODE_*` 환경 변수 때문에 실패한다. 시험이 host 환경 변수를 지우지 않고, host 판별이 환경 변수에 기대는지 확인한다.
 - **리뷰 범위.** `vectorcache/writer.py`의 compaction·append, teacher와 `automatic_staging`의 유료 호출 경로를 독립 리뷰한다.
 - **일반 편집 후보의 부분 실패.** 한 원문에서 나온 두 후보 중 하나의 첫 쓰기가 실패하면, 재시도가 원문을 다시 추출하고 남은 후보가 사라진다. 원래 응답과 후보별 완료 기록, 혼합 버전의 재시도 경계를 설계한다.
@@ -203,7 +202,7 @@ L2 후속 ── L3
 
 ### 1.0.x-10 문서와 릴리스 절차 정합
 
-- **범위.** `docs/release.md`·`docs/release-agent-qa.md`를 현재 검증 방식에 맞춰 줄인다. 불변 목록에 `provider-reattest.json`과 재봉인 규칙을 반영한다. `recipe_fingerprint`의 loader 문자열이 값이 아닌 라벨이라는 점을 적는다. 사용자 문서의 state 경로, 없는 진단 이름, minimal settings의 허용 키 5개, `CONTRIBUTING.md`의 폴더 이름. `_render_context`의 비위키 행 분기 확인. 저장소 자체 위키에서 없는 동작을 설명하는 카드의 퇴역.
+- **범위.** `docs/release.md`·`docs/release-agent-qa.md`를 현재 검증 방식에 맞춰 줄인다. `recipe_fingerprint`의 loader 문자열이 값이 아닌 라벨이라는 점을 적는다. 없는 진단 이름, minimal settings의 허용 키 5개 정합, `_render_context`의 비위키 행 분기를 확인한다. 저장소 자체 위키에서 없는 동작을 설명하는 카드를 퇴역한다.
 - **의존.** 없음. **크기.** S. **불변.** 없음.
 - **열린 결정.** 없음. 설치본 agent QA 계약은 마이너 버전마다 도는 전수 점검이다(`docs/release.md`의 Q6).
 
@@ -213,18 +212,9 @@ L2 후속 ── L3
 - **의존.** 없음. **크기.** S. **불변.** 없음.
 - **합격.** focused 시험. 고정비는 `sync.profile`의 storage 시간이 카드당 10 ms 이상 줄 때만 유지한다.
 
-### 1.0.x-12 검증 job 없는 교체 pending 정리
-
-- **현재 동작.** verified 카드의 교체 후보 `.<card>.pending-<hash>`가 대응하는 verify-queue job 없이 남을 수 있다.
-- **운영 근거.** 0.x에서 생성된 job 없는 후보가 service-engineering 191개, agentflow 120개, rccar 37개 관측됐다. 이 348개는 운영자가 archive로 옮겼다.
-- **범위.** 수명 주기 또는 verify worker가 job 없는 pending의 나이와 소유·경로를 확인해 정해진 보존 기간이 지난 파일을 정리하고 결과를 이벤트로 남긴다. 활성 job과 진행 중인 교체 후보는 보존하고, 삭제 직전에 job과 파일 정체성을 다시 확인한다.
-- **의존.** 없음. **크기.** S. **불변.** 확인(기존 queue·lock·파일 모양을 유지한다).
-- **열린 결정.** 보존 기간과 정리 주체.
-- **합격(live).** 보존 기간이 지난 job 없는 pending은 다음 정리 후 0개이고 정리 건수가 이벤트와 일치한다. 활성 job의 pending과 verified 카드는 보존된다.
-
 ### 1.0.x-13 setup gitignore 안내 보강
 
-- **운영 근거.** 프로젝트 포인터 외에도 compile 작업 파일과 wiki의 숨김 임시 파일이 Git 미추적 항목으로 나타날 수 있다.
+- **운영 근거.** 프로젝트 포인터 외에도 compile 작업 파일(`wiki-pipeline.sqlite3`·`edit-inbox.jsonl`·lock 등)과 wiki 게시 중 임시 숨김 파일(`.publish-*.tmp`)이 Git 미추적 항목으로 나타날 수 있다.
 - **범위.** setup의 `.gitignore` 안내에 `.memvane/compile/`과 `.memvane/wiki/**/.*`를 더한다. 기존 안내와 추적 파일은 유지한다.
 - **의존.** 없음. **크기.** S. **불변.** 없음.
 - **합격.** setup 안내에 두 줄이 각각 한 번 나오고, 적용 뒤 compile과 숨김 임시 파일은 무시되며 일반 wiki 카드와 이미 추적된 파일은 유지된다.
@@ -294,7 +284,7 @@ L2 후속 ── L3
 ### 1.1-6 recall·wiki 품질
 
 - **범위.** verify defer 루프의 종점(`source_changed_before_verify`, `content_hash_mismatch`, `missing`의 분리). vector 대상에서 빠지는 카드(service-engineering 3,751장 중 568장)의 사유 분류와 대책. 긴 프롬프트의 `laya_selector_invalid_pool`. subagent·하네스 생성 프롬프트의 주입 기준.
-- **의존.** 1.1-5. **크기.** M. **불변.** 확인(`.memvane/compile/*.jsonl` 행에 재시도 상태를 싣는 방식은 추가 키로 되는지 판정한다).
+- **의존.** 1.1-5. **크기.** M. **불변.** 확인(`.memvane/compile/wiki-pipeline.sqlite3`의 `verify_jobs`에 재시도 상태를 싣는 방식이 원장 DDL 계약에 저촉되는지 판정한다).
 - **열린 결정.** subagent·하네스 프롬프트의 주입 기준. 판단 전에 이벤트 로그로 건수와 분량을 잰다.
 - **합격(live).** verify 큐에서 14일 넘게 남은 행 0건. vector 대상에서 빠진 카드 비율이 5% 이하이거나 사유별 건수가 이벤트에 남는다.
 
@@ -317,7 +307,7 @@ L2 후속 ── L3
 |---|---|---|---|
 | 세션 위치와 무관한 recall(미온보딩 루트, 프로젝트 간 편집) | L | 확인 | 1.1-7 뒤. 설계 문서 선행 |
 | 연결 worktree의 카드 수명 주기 | L | 확인 | 위 항목 뒤 |
-| 대시보드 제어 액션·편집·알림 ([설계](design-local-web-ui.md) M2) | M | 확인 | 1.1.2~1.1.3 Phase 1 대시보드·1.1-7 뒤 |
+| 대시보드 제어 액션·편집·알림 ([설계](design-local-web-ui.md) M2) | M | 확인 | 1.1.x Phase 1 대시보드·1.1-7 뒤 |
 | 도메인 `domain/` 층 실체화 | L | 없음 | 패치 릴리스 간격이 1주 이상으로 안정된 뒤. 도메인 단위로 나눈다 |
 | 원문 소실 보류(`held_missing`)와 삭제 receipt | L | 확인 | 삭제 근거를 store에서 찾아야 하는 사례가 생길 때 |
 | 학습 중지·재개의 end-to-end 증거, 학습 자식 부하 측정 | M | 없음 | 1.1-3과 함께 |
