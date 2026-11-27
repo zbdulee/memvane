@@ -138,7 +138,9 @@ def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline
     """Bind one provider result to the live v6 snapshot and calling context.
 
     Yields one query vector, or a list of them for a prompt asked as windows.
-    ``info`` receives ``queryChunks`` (vectors answered) and ``queryChunksRequested``.
+    ``info`` receives ``queryChunks`` (vectors answered) and ``queryChunksRequested``,
+    and ``queryInstructionFree`` when a prompt recall embedded its prompt without its
+    answer-format or tool instruction sentences (``keywords.semantic_query_text``).
     """
     from memvane.store.api import query_values
     from memvane.kernel.errors import IndexContractError
@@ -148,7 +150,14 @@ def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline
     try:
         # An edit recall asks its query whole, as before: its pool is a learning case.
         from memvane.recall.recall_scope import edit_recall
-        vectors,requested=_provider_vector(provider,prompt,remaining,chunks=edit_recall() is None)
+        prompt_lane=edit_recall() is None
+        text=prompt
+        if prompt_lane:
+            from memvane.recall.keywords import semantic_query_text
+            text=semantic_query_text(prompt)
+            if text!=prompt and info is not None:
+                info['queryInstructionFree']=True
+        vectors,requested=_provider_vector(provider,text,remaining,chunks=prompt_lane)
     except IndexContractError as exc:
         # ``provider_process_failed``: whatever else the round trip raised. The recall goes on without a vector.
         from memvane.provider.types import QUERY_IDENTITY_ERRORS
