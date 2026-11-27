@@ -118,18 +118,12 @@ def advance_v1(record, *, phase, reason=None):
 def _pointer_dir(create):
     """Return the private initial-build pointer directory."""
     from memvane.kernel import memvane_paths
-    cursor = Path.home()
-    parts = memvane_paths.STATE_PARTS
-    for name in (*parts, POINTERS):
-        cursor = cursor / name
-        if not cursor.exists() and not cursor.is_symlink():
-            if not create:
-                return None
-            os.mkdir(cursor, 0o700)
-        info = cursor.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                or stat.S_IMODE(info.st_mode) & 0o022):
-            _fail('initial_build_pointer_unsafe')
+    try:
+        cursor = memvane_paths.ensure_state_dir(POINTERS, create=create)
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        _fail('initial_build_pointer_unsafe')
     return _private_dir(cursor)
 
 

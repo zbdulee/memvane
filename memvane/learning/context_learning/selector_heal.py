@@ -289,8 +289,10 @@ def _prepare_lease(home):
     """
     import fcntl
     from memvane.kernel import memvane_paths
-    base = memvane_paths.state_base(home)
-    base.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        base = memvane_paths.ensure_state_dir(home=home)
+    except ValueError as exc:
+        raise HealRefused('learning_prepare_lock_unsafe') from exc
     fd = os.open(base / PREPARE_LOCK, os.O_RDWR | os.O_CREAT |
                  getattr(os, 'O_NOFOLLOW', 0), 0o600)
     try:

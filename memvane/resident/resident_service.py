@@ -129,17 +129,13 @@ def service_dir(*, create=False, home=None):
             if not create:
                 return None
             raise
-    cursor = Path(home).resolve() if home is not None else _account_home()
-    for name in (*memvane_paths.STATE_PARTS, 'service'):
-        cursor = cursor / name
-        if not cursor.exists() and not cursor.is_symlink():
-            if not create:
-                return None
-            os.mkdir(cursor, 0o700)
-        info = cursor.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                or stat.S_IMODE(info.st_mode) & 0o022):
-            _fail('laya_service_root_unsafe')
+    home_root = Path(home).resolve() if home is not None else _account_home()
+    try:
+        cursor = memvane_paths.ensure_state_dir('service', home=home_root, create=create)
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        _fail('laya_service_root_unsafe')
     return private_root(cursor)
 
 
