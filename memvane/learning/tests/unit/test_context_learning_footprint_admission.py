@@ -132,6 +132,9 @@ class IdleReleaseTests(unittest.TestCase):
             forward=lambda *_a, **_k: {'schema_version': 1, 'predictions': []},
             admission=lambda *_a, **_k: ({'batch': 1}, {'available_mib': 8000}), rss=lambda: 100,
             end_reuse=lambda: None)
+        # A fixed clock: ``(last + IDLE_RELEASE_SECONDS) - last`` on an uptime-sized monotonic
+        # value can round one ULP below the limit and make the boundary host-dependent.
+        engine.last_used = 1000.0
         return engine, loads
 
     def test_an_idle_model_is_released_and_the_next_request_loads_it_again(self):
