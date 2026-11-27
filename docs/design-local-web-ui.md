@@ -1,6 +1,6 @@
 # MemVane 로컬 웹 대시보드(UI) 설계
 
-- **상태**: 4차 개정 (v1.1.1 코드 변경 정합 + 브랜치 표시 피드백 반영)
+- **상태**: 5차 개정 (v1.1.4 `stateFormat` 2 · 위키 파이프라인 SQLite 원장 정합)
 - **대상 버전**: `1.1.x` 이후 (1.x 영속 계약 무변경 원칙 준수)
 - **관련 문서**: [architecture.md](architecture.md), [privacy.md](privacy.md), [project-registry.md](project-registry.md), [ROADMAP.md](ROADMAP.md), [release.md](dev/contexts/release.md), [working-rules.md](dev/contexts/working-rules.md), [UI 가안 프로토타입](mockups/local-web-ui-prototype.html)
 
@@ -59,7 +59,7 @@ MemVane은 현재 CLI/스킬(`logs`, `query`, `update`, `setup`, `wiki-compile`,
 │   ├── auth.py                 # 1회성 code 교환, 다중 탭 세션 LRU, Host/Origin/Sec-Fetch-Site/CSRF
 │   ├── sse.py                  # SSE 브로드캐스트 & activeClients/grace 추적 & inode 기반 파일 감시
 │   ├── lifecycle.py            # 싱글톤 server.json/lock, detached 기동, 버전 비교 교체, 유휴 종료
-│   ├── preferences.py          # $HOME/.local/state/memvane/v1/ui/preferences.json & auto-open-state.json
+│   ├── preferences.py          # $HOME/.local/state/memvane/v2/ui/preferences.json & auto-open-state.json
 │   ├── platform_io.py          # UI 전용 OS 추상화 (브라우저 오픈, PID 생존, server.lock, 디스크 경로)
 │   ├── local_client.py         # raw socket 기반 127.0.0.1 HTTP/1.1 제어 클라이언트 (Connection: close)
 │   ├── read_adapters.py        # registry/diagnostics/wiki/recall/learning/runtime 읽기 DTO 조합
@@ -84,7 +84,7 @@ MemVane은 현재 CLI/스킬(`logs`, `query`, `update`, `setup`, `wiki-compile`,
 
 - **계층 번호**: `ui: 12` (하위 모든 도메인보다 상위 계층. `app: 11`과 순환 없이 `entry/run.py`와 `memvane/ui/cli.py`만 연결).
 - **G1 / G2 (단방향 공개 API 경계)**: `memvane/ui/`는 하위 도메인의 공개 `api.py`·`types.py`와 `memvane/kernel/`만 import한다.
-- **G3 (`memvane/kernel/` 한도 0여유 회피)**: `memvane/kernel/`은 이미 **14개 모듈 / 1,499줄**(한도 14개 / 1,500줄, [v1_guard.py](../tests/structure/v1_guard.py#L1154-L1162))에 도달했다. 따라서 UI 전용 OS 추상화(브라우저 오픈, 프로세스 생존 확인, `server.lock`, OS별 `Application Support`/XDG 경로 계산)는 `memvane/kernel/`에 1줄도 추가하지 않고 **`memvane/ui/platform_io.py`에 격리**한다.
+- **G3 (`memvane/kernel/` 한도 0여유 회피)**: `memvane/kernel/`은 이미 **14개 모듈 / 1,489줄**(한도 14개 / 1,500줄, [v1_guard.py](../tests/structure/v1_guard.py#L1154-L1162))에 도달했다. 따라서 UI 전용 OS 추상화(브라우저 오픈, 프로세스 생존 확인, `server.lock`, OS별 `Application Support`/XDG 경로 계산)는 `memvane/kernel/`에 1줄도 추가하지 않고 **`memvane/ui/platform_io.py`에 격리**한다.
 - **G5 (필수 파일 & 속성 30개 한도 & 핀 고정 도메인 대응)**:
   - `memvane/ui/`는 필수 파일 3종(`README.md`, `api.py`, `types.py`)을 갖추고 `ui/api.py` 공개 속성을 30개 미만(목표 ≤ 10개)으로 유지한다.
   - **한도 포화 도메인 읽기 접근 계약**:
@@ -93,7 +93,7 @@ MemVane은 현재 CLI/스킬(`logs`, `query`, `update`, `setup`, `wiki-compile`,
       - `runtime_main`은 기존 계약([runtime_work.py](../memvane/runtime/runtime_work.py#L739-L759), [entry/run.py](../entry/run.py#L50-L54))대로 **항상 `int` 종료코드(`0`/`2`)만 반환**하고, 스냅샷 결과 `dict`는 `execute(snapshot_dict)` 콜백 인자로 전달한다(stdout 미오염으로 `ThreadingHTTPServer` thread-safe 보장; `entry_commands.py` CLI 분기에서는 `collector`로 받아 JSON 출력 가능).
       - 내부 구현은 반드시 `service_root(create=False)`를 사용해 디렉터리를 생성(`mkdir 0700`)하지 않으며, `QMD_SETUP_GUARD_FIXTURE=1` 가드(실계정 홈 차단) 및 `errors._query_only_uri` + `PRAGMA query_only=ON`으로 `wakes`·`wake_overflow`·`wake_meta`와 보조 JSON(`runtime-wake-failures.json`·`drops`·`overflow`·`preparing`·`deferred`)만 읽는다. (`runtime_work.py`는 759줄로 G4 여유 충분, `runtime/api.py` 핀 42개 및 `wake_queue` 시그니처 100% 유지.)
     - **`memvane/resident/api.py` (7/30, 여유 23)**: 공유 worker 실패(`w-<24 hex>.sock.resident.state`)와 설치별 증명 실패(`.resident.state.proof-<ino>-<mtime_ns>`, 1시간 뒤 자동 재증명 `_ATTESTATION_RETRY_SECONDS = 3600`)가 분리되어 있다. 기존 `failure_decision()`은 `attempts >= 3`일 때 `_write_state(..., 'worker_exited', terminal=True)` 파일 쓰기 부작용이 있고 `installation=True` 인자도 노출하지 않으므로 UI에서 직접 호출하지 않고, `resident/api.py`에 **순수 read-only 상태 스냅샷 파사드**(예: `inspect_owner_state(manifest)`) 1개를 신설한다(8/30).
-    - **`memvane/wiki/verify/api.py` (18/30, 여유 12)**: 교체·첫 검수·보류 큐·새 refresh 이벤트는 공용 `.memvane/compile/*.jsonl` 외에 `.memvane/compile/.handoff/v1/`(`returns/`, `refresh/events.jsonl`, `publication`/`legacy`/`hold`)에 저장된다. UI가 `.handoff/v1/` 내부 파일을 직접 파싱하지 않도록 `wiki/verify/api.py`에 read-only 요약 파사드(예: `handoff_summary(root)`) 1개를 신설한다(19/30). `.memvane/compile/*.jsonl`·private 원장 판정/요약 코드는 [working-rules.md](dev/contexts/working-rules.md#L77-L80) 규정에 따라 구현 전 상태 조합표와 실제 writer 출력 기반 회귀 시험을 선행한다.
+    - **`memvane/wiki/pipeline/api.py` (20/30, 여유 10)**: 위키 컴파일·검수·게시·dedup·억제 상태는 `.memvane/compile/wiki-pipeline.sqlite3`(`compile_jobs`·`verify_jobs`·`publish_txns`·`refresh_events`·`dedup_pairs`·`suppressions`·`audit_events`)와 훅 inbox `.memvane/compile/edit-inbox.jsonl`에 저장된다. UI가 원장 테이블을 직접 SQL로 읽지 않도록 `wiki/pipeline/api.py`에 read-only 요약 파사드(예: `pipeline_summary(project_root)`) 1개를 신설한다(21/30; 내부에서 `open_pipeline(project_root, readonly=True)`로 `errors._query_only_uri` + `PRAGMA query_only=ON`을 사용). 원장 판정/요약 코드는 [working-rules.md](dev/contexts/working-rules.md#L77-L80) 규정에 따라 구현 전 상태 조합표와 실제 writer 출력 기반 회귀 시험을 선행한다.
 - **G6 (Hook Isolation / `hook_closures`)**:
   - `memvane/host/`(계층 10) 및 `hermes_adapter/`는 `memvane/ui/`를 **절대 import하지 않는다**.
   - SessionStart opt-in 게이트(`host_response.py`)는 `action == 'update-queued'` 처리 경로 **함수 본문 내부에서만** `subprocess`·`json`·경량 헬퍼를 지연(lazy) import해, [v1-baseline.json](../tests/structure/v1-baseline.json)의 `hook-classify`·`hook-serve` top-level `hook_closures`가 단 1모듈도 늘어나지 않게 유지한다.
@@ -111,7 +111,7 @@ MemVane은 현재 CLI/스킬(`logs`, `query`, `update`, `setup`, `wiki-compile`,
 - **권장안 (계층 분리형 승격)**:
   - `logs_slo.py`의 `install_size`는 `<state_root>/route.json`과 `sourceRoot`만 읽고 상위 도메인을 import하지 않으므로 `memvane/diagnostics/`의 **adapter 계층 모듈**(예: `event_queries.py`, `slo.py` — `types.py`/`domain/` 금지로 `G7` 준수)로 옮겨도 G2에 걸리지 않는다.
   - `logs.py`의 `--all` 다중 타깃 해석(`log_targets.resolve`)은 `registry`(계층 5) 의존이므로 `diagnostics`(계층 1)로 옮기지 않고 `skills/logs/`와 `memvane/ui/`에 각각 남긴다.
-  - `logs.py`의 **구형 `prompt['text']` 제거**([logs.py](../skills/logs/scripts/logs.py#L148-L153)), `diagnostic.part` 숨김, 제어문자/Bidi 정규화 로직과 `logs_slo.py`의 `v1.1.1` 집계(`SEMANTIC_USED = ('complete', 'partial')`, `full_coverage(row)`, `fullCoverage`, `arenaFullCoverage`, `partial` 건수, `vectorSource == 'arena'` 요약)를 함께 승격한다.
+  - `logs.py`의 **구형 `prompt['text']` 제거**([logs.py](../skills/logs/scripts/logs.py#L148-L153)), `diagnostic.part` 숨김, 제어문자/Bidi 정규화 로직과 `logs_slo.py`의 집계(`SEMANTIC_USED = ('complete', 'partial')`, `full_coverage(row)`, `fullCoverage`, `arenaFullCoverage`, `partial` 건수, `vectorSource == 'arena'` 요약)를 함께 승격한다.
   - `memvane/diagnostics/api.py`는 현재 **20/30** 속성이므로 파사드 4개(`query_events`, `summarize_events`, `slo_lines`, `reassemble_diagnostic`)만 추가해도 **24/30**으로 `G5` 한도를 안전하게 준수한다.
 
 ### 2.3 아키텍처 흐름도
@@ -124,9 +124,9 @@ flowchart TD
     Entry["entry/run.py ui"]
     LocalClient["memvane/ui/local_client.py (raw socket 127.0.0.1, Connection: close)"]
     UIServer["memvane/ui/server.py (127.0.0.1:0, Python 3.9+)"]
-    ReadAPI["도메인 읽기 API<br/>(registry / diagnostics / wiki/card / recall.dry_run / learning / runtime)"]
+    ReadAPI["도메인 읽기 API<br/>(registry / diagnostics / wiki/card / wiki/pipeline / recall.dry_run / learning / runtime)"]
     WriteEntry["entry/setup.py · entry/run.py ui action-sync (Phase 2 승인 실행)"]
-    StateUI["$HOME/.local/state/memvane/v1/ui/<br/>(server.json, preferences.json, auto-open-state.json)"]
+    StateUI["$HOME/.local/state/memvane/v2/ui/<br/>(server.json, preferences.json, auto-open-state.json)"]
     StateData["installs/<id> & .memvane/<br/>(events.jsonl, journal, schema3)"]
 
     Skill --> Entry
@@ -226,8 +226,8 @@ flowchart TD
 #### 3) Wiki 카드 브라우저 & 출처 검증 뷰어 (`targetId` 컨텍스트, `N-06` 반영)
 - **소유권 구분 (Main vs Linked Worktree)**:
   - **체크아웃(`targetId`) 단위 읽기**: `.memvane/wiki/*.md`, 원문 파일(`wiki/source`), schema3 view 상태는 선택된 main 또는 worktree 체크아웃 자체의 디렉터리에서 읽는다.
-  - **설치(`installId`) 단위 읽기**: `.memvane/compile/*.jsonl`, `.memvane/compile/.handoff/v1/`(private 교체·첫 검수·보류 큐·`refresh/events.jsonl`), `wiki.backfill`, `wiki.card` 이벤트는 main checkout(`installId`)에만 존재하므로([host_response.py](../memvane/host/host_response.py) `_serve_worktree`, [.gitignore](../.gitignore#L17)), worktree 선택 시 UI 배지로 `"Compile·Backfill·Private Handoff 기록은 main checkout 기준"`임을 명확히 안내하고 main에서 조회한다. `wiki/verify/api.py` read-only 요약 파사드로 공용+private 대기/보류 건수 및 보류 사본 사용량(64 MiB 한도 대비)을 집계한다.
-- **목록 & 필터**: `verified` / `generated` / 교체 대기(`.*.pending-*` + private handoff 대기·보류) / 원문 불일치(`stale`) / `skipPaths` 숨김 / `over_budget`(700토큰 목표 초과) 필터 및 전문 검색.
+  - **설치(`installId`) 단위 읽기**: `.memvane/compile/wiki-pipeline.sqlite3`·`edit-inbox.jsonl`, `wiki.backfill`, `wiki.card` 이벤트는 main checkout(`installId`)에만 존재하므로([host_response.py](../memvane/host/host_response.py) `_serve_worktree`, [.gitignore](../.gitignore#L17)), worktree 선택 시 UI 배지로 `"Compile·Backfill·위키 원장 기록은 main checkout 기준"`임을 명확히 안내하고 main에서 조회한다. `wiki/pipeline/api.py` read-only 요약 파사드로 `compile_jobs`·`verify_jobs`·`publish_txns`·`refresh_events`·`dedup_pairs` 집계를 조회한다.
+- **목록 & 필터**: `verified` / `generated` / 검수·교체 대기(`verify_jobs` · 진행 중 `publish_txns`) / 원문 불일치(`stale`) / `skipPaths` 숨김 / `over_budget`(700토큰 목표 초과) 필터 및 전문 검색.
 - **카드 상세 + 원문 나란히 대조**:
   - Frontmatter(`status`, `createdBy`, `sourceRevisions`, `sourceSpans`, `related`, `aliases`), 안전 마크다운 렌더, auto 블록(`<!-- qmd:auto:start -->` ~ `<!-- qmd:auto:end -->`)과 수동 보존 블록 시각 구분, `related` 카드 인라인 링크.
   - **원문 파일 나란히 보기(On-demand)**: `"원문 보기"` 버튼 클릭 시에만 서버가 안전 경계 검증(§7.3) 후 원문 내용과 `sourceSpans` 줄 범위 하이라이트를 반환한다.
@@ -256,7 +256,7 @@ Phase 2에서도 **UI 백엔드가 index/journal/route/learning/settings 파일�
    - `POST /api/actions/<name>/preview` → 변경 대상·용량·`previewSha256` 반환 → 사용자 확인 모달 승인 시 `POST /api/actions/<name>/apply`에 `previewSha256` 전달.
 2. **제어 액션 목록**:
    - **수동 Sync Wake 큐잉**: `entry/run.py wake`(포그라운드 worker 실행기)를 호출하지 않고, 전용 서브커맨드 **`entry/run.py ui action-sync --target <targetId>`**가 선택된 route 증명 + `require_cached_plugin_for_live_write()` 통과 후 `runtime.api.request('laya-sync', main_root)`만 호출해 즉시 `queued` 반환.
-   - **정리(GC)**: `state-cleanup`, `gc-index-runtime`, 오래된 job 없는 `.pending-*` 정리(`1.0.x-12`, 공용 `verify-queue.jsonl`만 보지 않고 `wiki/verify`의 `pending_ownership`·private handoff 소유권 검증을 거쳐 활성 private 후보 보존)·중복 카드(`1.0.x-14`) 검토 및 정리.
+   - **정리(GC)**: `state-cleanup`, `gc-index-runtime`, 중복 카드(`1.0.x-14`, 원장 `dedup_pairs`) 검토 및 정리.
    - **학습 제어**: Teacher on/off, 직전 selector 모델 롤백(미리보기 후 실행).
    - **온보딩 & 설정 편집기**: `.memvane/settings.json` minimal schema(허용 5키) 검증, `skipPaths` 변경 시 숨겨질 카드 미리보기, 온보딩(`plan`→`review`→`prepare`→`finalize`→`activate`) 및 `restore` 마법사.
    - **읽기 전용 안전 스위치**: `preferences.json`의 `readOnlyDefault: true` 및 `--read-only` CLI 플래그 지원.
@@ -374,7 +374,7 @@ http://127.0.0.1:<port>/#code=<one_time_code>&target=<targetId>&tab=overview
 | `GET /api/installs/<installId>/errors?hours=24&details=0` | 세션 쿠키 + Origin/Header | 오류/거부 이벤트 (`details=1`은 클릭 시에만 `diagnostic.part` 재조립) |
 | `GET /api/installs/<installId>/learning` | 세션 쿠키 + Origin/Header | 학습 체크포인트, 4종 승격 지표(한글 설명 메타 포함), teacher 상태, score 추이 |
 | `POST /api/installs/<installId>/learning/check` | 세션 쿠키 + Origin/Header | On-demand `--learning-check` 불변식 위반 개수 조회 |
-| `GET /api/targets/<targetId>/wiki?status=&q=&limit=200` | 세션 쿠키 + Origin/Header | 해당 `targetId`의 카드 메타·예산 + main(`installId`) 기준 `wiki.backfill` 및 `.handoff/v1/` private 대기·보류 요약 |
+| `GET /api/targets/<targetId>/wiki?status=&q=&limit=200` | 세션 쿠키 + Origin/Header | 해당 `targetId`의 카드 메타·예산 + main(`installId`) 기준 `wiki.backfill` 및 `wiki-pipeline.sqlite3` 원장 대기·검수·게시 요약 |
 | `GET /api/targets/<targetId>/wiki/card?rel=<path>` | 세션 쿠키 + Origin/Header | 카드 상세(frontmatter, auto/수동 블록 분리, `related`) |
 | `GET /api/targets/<targetId>/wiki/source?rel=<path>` | 세션 쿠키 + Origin/Header | 원문 파일 나란히 보기(명시적 클릭 시만 로드, §7.3 경계 적용) |
 | `POST /api/targets/<targetId>/query-playground` | 세션 쿠키 + Origin/Header | `recall.api.dry_run_recall` 격리 실행(4단계 결과, `semanticStatus`: `complete`/`partial`/`lexical_only`/`provider_absent`, `vectorCoveredMembers`/`vectorEligibleMembers` + fallback 사유) |
@@ -448,7 +448,7 @@ RFC 6265상 브라우저는 `127.0.0.1:3000`(로컬 dev 서버)과 `127.0.0.1:<m
 장기적인 Linux · Windows 지원을 위해 설계 단계에서 아래 6가지 경계를 고정한다.
 
 1. **Shell/Bash 의존 제거**: UI 백엔드와 `skills/ui/scripts/ui.py`는 `.sh` 래퍼를 거치지 않고 `sys.executable`로 `entry/run.py`·`entry/setup.py`를 `shell=False` 리스트 인자로 직접 실행한다.
-2. **OS 추상화 경계 분리 (`memvane/ui/platform_io.py`)**: `memvane/kernel/`(G3 한도 14/14, 1,499/1,500줄)을 수정하지 않고 `memvane/ui/platform_io.py`에서 브라우저 오픈·PID 생존·`server.lock`·OS별 디스크 경로 계산을 캡슐화한다. (앞서 §1.2.1에 명시했듯 네이티브 Windows 실행 자체는 하위 도메인 `event_log`/`runtime`/`resident`/`learning`의 POSIX 의존 제거가 선행 조건이다.)
+2. **OS 추상화 경계 분리 (`memvane/ui/platform_io.py`)**: `memvane/kernel/`(G3 한도 14/14, 1,489/1,500줄)을 수정하지 않고 `memvane/ui/platform_io.py`에서 브라우저 오픈·PID 생존·`server.lock`·OS별 디스크 경로 계산을 캡슐화한다. (앞서 §1.2.1에 명시했듯 네이티브 Windows 실행 자체는 하위 도메인 `event_log`/`runtime`/`resident`/`learning`의 POSIX 의존 제거가 선행 조건이다.)
 3. **짧게 열고 닫는 파일/SQLite 읽기 (Windows 파일 잠금 대비)**: 파일 핸들과 SQLite 연결(`errors._query_only_uri` + `PRAGMA query_only=ON`)을 요청 간에 캐시하지 않고 요청 스코프 내부에서 최단 시간만 열어 `finally`로 즉시 닫아 백그라운드 atomic rename·로그 rotation 충돌을 막는다.
 4. **브라우저 오픈 · SSH · WSL 폴백**:
    - 비GUI 환경(`SSH_CONNECTION`/`SSH_TTY`, Linux `DISPLAY`/`WAYLAND_DISPLAY` 부재, TUI `$BROWSER` 설정 시)에서는 `webbrowser.open()`을 호출하지 않고 즉시 `--no-open` 경로로 `manualUrl` 및 SSH 포트포워딩 안내를 출력해 행(hang)을 방지한다.
@@ -466,9 +466,9 @@ RFC 6265상 브라우저는 `127.0.0.1:3000`(로컬 dev 서버)과 `127.0.0.1:<m
 |---|---|---|
 | store · journal DDL, application id, `user_version` | 변경 없음 (전용 DB 테이블 없이 read-only API만 소비) | **저촉 없음** |
 | route · ledger · build · attestation JSON 키/스키마 | 변경 없음 | **저촉 없음** |
-| `.memvane/settings.json` 허용 키 5개 | 변경 없음 (UI 설정은 `v1/ui/`에 분리) | **저촉 없음** |
-| `sync.lock` · `service.lock` · `control.sock` · wake kind | 변경 없음 (`v1/ui/server.lock`은 별도 네임스페이스) | **저촉 없음** |
-| 계약 밖 파생물 목록 | `$HOME/.local/state/memvane/v1/ui/`(`server.json`, `preferences.json`, `auto-open-state.json`, `server.lock`) 등재 필요 | **문서 보완** |
+| `.memvane/settings.json` 허용 키 5개 | 변경 없음 (UI 설정은 `v2/ui/`에 분리) | **저촉 없음** |
+| `sync.lock` · `service.lock` · `control.sock` · wake kind | 변경 없음 (`v2/ui/server.lock`은 별도 네임스페이스) | **저촉 없음** |
+| 계약 밖 파생물 목록 | `$HOME/.local/state/memvane/v2/ui/`(`server.json`, `preferences.json`, `auto-open-state.json`, `server.lock`) 등재 필요 | **문서 보완** |
 | `hooks/run-hook` · `hook-classify` · `hook-serve` 계약 | 기본 OFF, `memvane/host/`는 `memvane/ui/` 미import (`hook_closures` 불변) | **저촉 없음** |
 
 ### 9.2 정적 가드 · 매니페스트 · 테스트 계획
@@ -486,7 +486,7 @@ RFC 6265상 브라우저는 `127.0.0.1:3000`(로컬 dev 서버)과 `127.0.0.1:<m
 3. **단위/통합 테스트**:
    - 보안: `Host` 변조, `Sec-Fetch-Site: same-site`/`cross-site` 차단, `/api/events/stream` 포함 모든 `/api/*`에서 `X-MemVane-UI` 누락 거부, 무인증 `/api/health` 정보 비노출, 만료/재사용 코드 거부, `POST /api/internal/code` 시크릿 검증, 다중 탭 16슬롯 LRU.
    - 파일 경계: `wiki/source` 프로젝트 루트 하위 symlink 차단(`O_NOFOLLOW`) vs 상위 `/var`·`/tmp` 허용, `.memvane/`/`skipPaths`/`excluded_source(..., wiki_source=True)` 차단.
-   - 수명주기 & 무오염: `bundle_lifecycle.newer` 기준 상위 버전만 교체, `QMD_SETUP_GUARD_FIXTURE=1`에서 실 브라우저 미실행, `dry_run_recall` `partial` 커버리지(`vectorCoveredMembers`/`vectorEligibleMembers`) 및 `use_selector=True` cold 상태 무스폰, `events.jsonl`·`edit-recall-sessions/`·학습 DB 무변경, `resident` read-only 상태 파사드 무쓰기, `wiki/verify` private handoff 요약(실제 writer 출력 + 상태 조합표), `runtime_main(['snapshot-readonly'])` 디렉터리 미생성, Python driver 기반 HTTP/SSE 통합 테스트(Node `execFileSync` 자기 데드락 회피).
+   - 수명주기 & 무오염: `bundle_lifecycle.newer` 기준 상위 버전만 교체, `QMD_SETUP_GUARD_FIXTURE=1`에서 실 브라우저 미실행, `dry_run_recall` `partial` 커버리지(`vectorCoveredMembers`/`vectorEligibleMembers`) 및 `use_selector=True` cold 상태 무스폰, `events.jsonl`·`edit-recall-sessions/`·학습 DB 무변경, `resident` read-only 상태 파사드 무쓰기, `wiki/pipeline` 원장 요약(21/30, 실제 writer 출력 + 상태 조합표), `runtime_main(['snapshot-readonly'])` 디렉터리 미생성, Python driver 기반 HTTP/SSE 통합 테스트(Node `execFileSync` 자기 데드락 회피).
 
 ---
 
@@ -498,7 +498,7 @@ RFC 6265상 브라우저는 `127.0.0.1:3000`(로컬 dev 서버)과 `127.0.0.1:<m
 - **M0 (사전 기반 정리)**:
   - `logs.py`·`logs_slo.py` 순수 집계 로직(`partial`·`fullCoverage`·`arenaFullCoverage` 포함) `memvane/diagnostics/` 이관(`diagnostics/api.py` ≤ 24/30).
   - `memvane/recall/api.py`에 `dry_run_recall`(`partial` vector 지원 포함) 및 `DryRunRecallResult` 신설(`v1_guard.py:_VALUE_SOURCES` 등재).
-  - `learning/api.py` 무mock 단일 호출처 통합으로 1슬롯 확보(`inspect_project`), `resident/api.py` 순수 read-only 상태 파사드(8/30), `wiki/verify/api.py` private handoff 읽기 요약 파사드(19/30), `runtime_work.main`에 `snapshot-readonly` 추가(`runtime/api.py` 42/42 핀 무변경, `service_root(create=False)`).
+  - `learning/api.py` 무mock 단일 호출처 통합으로 1슬롯 확보(`inspect_project`), `resident/api.py` 순수 read-only 상태 파사드(8/30), `wiki/pipeline/api.py` 원장 요약 파사드(21/30), `runtime_work.main`에 `snapshot-readonly` 추가(`runtime/api.py` 42/42 핀 무변경, `service_root(create=False)`).
 - **M1a (보안 서버 + Overview/Logs/Errors + `skills/ui`)**:
   - `memvane/ui/` 코어(`server`, `auth`, `sse`, `lifecycle`, `platform_io`, `local_client`), `entry/run.py ui`, `skills/ui/`, 5개 매니페스트/`manual-skills.test.mjs` 갱신.
   - `ui/` Preact+TS+Vite 셋업, Web Locks + `BroadcastChannel` SSE 리더, 오르카 스타일 프로젝트/워크트리 사이드바, Overview & 경고 배너.

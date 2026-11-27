@@ -433,7 +433,7 @@
     </div>
     <div class="topbar-right">
       <span class="pill" title="BroadcastChannel 단일 SSE 리더"><span class="dot green"></span>SSE Leader · 1 tab</span>
-      <span class="pill mono">v1.1.1</span>
+      <span class="pill mono">v1.1.4</span>
       <span class="pill">Read-Only</span>
       <button class="btn btn-sm" id="themeBtn" title="다크/라이트 테마 전환">테마</button>
       <button class="btn btn-sm btn-labels" id="labelsBtn" title="영역 ID 표시 토글 (단축키 L)">영역 ID [L]</button>
@@ -519,7 +519,7 @@
 (() => {
   'use strict';
 
-  // ---------------- Mock Domain Data (Aligned with design-local-web-ui.md r4 / v1.1.1) ----------------
+  // ---------------- Mock Domain Data (Aligned with design-local-web-ui.md r5 / v1.1.4) ----------------
   const TARGETS = [
     {
       targetId: 'a81f3c2e91b40d7712e90f8a4b6c1d02',
@@ -590,7 +590,7 @@
       installId: '55b0d91a03ce8812f4a772e19c3088ab',
       kind: 'main',
       name: 'memvane',
-      branch: 'release/1.1.2',
+      branch: 'main',
       displayRoot: '/Users/dev/work/memvane',
       hosts: ['claude', 'codex', 'hermes'],
       status: 'active',
@@ -812,7 +812,7 @@
       sourceRevisions: [{ path: 'memvane/kernel/errors.py', sha256: '1122aabbccdd', span: 'L35-L45' }],
       related: ['concepts/v1-guard-g4-도메인-줄-수-상한.md'],
       autoBody: 'macOS 시스템 Python 3.9 Apple libsqlite3는 WAL 잔여 헤더 DB를 ?mode=ro로 열 수 없으므로 모든 읽기 전용 SQLite 경로는 errors._query_only_uri와 PRAGMA query_only=ON을 사용한다.',
-      manualBody: '.handoff/v1/ private 교체 후보(.pending-9e21fa)가 검증 큐에 올라가 있으며 원문 변경으로 stale 마킹됨. (본문 742 tok — 700 tok 목표 초과)',
+      manualBody: 'wiki-pipeline.sqlite3 verify_jobs에 교체 후보가 대기 중이며 원문 변경으로 stale 마킹됨. (본문 742 tok — 700 tok 목표 초과)',
       sourceLines: [
         { n: 35, text: 'def _query_only_uri(path, *, sealed=False):', hl: true },
         { n: 36, text: '    """URI for reading existing SQLite data; callers set PRAGMA query_only."""', hl: true },
@@ -1288,7 +1288,7 @@
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <span class="card-title">Wiki Backfill &amp; 검증 현황</span>
             ${t && t.kind === 'worktree' ? '<span class="badge badge-blue">Compile·Backfill·Private Handoff 기록은 main checkout 기준</span>' : ''}
-            <span class="mono" style="font-size:11.5px;color:var(--text-secondary);">settled 142 · dispatched 6 · pending 18 · skipped 4 · private handoff: 교체 대기 2 · 보류 1 (1.4 / 64 MiB)</span>
+            <span class="mono" style="font-size:11.5px;color:var(--text-secondary);">settled 142 · dispatched 6 · pending 18 · skipped 4 · wiki-pipeline.sqlite3: compile 6 · verify 대기 2 · publish_txns 0 · dedup 1</span>
           </div>
           <input type="text" id="wikiSearchInput" value="${esc(state.wikiSearch)}" placeholder="카드 제목/경로 검색..." style="background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:5px 9px;font-size:12px;width:220px;" />
         </div>
@@ -1374,7 +1374,7 @@
             </div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
-            <div class="cand-item"><span class="card-sub">임베딩 상주 프로세스 (Embed Resident)</span><strong class="mono">PID 4821 · metal · 1.02 GB</strong><span class="card-sub mono">bundle v1.1.1 · 공유 실패 0/3 (w-8f2a...sock 정상)</span><span class="card-sub mono">설치별 증명 2/2 정상 · 실패 시 1시간 뒤 자동 재증명</span></div>
+            <div class="cand-item"><span class="card-sub">임베딩 상주 프로세스 (Embed Resident)</span><strong class="mono">PID 4821 · metal · 1.02 GB</strong><span class="card-sub mono">bundle v1.1.4 · 공유 실패 0/3 (w-8f2a...sock 정상)</span><span class="card-sub mono">설치별 증명 2/2 정상 · 실패 시 1시간 뒤 자동 재증명</span></div>
             <div class="cand-item"><span class="card-sub">학습 추론 서비스 (Learning Inference)</span><strong class="mono">PID 4905 · mps · 1.38 GB</strong><span class="card-sub mono">활성 모델 9c12ab40fe12</span></div>
           </div>
           <table>
@@ -1472,7 +1472,7 @@
         <section class="card" data-region="L4-ui-preferences" data-region-label="웹 UI 전역 환경설정 (preferences.json)">
           <div class="card-header">
             <div>
-              <div class="card-title">UI 전역 동작 설정 (~/.local/state/memvane/v1/ui/preferences.json)</div>
+              <div class="card-title">UI 전역 동작 설정 (~/.local/state/memvane/v2/ui/preferences.json)</div>
               <div class="card-sub">1.x 불변 계약(.memvane/settings.json 5키)과 분리된 전역 설정입니다.</div>
             </div>
           </div>
