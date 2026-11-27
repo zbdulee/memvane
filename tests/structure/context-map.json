@@ -143,12 +143,27 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/diagnostics/event_queries.py": {
+      "context": "diagnostics",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/diagnostics/event_summary.py": {
+      "context": "diagnostics",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/diagnostics/event_log.py": {
       "context": "diagnostics",
       "layer": "adapter",
       "pinned": false
     },
     "memvane/diagnostics/job_telemetry.py": {
+      "context": "diagnostics",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/diagnostics/slo.py": {
       "context": "diagnostics",
       "layer": "adapter",
       "pinned": false
@@ -1974,6 +1989,11 @@
       "pinned": false
     },
     "memvane/wiki/pipeline/retention.py": {
+      "context": "wiki/pipeline",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/pipeline/summary.py": {
       "context": "wiki/pipeline",
       "layer": "adapter",
       "pinned": false
