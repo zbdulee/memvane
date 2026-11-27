@@ -309,6 +309,8 @@ def resume(root):
     result = None
     try:
         root = Path(root)
+        if not os.path.lexists(root / POINTER):
+            return None  # Nothing was applied here, so nothing is being undone.
         status, _path, row = _state(root)
         if status == 'already_restored' and _owed(root, row):
             result = {**_summary(row, 'restored'), 'changesApplied': 0}
