@@ -250,8 +250,10 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
     from .adapter import EDIT_INPUT_VIEW
     from memvane.runtime.api import admission_policy
     controller,(coord_fd,admission)=coordination
-    from .trainer_footprint import admission_view,record
-    control={'schema':1,'root':str(controller.root),'policy':admission_policy(admission_view(root,policy)),
+    from .trainer_footprint import record
+    # The policy as configured: the control is part of the training request's identity
+    # (``train-intent.json``), so a measured estimate never changes a job's identity.
+    control={'schema':1,'root':str(controller.root),'policy':admission_policy(policy),
              'namespace':queue.scope,'job_id':job['id']}
     fds=tuple(fd for fd in (claim_fd,coord_fd) if fd is not None)
     grant_sha=proposal_sha256(grant)
@@ -406,8 +408,7 @@ def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*
     pin=digest(canonical([stage[k] for k in ('trainEvidenceSha256','artifactSha256','authorizationSha256','baseArtifactSha256','trainCases')]))
     evaluation=queue.ensure(cycle_id,pin,_case_evidence(validation))
     controller,(coord_fd,_)=coordination
-    from .trainer_footprint import admission_view
-    control={'schema':1,'root':str(controller.root),'policy':admission_policy(admission_view(root,policy)),'namespace':job['namespace'],'job_id':evaluation['id']}
+    control={'schema':1,'root':str(controller.root),'policy':admission_policy(policy),'namespace':job['namespace'],'job_id':evaluation['id']}
     folder=root/'cycles'/cycle_id;incumbent=Path(policy['baseArtifact'])
     from .candidate_apply import INCUMBENT_DAMAGED
     with queue.claim(evaluation['id']) as claim:
