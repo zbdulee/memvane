@@ -149,6 +149,20 @@ class Codes(unittest.TestCase):
                                                            {'ready': False, 'reason': 'memory_reserve'})),
                          {'state': 'deferred', 'reason': 'learning_deferred_resource', 'detail': 'memory_reserve'})
 
+    def test_a_busy_kernel_gate_names_the_gate(self):
+        for gate in ('provider', 'control', 'trainer', 'compute'):
+            with self.subTest(gate=gate):
+                self.assertEqual(worker._deferred(ResourceDeferred('learning_compute_busy', {'gate': gate})),
+                                 {'state': 'deferred', 'reason': 'learning_compute_busy', 'gate': gate,
+                                  'detail': 'gate_' + gate})
+        # An admission criterion stays the detail; a gate that is not a fixed code is not recorded.
+        self.assertEqual(worker._deferred(ResourceDeferred('learning_compute_busy',
+                                                           {'reason': 'memory_reserve', 'gate': 'control'})),
+                         {'state': 'deferred', 'reason': 'learning_compute_busy', 'gate': 'control',
+                          'detail': 'memory_reserve'})
+        self.assertEqual(worker._deferred(ResourceDeferred('learning_compute_busy', {'gate': '/tmp/x.lock'})),
+                         {'state': 'deferred', 'reason': 'learning_compute_busy'})
+
     def test_only_a_fixed_code_survives(self):
         self.assertEqual(worker._code(IndexContractError('provider_start_failed')), 'provider_start_failed')
         self.assertEqual(worker._code(IndexContractError('private document path and content')), 'failed')
@@ -188,3 +202,81 @@ class RouteSource(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OwnerOccupancy(unittest.TestCase):
+    """``sync.profile``'s sync owner fields: every acquisition of the pass, measured around ``sync_owner``."""
+
+    def acquisitions(self, *answers):
+        from contextlib import contextmanager
+        from unittest import mock
+        calls, sink = iter(answers), []
+
+        @contextmanager
+        def owner(path, **kwargs):
+            self.assertEqual(kwargs, {'wait': True})
+            yield next(calls)
+        token = worker._OWNER_PASS.set(sink)
+        try:
+            with mock.patch.object(worker, 'sync_owner', owner):
+                for _answer in answers:
+                    with worker._sync_owner('/synthetic/store.sqlite'):
+                        pass
+        finally:
+            worker._OWNER_PASS.reset(token)
+        return sink
+
+    def test_each_acquisition_records_whether_it_got_the_owner(self):
+        sink = self.acquisitions(object(), None, object())
+        self.assertEqual([item['acquired'] for item in sink], [True, False, True])
+        self.assertEqual(sink[1]['holdNs'], 0)
+        fields = worker._owner_fields(sink)
+        self.assertEqual((fields['ownerCalls'], fields['ownerBusy']), (3, 1))
+        self.assertEqual(set(fields), {'ownerCalls', 'ownerBusy', 'ownerContended', 'ownerWaitMs',
+                                       'ownerWaitMaxMs', 'ownerHoldMs', 'ownerHoldMaxMs'})
+
+    def test_an_acquisition_that_waited_a_poll_interval_is_contended(self):
+        step = worker.OWNER_CONTENDED_MS * 1000000
+        sink = [{'acquired': True, 'waitNs': step, 'holdNs': 7 * step},
+                {'acquired': True, 'waitNs': step - 1, 'holdNs': step},
+                {'acquired': False, 'waitNs': 60 * step, 'holdNs': 0}]
+        fields = worker._owner_fields(sink)
+        self.assertEqual((fields['ownerContended'], fields['ownerBusy']), (1, 1))
+        self.assertEqual((fields['ownerHoldMs'], fields['ownerHoldMaxMs']),
+                         (8 * worker.OWNER_CONTENDED_MS, 7 * worker.OWNER_CONTENDED_MS))
+        self.assertEqual(fields['ownerWaitMaxMs'], 60 * worker.OWNER_CONTENDED_MS)
+        self.assertEqual(worker._owner_fields([]), {})
+
+    def test_without_a_pass_nothing_is_recorded(self):
+        from contextlib import contextmanager
+        from unittest import mock
+
+        @contextmanager
+        def owner(path, **kwargs):
+            yield object()
+        with mock.patch.object(worker, 'sync_owner', owner):
+            with worker._sync_owner('/synthetic/store.sqlite') as held:
+                self.assertIsNotNone(held)
+        self.assertIsNone(worker._OWNER_PASS.get())
+
+
+class PassFields(unittest.TestCase):
+    """``sync.profile``'s view of a settled pass: the main view apart from linked views (no paths)."""
+
+    def test_linked_views_are_hashed_ids_with_their_states(self):
+        result = {'state': 'indexed', 'reason': None,
+                  'linkedWaiting': {'waiting': 1, 'held': 0, 'reasons': {'schema3_pass_budget': 1},
+                                    'pending': 'linked_reoffer'},
+                  'worktrees': [{'root': '/private/side', 'state': 'pending', 'reason': 'schema3_pass_budget'},
+                                {'root': '/private/other', 'state': 'indexed', 'vector': {'state': 'pending'}}]}
+        fields = worker._pass_fields(result, 'unchanged')
+        self.assertEqual((fields['main'], fields['passState']), ('unchanged', 'indexed'))
+        self.assertEqual(fields['linked']['pending'], 'linked_reoffer')
+        self.assertEqual(fields['linkedViews'],
+                         [{'view': worker._view_id('/private/side'), 'state': 'pending',
+                           'reason': 'schema3_pass_budget'},
+                          {'view': worker._view_id('/private/other'), 'state': 'indexed', 'vector': 'pending'}])
+        self.assertNotIn('/private', str(fields))
+        self.assertRegex(fields['linkedViews'][0]['view'], r'^[0-9a-f]{12}$')
+        self.assertEqual(worker._pass_fields({'state': 'unchanged'}, 'unchanged'),
+                         {'main': 'unchanged', 'passState': 'unchanged'})

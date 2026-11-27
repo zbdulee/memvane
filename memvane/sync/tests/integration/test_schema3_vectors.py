@@ -74,6 +74,12 @@ class SyncVectors(SyncCase):
         self.assertGreater(row['scanCalls'], 0)
         self.assertGreater(row['planCalls'], 0)
         self.assertNotIn('profilecanary', str(row))
+        # The pass's sync owner occupancy: the publish and the discovery after it each took the owner.
+        self.assertGreaterEqual(row['ownerCalls'], 2, row)
+        self.assertEqual((row['ownerBusy'], row['ownerContended']), (0, 0), row)
+        self.assertGreater(row['ownerHoldMs'], 0, row)
+        self.assertLessEqual(row['ownerHoldMaxMs'], row['ownerHoldMs'], row)
+        self.assertEqual((row['main'], row['passState']), ('indexed', 'indexed'), row)
 
     def reader_spec(self):
         from memvane.journal.api import inspect_journal

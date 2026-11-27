@@ -14,13 +14,14 @@ than after the pass before. Movement elsewhere (the main view, another view)
 and work that did not lower what is left are no reason. A view whose count rises
 again (new work after it had finished or shrunk) starts its low again from
 that count, so the passes that work it off set new lows. ``CAP`` offers in a
-row without a new low (of any view, or of the number that wait) end the free
-re-offers: the pass then fails as
-``schema3_linked_pending`` and the wake queue's backoff and retry cap bound it.
+row without a new low (of any view, or of the number that wait) end the
+re-offers: the pass, a success for its published main view, records the wait
+as ``linked_capped`` and is not offered again; the next sync request reaches
+the views.
 
 Apart from that, ``ABSOLUTE_CAP`` offers in a row (a pass that is not offered
-ends the row) fail one pass the same way, whatever moved: a count that rises
-and falls again sets a new low every other pass.
+ends the row) end the re-offers for one pass the same way, whatever moved: a
+count that rises and falls again sets a new low every other pass.
 
 The file is a cache. Unreadable, it reads as no history; when it cannot be
 written no re-offer is made (the count could not advance), and the next sync

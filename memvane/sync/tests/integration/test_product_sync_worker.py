@@ -67,6 +67,18 @@ class ProductSyncWorker(SyncCase):
         refused = self.run_pass(Criterion())
         self.assertIn('memory_reserve', refused.get('detail', ''), refused)
 
+    def test_a_busy_provider_gate_is_named_in_the_pass_detail(self):
+        from memvane.kernel.resource_deferred import ResourceDeferred
+
+        class Busy(Coordinator):
+            def activity(self, lane, policy, report):
+                raise ResourceDeferred('learning_compute_busy', {'gate': 'provider'})
+        self.card(self.CARDS[0][0], 'falconprobe')
+        refused = self.run_pass(Busy())
+        self.assertEqual((refused['state'], refused['reason']), ('deferred', 'learning_compute_busy'), refused)
+        # The wake event's detail carries the gate (``vec_deferred_learning_compute_busy:gate_provider``).
+        self.assertIn('gate_provider', refused.get('detail', ''), refused)
+
 
 if __name__ == '__main__':
     unittest.main()

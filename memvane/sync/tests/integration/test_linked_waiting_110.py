@@ -71,7 +71,8 @@ class LinkedWaiting(SyncCase):
             self.assertEqual(self.states(result).count('pending'), max(left, 0), result)
             if left > 0:
                 self.assertEqual(result['linkedWaiting'],
-                                 {'waiting': left, 'held': 0, 'reasons': {'schema3_pass_budget': left}}, result)
+                                 {'waiting': left, 'held': 0, 'reasons': {'schema3_pass_budget': left},
+                                  'pending': 'linked_reoffer'}, result)
                 self.assertEqual(wakes, [('laya-sync', str(self.project), worker.SCHEMA3_VECTOR_REOFFER_SECONDS)])
         self.assertNotIn('linkedWaiting', result)
         del wakes[:]
@@ -96,6 +97,7 @@ class LinkedWaiting(SyncCase):
         self.assertNotIn('reason', result, result)
         self.assertEqual(result['linkedWaiting']['waiting'], LINKED_VIEWS, result)
         self.assertEqual(sum(result['linkedWaiting']['reasons'].values()), LINKED_VIEWS, result)
+        self.assertEqual(result['linkedWaiting']['pending'], 'linked_next_request', result)
         self.assertNotIn('vectorReoffer', result)
         self.assertEqual(wakes, [])
 
@@ -292,7 +294,7 @@ class SettleVectors(unittest.TestCase):
         settled = worker._settle_vectors(result, reoffer, linked)
         return settled['state'], settled.get('reason'), settled.get('vectorReoffer', False), len(calls)
 
-    def test_only_the_main_views_vectors_a_provider_defect_or_a_capped_wait_fail_the_pass(self):
+    def test_only_the_main_views_vectors_or_a_provider_defect_fail_the_pass(self):
         moved = {'state': 'pending', 'reason': 'schema3_vector_deadline', 'progress': 3}
         stuck = {'state': 'pending', 'reason': 'schema3_vector_deadline', 'progress': 0}
         resource = {'state': 'deferred', 'reason': 'memory_reserve'}
@@ -322,8 +324,8 @@ class SettleVectors(unittest.TestCase):
             # A re-request that fails: a linked wait stays a success, the main view's vectors keep the wake.
             (result(done, moved), 'offer', True, ('unchanged', None, False, 1)),
             (result(moved), 'none', True, ('pending', 'schema3_vector_deadline', False, 1)),
-            # Too many offers without less to do: a counted failure.
-            (result(done, stuck), 'capped', False, ('pending', 'schema3_linked_pending', False, 0)),
+            # Too many offers without less to do: still the main view's success, no offer.
+            (result(done, stuck), 'capped', False, ('unchanged', None, False, 0)),
             (result(moved, stuck), 'capped', False, ('unchanged', None, True, 1)),
         )
         for index, (value, linked, fails, expected) in enumerate(cases):
@@ -339,10 +341,49 @@ class SettleVectors(unittest.TestCase):
         settled = worker._settle_vectors(result, lambda: calls.append(1), 'capped', True)
         self.assertEqual((settled['state'], settled.get('reason'), settled.get('vectorReoffer'), len(calls)),
                          ('unchanged', None, True, 1))
-        # Once it has caught up the capped wait fails the pass as before.
+        # Once it has caught up the capped wait ends the offers; the main publish stays a success.
         settled = worker._settle_vectors(result, lambda: calls.append(1), 'capped', False)
-        self.assertEqual((settled['state'], settled['reason'], settled.get('vectorReoffer'), len(calls)),
-                         ('pending', 'schema3_linked_pending', None, 1))
+        self.assertEqual((settled['state'], settled.get('reason'), settled.get('vectorReoffer'), len(calls)),
+                         ('unchanged', None, None, 1))
+
+    def test_the_linked_wait_names_what_happens_to_the_views_beside_the_main_success(self):
+        waiting = {'waiting': 1, 'held': 0, 'reasons': {'schema3_pass_budget': 1}}
+        done = {'state': 'published'}
+        stuck = {'state': 'pending', 'reason': 'schema3_vector_deadline', 'progress': 0}
+        moved = {'state': 'pending', 'reason': 'schema3_vector_deadline', 'progress': 2}
+        defect = {'state': 'provider_blocked', 'reason': 'provider_identity_changed'}
+
+        def settle(main, linked, fails=False, worktree=None):
+            def reoffer():
+                if fails:
+                    raise OSError('queue')
+            result = {'state': 'unchanged', 'vector': main, 'linkedWaiting': dict(waiting),
+                      'worktrees': [worktree or {'root': '/w0', 'state': 'pending', 'reason': 'schema3_pass_budget'}]}
+            settled = worker._settle_vectors(result, reoffer, linked)
+            return settled['state'], settled['linkedWaiting']['pending'], settled['linkedWaiting']['reasons']
+        cases = (
+            # main vector, linked decision, re-request fails -> pass state, linked pending
+            (done, 'offer', False, ('unchanged', 'linked_reoffer')),
+            (done, 'offer', True, ('unchanged', 'linked_next_request')),
+            (done, 'none', False, ('unchanged', 'linked_next_request')),
+            (done, 'capped', False, ('unchanged', 'linked_capped')),
+            # The main view's own wait keeps the wake: the linked views come again with it.
+            (stuck, 'capped', False, ('pending', 'linked_reoffer')),
+            (moved, 'capped', False, ('unchanged', 'linked_reoffer')),
+        )
+        for main, linked, fails, expected in cases:
+            with self.subTest(main=main, linked=linked, fails=fails):
+                state, pending, reasons = settle(main, linked, fails)
+                self.assertEqual((state, pending), expected)
+                self.assertEqual(reasons, {'schema3_pass_budget': 1})
+        # Work after the publish (external edits, discovery) keeps the wake: the linked views come with it.
+        result = {'state': 'pending', 'reason': 'external_edits_pending', 'vector': done,
+                  'linkedWaiting': dict(waiting), 'worktrees': [{'root': '/w0', 'state': 'pending'}]}
+        self.assertEqual(worker._settle_vectors(result, lambda: None, 'capped')['linkedWaiting']['pending'],
+                         'linked_reoffer')
+        # A provider defect ends the wake: nothing brings the linked views back but the next request.
+        self.assertEqual(settle(done, 'offer', worktree={'root': '/w0', 'state': 'unchanged', 'vector': defect})[:2],
+                         ('blocked', 'linked_next_request'))
 
     def test_a_pass_that_did_not_publish_is_left_as_it_is(self):
         for linked in ('none', 'offer', 'capped'):
