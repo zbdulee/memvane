@@ -10,6 +10,7 @@ import sys
 import time
 
 from . import resident
+from .idle_release import release_idle as _release_idle
 from .inference_identity import IdentityCache, has_evidence
 from memvane.runtime.api import service_root
 from memvane.runtime.types import ServiceFailure
@@ -99,11 +100,13 @@ class GenerationEngine:
         # (generation, seconds) of a first load retained after its request
         # ran out of time; memory only, reported once by a later request.
         self.cached_load = None
+        self.last_used = time.monotonic()  # Read by ``idle_release``.
 
     def _pending_key(self,job):
         return (job['apply_id'],job['namespace'],tuple(job['generation']),tuple(job['expected_old']))
 
     def prepare(self,job,*,cancelled,revalidate):
+        self.last_used=time.monotonic()
         from .contracts import digest
         from .store import canonical
         key=self._pending_key(job);token=digest(canonical(key))
@@ -119,6 +122,7 @@ class GenerationEngine:
         return token
 
     def activate(self,token,job):
+        self.last_used=time.monotonic()
         key=self._pending_key(job)
         if self.last_activation==(token,key) and self.active is not None and self.active[0]==job['generation']:return
         if (self.pending is None or self.pending[:2]!=(token,key)
@@ -134,6 +138,7 @@ class GenerationEngine:
         def check():
             if cancelled() or time.monotonic() >= job['deadline']:
                 raise ServiceFailure('deadline_expired')
+        self.last_used = time.monotonic()
         check()
         if self.pending is not None:
             if time.monotonic()>=self.pending[4]:self.pending=None
@@ -870,7 +875,7 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
             try:
                 conn, envelope, deadline, queued = pending.get(timeout=.05)
             except queue.Empty:
-                continue
+                _release_idle(engine);continue
             busy.set()
             queue_wait = round(time.monotonic()-queued, 6)
             try:

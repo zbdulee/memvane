@@ -101,7 +101,8 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None, coordinator=N
         from memvane.runtime.api import coordinator as Coordinator
         coordinator=coordinator or Coordinator()
         try:
-            with coordinator.training(policy,report) as lease:
+            from .trainer_footprint import admission_view
+            with coordinator.training(admission_view(root,policy),report) as lease:
                 return _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,
                     trainer_factory=trainer_factory,claim_fd=claim,coordination=(coordinator,lease))
         except ResourceDeferred as exc:
@@ -249,7 +250,8 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
     from .adapter import EDIT_INPUT_VIEW
     from memvane.runtime.api import admission_policy
     controller,(coord_fd,admission)=coordination
-    control={'schema':1,'root':str(controller.root),'policy':admission_policy(policy),
+    from .trainer_footprint import admission_view,record
+    control={'schema':1,'root':str(controller.root),'policy':admission_policy(admission_view(root,policy)),
              'namespace':queue.scope,'job_id':job['id']}
     fds=tuple(fd for fd in (claim_fd,coord_fd) if fd is not None)
     grant_sha=proposal_sha256(grant)
@@ -321,6 +323,7 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
             answer, train_resources = _train_once(trainer, request, folder)
             if answer != {'schema_version': 1, 'status': 'trained'}:
                 raise ValueError('invalid_shared_train_result')
+            record(root, policy, train_resources)  # The next admission's estimate; never raises.
             source_active = all(_case_active(root, (r[7], r[1], r[3]))
                                 for r in train)
             stage = {'schema_version': 1, 'cohort_id': grant['cohort']['id'],
@@ -403,7 +406,8 @@ def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*
     pin=digest(canonical([stage[k] for k in ('trainEvidenceSha256','artifactSha256','authorizationSha256','baseArtifactSha256','trainCases')]))
     evaluation=queue.ensure(cycle_id,pin,_case_evidence(validation))
     controller,(coord_fd,_)=coordination
-    control={'schema':1,'root':str(controller.root),'policy':admission_policy(policy),'namespace':job['namespace'],'job_id':evaluation['id']}
+    from .trainer_footprint import admission_view
+    control={'schema':1,'root':str(controller.root),'policy':admission_policy(admission_view(root,policy)),'namespace':job['namespace'],'job_id':evaluation['id']}
     folder=root/'cycles'/cycle_id;incumbent=Path(policy['baseArtifact'])
     from .candidate_apply import INCUMBENT_DAMAGED
     with queue.claim(evaluation['id']) as claim:
@@ -449,7 +453,8 @@ def evaluate_pending(root,policy,cycle_id,*,trainer_factory=None,coordinator=Non
     root,grant,queue,job,stage,train,validation,cohort_train,evaluations,evaluation=prepared
     controller=coordinator or Coordinator()
     try:
-        with controller.training(policy,resource_report(policy,detailed=True)) as lease:
+        from .trainer_footprint import admission_view
+        with controller.training(admission_view(root,policy),resource_report(policy,detailed=True)) as lease:
             return _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,
                 trainer_factory=trainer_factory,coordination=(controller,lease))
     except ResourceDeferred as exc:
