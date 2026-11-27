@@ -57,7 +57,8 @@ source path는 프로젝트 상대 경로이고 member path는 wiki 상대 Markd
 wiki root의 `SCHEMA.md`·`index.md`·`log.md`는 member가 될 수 없다.
 `presence`는 `present` 또는 `held_missing`이다. `trust_digest`는 null일 수 있다.
 source 지문은 handle과 같은 worktree·branch·path에 속해야 한다.
-`present`는 현재 scan과 capture의 HEAD도 일치해야 한다.
+`present`는 `observed` 지문이어야 한다. sync는 같은 worktree·branch·path·SHA·길이·tracked
+state의 관측에 저장된 지문 행을 다시 쓰므로, 그 행의 scan과 HEAD는 manifest보다 앞설 수 있다.
 `complete: true`는 호출자의 완료 주장이고 원문 전체를 관측했다는 증명이 아니다.
 
 검색 자격 `eligible`은 저장소가 source·attestation·`skipPaths`에서 도출한다.
@@ -110,6 +111,11 @@ prepare는 head와 capture에 묶인 유계 stage에 변경 행과 vector spec�
 prepare와 publish는 원래 handle의 capture·settings·파일 관측을 다시 확인한다.
 vector 세대는 준비·봉인·게시 시 참조한 complete set의 실제 행·입력 SHA·바이트·
 provenance를 재검증한다. set head의 count와 digest만으로 게시하지 않는다.
+같은 spec으로 complete 봉인된 head 위의 prepare는 head에 없던 blob의 set만 행까지
+재검증한다. head의 set은 그 head의 prepare가 검증했고 불변이며, pin한 lane은 점수를 매기는
+행을 다시 확인한다. head member의 blob 본문도 다시 읽지 않고 저장된 길이만 센다.
+publish는 같은 프로세스에서 그 세대를 prepare할 때 읽은 wiki 파일의 node(장치·inode·크기·
+mtime·ctime)와 wiki root가 그대로이면 그 읽기를 다시 쓰고, 하나라도 다르면 모두 다시 읽는다.
 publish는 같은 transaction 안에서 seal과 원래 base를 확인하고
 `(view_id, incarnation, gen_id, epoch)`를 비교해 head를 바꾼다.
 epoch는 같은 head 값으로 돌아오는 ABA를 구분한다. 다른 view의 게시가 CAS 충돌을
@@ -134,7 +140,10 @@ binary path 오름차순으로 정렬한다. FTS title과 결과의 `display_tit
 
 고정 schema manifest와 view별 head FTS DDL·shadow 구성을 검사한다.
 봉인 전 FTS `integrity-check`를 실행하며 logical rows와 opaque physical shadow
-commitment를 함께 봉인한다. shadow 값은 SQLite 저장 바이트의 commitment이고
+commitment를 함께 봉인한다. head가 있는 게시는 바뀐 카드의 FTS 행만 만든다. seal을 다시
+확인한 head의 FTS 누적값에 변경분을 더한 값이 head FTS 테이블 전체에서 읽은 누적값과
+같아야 봉인하고(`fts_rows_mismatch`), 봉인 값은 전체 행을 다시 만든 경우와 같다. 첫 게시는
+전체 행을 만들어 테이블과 대조한다. shadow 값은 SQLite 저장 바이트의 commitment이고
 FTS 내부 형식의 해석이나 외부 신뢰 attestation이 아니다.
 
 candidate 쓰기 연결은 SQL statement cache 없이 범위가 제한된 authorizer를 설치한다.

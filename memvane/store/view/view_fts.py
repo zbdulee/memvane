@@ -379,6 +379,16 @@ def verify_head_index(db,view_id):
         v.fail('fts_integrity_failed')
 
 
+def head_rows(db,view_id,deadline=None):
+    """The head FTS table's rows in path order, as ``fts_rows`` dicts."""
+    cursor=db.execute(f'SELECT filepath,title,body,path_key FROM {head_table(view_id)} ORDER BY path_key COLLATE BINARY')
+    try:
+        for row in cursor:
+            _deadline(deadline)
+            yield dict(zip(_FIELDS,row))
+    finally:cursor.close()
+
+
 def head_proof(db,view_id,rows,deadline=None,*,expected_storage=None,logical=True):
     """Stream an ordered head corpus and its physical commitment in one snapshot."""
     try:rows=iter(rows)

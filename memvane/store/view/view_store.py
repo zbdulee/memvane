@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
+import os
 from pathlib import Path
 import time
 import uuid
@@ -18,8 +19,8 @@ import uuid
 from memvane.store.blob import blob_values as v
 from memvane.store.checkout import checkout_view as checkout
 from memvane.store.blob.blob_values import BlobStoreError
-from memvane.store.blob.blob_store import (BlobStore, _bound_settings, _current_file_node, _insert, _regular,
-                             _worktree_record, _worktree_row)
+from memvane.store.blob.blob_store import (BlobStore, _bound_settings, _current_file_node, _dirfd, _insert, _node,
+                                           _regular, _worktree_record, _worktree_row)
 from memvane.store.view import view_fts as view_fts
 from memvane.store.view import view_values as vals
 from memvane.store.view import view_vectors as vectors
@@ -292,23 +293,77 @@ def _skip_patterns(saved):
         v.fail('wiki_settings_invalid')
 
 
+def _each_below(root, paths, read):
+    """``{path: read(root fd, path)}`` below one no-follow root descriptor; ``read`` opens segments no-follow."""
+    rootfd = _dirfd(root)
+    try:
+        return {relative: read(rootfd, relative) for relative in paths}
+    finally:
+        os.close(rootfd)
+
+
 def _wiki_files(saved, members):
-    """Bounded FD reads of the exact admitted wiki bytes; never under the writer lock."""
+    """Bounded FD reads of the exact admitted wiki bytes below one root descriptor; never under the writer lock."""
     files, total = {}, 0
-    for member in members:
-        try:
-            raw, node, rootnode = _regular(saved['wiki_root'], member['path'], v.MAX_BODY)
-        except OSError:
-            v.fail('wiki_member_unavailable')
-        if not checkout._persistent_directory_equal({'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}, rootnode):
-            v.fail('wiki_root_changed')
-        if v.hash_bytes(raw) != member['blob_sha']:
-            v.fail('wiki_member_changed')
-        total += len(raw)
-        if total > vals.MAX_WIKI_BYTES:
-            v.fail('generation_too_large')
-        files[member['path']] = node
+    try:
+        rootfd = _dirfd(saved['wiki_root'])
+    except OSError:
+        v.fail('wiki_member_unavailable')
+    try:
+        for member in members:
+            try:
+                raw, node, rootnode = _regular(rootfd, member['path'], v.MAX_BODY)
+            except OSError:
+                v.fail('wiki_member_unavailable')
+            if not checkout._persistent_directory_equal({'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']},
+                                                        rootnode):
+                v.fail('wiki_root_changed')
+            if v.hash_bytes(raw) != member['blob_sha']:
+                v.fail('wiki_member_changed')
+            total += len(raw)
+            if total > vals.MAX_WIKI_BYTES:
+                v.fail('generation_too_large')
+            files[member['path']] = node
+    finally:
+        os.close(rootfd)
     return files
+
+
+def _wiki_files_again(saved, members, prepared, gen_id):
+    """``gen_id``'s prepare read in this process while every member's file node and the wiki root match."""
+    if prepared is not None and prepared[:2] == (gen_id, {m['path']: m['blob_sha'] for m in members}):
+        try:
+            if (_each_below(saved['wiki_root'], prepared[2], _current_file_node) == prepared[2]
+                    and checkout._persistent_directory_equal({'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']},
+                                                             _node(os.lstat(saved['wiki_root'])))):
+                return prepared[2]
+        except (OSError, BlobStoreError):
+            pass
+    return _wiki_files(saved, members)
+
+
+def _proven_sets(db, view_id, spec, current):
+    """Eligible head blobs whose (immutable) sets the head's prepare validated under the same ``spec``."""
+    sealed = db.execute('SELECT g.coverage,g.recipe_id,g.profile_id FROM s_heads h JOIN s_generations g '
+                        'ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=?', (view_id,)).fetchone()
+    if spec is None or tuple(sealed or ()) != ('complete', spec['recipe_id'], spec['profile_id']):
+        return ()
+    return {row['blob_sha'] for row in current.values() if row['eligible']}
+
+
+def _fts_delta(store, db, view_id, head, changes, deadline):
+    """``(physical, fts_acc)`` of a head table that must hold the seal-checked head's corpus plus ``changes``."""
+    from memvane.store.view import view_rows as rows
+    base = dict(db.execute('SELECT * FROM s_generations WHERE view_id=? AND ordinal=?',
+                           (view_id, head.ordinal)).fetchone())
+    if rows.seal_digest(rows._seal_fields(store._incarnation, base)) != base['seal_digest']:
+        v.fail('generation_seal_mismatch')
+    text_acc = rows.acc_value(base['fts_acc'])
+    for row, sign in changes:
+        text_acc = rows.acc_update(text_acc, rows._FTS_DOMAIN, row, sign)
+    if rows.fts_acc(view_fts.head_rows(db, view_id, deadline)) != text_acc:
+        v.fail('fts_rows_mismatch')
+    return view_fts.head_storage_digest(db, view_id, deadline), text_acc
 
 
 def _live(db, saved, files):
@@ -318,7 +373,7 @@ def _live(db, saved, files):
         v.fail('wiki_binding_changed')
     _bound_settings(saved)
     try:
-        current = {path: _current_file_node(saved['wiki_root'], path) for path in files}
+        current = _each_below(saved['wiki_root'], files, _current_file_node)
     except OSError:
         v.fail('wiki_member_changed')
     if current != files:
@@ -470,8 +525,8 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
                 ok = False
         return int(ok), refs
 
-    def _derive(self, handle, manifest, skips, *, retain_bodies=True, deadline=None):
-        """Metadata-only derivation inside a short read transaction."""
+    def _derive(self, handle, manifest, skips, *, retain_bodies=True, deadline=None, only=None, proven=()):
+        """Metadata-only derivation in a short read transaction; ``only`` blobs if given, ``proven`` ones sized only."""
         if deadline is not None and time.monotonic() >= deadline:
             v.fail('fts_deadline_exceeded')
         if not self._db.in_transaction:
@@ -484,8 +539,9 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
             fp = self._fingerprint(source['fingerprint_id'], cache=cache)
             if (fp['worktree_id'], fp['branch_key'], fp['path']) != (handle.worktree_id, handle.branch_key, source['path']):
                 v.fail('source_binding_mismatch')
-            if source['presence'] == 'present' and (fp['scan_id'] != manifest['scan_id']
-                                                    or fp['head_oid'] != handle.head_oid):
+            # A present source is an observed row. put_source_fingerprints reuses unchanged
+            # observations, so its scan and HEAD may predate this manifest.
+            if source['presence'] == 'present' and fp['binding_state'] != 'observed':
                 v.fail('source_observation_stale')
             if not vals.skipped(source['path'], skips):
                 current[source['path']] = (source, fp)
@@ -497,6 +553,14 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
             if deadline is not None and time.monotonic() >= deadline:
                 v.fail('fts_deadline_exceeded')
             blob = member['blob_sha']
+            if only is not None and blob not in only:
+                continue
+            if blob not in verified_bodies and blob in proven and not retain_bodies:
+                known = self._db.execute('SELECT byte_length FROM wiki_blobs WHERE blob_sha=?', (blob,)).fetchone()
+                if known is None:
+                    v.fail('blob_missing')
+                cache['blobs'].add(blob)
+                verified_bodies[blob] = known[0]
             if blob not in verified_bodies:
                 body = self._blob(blob, cache=cache)
                 cache['blobs'].add(blob)
@@ -523,7 +587,7 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
         return dict(members=sorted(members, key=lambda m: m['path']),
                     sources=sorted((s for s, _ in current.values()), key=lambda s: s['path']),
                     cards=sorted(cards, key=lambda c: (c['wiki_path'], c['ordinal'])),
-                    bodies=bodies, body_bytes=body_bytes,
+                    bodies=bodies, body_bytes=body_bytes, cache=cache,
                     verified_bodies=verified_bodies if retain_bodies else {})
 
 

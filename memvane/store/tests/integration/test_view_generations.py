@@ -79,16 +79,22 @@ class GenerationChecks(GenerationCase):
         self.assertEqual(self.eligible(store,gen),1)
         self.assertEqual(store.attestation(m['members'][0]['trust_digest'])['sources'][0]['fingerprint_id'], original)
 
-    def test_06_source_path_scan_and_branch_claims_are_bound(self):
+    def test_06_source_path_and_binding_claims_are_bound(self):
         store,_,h=self.seeded();m=self.snapshot(store,h)
         generations=self.generations(store)
         for patch in [{'path':'notes/other.md'},{'fingerprint_id':'0'*64}]:
             changed=copy.deepcopy(m);changed['sources'][0].update(patch)
             with self.subTest(patch=patch):self.refused(store.prepare_generation,h,changed,expected_head=store.head(h))
-        wrong=store.fingerprint(m['sources'][0]['fingerprint_id'])
-        bad=copy.deepcopy(m);bad['sources'][0]['fingerprint_id']=store.put_fingerprint(dict(wrong,scan_id='2'*32))
+        prior=store.fingerprint(m['sources'][0]['fingerprint_id'])
+        unbound=dict(prior,binding_state='legacy_unbound',head_oid=None,tracked_state='unknown')
+        bad=copy.deepcopy(m);bad['sources'][0]['fingerprint_id']=store.put_fingerprint(unbound)
         self.refused(store.prepare_generation,h,bad,expected_head=store.head(h))
         self.assertEqual(self.generations(store),generations)
+        # An unchanged observation keeps its earlier scan: the stored row is reused (1.0.x-3).
+        older=copy.deepcopy(m);older['sources'][0]['fingerprint_id']=store.put_fingerprint(dict(prior,scan_id='2'*32))
+        gen,base=self.prepared(store,h,older)
+        store.publish_generation(h,gen,expected_head=base)
+        self.assertEqual(self.generations(store),generations+1)
 
     def test_07_skipped_source_is_filtered_without_laundering_trust(self):
         (self.root/'.memvane/settings.json').write_text(json.dumps(dict(SETTINGS,skipPaths=['notes'])))

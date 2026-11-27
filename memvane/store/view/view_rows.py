@@ -564,9 +564,10 @@ class RowsMixin:
         with self._session() as db:
             if self._rows_head(db, handle) != base:
                 v.fail('view_head_conflict')
-            plan = self._derive(handle, manifest, skips, deadline=deadline)
             current = {row['path']: row for row in self._rows_open(db, handle.view_id)}
-            source_rows, source_objects = self._rows_source_objects(plan['sources'])
+            plan = self._derive(handle, manifest, skips, retain_bodies=False, deadline=deadline,
+                                proven={row['blob_sha'] for row in current.values()})  # verified at their prepare
+            source_rows, source_objects = self._rows_source_objects(plan['sources'], cache=plan['cache'])
             source_items = [dict(path=(old or new)['path'], action='delete' if new is None else 'put',
                                  observation_id=None if new is None else new['observation_id'])
                             for old, new in self._source_diff(self._rows_open_sources(db, handle.view_id),
@@ -574,7 +575,8 @@ class RowsMixin:
             card_rows, card_objects, card_items = self._rows_card_source_changes(
                 db, handle.view_id, current, plan)
             # Zero or complete: every eligible member's set is validated before any write.
-            self._rows_coverage(db, [_card_row(m) for m in plan['members']], spec, full=True, deadline=deadline)
+            self._rows_coverage(db, [_card_row(m) for m in plan['members']], spec, full=True, deadline=deadline,
+                                proven=store_module._proven_sets(db, handle.view_id, spec, current))
         wanted = {member['path']: _card_row(member) for member in plan['members']}
         items = [_stage_item(path, wanted.get(path)) for path in _sorted_paths(set(current) | set(wanted))
                  if current.get(path) != wanted.get(path)]
@@ -639,10 +641,11 @@ class RowsMixin:
             store_module._current_capture(saved, self._repository, self._policy, entry['capture'], deadline=deadline)
             _live(db, saved, files)
             _expired(deadline)
+        self._prepared_wiki = (gen_id, {m['path']: m['blob_sha'] for m in plan['members']}, files)
         return gen_id
 
     def _rows_publish(self, handle, gen_id, *, expected_head, deadline):
-        from memvane.store.view.view_store import _live, _skip_patterns, _wiki_files
+        from memvane.store.view.view_store import _live, _skip_patterns, _wiki_files_again
         from memvane.store.view import view_store as store_module
         _deadline_value(deadline)
         self._require_write()
@@ -723,8 +726,9 @@ class RowsMixin:
                 stage, items, _, final, _, _ = staged_state(db)
         if published is None:
             # Bounded FD reads of the final members' exact bytes, outside the writer lock.
-            files = _wiki_files(saved, final)
-            rows = self._rows_fts_rows(final, cache={}, deadline=deadline)
+            files = _wiki_files_again(saved, final, getattr(self, '_prepared_wiki', None), gen_id)
+            # Over a head only the changed cards' FTS rows are built (``_rows_write``).
+            rows = None if base['gen_id'] is not None else self._rows_fts_rows(final, cache={}, deadline=deadline)
         with self._session(write=True) as db:
             head = self._rows_head_row(db, handle.view_id)
             published = db.execute('SELECT view_id,epoch FROM s_generations WHERE gen_id=?', (gen_id,)).fetchone()
@@ -816,10 +820,13 @@ class RowsMixin:
             if rollback is None:
                 fts.verify_head_index(db, view_id)
                 self._fts_guard.freeze_head()
-                _, physical = fts.head_proof(db, view_id, rows, deadline, logical=False)
+                if rows is None:
+                    physical, text_acc = store_module._fts_delta(self, db, view_id, head, text_changes, deadline)
+                else:
+                    _, physical = fts.head_proof(db, view_id, rows, deadline, logical=False)
+                    text_acc = fts_acc(rows)
                 members = member_acc(self._rows_open_after(db, view_id, deltas), final_sources,
                                      final_card_sources)
-                text_acc = fts_acc(rows)
             else:
                 current, prior = rollback
                 members, text_acc = members_value(current['member_acc']), acc_value(current['fts_acc'])
@@ -1191,8 +1198,8 @@ class RowsMixin:
 
     # -- vector coverage, fill cursor and exact search ------------------------
 
-    def _rows_coverage(self, db, cards, spec, *, full, deadline=None):
-        """Every eligible card's blob has the spec's complete set; ``full`` re-validates each set."""
+    def _rows_coverage(self, db, cards, spec, *, full, deadline=None, proven=()):
+        """Every eligible card's blob has the spec's complete set; ``full`` re-validates each set not ``proven``."""
         if spec is None:
             return []
         self._recipe(spec['recipe_id']); self._profile(spec['profile_id'])
@@ -1202,7 +1209,8 @@ class RowsMixin:
             if not row['eligible'] or row['blob_sha'] in heads:
                 continue
             head = self._vector_heads(db, row['blob_sha'], spec['recipe_id'], spec['profile_id'])
-            if full and len(self._vectors(row['blob_sha'], spec['recipe_id'], spec['profile_id'])) != head['chunk_count']:
+            if full and row['blob_sha'] not in proven and len(
+                    self._vectors(row['blob_sha'], spec['recipe_id'], spec['profile_id'])) != head['chunk_count']:
                 v.fail('embedding_set_invalid')
             heads[row['blob_sha']] = head
         return heads

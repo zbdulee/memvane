@@ -88,11 +88,18 @@ class VectorChecks(VectorCase):
                                      vector_spec=dict(recipe_id=r, profile_id=profile_id))
         self.assertEqual(store.head(h), head)
 
-    def test_05_set_digest_spoof_refuses_before_publish_and_after_pin(self):
+    def test_05_set_digest_spoof_refuses_the_pinned_lanes(self):
         store, _, h, manifest, r, p, _, pin = self.ready()
         self.damage('embedding_sets', 'UPDATE embedding_sets SET set_digest=?', ('f' * 64,))
         self.bounded_refusal(store.search_exact, pin, [1.0, 0.0], 10, profile_id=p)
         self.bounded_refusal(store.search_hybrid, pin, 'hello', [1.0, 0.0], 10, profile_id=p)
+
+    def test_05b_set_digest_spoof_refuses_the_first_complete_prepare(self):
+        # A head already sealed complete under the spec validated its sets at its own prepare
+        # (they are immutable, and pinned lanes re-check them: test_05); the first one re-reads all.
+        store, _, h, manifest, r, p, _, _ = self.ready(lexical=True)
+        self.fill(store, h, manifest, r, p)
+        self.damage('embedding_sets', 'UPDATE embedding_sets SET set_digest=?', ('f' * 64,))
         self.bounded_refusal(store.prepare_generation, h, manifest, expected_head=store.head(h),
                              vector_spec=dict(recipe_id=r, profile_id=p))
 
