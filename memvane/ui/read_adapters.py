@@ -11,6 +11,7 @@ the registry, and branch names come from ``<gitdir>/HEAD`` (no-follow,
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 import os
 from pathlib import Path
 import re
@@ -261,42 +262,150 @@ def _verdict(lines):
     return 'ok' if 'ok' in states else 'no-data'
 
 
+def _error_item(install_id, row, detail=None):
+    host = row.get('host')
+    ident = row.get('diagnostic_id')
+    item = {
+        'ts': row.get('ts') or '',
+        'installId': install_id,
+        'targetId': None,
+        'host': host if host in ('claude', 'codex', 'hermes', 'gemini') else None,
+        'event': str(row.get('event') or ''),
+        'reason': str(row.get('reason') or ''),
+        'diagId': ident if isinstance(ident, str) else None,
+    }
+    if detail is not None:
+        item['detail'] = detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False, indent=2)
+    return item
+
+
+def _recall_item(install_id, row):
+    host = row.get('host')
+    degraded_raw = row.get('degraded')
+    degraded = ([degraded_raw] if isinstance(degraded_raw, str) and degraded_raw in ('worktree', 'reader_endpoint', 'preview')
+                else [x for x in degraded_raw if x in ('worktree', 'reader_endpoint', 'preview')] if isinstance(degraded_raw, list)
+                else [])
+    prompt = row.get('prompt') if isinstance(row.get('prompt'), dict) else {}
+    outcome = row.get('outcome')
+    return {
+        'ts': row.get('ts') or '',
+        'event': 'recall.edit' if row.get('event') == 'recall.edit' else 'recall',
+        'installId': install_id,
+        'targetId': None,
+        'host': host if host in ('claude', 'codex', 'hermes', 'gemini') else 'claude',
+        'session': str(row.get('session') or ''),
+        'outcome': outcome if outcome in ('served', 'empty', 'refused') else 'empty',
+        'reason': str(row.get('reason') or ''),
+        'notes': [str(note) for note in (row.get('notes') or ())],
+        'semantic': row.get('semantic'),
+        'vectorCoveredMembers': row.get('vectorCoveredMembers'),
+        'vectorEligibleMembers': row.get('vectorEligibleMembers'),
+        'degraded': degraded,
+        'cards': [card for card in (row.get('cards') or ()) if isinstance(card, dict)],
+        'prompt': {'sha256': str(prompt.get('sha256') or ''), 'chars': int(prompt.get('chars') or 0)},
+        'timings': {key: row.get(key) for key in (
+            'pinMs', 'lexicalMs', 'stillCurrentMs', 'checkoutMs',
+            'queryEmbeddingMs', 'semanticMs', 'selectorResidentSeconds')},
+        'totalMs': row.get('ms'),
+    }
+
+
 def install_digest(state_root, *, now=None):
     """The last 24 h of one install: recalls, hook latency, SLO verdict, errors, last publish, warnings."""
     from memvane.diagnostics import api as diagnostics
     raw = _raw_events(state_root)
     digest = {'events': 'ok' if raw is not None else 'unreadable', 'recalls24h': 0, 'p50Ms': None,
-              'p95Ms': None, 'slo': 'no-data', 'errors24h': 0, 'lastPublishAt': None, 'warnings': {}}
+              'p95Ms': None, 'slo': 'no-data', 'errors24h': 0, 'lastPublishAt': None, 'warnings': {},
+              'hosts': [], 'lastErrorAt': None, '_errors': []}
     if raw is None:
         return digest
     now = _now(now)
     rows = diagnostics.query_events(raw, None, hours=24, raw=True, now=now)
     lines = diagnostics.slo_lines(rows, 24, state_root=state_root, now=now)
     hook = next((line for line in lines if line.get('line') == 'hook'), {})
-    digest.update(recalls24h=sum(1 for row in rows if row.get('event') == 'recall'),
-                  p50Ms=hook.get('p50'), p95Ms=hook.get('p95'), slo=_verdict(lines),
-                  errors24h=len(diagnostics.query_events(rows, 'errors', hours=24, now=now)),
-                  warnings=_warnings(rows))
+    errors = sorted(diagnostics.query_events(rows, 'errors', hours=24, now=now),
+                    key=lambda row: str(row.get('ts') or ''), reverse=True)
     published = [row.get('ts') for row in rows
                  if row.get('event') == 'index.publish' and row.get('outcome') == 'published']
-    digest['lastPublishAt'] = max((ts for ts in published if isinstance(ts, str)), default=None)
+    hosts = sorted({row.get('host') for row in rows
+                    if row.get('host') in ('claude', 'codex', 'hermes', 'gemini')})
+    digest.update(
+        recalls24h=sum(1 for row in rows if row.get('event') == 'recall'),
+        p50Ms=hook.get('p50'), p95Ms=hook.get('p95'), slo=_verdict(lines),
+        errors24h=len(errors), warnings=_warnings(rows), hosts=hosts,
+        lastPublishAt=max((ts for ts in published if isinstance(ts, str)), default=None),
+        lastErrorAt=errors[0].get('ts') if errors else None,
+        _errors=errors[:50],
+    )
     return digest
 
 
 # --------------------------------------------------------------- overview
 
 
-def _banner(snapshot):
+def _view_state(row):
+    if row.get('status') == 'active':
+        return 'ready'
+    if 'preparing' in str(row.get('reason') or ''):
+        return 'view_preparing'
+    return 'absent' if row.get('status') == 'absent' else 'unproved'
+
+
+def _node_view(row, *, digest=None, pending=0, parent_id=None):
+    raw_cards = row.get('cards') or {}
+    cards = {'verified': int(raw_cards.get('verified', 0)),
+             'generated': int(raw_cards.get('generated', 0)),
+             'pending': int(pending)}
+    node = {
+        'targetId': row['targetId'],
+        'installId': row['installId'],
+        'kind': 'worktree' if parent_id is not None else 'main',
+        'name': Path(row['displayPath']).name or row['displayPath'],
+        'displayRoot': row['displayPath'],
+        'branch': row['branch'],
+        'hosts': digest['hosts'] if digest else [],
+        'cards': cards,
+        'lastSyncAt': digest['lastPublishAt'] if digest else None,
+        'recalls24h': digest['recalls24h'] if digest else 0,
+        'p50Ms': digest['p50Ms'] if digest else None,
+        'p95Ms': digest['p95Ms'] if digest else None,
+        'slo': digest['slo'] if digest else 'no-data',
+    }
+    if parent_id is not None:
+        node['parentTargetId'] = parent_id
+        node['viewState'] = _view_state(row)
+    return node
+
+
+def _alerts(snapshot):
     status = snapshot.get('status')
-    banner = []
+    alerts = []
     if status in REGISTRY_TROUBLE:
-        banner.append({'level': 'warning', 'code': 'registry_' + status, 'reason': snapshot.get('reason')})
+        code = 'registry_' + status
+        alerts.append({'code': code, 'severity': 'warn', 'scope': {'kind': 'global'},
+                       'message': str(snapshot.get('reason') or code), 'retryInSeconds': None})
     elif status == 'ok':
         if snapshot.get('stale'):
-            banner.append({'level': 'info', 'code': 'registry_stale'})
+            alerts.append({'code': 'registry_stale', 'severity': 'info', 'scope': {'kind': 'global'},
+                           'message': 'registry_stale', 'retryInSeconds': None})
         if not snapshot.get('complete'):
-            banner.append({'level': 'info', 'code': 'registry_incomplete'})
-    return banner
+            alerts.append({'code': 'registry_incomplete', 'severity': 'info', 'scope': {'kind': 'global'},
+                           'message': 'registry_incomplete', 'retryInSeconds': None})
+    return alerts
+
+
+def _snapshot_meta(snapshot):
+    status = snapshot.get('status')
+    if status == 'ok':
+        state = 'stale' if snapshot.get('stale') else 'complete'
+    else:
+        state = status if status in ('absent', 'busy', 'recovery_required') else 'absent'
+    return {
+        'state': state,
+        'truncated': bool(snapshot.get('truncated', False)),
+        'maxRows': int(snapshot.get('maxRows', 8192)),
+        'lastReconcileAt': snapshot.get('lastReconcileAt'),
+    }
 
 
 def _target_row(row):
@@ -310,47 +419,60 @@ def _target_row(row):
 
 
 def overview(*, home=None, reconcile=False, now=None, max_installs=64, observe=None):
-    """``{registry, banner, installs: [{installId, proved, digest, pending, main, worktrees}]}``.
-
-    ``observe(install id, state root)`` is told every proved install (the server watches its log).
-    """
+    """OverviewResponse DTO matching ``ui/src/api/types.ts``."""
     snapshot = _registry(home, reconcile=reconcile)
-    banner = _banner(snapshot)
-    installs = {}
+    alerts = _alerts(snapshot)
+    groups = {}
     for row in _rows(snapshot):
-        group = installs.setdefault(row['installId'], {'installId': row['installId'], 'main': None,
-                                                       'worktrees': []})
+        group = groups.setdefault(row['installId'], {'installId': row['installId'], 'main': None, 'worktrees': []})
         target = _target_row(row)
         if row.get('kind') == 'main':
             group['main'] = target
         else:
             group['worktrees'].append(target)
-    result = []
-    for index, group in enumerate(sorted(installs.values(), key=lambda g: g['installId'])):
+    projects, installs, recent_errors = [], [], []
+    for index, group in enumerate(sorted(groups.values(), key=lambda g: g['installId'])):
         main = group['main']
-        group['proved'] = False
-        group['digest'] = None
-        group['pending'] = None
-        if main is not None and main['status'] == 'active' and index < max_installs:
+        if main is None:
+            continue
+        digest, pending = None, 0
+        if main['status'] == 'active' and index < max_installs:
             decision, state_root = _prove(main['displayPath'], group['installId'], worktree=False)
             if decision is not None and state_root is not None:
-                group['proved'] = True
-                group['routeState'] = decision.get('state')
                 if observe is not None:
                     observe(group['installId'], state_root)
-                group['digest'] = install_digest(state_root, now=now)
-                group['pending'] = pending_cards(main['displayPath'])
-                for code, count in group['digest']['warnings'].items():
-                    banner.append({'level': 'warning', 'code': code, 'installId': group['installId'],
-                                   'count': count})
-        elif main is not None and index >= max_installs:
-            group['digest'] = {'events': 'limit_exceeded'}
-        group['worktrees'].sort(key=lambda target: target['displayPath'])
-        result.append(group)
-    registry = {key: snapshot.get(key) for key in ('status', 'reason', 'complete', 'stale')}
-    registry['rows'] = len(snapshot.get('rows') or ())
-    return {'registry': registry, 'banner': banner, 'installs': result,
-            'generatedAt': _now(now).isoformat(timespec='seconds')}
+                digest = install_digest(state_root, now=now)
+                pending_info = pending_cards(main['displayPath'])
+                pending = pending_info['pending'] if isinstance(pending_info, dict) else 0
+                for code, count in digest['warnings'].items():
+                    alerts.append({'code': code, 'severity': 'warn',
+                                   'scope': {'kind': 'install', 'installId': group['installId']},
+                                   'message': f'{code} ({count})', 'retryInSeconds': None})
+                for err in digest['_errors']:
+                    recent_errors.append(_error_item(group['installId'], err))
+        main_node = _node_view(main, digest=digest, pending=pending)
+        wt_rows = sorted(group['worktrees'], key=lambda item: item['displayPath'])
+        wt_nodes = [_node_view(wt, digest=digest, parent_id=main_node['targetId']) for wt in wt_rows]
+        projects.append({'installId': group['installId'], 'main': main_node, 'worktrees': wt_nodes})
+        installs.append({
+            'installId': group['installId'],
+            'projectName': main_node['name'],
+            'recalls24h': digest['recalls24h'] if digest else 0,
+            'p50Ms': digest['p50Ms'] if digest else None,
+            'p95Ms': digest['p95Ms'] if digest else None,
+            'slo': digest['slo'] if digest else 'no-data',
+            'errors24h': digest['errors24h'] if digest else 0,
+            'lastErrorAt': digest['lastErrorAt'] if digest else None,
+        })
+    recent_errors.sort(key=lambda item: item['ts'], reverse=True)
+    return {
+        'generatedAt': _now(now).isoformat(timespec='seconds'),
+        'snapshot': _snapshot_meta(snapshot),
+        'projects': projects,
+        'installs': installs,
+        'alerts': alerts,
+        'recentErrors': recent_errors[:50],
+    }
 
 
 # ---------------------------------------------------------- install views
@@ -413,7 +535,8 @@ def install_recalls(install_id, *, hours=None, limit=100, outcome=None, host=Non
             + diagnostics.query_events(raw, None, hours=hours, event='recall.edit', raw=True, now=now)
             if _matches(row, outcome, host, worktree)]
     rows.sort(key=lambda row: str(row.get('ts') or ''), reverse=True)
-    return {'installId': install_id, 'hours': hours, 'total': len(rows), 'recalls': rows[:limit]}
+    return {'installId': install_id, 'hours': hours, 'total': len(rows),
+            'items': [_recall_item(install_id, row) for row in rows[:limit]]}
 
 
 def install_errors(install_id, *, hours=None, details=False, home=None, now=None, limit=200):
@@ -427,14 +550,12 @@ def install_errors(install_id, *, hours=None, details=False, home=None, now=None
     now = _now(now)
     rows = diagnostics.query_events(raw, 'errors', hours=hours, raw=True, now=now)
     rows = sorted(rows, key=lambda row: str(row.get('ts') or ''), reverse=True)[:limit]
-    if details:
-        out = []
-        for row in rows:
-            ident = row.get('diagnostic_id')
-            out.append(dict(row, detail=diagnostics.reassemble_diagnostic(raw, ident))
-                       if isinstance(ident, str) else row)
-        rows = out
-    return {'installId': install_id, 'hours': hours, 'details': bool(details), 'errors': rows}
+    items = []
+    for row in rows:
+        ident = row.get('diagnostic_id')
+        detail = diagnostics.reassemble_diagnostic(raw, ident) if (details and isinstance(ident, str)) else None
+        items.append(_error_item(install_id, row, detail=detail))
+    return {'installId': install_id, 'hours': hours, 'details': bool(details), 'items': items}
 
 
 def since_iso(hours, now=None):

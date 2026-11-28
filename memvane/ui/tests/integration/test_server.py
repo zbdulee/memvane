@@ -172,12 +172,12 @@ class AuthTests(ServerCase):
         cookie = self.login()
         status, _f, body = self.browser('GET', '/api/overview', cookie=cookie)
         self.assertEqual(status, 200)
-        self.assertEqual((body['registry']['status'], body['installs']), ('absent', []))
-        self.assertIn('registry_absent', [item['code'] for item in body['banner']])
+        self.assertEqual((body['snapshot']['state'], body['projects'], body['installs']), ('absent', [], []))
+        self.assertIn('registry_absent', [item['code'] for item in body['alerts']])
         status, _f, body = self.browser('GET', f'/api/installs/{"a" * 32}/summary', cookie=cookie)
-        self.assertEqual((status, body['error']), (404, 'target_unknown'))
+        self.assertEqual((status, body['error'], body['code']), (404, 'target_unknown', 'target_unknown'))
         status, _f, body = self.browser('GET', f'/api/installs/{"a" * 32}/errors?details=2', cookie=cookie)
-        self.assertEqual((status, body['error']), (400, 'details_invalid'))
+        self.assertEqual((status, body['error'], body['code']), (400, 'details_invalid', 'details_invalid'))
 
 
 class StreamTests(ServerCase):

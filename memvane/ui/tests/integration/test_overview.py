@@ -57,21 +57,19 @@ class OverviewTests(FixtureCase):
         seen = []
         view = read_adapters.overview(home=self.home, observe=lambda install, root: seen.append(install))
         self.assertEqual(tree_digest(self.state), before)
-        self.assertEqual(view['registry']['status'], 'ok')
-        self.assertEqual([group['installId'] for group in view['installs']], [self.id])
-        group = view['installs'][0]
-        self.assertEqual((group['proved'], group['routeState'], seen), (True, 'candidate', [self.id]))
-        main = group['main']
-        self.assertEqual((main['targetId'], main['kind'], main['branch'], main['displayPath']),
+        self.assertEqual(view['snapshot']['state'], 'complete')
+        self.assertEqual([group['installId'] for group in view['projects']], [self.id])
+        self.assertEqual([row['installId'] for row in view['installs']], [self.id])
+        self.assertEqual(seen, [self.id])
+        main = view['projects'][0]['main']
+        self.assertEqual((main['targetId'], main['kind'], main['branch'], main['displayRoot']),
                          (self.id, 'main', 'main', str(self.project.root)))
         self.assertEqual((main['cards']['verified'], main['cards']['generated']), (1, 1))
-        digest = group['digest']
-        self.assertEqual((digest['events'], digest['recalls24h']), ('ok', 2))
-        self.assertGreaterEqual(digest['errors24h'], 1)
-        self.assertIsNotNone(digest['lastPublishAt'])
-        self.assertEqual(digest['warnings'], {'needs_extractor': 1})
-        self.assertIn({'level': 'warning', 'code': 'needs_extractor', 'installId': self.id, 'count': 1},
-                      view['banner'])
+        inst = view['installs'][0]
+        self.assertEqual(inst['recalls24h'], 2)
+        self.assertGreaterEqual(inst['errors24h'], 1)
+        self.assertIsNotNone(main['lastSyncAt'])
+        self.assertIn('needs_extractor', [alert['code'] for alert in view['alerts']])
         self.assertNotIn('secret prompt text', json.dumps(view))
 
     def test_install_views_need_a_proved_target(self):
@@ -82,16 +80,16 @@ class OverviewTests(FixtureCase):
         self.assertEqual((target['kind'], target['routeState'], target['stateRoot']),
                          ('main', 'candidate', str(self.state)))
         recalls = read_adapters.install_recalls(self.id, home=self.home, limit=2)
-        self.assertEqual((recalls['total'], len(recalls['recalls'])), (3, 2))
-        stamps = [row['ts'] for row in recalls['recalls']]
+        self.assertEqual((recalls['total'], len(recalls['items'])), (3, 2))
+        stamps = [row['ts'] for row in recalls['items']]
         self.assertEqual(stamps, sorted(stamps, reverse=True))
         main_only = read_adapters.install_recalls(self.id, home=self.home, target=self.id)
         self.assertEqual(main_only['total'], 2)
         served = read_adapters.install_recalls(self.id, home=self.home, outcome='served')
         self.assertEqual(served['total'], 2)
         errors = read_adapters.install_errors(self.id, home=self.home)
-        self.assertEqual([row['reason'] for row in errors['errors']], ['route_unproved'])
-        self.assertNotIn('detail', errors['errors'][0])
+        self.assertEqual([row['reason'] for row in errors['items']], ['route_unproved'])
+        self.assertNotIn('detail', errors['items'][0])
         summary = read_adapters.install_summary(self.id, home=self.home)
         self.assertEqual(summary['routeState'], 'candidate')
         self.assertIn('hook', [line['line'] for line in summary['slo']])
@@ -115,7 +113,8 @@ class OverviewTests(FixtureCase):
             with self.assertRaises(read_adapters.TargetError) as caught:
                 read_adapters.resolve_target(self.id, home=self.home)
             self.assertEqual((str(caught.exception), caught.exception.status), ('target_unproved', 409))
-            group = read_adapters.overview(home=self.home)['installs'][0]
-            self.assertEqual((group['proved'], group['digest']), (False, None))
+            view = read_adapters.overview(home=self.home)
+            inst = view['installs'][0]
+            self.assertEqual((inst['recalls24h'], inst['slo']), (0, 'no-data'))
         finally:
             route.write_bytes(saved)

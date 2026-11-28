@@ -21,8 +21,13 @@ export interface ApiErrorBody {
 // ---------------------------------------------------------------- session
 
 export interface UiPreferences {
-  autoOpen: 'off' | 'onboarded_sessions';
-  theme: 'system' | 'dark' | 'light';
+  schema: string;
+  autoOpenOnSessionStart: boolean;
+  autoOpenScope: 'onboarded_sessions';
+  idleShutdownMinutes: number;
+  autoOpenCooldownMinutes: number;
+  reconnectGraceSeconds: number;
+  readOnlyDefault: boolean;
 }
 
 export interface SessionMeta {

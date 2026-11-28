@@ -256,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, body, 'application/json; charset=utf-8', extra=extra)
 
     def _error(self, status, code):
-        self._json(status, {'error': code})
+        self._json(status, {'error': code, 'code': code})
 
     def _body(self):
         """The JSON object of the request body ({} when empty); None after an error response."""
