@@ -101,6 +101,12 @@ def card_counts(target_root, *, limit=CARD_SCAN_LIMIT):
     """``{verified, generated, other, truncated}`` of the checkout's ``.memvane/wiki`` cards."""
     counts = {'verified': 0, 'generated': 0, 'other': 0, 'truncated': False}
     root = Path(target_root) / '.memvane' / 'wiki'
+    for part in (Path(target_root) / '.memvane', root):
+        try:
+            if not stat.S_ISDIR(os.lstat(part).st_mode):
+                return counts
+        except OSError:
+            return counts
     seen = 0
     stack = [root]
     while stack:
@@ -213,9 +219,16 @@ def resolve_target(value, *, home=None, snapshot=None):
             # The registry row records the scope id it was proved with (``incarnation``).
             if isinstance(recorded, str) and isinstance(scope, str) and scope != recorded:
                 raise TargetError('target_scope_mismatch', 409)
+            collections = decision.get('collections') or main_route.get('collections') or ()
+            wiki_collections = tuple(
+                item['name'] for item in collections
+                if isinstance(item, dict) and item.get('role') == 'wiki'
+                and isinstance(item.get('name'), str) and item['name']
+            )
             return {'targetId': value, 'installId': install, 'kind': row['kind'],
                     'targetRoot': row['targetRoot'], 'projectRoot': row.get('projectRoot'),
-                    'stateRoot': str(state_root), 'routeState': decision.get('state')}
+                    'stateRoot': str(state_root), 'routeState': decision.get('state'),
+                    'wikiCollections': wiki_collections}
     raise TargetError('target_unknown', 404)
 
 

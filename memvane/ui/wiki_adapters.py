@@ -254,10 +254,25 @@ def _is_stale(revisions, root, config):
     return isinstance(state, dict) and state.get('state') == 'stale'
 
 
-def _is_hidden(paths, skip):
+def _is_denied_rel(rel, parts=None):
     from memvane.settings import api as settings
+    head = parts[0] if parts else (rel.split('/', 1)[0] if isinstance(rel, str) else '')
+    return (head.lower() in WIKI_PARTS[:1]
+            or settings.is_denied_source_path(rel)
+            or settings.is_denied_source_path(rel.lower()))
+
+
+def _is_skipped_rel(rel, skip):
+    from memvane.settings import api as settings
+    if settings.excluded_source(rel, skip, wiki_source=True):
+        return True
+    lower_skip = [entry.lower() for entry in (skip or ()) if isinstance(entry, str)]
+    return settings.excluded_source(rel.lower(), lower_skip, wiki_source=True)
+
+
+def _is_hidden(paths, skip):
     for path in paths:
-        if settings.is_denied_source_path(path) or settings.excluded_source(path, skip, wiki_source=True):
+        if _is_denied_rel(path) or _is_skipped_rel(path, skip):
             return True
     return False
 
@@ -470,7 +485,16 @@ def wiki_card(target_id, rel, *, home=None):
     parts = _rel_parts(rel, suffix='.md')
     target = _target(target_id, home)
     root = target['targetRoot']
-    data, truncated, _ = _read_below(root, list(WIKI_PARTS) + parts, CARD_LIMIT, missing='card_not_found')
+    effective_rel = '/'.join(parts)
+    try:
+        data, truncated, _ = _read_below(root, list(WIKI_PARTS) + parts, CARD_LIMIT, missing='card_not_found')
+    except TargetError as exc:
+        if exc.status == 404 and len(parts) >= 2 and parts[0] in (target.get('wikiCollections') or ()):
+            parts = parts[1:]
+            effective_rel = '/'.join(parts)
+            data, truncated, _ = _read_below(root, list(WIKI_PARTS) + parts, CARD_LIMIT, missing='card_not_found')
+        else:
+            raise
     if truncated:
         raise TargetError('card_too_large', 413)
     parsed = _parse_card(data)
@@ -481,7 +505,7 @@ def wiki_card(target_id, rel, *, home=None):
     revisions = {item['path']: str(item.get('sha256') or '') for item in _revisions(parsed['block'])}
     return {
         'targetId': target_id,
-        'rel': rel,
+        'rel': effective_rel,
         'frontmatter': {
             'status': status,
             'createdBy': created_by if isinstance(created_by, str) and created_by else None,
@@ -522,12 +546,11 @@ def _highlights(value, line_count):
 
 def wiki_source(target_id, rel, *, highlights=None, home=None):
     """WikiSourceResponse DTO: one source file of the checkout, read inside the §7.3 boundary."""
-    from memvane.settings import api as settings
     parts = _rel_parts(rel)
-    if parts[0] in WIKI_PARTS[:1] or settings.is_denied_source_path(rel):
+    if _is_denied_rel(rel, parts):
         raise TargetError('source_denied', 403)
     target = _target(target_id, home)
-    if settings.excluded_source(rel, _merged_skip(target, _main_root(target)), wiki_source=True):
+    if _is_skipped_rel(rel, _merged_skip(target, _main_root(target))):
         raise TargetError('source_skipped', 403)
     data, truncated, _ = _read_below(target['targetRoot'], parts, SOURCE_LIMIT, missing='source_not_found')
     if b'\x00' in data:

@@ -214,3 +214,19 @@ class WikiApiTests(FixtureCase):
         with self.assertRaises(TargetError) as caught:
             wiki_adapters.wiki_source(self.wt_id, 'private/secret.md', home=self.home)
         self.assertEqual(str(caught.exception), 'source_skipped')
+
+    def test_collection_prefixed_card_rel_resolves_and_case_variants_are_denied(self):
+        from memvane.ui import read_adapters
+        collection = read_adapters.resolve_target(self.id, home=self.home)['wikiCollections'][0]
+        view = wiki_adapters.wiki_card(self.id, f'{collection}/concepts/alpha.md', home=self.home)
+        self.assertEqual(view['rel'], 'concepts/alpha.md')
+        with self.assertRaises(TargetError) as caught:
+            wiki_adapters.wiki_card(self.id, 'other-collection/concepts/alpha.md', home=self.home)
+        self.assertEqual((str(caught.exception), caught.exception.status), ('card_not_found', 404))
+        for denied_rel in ('.MemVane/settings.json', '.GIT/config'):
+            with self.assertRaises(TargetError) as caught:
+                wiki_adapters.wiki_source(self.id, denied_rel, home=self.home)
+            self.assertEqual((str(caught.exception), caught.exception.status), ('source_denied', 403), denied_rel)
+        with self.assertRaises(TargetError) as caught:
+            wiki_adapters.wiki_source(self.id, 'Private/secret.md', home=self.home)
+        self.assertEqual((str(caught.exception), caught.exception.status), ('source_skipped', 403))

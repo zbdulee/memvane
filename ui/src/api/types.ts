@@ -384,11 +384,11 @@ export interface LearningResponse {
 
 // ---------------------------------------------------------------- SSE
 
-export type DrainReason = 'bundle_upgraded' | 'user_stop';
+export type DrainReason = 'bundle_upgraded' | 'user_stop' | 'idle';
 
 export type SseEvent =
   | {type: 'heartbeat'; data: {ts: IsoTime; activeClients: number; idleSecondsRemaining: number | null}}
-  | {type: 'session_started'; data: {targetId: TargetId; installId: InstallId; host: HostName; ts: IsoTime}}
+  | {type: 'session_started'; data: {targetId: TargetId | null; installId: InstallId | null; host: HostName | null; ts: IsoTime}}
   | {type: 'events_updated'; data: {installIds: InstallId[]}}
   | {type: 'runtime_updated'; data: {ts: IsoTime}}
   | {type: 'server_draining'; data: {reason: DrainReason}};

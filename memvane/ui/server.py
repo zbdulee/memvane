@@ -279,7 +279,7 @@ class Handler(BaseHTTPRequestHandler):
             self._error(411, 'length_required')
             return None
         raw = self.headers.get('Content-Length', '0')
-        if not raw.isdigit():
+        if not (raw.isascii() and raw.isdigit()):
             self._error(400, 'content_length_invalid')
             return None
         length = int(raw)

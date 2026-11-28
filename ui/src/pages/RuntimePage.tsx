@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'preact/hooks';
+import {useEffect, useRef, useState} from 'preact/hooks';
 import type {
   DiskUsageItem,
   InstallId,
@@ -331,29 +331,35 @@ function LearningCard(props: {installId: InstallId} & Pick<RuntimePageProps, 'lo
   const [learning, setLearning] = useState<Load<LearningView>>({state: 'loading'});
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState<string | null>(null);
+  const ticketRef = useRef(0);
   const {installId, loadLearning, runLearningCheck} = props;
 
   useEffect(() => {
-    let live = true;
+    const ticket = ++ticketRef.current;
     setLearning({state: 'loading'});
+    setChecking(false);
+    setCheckError(null);
     loadLearning(installId).then(
-      value => live && setLearning({state: 'ready', value}),
-      (reason: unknown) => live && setLearning({state: 'failed', message: failure(reason)}),
+      value => ticket === ticketRef.current && setLearning({state: 'ready', value}),
+      (reason: unknown) => ticket === ticketRef.current && setLearning({state: 'failed', message: failure(reason)}),
     );
     return () => {
-      live = false;
+      ticketRef.current += 1;
     };
   }, [installId, loadLearning]);
 
   const check = () => {
+    const ticket = ++ticketRef.current;
     setChecking(true);
     setCheckError(null);
     runLearningCheck(installId).then(
       value => {
+        if (ticket !== ticketRef.current) return;
         setLearning({state: 'ready', value});
         setChecking(false);
       },
       (reason: unknown) => {
+        if (ticket !== ticketRef.current) return;
         setCheckError(failure(reason));
         setChecking(false);
       },
