@@ -1,0 +1,2 @@
+# ui/dist/ is committed build output; CI compares a fresh build byte for byte.
+ui/dist/** text eol=lf
