@@ -76,8 +76,9 @@ class WikiApiTests(FixtureCase):
                                                'dedupPairs'})
         self.assertTrue(all(isinstance(count, int) for count in view['ledger'].values()))
         alpha = view['cards'][0]
-        self.assertEqual(set(alpha), {'rel', 'title', 'status', 'tokens', 'overBudget', 'stale', 'hidden',
-                                      'updatedAt'})
+        self.assertEqual(set(alpha), {'rel', 'title', 'status', 'tokens', 'overBudget', 'stale', 'staleReason',
+                                      'hidden', 'updatedAt'})
+        self.assertIsNone(alpha['staleReason'])
         self.assertEqual((alpha['title'], alpha['status'], alpha['stale'], alpha['hidden']),
                          ('Alpha', 'verified', False, False))
         expected = {
@@ -98,6 +99,29 @@ class WikiApiTests(FixtureCase):
             with self.assertRaises(TargetError) as caught:
                 self.list(**kwargs)
             self.assertEqual((str(caught.exception), caught.exception.status), (code, 400))
+
+    def test_stale_cards_name_a_deleted_or_a_changed_source(self):
+        self.project.write_note('gone.md', 'about to go\n')
+        self.project.write_card('concepts/gone.md', title='Gone', body='Gone.\n',
+                                sources=[self.project.root / 'gone.md'])
+        # Two sources: the changed one comes first, the deleted one still names the card.
+        self.project.write_card('concepts/mixed.md', title='Mixed', body='Mixed.\n',
+                                sources=[self.project.root / 'drift.md', self.project.root / 'gone.md'],
+                                status='generated')
+        (self.project.root / 'drift.md').write_text('original\n', encoding='utf-8')
+        self.project.write_card('concepts/drift.md', title='Drift', body='Drift.\n',
+                                sources=[self.project.root / 'drift.md'])
+        (self.project.root / 'drift.md').write_text('changed again\n', encoding='utf-8')
+        (self.project.root / 'gone.md').unlink()
+        view = self.list(status='stale')
+        self.assertEqual({card['rel']: (card['stale'], card['staleReason']) for card in view['cards']}, {
+            'concepts/drift.md': (True, 'source_changed'),
+            'concepts/gone.md': (True, 'source_deleted'),
+            'concepts/mixed.md': (True, 'source_deleted'),
+        })
+        fresh = {card['rel']: (card['stale'], card['staleReason']) for card in self.list()['cards']
+                 if card['rel'] in ('concepts/alpha.md', 'concepts/beta.md')}
+        self.assertEqual(fresh, {'concepts/alpha.md': (False, None), 'concepts/beta.md': (False, None)})
 
     def test_worktree_lists_its_own_cards_and_reads_the_ledger_from_main(self):
         self.worktree.write_card('concepts/feature.md', title='Feature', body='Only here.\n')

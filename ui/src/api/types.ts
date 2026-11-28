@@ -54,15 +54,35 @@ export interface CardCounts {
   pending: number;
 }
 
-/** `<name>`, `detached@<short7>`, `non-git` or `unknown` (read from `<gitdir>/HEAD`). */
+/** `<name>`, `detached@<short7>`, `non-git` or `unknown` (`<gitdir>/HEAD` of the nearest `.git` at or above the root). */
 export type BranchLabel = string;
+
+/**
+ * Checkout state from the registry row and the route proof: `ready` (active, proved),
+ * `view_preparing` (cold worktree view), `proof_failed` (root present, route re-proof failed),
+ * `path_missing` (`missing_pending`, `detached/missing`, or an active row whose root is gone),
+ * `released` (`detached/released`, `detached/withdrawn`), `moved` (`detached/root_moved`),
+ * `conflict` (two installs claim the root).
+ */
+export type CheckoutViewState =
+  | 'ready'
+  | 'view_preparing'
+  | 'proof_failed'
+  | 'path_missing'
+  | 'released'
+  | 'moved'
+  | 'conflict';
 
 interface CheckoutNodeBase {
   targetId: TargetId;
   installId: InstallId;
   name: string;
   displayRoot: string;
+  /** `unknown` for a row that is not active or whose root is gone. */
   branch: BranchLabel;
+  viewState: CheckoutViewState;
+  /** Reason code of a failed route proof (`proof_failed` only), else null. */
+  proofReason: string | null;
   hosts: HostName[];
   cards: CardCounts;
   /** Last published `wake.sync`, or null when none was seen. */
@@ -77,12 +97,9 @@ export interface MainCheckoutNode extends CheckoutNodeBase {
   kind: 'main';
 }
 
-export type LinkedViewState = 'ready' | 'view_preparing' | 'absent' | 'unproved';
-
 export interface LinkedWorktreeNode extends CheckoutNodeBase {
   kind: 'worktree';
   parentTargetId: TargetId;
-  viewState: LinkedViewState;
 }
 
 export type WorktreeNode = MainCheckoutNode | LinkedWorktreeNode;
@@ -209,6 +226,8 @@ export interface ErrorsResponse {
 export type WikiCardStatus = 'verified' | 'generated';
 export type WikiListFilter = 'all' | 'verified' | 'generated' | 'pending' | 'stale' | 'hidden' | 'over_budget';
 
+export type WikiStaleReason = 'source_deleted' | 'source_changed';
+
 export interface WikiCardMeta {
   rel: string;
   title: string;
@@ -216,6 +235,8 @@ export interface WikiCardMeta {
   tokens: number;
   overBudget: boolean;
   stale: boolean;
+  /** Why a stale card is stale: a source file is gone, or a source's bytes changed. */
+  staleReason: WikiStaleReason | null;
   hidden: boolean;
   updatedAt: IsoTime | null;
 }

@@ -4,6 +4,7 @@ import {navigate, TABS} from '../router';
 import {formatDuration, safeText} from '../text';
 import type {Theme} from '../theme';
 import {Dot, type Tone} from './Badge';
+import {branchText, isDormant} from '../checkoutState';
 
 interface Props {
   tab: TabId;
@@ -50,7 +51,7 @@ export function Topbar(props: Props) {
                   : null}
                 <strong>{safeText(selected.name)}</strong>
                 <span class="badge badge-muted">{selected.kind === 'main' ? 'main' : 'worktree'}</span>
-                <span class="badge badge-muted mono">⎇ {safeText(selected.branch)}</span>
+                <span class={`badge badge-muted${isDormant(selected) ? '' : ' mono'}`}>{safeText(branchText(selected))}</span>
               </>
             )}
         </nav>

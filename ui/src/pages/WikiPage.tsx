@@ -11,6 +11,7 @@ import type {
   WikiCardMeta,
   WikiLedgerSummary,
   WikiListFilter,
+  WikiStaleReason,
   WikiListResponse,
   WikiSourceResponse,
   WorktreeNode,
@@ -42,15 +43,24 @@ type Load<T> = {state: 'idle'} | {state: 'loading'} | {state: 'loaded'; data: T}
 const LIST_LIMIT = 200;
 const SEARCH_DELAY_MS = 300;
 
-const FILTERS: readonly {id: WikiListFilter; label: string}[] = [
+const FILTERS: readonly {id: WikiListFilter; label: string; title?: string}[] = [
   {id: 'all', label: '전체'},
   {id: 'verified', label: 'verified'},
   {id: 'generated', label: 'generated'},
   {id: 'pending', label: '검수·교체 대기'},
-  {id: 'stale', label: '원문 불일치'},
+  {
+    id: 'stale',
+    label: '원문 불일치',
+    title: '원문 삭제: 카드가 인용한 원문 파일이 사라짐 · 원문 변경: 원문 내용이 카드가 기록한 해시와 다름',
+  },
   {id: 'hidden', label: 'skipPaths 숨김'},
   {id: 'over_budget', label: '700토큰 초과'},
 ];
+
+const STALE_BADGE: Record<WikiStaleReason, {tone: 'red' | 'amber'; label: string; title: string}> = {
+  source_deleted: {tone: 'red', label: '원문 삭제', title: '카드가 인용한 원문 파일이 이 체크아웃에 없습니다.'},
+  source_changed: {tone: 'amber', label: '원문 변경', title: '원문 내용이 카드가 기록한 해시와 다릅니다.'},
+};
 
 /** Ledger counts; `filter` names the card list filter that shows the affected cards, when one does. */
 const LEDGER_LABELS: readonly {key: keyof WikiLedgerSummary; label: string; filter: WikiListFilter | null; hint: string}[] = [
@@ -102,7 +112,9 @@ function CardBadges({card}: {card: WikiCardMeta}) {
   return (
     <div class="cell-badges">
       <Badge tone={card.status === 'verified' ? 'green' : 'amber'}>{card.status}</Badge>
-      {card.stale ? <Badge tone="red">원문 불일치</Badge> : null}
+      {card.staleReason !== null
+        ? <Badge tone={STALE_BADGE[card.staleReason].tone} title={STALE_BADGE[card.staleReason].title}>{STALE_BADGE[card.staleReason].label}</Badge>
+        : null}
       {card.hidden ? <Badge tone="muted">skipPaths 숨김</Badge> : null}
       {card.overBudget ? <Badge tone="purple">700토큰 초과</Badge> : null}
     </div>
@@ -495,6 +507,7 @@ export function WikiPage({selected, loadList, loadCard, loadSource}: WikiPagePro
                 type="button"
                 class={`btn btn-sm${filter === item.id ? ' active' : ''}`}
                 aria-pressed={filter === item.id}
+                {...(item.title !== undefined ? {title: item.title} : {})}
                 onClick={() => setFilter(item.id)}
               >
                 {item.label}

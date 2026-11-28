@@ -8,6 +8,7 @@ import type {
   TabId,
   WorktreeNode,
 } from '../api/types';
+import {CHECKOUT_STATE, branchText, dormantToggleLabel, dotTone, isDormant, stateTitle} from '../checkoutState';
 import {Badge, Dot, type Tone} from '../components/Badge';
 import {navigate, routeHash} from '../router';
 import {nodesInScope} from '../scope';
@@ -48,17 +49,11 @@ function latest(values: readonly (string | null)[]): string | null {
 }
 
 function StateBadge({node}: {node: WorktreeNode}) {
-  if (node.kind === 'main') return <Badge tone="blue">main</Badge>;
-  switch (node.viewState) {
-    case 'ready':
-      return <Badge tone="green">linked</Badge>;
-    case 'view_preparing':
-      return <Badge tone="amber" mono>view_preparing</Badge>;
-    case 'absent':
-      return <Badge tone="muted">view 없음</Badge>;
-    case 'unproved':
-      return <Badge tone="red">미증명</Badge>;
+  const info = CHECKOUT_STATE[node.viewState];
+  if (node.viewState === 'ready') {
+    return <Badge tone={node.kind === 'main' ? 'blue' : 'green'} title={stateTitle(node)}>{node.kind === 'main' ? 'main' : 'linked'}</Badge>;
   }
+  return <Badge tone={info.tone} title={stateTitle(node)}>{info.label}</Badge>;
 }
 
 function Kpis({nodes, overview}: {nodes: readonly WorktreeNode[]; overview: OverviewResponse}) {
@@ -140,9 +135,9 @@ function CheckoutTable({nodes, selected, tab}: {nodes: readonly WorktreeNode[]; 
             >
               <td>
                 <div class="cell-name">
-                  <Dot tone={node.kind === 'worktree' && node.viewState !== 'ready' ? 'amber' : 'green'} />
+                  <Dot tone={dotTone(node)} />
                   <strong>{safeText(node.name)}</strong>
-                  <Badge tone="muted" mono>⎇ {safeText(node.branch)}</Badge>
+                  <Badge tone="muted" mono={!isDormant(node)}>{safeText(branchText(node))}</Badge>
                 </div>
                 <div class="cell-sub mono" title={safeText(node.displayRoot)}>{safeText(node.displayRoot)}</div>
               </td>
@@ -419,7 +414,11 @@ function ErrorList({errors, projectName, totals}: ErrorListProps) {
 }
 
 export function OverviewPage({overview, selected, tab, reconciling, onReconcile}: Props) {
-  const nodes = nodesInScope(overview.projects, selected);
+  const [showDormant, setShowDormant] = useState(false);
+  const scoped = nodesInScope(overview.projects, selected);
+  // Only active checkouts show by default; a selected dormant row always shows itself.
+  const hidden = scoped.filter(node => isDormant(node) && node.targetId !== selected?.targetId);
+  const nodes = showDormant ? scoped : scoped.filter(node => !hidden.includes(node));
   const installIds = new Set(nodes.map(node => node.installId));
   const errors = overview.recentErrors.filter(item => installIds.has(item.installId)
     && (selected?.kind !== 'worktree' || item.targetId === null || item.targetId === selected.targetId));
@@ -439,6 +438,19 @@ export function OverviewPage({overview, selected, tab, reconciling, onReconcile}
           </div>
           <div class="card-actions">
             <span class="card-sub mono">마지막 재스캔 {formatRelative(overview.snapshot.lastReconcileAt)}</span>
+            {hidden.length > 0
+              ? (
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  aria-pressed={showDormant}
+                  title="경로 없음·해제됨·이동됨·충돌 상태의 체크아웃"
+                  onClick={() => setShowDormant(!showDormant)}
+                >
+                  {dormantToggleLabel(hidden.length, showDormant)}
+                </button>
+              )
+              : null}
             <button type="button" class="btn btn-sm" onClick={onReconcile} disabled={reconciling}>
               {reconciling ? '재스캔 중…' : '상태 재스캔'}
             </button>

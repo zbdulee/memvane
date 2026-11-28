@@ -117,6 +117,23 @@ class BranchTests(FixtureCase):
         plain.mkdir()
         self.assertEqual(read_adapters.read_branch(plain), 'non-git')
 
+    def test_a_folder_inside_a_checkout_reads_the_nearest_git_above_it(self):
+        repo = self.tmp / 'mono'
+        repo.mkdir()
+        self.git(repo, 'init', '-q')
+        self.git(repo, 'commit', '--allow-empty', '-qm', 'one')
+        (repo / 'apps' / 'novel').mkdir(parents=True)
+        self.assertEqual(read_adapters.read_branch(repo / 'apps' / 'novel'), 'main')
+        linked = self.tmp / 'mono-wt'
+        self.git(repo, 'worktree', 'add', '-q', '-b', 'side', str(linked))
+        (linked / 'apps' / 'novel').mkdir(parents=True)
+        self.assertEqual(read_adapters.read_branch(linked / 'apps' / 'novel'), 'side')
+        # The nearest entry decides: a symlinked ``.git`` above the folder is refused, never followed.
+        outer = self.tmp / 'outer'
+        (outer / 'inner').mkdir(parents=True)
+        os.symlink(repo / '.git', outer / '.git')
+        self.assertEqual(read_adapters.read_branch(outer / 'inner'), 'unknown')
+
     def test_unreadable_or_symlinked_head_is_unknown(self):
         repo = self.tmp / 'fake'
         (repo / '.git').mkdir(parents=True)
