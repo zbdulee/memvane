@@ -144,7 +144,7 @@ class SupersededRevision(FixtureCase):
 
     def run_verify(self):
         """The worker's verify pass (reviews, then ``supersession.settle``) until no row is open."""
-        for _ in range(10):
+        for _ in range(20):
             worker._run_verify_pass(self.root, self.config, self.config['compile'])
             if not self.open_rows():
                 return
@@ -457,16 +457,114 @@ class SupersededRevision(FixtureCase):
 
     def test_merge_needed_cards_stay_and_the_rest_retire(self):
         self.legacy_state(titles=('alpha', 'beta', 'gamma', 'delta'),
-                          rev1=lambda: self.process([card('Gamma', targetPath='concepts/gamma-copy.md')]))
+                          rev1=lambda: self.direct(['Gamma'], targetPath='concepts/gamma-copy.md'))
         self.assertIn('gamma-copy', self.cards())
-        self.process([card('Gamma')])  # ambiguous: gamma and gamma-copy both carry the title
-        self.assertEqual((self.open_rows(), self.record()), ([], 'pending'))
+        # Gamma is ambiguous (gamma and gamma-copy carry the title); Alpha is rewritten.
+        self.process([card('Gamma'), card('Alpha')])
+        self.assertEqual((self.open_rows(), self.record()), ([('replace', 'alpha')], 'pending'))
         self.run_verify()
         self.assertEqual(self.archived(), [('beta', 'superseded_by_revision'),
                                            ('delta', 'superseded_by_revision')])
         self.assertIn('gamma', self.cards())
         self.assertIn('gamma-copy', self.cards())
         self.assert_not_paid_again()
+
+    def test_merge_needed_only_answer_retires_nothing_without_a_reviewed_rewrite(self):
+        self.legacy_state(titles=('alpha', 'beta', 'gamma', 'delta'),
+                          rev1=lambda: self.direct(['Gamma'], targetPath='concepts/gamma-copy.md'))
+        self.process([card('Gamma')])
+        self.assertEqual((self.open_rows(), self.record()), ([], 'held_no_rewrite'))
+        self.run_verify()
+        self.assertEqual((self.calls('verify'), self.archived()), (0, []))
+        self.assert_not_paid_again()
+
+    # -- the recorded attempt holds without a proving card ---------------------------------------
+    def all_verified_then_rev2(self):
+        self.process([card('Alpha'), card('Beta'), card('Gamma')])
+        self.run_verify()
+        self.project.write_note('docs/source.md', REV2)
+        self.fake.calls.clear()
+
+    def test_no_proof_failed_review_is_not_bought_again(self):
+        self.all_verified_then_rev2()
+        self.verdicts['Alpha'] = FAIL
+        self.process([card('Alpha')])
+        self.run_verify()
+        self.assertEqual(self.record(), 'held_review_failed')
+        self.assertEqual(self.process([card('Alpha')])[1], ['supersession_recorded'])
+        self.assertEqual((self.calls('extract'), self.calls('verify'), self.record()), (1, 1, 'held_review_failed'))
+
+    def test_no_proof_empty_answer_is_not_bought_again(self):
+        self.all_verified_then_rev2()
+        self.process([])
+        self.assertEqual(self.record(), 'incomplete')
+        self.assertEqual(self.process([])[1], ['supersession_recorded'])
+        self.assertEqual(self.calls('extract'), 1)
+
+    def test_no_proof_unusable_answer_is_recorded(self):
+        self.all_verified_then_rev2()
+        self.fake.responses['extract'] = lambda payload, argv: 'not an object'
+        self.process()
+        self.assertEqual(self.record(), 'failed')
+        self.assertEqual(self.process()[1], ['supersession_recorded'])
+        self.assertEqual(self.calls('extract'), 1)
+
+    def test_forced_and_partial_jobs_still_extract_recorded_bytes(self):
+        self.all_verified_then_rev2()
+        self.process([])
+        self.assertEqual(self.record(), 'incomplete')
+        self.answers.append([card('Alpha')])
+        worker.process_job_settled(self.root, self.config, self.config['compile'],
+                                   {**self.job(), 'forceRecompile': True})
+        self.assertEqual(self.calls('extract'), 2)
+
+    # -- the attempt's card lists ----------------------------------------------------------------
+    def test_more_than_twenty_rewritten_cards_are_all_kept_out_of_retirement(self):
+        titles = ('alpha',) + tuple(f'card{index:02d}' for index in range(22))
+        self.config['compile'].setdefault('budget', {})['cardsPerSource'] = 25
+        self.legacy_state(titles=titles)
+        self.process([card(title.title()) for title in titles[1:22]])
+        with pipeline.open_pipeline(self.root, readonly=True) as store:
+            payload = store.get_suppression('supersession', 'docs/source.md')['payload']
+        self.assertEqual((payload['outcome'], len(payload['written'])), ('pending', 21))
+        self.run_verify()
+        self.assertEqual(self.archived(), [('card21', 'superseded_by_revision')])
+
+    def test_an_attempt_naming_too_many_cards_is_incomplete(self):
+        self.legacy_state()
+        with mock.patch.object(supersession, 'MAX_RECORDED_CARDS', 1):
+            self.process([card('Beta'), card('Gamma')])
+        self.assertEqual(self.record(), 'incomplete')
+        self.assert_nothing_retired()
+
+    # -- settle rechecks the source before every retirement --------------------------------------
+    def test_a_source_edit_during_retirement_stops_it(self):
+        from memvane.wiki.lifecycle import api as lifecycle
+        self.legacy_state(titles=('alpha', 'beta', 'gamma', 'delta'))
+        self.process([card('Beta')])
+        old = self.project.revision(self.source)['sha256']
+        real = lifecycle.retire_card
+
+        def retire_then_edit(*args):
+            outcome = real(*args)
+            self.project.write_note('docs/source.md', REV3)
+            return outcome
+        with mock.patch.object(lifecycle, 'retire_card', side_effect=retire_then_edit):
+            self.run_verify()
+        self.assertEqual(len(self.archived()), 1)
+        with pipeline.open_pipeline(self.root, readonly=True) as store:
+            row = store.get_suppression('supersession', 'docs/source.md')
+        self.assertEqual((row['bodyHash'], row['payload']['outcome']), (old, 'source_changed'))
+
+    # -- pages the compiler did not write --------------------------------------------------------
+    def test_scan_skips_pages_without_frontmatter_or_utf8(self):
+        self.legacy_state()
+        (self.wiki / 'notes').mkdir(exist_ok=True)
+        (self.wiki / 'notes/plain.md').write_bytes('메모 노트\n'.encode('cp949'))
+        (self.wiki / 'notes/legacy.md').write_bytes(b'---\n' + '제목: 메모\n'.encode('cp949') + b'---\n')
+        found = supersession.scan(self.root, self.bound, self.project.revision(self.source))
+        self.assertEqual((found['unreadable'], sorted(c.stem for c, _ in found['superseded'])),
+                         (1, ['beta', 'gamma']))
 
     # -- ratio guard and the per-pass cap -------------------------------------------------------
     def larger_wiki(self, count=12):

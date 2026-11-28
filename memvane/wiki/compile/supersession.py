@@ -28,11 +28,13 @@ The compile worker uses the module in three places.
    ``(source path, source sha256)`` in the ledger's ``suppressions`` table
    (kind ``supersession``). Outcomes: ``pending`` (retirement waits for the
    rewritten cards' review), ``settled`` (nothing to retire), ``incomplete``
-   (an empty, capped or partly unknown answer), ``held_truncated`` (the
-   extractor saw a cut source, so a missing card is no evidence),
-   ``held_ratio`` (more than ``RATIO_LIMIT`` of the superseded cards would go
-   and at least ``RATIO_MIN`` of them), ``failed`` (the extractor's answer was
-   unusable for good). ``record_failure`` writes ``failed``.
+   (an empty, capped or partly unknown answer, or more than
+   ``MAX_RECORDED_CARDS`` cards to list), ``held_truncated`` (the extractor saw
+   a cut source, so a missing card is no evidence), ``held_ratio`` (more than
+   ``RATIO_LIMIT`` of the superseded cards would go and at least ``RATIO_MIN``
+   of them), ``held_no_rewrite`` (only merge-needed outcomes: no rewritten card
+   can pass review to vouch for the answer), ``failed`` (the extractor's
+   answer was unusable for good). ``record_failure`` writes ``failed``.
 3. ``settle`` runs after each verify pass. A ``pending`` attempt retires its
    superseded cards only once every card the answer rewrote is ``verified`` at
    the new revision; a rewritten card whose review ended otherwise ends the
@@ -43,8 +45,20 @@ The compile worker uses the module in three places.
    pass; the rest waits for the next pass. A finished attempt becomes
    ``retired``.
 
-A recorded attempt counts only for its source bytes: a new edit (new sha256)
-is attempted again. The judgement of a card reads the card bytes only.
+An attempt is recorded only when some card cites an older revision of the
+source (a ``SUPERSEDED`` or ``REFRESHABLE`` card at record time); an ordinary
+compile keeps its existing retry rules. A recorded attempt counts only for its
+source bytes: every outcome is final for them, and the worker skips any
+non-partial, non-forced job of those bytes
+with ``supersession_recorded`` whether or not a verified card proves the
+revision. A new edit (new sha256) is attempted again. A card held this way
+keeps citing the old revision. Selected publication does not recheck source
+freshness (``verified_wiki_locations(..., current_source=False)``), so a held
+``verified`` card stays in recall with its old account until the source
+changes; a ``generated`` one is not served under ``recallVerifiedOnly``. Holding
+trades that staleness for not retiring on weak evidence and not paying again.
+The judgement of a card reads the card bytes only; pages without frontmatter and
+pages that are not UTF-8 are skipped (counted in ``unreadable``).
 """
 from __future__ import annotations
 
@@ -76,6 +90,8 @@ RATIO_MIN = 3
 MAX_RETIRE_PER_RUN = 25
 # Pending attempts looked at per settle pass.
 MAX_SETTLE_ATTEMPTS = 64
+# Cards one attempt may name (``cardsPerSource`` is capped at 50; merge matches add a few).
+MAX_RECORDED_CARDS = 200
 _EXPECTED = (OSError, ValueError, RuntimeError, sqlite3.Error)
 # The (path, sha256) of the source this job extracts because of superseded cards.
 _ATTEMPT: ContextVar = ContextVar('supersession_attempt', default=None)
@@ -194,7 +210,7 @@ def scan(root, bound, source_revision: dict):
         files = sorted(itertools.islice(wiki_root.rglob('*.md'), worker.SELECTED_PROOF_MAX_CARDS + 1))
         if len(files) > worker.SELECTED_PROOF_MAX_CARDS:
             return None
-        total = refreshable = 0
+        total = refreshable = unreadable = 0
         superseded = []
         for path in files:
             rel_card = path.relative_to(wiki_root)
@@ -207,13 +223,20 @@ def scan(root, bound, source_revision: dict):
             if data is None:
                 return None
             total += len(data)
-            # read_text's universal newlines: the retirement compares these exact bytes.
-            text = data.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
+            if not data.startswith(b'---\n'):
+                continue  # No frontmatter, no source revision (the proof scan skips it too).
+            try:
+                # read_text's universal newlines: the retirement compares these exact bytes.
+                text = data.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
+            except UnicodeDecodeError:
+                unreadable += 1  # Not a card this compiler wrote; counted for the diagnostic row.
+                continue
             state = citation(text, same_source, source_revision)
             if state == SUPERSEDED:
                 superseded.append((path, text))
             refreshable += state == REFRESHABLE
-        return {'superseded': superseded, 'refreshable': refreshable, 'wikiRoot': wiki_root}
+        return {'superseded': superseded, 'refreshable': refreshable, 'unreadable': unreadable,
+                'wikiRoot': wiki_root}
     except Exception:
         return None
 
@@ -256,10 +279,19 @@ def _record(root, revision: dict, outcome: str, cpath, job, **fields) -> bool:
     return written
 
 
-def record_failure(root, reason: str, cpath, job) -> None:
-    """A marked attempt whose answer was unusable for good: these bytes are not extracted again."""
+def record_failure(root, reason: str, cpath, job, selected=None) -> None:
+    """An attempt whose answer was unusable for good: with old cards, these bytes are not extracted again."""
     attempt = _ATTEMPT.get()
-    if attempt is not None:
+    if attempt is None:
+        return
+    if selected is None:
+        from memvane.wiki.workspace import api as workspace
+        try:
+            selected = workspace.selected(Path(root).resolve())
+        except _EXPECTED:
+            return
+    found = scan(root, selected, attempt)
+    if found is not None and (found['superseded'] or found['refreshable']):
         _record(root, attempt, 'failed', cpath, job, reason=reason)
 
 
@@ -327,6 +359,15 @@ def record_after(root, job: dict, source_revision: dict, selected, cpath, outcom
     """Record what a finished extraction means for the source's old cards; retire nothing yet."""
     if selected is None:
         return
+    found = scan(root, selected, source_revision)
+    if found is None:
+        cpath.append(_diagnostic_row('deferred', job, 'superseded_scan_unavailable'))
+        return
+    if not found['superseded'] and not found['refreshable']:
+        return  # No card cites an older revision: an ordinary compile, nothing to record.
+    if found['unreadable']:
+        cpath.append({**_diagnostic_row('skipped', job, 'superseded_scan_skipped_pages'),
+                      'pages': found['unreadable']})
     if not outcomes.complete or not outcomes.written | outcomes.named:
         _record(root, source_revision, 'incomplete', cpath, job)
         return
@@ -336,14 +377,18 @@ def record_after(root, job: dict, source_revision: dict, selected, cpath, outcom
         cpath.append(_diagnostic_row('deferred', job, 'superseded_held_truncated'))
         _record(root, source_revision, 'held_truncated', cpath, job)
         return
-    found = scan(root, selected, source_revision)
-    if found is None:
-        cpath.append(_diagnostic_row('deferred', job, 'superseded_scan_unavailable'))
+    if len(outcomes.written) + len(outcomes.named) > MAX_RECORDED_CARDS:
+        # The exclusion list must be whole or a returned card could retire.
+        _record(root, source_revision, 'incomplete', cpath, job, reason='too_many_cards')
         return
     keep = outcomes.written | outcomes.named
     unreturned = _unreturned(root, found['superseded'], keep)
-    fields = {'written': sorted(outcomes.written)[:20], 'named': sorted(outcomes.named)[:20]}
-    if not unreturned:
+    fields = {'written': sorted(outcomes.written), 'named': sorted(outcomes.named)}
+    if unreturned and not outcomes.written:
+        # Only merge-needed outcomes: no rewritten card will pass review, so
+        # nothing vouches for the answer; keep every card.
+        _record(root, source_revision, 'held_no_rewrite', cpath, job, **fields)
+    elif not unreturned:
         _record(root, source_revision, 'settled', cpath, job, **fields)
     elif ratio_held(len(unreturned), len(found['superseded'])):
         cpath.append({**_diagnostic_row('deferred', job, 'superseded_retire_guarded'),
@@ -401,6 +446,9 @@ def _settle_one(root: Path, selected, path: str, sha: str, payload: dict, open_t
     if 'wait' in states:
         return
     fields = {k: payload.get(k) for k in ('written', 'named')}
+    if not states:
+        _record(root, revision, 'held_no_rewrite', log, job, **fields)
+        return
     if 'fail' in states:
         # A rewritten card did not pass review: its old account stays, and so do the others.
         log.append(_diagnostic_row('deferred', job, 'superseded_review_failed'))
@@ -420,6 +468,11 @@ def _settle_one(root: Path, selected, path: str, sha: str, payload: dict, open_t
     retired = []
     for card, text in unreturned:
         if budget[0] <= 0:
+            break
+        now = card_api.snapshot_bytes(root / path)
+        if now is None or now[0]['sha256'] != sha:
+            # Edited while this pass retires: the answer no longer describes the source.
+            _record(root, revision, 'source_changed', log, job, **fields)
             break
         budget[0] -= 1
         try:

@@ -6,7 +6,19 @@
 
 선택된 설치의 worker는 현재 원문 revision을 증명하는 verified 카드가 있어도, 그 원문의 옛 revision만 인용한 기계 카드가 남아 있고 이 원문 바이트(경로·sha256)로 시도한 기록이 없으면 추출한다(`supersession`). 대체 대상(`SUPERSEDED`, 은퇴 가능)은 플러그인 소유, 자동 source trigger(`post_tool_source`·`post_sync_source`·`session_start_source`)로 생성, 단일 원문 인용, 관리 블록 밖 본문 없음, `verified`이면서 `verifiedBodyHash`가 본문과 일치하는 카드다. 같은 조건에 검수 지문만 없는 카드(`generated` 등)는 갱신 대상(`REFRESHABLE`)이라 추출을 부르고 답에 나오면 다시 쓰지만 은퇴하지 않는다. 나머지 옛 revision 카드는 추출을 부르지도 은퇴하지도 않는다.
 
-추출이 끝나면 결과를 원장 `suppressions`의 kind `supersession` 행(키 원문 경로, `body_hash` 원문 sha256)에 남긴다. 그 sha256에서는 다시 추출하지 않고, 원문이 바뀌면 다시 시도한다. 결과는 `pending`(다시 쓴 카드의 검수를 기다림), `settled`(은퇴할 카드 없음), `incomplete`(빈 답, `cardsPerSource` 초과, 객체가 아닌 후보, writer 거절·실패·경로 없는 결과), `held_truncated`(`maxSourceChars`로 잘린 원문이라 빠진 카드가 없다는 근거가 아님), `held_ratio`(다시 나오지 않은 대체 대상이 3장 이상이면서 대체 대상의 절반 초과), `failed`(쓸 수 없는 답으로 job을 버림)다. 일시적 실패(timeout·예산 유예·식힘·추출 중 원문 변경)는 기록하지 않고 기존 재시도를 따른다. 은퇴는 검수 pass 뒤 `supersession.settle`이 한다. `pending` 시도는 다시 쓴 카드가 모두 새 revision으로 `verified`가 된 뒤에만 은퇴하고, 그중 하나라도 검수를 통과하지 못하면 `held_review_failed`로 끝나 아무것도 은퇴하지 않는다. 은퇴는 수명 주기 writer(`wiki_source_retire.retire_card`)로 `retired-wiki/`에 보관하고 `wiki` 활동 이벤트(`reason: superseded_by_revision`)를 남기며, pass당 25장까지 하고 남은 카드는 다음 pass가 잇는다. 예상 가능한 예외는 진단 행으로 남기고 pass를 계속한다. 유료 호출은 원문 바이트당 추출 1회와 다시 나온 카드당 검수 1회이고, 기존 `extractorPerRun`·검수 예산·식힘을 따른다.
+추출 시점에 그 원문의 옛 revision을 인용한 `SUPERSEDED`·`REFRESHABLE` 카드가 있으면, 추출이 끝난 뒤 결과를 원장 `suppressions`의 kind `supersession` 행(키 원문 경로, `body_hash` 원문 sha256)에 남긴다. 옛 카드가 없는 보통의 compile은 기록하지 않고 기존 재시도 규칙을 따른다. 기록이 있는 원문 바이트는 증명 카드가 있든 없든, partial·force가 아닌 job이면 `supersession_recorded`로 끝낸다. 모든 결과가 그 바이트에서 종결 상태다. 원문이 바뀌면 sha256이 달라 다시 시도한다. 결과는 다음과 같다.
+
+- `pending`: 다시 쓴 카드의 검수를 기다린다.
+- `settled`: 은퇴할 카드가 없다.
+- `incomplete`: 빈 답, `cardsPerSource` 초과, 객체가 아닌 후보, writer 거절·실패·경로 없는 결과, 또는 이름을 남길 카드가 200장을 넘었다.
+- `held_truncated`: `maxSourceChars`로 잘린 원문이라 빠진 카드가 없다는 근거가 아니다.
+- `held_ratio`: 다시 나오지 않은 대체 대상이 3장 이상이면서 대체 대상의 절반을 넘는다.
+- `held_no_rewrite`: `merge-needed`만 나와 검수로 답을 뒷받침할 다시 쓴 카드가 없다.
+- `failed`: 쓸 수 없는 답이라 job을 버렸다.
+
+일시적 실패(timeout·예산 유예·식힘·추출 중 원문 변경)는 기록하지 않는다. 은퇴는 검수 pass 뒤 `supersession.settle`이 한다. `pending` 시도는 다시 쓴 카드가 모두 새 revision으로 `verified`가 된 뒤에만 은퇴한다. 하나라도 검수를 통과하지 못하면 `held_review_failed`로 끝나고 아무것도 은퇴하지 않는다. 카드마다 은퇴 직전에 원문 sha256을 다시 보고, 바뀌었으면 `source_changed`로 멈춘다. 은퇴는 수명 주기 writer(`wiki_source_retire.retire_card`)로 `retired-wiki/`에 보관하고 `wiki` 활동 이벤트(`reason: superseded_by_revision`)를 남긴다. pass당 25장까지 하고 남은 카드는 다음 pass가 잇는다. 예상 가능한 예외는 진단 행으로 남기고 pass를 계속한다. frontmatter가 없거나 UTF-8이 아닌 위키 페이지는 판정에서 건너뛰고 진단 행 `superseded_scan_skipped_pages`로 센다.
+
+보류(`held_*`·`incomplete`·`failed`)된 카드는 원문이 바뀔 때까지 옛 revision을 인용한 채 남는다. 선택 경로의 게시는 원문 현재성을 다시 확인하지 않는다(`verified_wiki_locations(..., current_source=False)`). 그래서 보류된 `verified` 카드는 옛 내용으로 recall에 계속 나온다. `generated` 카드는 `recallVerifiedOnly`라 나오지 않는다. 보류는 약한 근거로 은퇴하지 않고 같은 바이트에 다시 과금하지 않는 대가로 이 낡음을 감수한다. UI의 원문 변경 배지가 이 카드를 보여 준다. 유료 호출은 원문 바이트당 추출 1회와 다시 나온 카드당 검수 1회이고, 기존 `extractorPerRun`·검수 예산·식힘을 따른다.
 
 선택된 설치의 source 큐는 dedup·extractor 예산 적용 전에 최대 4,096행·8MiB의 identity를 검사한다. 유효한 installId/scopeId가 다른 설치를 가리키는 작업은 `selected_route_identity_changed` 원장을 쓴 뒤 제외한다. 0.x의 storeIncarnation 없는 identity도 판정한다. 같은 설치의 scope/incarnation 변화·identity 부재·검사 범위 밖의 행은 보존한다. 처리 전 route 재검증이나 원장 쓰기가 실패하면 원래 행 전체를 정상 큐로 돌려놓는다. 처리 후 삭제 직전 재검증이 실패하면 미완료 행과 stale 원문 행만 돌려놓고, 완료한 현재 작업은 복원하지 않는다. 큐 반환이 성공하면 claim을 해제하고 원래 오류를 다시 전달한다. 반환 I/O가 실패하면 해당 단계의 공용 claim 또는 private 원본이 복구를 맡는다. 원장은 기존 append 성공 계약이며 fsync 보장은 없다. 이 상한은 identity 검사 범위이고, claim의 기존 전체 파일 읽기에는 적용되지 않는다. worker stdout의 `completed`·`staleDropped`는 이번 pass의 종결·제거 수다(진척 판정에는 쓰지 않는다. 판정은 아래 문단의 남은 양이다).
 

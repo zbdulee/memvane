@@ -45,7 +45,8 @@ raw discovery와 수동 sync는 `contentRevision`을, PostToolUse는 `pendingRef
 이벤트 ID를 기록한다. 이미 claim한 행은 worker가 소유한다. 삭제·강제 재컴파일·
 공유 카드 대기·initial backfill은 각각의 작업으로 유지한다. worker는 현재 원문
 revision을 증명하는 신뢰 카드가 있으면 `already_compiled_revision`으로 마친다. 단, 그 원문의 옛 revision만
-인용한 기계 카드(`supersession`의 대체·갱신 대상)가 남아 있고 이 원문 바이트로 시도한 기록이 없으면 추출한다. 같은 원문을
+인용한 기계 카드(`supersession`의 대체·갱신 대상)가 남아 있고 이 원문 바이트로 시도한 기록이 없으면 추출한다.
+그 기록이 있는 바이트는 증명 카드가 없어도 `supersession_recorded`로 마친다. 같은 원문을
 기록한 교체본과 검수 job이 있으면 `awaiting_pending_verification`을 기록하고 추출을 생략한다.
 
 ## linked git worktree

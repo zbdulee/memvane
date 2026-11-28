@@ -685,14 +685,19 @@ def _reuse_source_revision(root, config, job, source_revision, selected_route, b
     reuse = job.get('partialCompile') is not True and job.get('forceRecompile') is not True
     proof_card = (selected_compiled_revision_card(root, selected_route, source_revision, content_only=True)
                   if reuse else None)
+    tried = reuse and supersession.recorded(root, source_revision)
     if proof_card is not None:
         found = supersession.scan(root, selected_route, source_revision)
-        if found is None or ((found['superseded'] or found['refreshable'])
-                             and not supersession.recorded(root, source_revision)):
+        if found is None or ((found['superseded'] or found['refreshable']) and not tried):
             # A card of this source still cites an older revision and these bytes were
             # not tried for it yet: one extraction rewrites or retires it (``supersession``).
-            supersession.mark_attempt(source_revision)
             proof_card = None
+    if proof_card is None and tried:
+        # These exact bytes were extracted already and the attempt's outcome is recorded:
+        # another extraction would buy the same answer (a new edit is a new sha256).
+        wiki_selected_laya.recheck(selected_route)
+        cpath.append(bounded_failure('skipped', job, 'supersession_recorded'))
+        return True, False, []
     if proof_card is not None:
         wiki_selected_laya.recheck(selected_route)
         if bound_pending is not None and not wiki_freshness.resolve_pending_refresh(
@@ -712,6 +717,7 @@ def _reuse_source_revision(root, config, job, source_revision, selected_route, b
     if claimed:
         # This source can produce a target the verifier holds. Keep the job until the claim returns.
         return False, True, []
+    supersession.mark_attempt(source_revision)
     return None
 
 
@@ -1403,7 +1409,8 @@ _NOT_AN_ATTEMPT = frozenset(('initial_backfill_already_settled', 'initial_backfi
 _SETTLING = frozenset(('not_refreshed', 'verify_inconclusive_suppressed', 'source_unreadable', 'invalid_source_scope',
                        'unsafe_source_path', 'missing_source_path', 'missing_extractor', 'missing_candidates',
                        'extractor_unavailable', 'writer_rejected', 'unknown_host_exhausted',
-                       'source_folder_excluded', 'already_compiled_revision', 'awaiting_pending_verification'))
+                       'source_folder_excluded', 'already_compiled_revision', 'awaiting_pending_verification',
+                       'supersession_recorded'))
 
 
 # A dropped job whose paid answer cannot be used: the same bytes would fail the same way.
