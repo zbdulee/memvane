@@ -1270,6 +1270,8 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         move_notice = _session_health_notice(decision, move_notice, host, payload)
         if move_notice:
             notice += "\n" + move_notice
+        if action == "update-queued":
+            _maybe_auto_open_ui(decision, host)
         if host == "hermes":
             # Hermes has no SessionStart context: the adapter carries the
             # move/conflict lines into the next turn.
@@ -1329,6 +1331,76 @@ def _edit_recall_tail(host, decision, proof, payload, *, linked=None) -> dict:
     if capture is not None:
         _set_learning_capture(capture)
     return response
+
+
+_UI_BLOCKING_ENV = ('QMD_SANDBOX', 'CLAUDE_SANDBOX', 'CODEX_SANDBOX', 'GEMINI_SANDBOX', 'HERMES_SANDBOX',
+                    'MEMVANE_TEST_RUNTIME_ROOT', 'CI', 'SSH_CONNECTION', 'SSH_TTY')
+
+
+def _maybe_auto_open_ui(decision: dict, host: str) -> None:
+    """Start ``entry/run.py ui open --from-session-start`` detached when the user opted in.
+
+    Every import is local so the hook closure gains no module, and the hook
+    never imports ``memvane.ui``. Any failure leaves the hook answer and exit
+    code unchanged: the dashboard is a convenience, the session is not.
+    """
+    try:
+        import json as _json
+        import os as _os
+        import subprocess
+        import sys as _sys
+        import time as _time
+        from pathlib import Path as _Path
+        env = _os.environ
+        if (env.get('QMD_SETUP_GUARD_FIXTURE') == '1' or any(env.get(name) for name in _UI_BLOCKING_ENV)
+                or env.get('CLAUDE_HEADLESS') == '1' or env.get('HERMES_HEADLESS') == '1'
+                or env.get('TERM') == 'dumb'
+                or (_sys.platform.startswith('linux') and not env.get('DISPLAY')
+                    and not env.get('WAYLAND_DISPLAY'))):
+            return
+        from memvane.kernel import memvane_paths
+        ui_dir = memvane_paths.state_base() / 'ui'
+
+        def private_json(path):
+            fd = _os.open(path, _os.O_RDONLY | getattr(_os, 'O_NOFOLLOW', 0) | getattr(_os, 'O_NONBLOCK', 0))
+            try:
+                info = _os.fstat(fd)
+                if (not (info.st_mode & 0o170000 == 0o100000) or info.st_uid != _os.getuid()
+                        or info.st_mode & 0o077 or info.st_size > 65536):
+                    return None
+                value = _json.loads(_os.read(fd, 65537).decode('utf-8'))
+            finally:
+                _os.close(fd)
+            return value if isinstance(value, dict) else None
+
+        preferences = private_json(ui_dir / 'preferences.json')
+        if not preferences or preferences.get('autoOpenOnSessionStart') is not True:
+            return
+        cooldown = preferences.get('autoOpenCooldownMinutes', 240)
+        if isinstance(cooldown, bool) or not isinstance(cooldown, int) or cooldown < 0:
+            cooldown = 240
+        try:
+            state = private_json(ui_dir / 'auto-open-state.json') or {}
+        except FileNotFoundError:
+            state = {}
+        now = _time.time()
+        for key in ('lastAutoOpenAt', 'lastUserClosedAt'):
+            last = state.get(key)
+            if (isinstance(last, (int, float)) and not isinstance(last, bool)
+                    and 0 <= now - last < cooldown * 60):
+                return
+        route = decision.get('mainRoute') if decision.get('state') == 'worktree' else decision
+        cwd = decision.get('worktreeProjectRoot') if decision.get('state') == 'worktree' else None
+        cwd = cwd or (route or {}).get('projectRoot')
+        if not isinstance(cwd, str) or not cwd:
+            return
+        script = _Path(__file__).resolve().parents[2] / 'entry' / 'run.py'
+        subprocess.Popen([_sys.executable, '-B', str(script), 'ui', 'open', '--cwd', cwd,
+                          '--from-session-start'],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         close_fds=True, start_new_session=True)
+    except Exception:  # noqa: BLE001 - an opt-in convenience never changes the hook answer
+        return
 
 
 def _reconcile_registry(decision: dict) -> None:
@@ -1522,6 +1594,8 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
         _request_worktree_sync(main, proof, recheck)
         from memvane.host.session_notice import append_notice
         notice = append_notice(main, WORKTREE_VIEW_NOTICE, host, payload)
+        if action == 'update-queued':
+            _maybe_auto_open_ui(decision, host)
         if host == 'hermes':
             return {'status': 'worktree_view', 'notice': notice}
         return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
