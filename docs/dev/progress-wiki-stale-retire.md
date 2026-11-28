@@ -274,6 +274,7 @@ E = 추출 호출, V = 검수 호출. "다음 pass"는 같은 입력(같은 원�
 - `npm run test:focused -- memvane/wiki/compile/tests/run.test.mjs`: 모듈 26/26, Python 시험 209개 통과.
 - `npm run test:focused -- memvane/wiki/lifecycle/tests/run.test.mjs memvane/wiki/verify/tests/run.test.mjs memvane/wiki/pipeline/tests/run.test.mjs`: 모듈 22/22, Python 시험 248개 통과.
 - `tests/structure/v1_guard.py --strict`·`--tests`: 모든 규칙 0. 새 모듈 `supersession.py`를 `context-map.json`에 등록했다.
+- 레인 D `b7ac41c3`·레인 A `55b3dd43`을 병합한 `4973a5f1`에서 다시 돌렸다. compile(`run.test.mjs`·`stale-1015.test.mjs`) 모듈 27/27·Python 시험 219개, lifecycle·verify·pipeline 모듈 22/22·Python 시험 250개, `wiki-db-provenance` e2e 통과. `static.test.mjs`는 G4 1건 실패: `memvane/wiki/lifecycle/git_branch_safety.py` 913줄이 기준선 871줄을 넘는다. 레인 A 브랜치 단독에서도 같은 값이다. 레인 C 파일은 기준선 안이다(`wiki_compile_worker.py` 1,895/2,006줄).
 
 ### 남은 위험
 
