@@ -2,13 +2,17 @@ import {useMemo, useState} from 'preact/hooks';
 import type {ProjectGroup, TabId, TargetId, WorktreeNode} from '../api/types';
 import {
   CHECKOUT_STATE,
+  DORMANT_TOGGLE_TITLE,
   branchText,
-  dormantCount,
   dormantToggleLabel,
   dotTone,
   isDormant,
+  isServable,
+  shownNodes,
   stateTitle,
+  unservableTitle,
 } from '../checkoutState';
+import {useShowDormant} from '../dormantPref';
 import {navigate} from '../router';
 import {allNodes} from '../scope';
 import {safeText} from '../text';
@@ -37,15 +41,20 @@ function viewBadge(node: WorktreeNode): {tone: Tone; label: string} | null {
 
 function TreeNode(props: {node: WorktreeNode; active: boolean; tab: TabId; toggle?: {open: boolean; onToggle: () => void}}) {
   const {node, active, tab, toggle} = props;
-  const select = () => navigate({tab, target: node.targetId});
+  const servable = isServable(node);
+  // A checkout the server cannot prove (404/409) is not selectable; its state says why.
+  const select = () => {
+    if (servable) navigate({tab, target: node.targetId});
+  };
   const view = viewBadge(node);
   return (
     <div
-      class={`tree-item${node.kind === 'worktree' ? ' tree-wt' : ''}${active ? ' active' : ''}`}
+      class={`tree-item${node.kind === 'worktree' ? ' tree-wt' : ''}${active ? ' active' : ''}${servable ? '' : ' tree-disabled'}`}
       role="treeitem"
       aria-selected={active}
+      aria-disabled={servable ? undefined : true}
       tabIndex={0}
-      title={safeText(node.displayRoot)}
+      title={safeText(servable ? node.displayRoot : `${node.displayRoot}\n${unservableTitle(node)}`)}
       onClick={select}
       onKeyDown={event => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -85,19 +94,26 @@ function TreeNode(props: {node: WorktreeNode; active: boolean; tab: TabId; toggl
 export function SidebarTree({projects, tab, selected, loading = false}: Props) {
   const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
-  const [showDormant, setShowDormant] = useState(false);
+  const [showDormant, setShowDormant] = useShowDormant();
   const needle = query.trim().toLowerCase();
-  const hidden = useMemo(() => dormantCount(allNodes(projects)), [projects]);
+  const nodes = useMemo(() => allNodes(projects), [projects]);
+  const shownByDefault = useMemo(() => new Set(shownNodes(projects, nodes, false, selected)), [projects, nodes, selected]);
+  const hidden = nodes.length - shownByDefault.size;
 
   const visible = useMemo(() => projects.flatMap(group => {
-    // Only active checkouts show by default; a dormant main without a live worktree hides its group.
-    const live = showDormant ? group.worktrees : group.worktrees.filter(node => !isDormant(node));
-    if (!showDormant && isDormant(group.main) && live.length === 0) return [];
+    // Only active checkouts show by default (plus the selected one); a dormant main
+    // stays as the header of a group that still has a shown worktree.
+    const shown = shownNodes(projects, [group.main, ...group.worktrees], showDormant, selected);
+    if (!shown.includes(group.main)) return [];
+    const live = group.worktrees.filter(node => shown.includes(node));
     if (needle === '') return [{group, worktrees: live}];
     const mainHit = matches(group.main, needle);
     const worktrees = mainHit ? live : live.filter(node => matches(node, needle));
     return mainHit || worktrees.length > 0 ? [{group, worktrees}] : [];
-  }), [projects, needle, showDormant]);
+  }), [projects, needle, showDormant, selected]);
+  // Hidden rows the search would match: offered instead of a bare "no results".
+  const hiddenMatches = showDormant || needle === '' ? 0
+    : nodes.filter(node => !shownByDefault.has(node) && matches(node, needle)).length;
 
   const toggle = (installId: string) => {
     const next = new Set(collapsed);
@@ -141,7 +157,7 @@ export function SidebarTree({projects, tab, selected, loading = false}: Props) {
         </div>
         <div class="nav-section-label">
           <span>온보딩 프로젝트</span>
-          <span class="mono">{loading ? '…' : projects.filter(group => !isDormant(group.main) || group.worktrees.some(node => !isDormant(node))).length}</span>
+          <span class="mono">{loading ? '…' : projects.filter(group => shownNodes(projects, [group.main, ...group.worktrees], false, selected).length > 0).length}</span>
         </div>
         {loading
           ? <div class="sidebar-empty" role="status">프로젝트 목록을 불러오는 중…</div>
@@ -169,13 +185,20 @@ export function SidebarTree({projects, tab, selected, loading = false}: Props) {
               </div>
             );
           })}
+        {!loading && hiddenMatches > 0
+          ? (
+            <button type="button" class="btn btn-sm sidebar-dormant" onClick={() => setShowDormant(true)}>
+              숨긴 체크아웃에서 {hiddenMatches}개 일치, 펼치기
+            </button>
+          )
+          : null}
         {!loading && hidden > 0
           ? (
             <button
               type="button"
               class="btn btn-sm sidebar-dormant"
               aria-pressed={showDormant}
-              title="경로 없음·해제됨·이동됨·충돌 상태의 체크아웃"
+              title={DORMANT_TOGGLE_TITLE}
               onClick={() => setShowDormant(!showDormant)}
             >
               {dormantToggleLabel(hidden, showDormant)}

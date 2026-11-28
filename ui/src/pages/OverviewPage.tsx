@@ -8,7 +8,19 @@ import type {
   TabId,
   WorktreeNode,
 } from '../api/types';
-import {CHECKOUT_STATE, branchText, dormantToggleLabel, dotTone, isDormant, stateTitle} from '../checkoutState';
+import {
+  CHECKOUT_STATE,
+  DORMANT_TOGGLE_TITLE,
+  branchText,
+  dormantToggleLabel,
+  dotTone,
+  isDormant,
+  isServable,
+  shownNodes,
+  stateTitle,
+  unservableTitle,
+} from '../checkoutState';
+import {useShowDormant} from '../dormantPref';
 import {Badge, Dot, type Tone} from '../components/Badge';
 import {navigate, routeHash} from '../router';
 import {nodesInScope} from '../scope';
@@ -56,7 +68,10 @@ function StateBadge({node}: {node: WorktreeNode}) {
   return <Badge tone={info.tone} title={stateTitle(node)}>{info.label}</Badge>;
 }
 
-function Kpis({nodes, overview}: {nodes: readonly WorktreeNode[]; overview: OverviewResponse}) {
+function Kpis({scoped, overview}: {scoped: readonly WorktreeNode[]; overview: OverviewResponse}) {
+  // Counts are the active checkouts whatever the toggle shows; hidden ones are counted apart.
+  const nodes = scoped.filter(node => !isDormant(node));
+  const dormant = scoped.length - nodes.length;
   const mains = nodes.filter(node => node.kind === 'main');
   const worktrees = nodes.length - mains.length;
   // Main checkouts own the install's published cards; a worktree-only scope counts its own view.
@@ -81,7 +96,11 @@ function Kpis({nodes, overview}: {nodes: readonly WorktreeNode[]; overview: Over
       <div class="kpi-box">
         <div class="kpi-label"><span>선택 범위 체크아웃</span><Badge tone="muted" mono>{overview.snapshot.state}</Badge></div>
         <div class="kpi-value num">{formatCount(nodes.length)}</div>
-        <div class="kpi-foot"><span>프로젝트 {formatCount(mains.length)}</span><span>워크트리 {formatCount(worktrees)}</span></div>
+        <div class="kpi-foot">
+          <span>프로젝트 {formatCount(mains.length)}</span>
+          <span>워크트리 {formatCount(worktrees)}</span>
+          {dormant > 0 ? <span title={DORMANT_TOGGLE_TITLE}>해제·없음 {formatCount(dormant)}</span> : null}
+        </div>
       </div>
       <div class="kpi-box">
         <div class="kpi-label"><span>24h Recall</span><SloBadge slo={slo} /></div>
@@ -123,14 +142,25 @@ function CheckoutTable({nodes, selected, tab}: {nodes: readonly WorktreeNode[]; 
           </tr>
         </thead>
         <tbody>
-          {nodes.map(node => (
+          {nodes.map(node => {
+            // A checkout the server cannot prove (404/409) opens neither a scope nor a shortcut.
+            const servable = isServable(node);
+            const blocked = servable ? undefined : unservableTitle(node);
+            const rowClass = [servable ? 'clickable' : 'disabled-row', node.kind === 'worktree' ? 'wt-row' : '',
+              isDormant(node) ? 'dormant-row' : '', selected?.targetId === node.targetId ? 'selected-row' : '']
+              .filter(Boolean).join(' ');
+            return (
             <tr
               key={node.targetId}
-              class={`clickable${node.kind === 'worktree' ? ' wt-row' : ''}${selected?.targetId === node.targetId ? ' selected-row' : ''}`}
+              class={rowClass}
               tabIndex={0}
-              onClick={() => navigate({tab, target: node.targetId})}
+              aria-disabled={servable ? undefined : true}
+              {...(blocked !== undefined ? {title: blocked} : {})}
+              onClick={() => {
+                if (servable) navigate({tab, target: node.targetId});
+              }}
               onKeyDown={event => {
-                if (event.key === 'Enter') navigate({tab, target: node.targetId});
+                if (servable && event.key === 'Enter') navigate({tab, target: node.targetId});
               }}
             >
               <td>
@@ -169,26 +199,30 @@ function CheckoutTable({nodes, selected, tab}: {nodes: readonly WorktreeNode[]; 
                 )}
               <td class="cell-action nowrap">
                 <div class="row-links">
-                  <a
-                    class="btn btn-sm"
-                    href={routeHash({tab: 'wiki', target: node.targetId})}
-                    onClick={event => event.stopPropagation()}
-                    onKeyDown={event => event.stopPropagation()}
-                  >
-                    Wiki
-                  </a>
-                  <a
-                    class="btn btn-sm"
-                    href={routeHash({tab: 'recall', target: node.targetId})}
-                    onClick={event => event.stopPropagation()}
-                    onKeyDown={event => event.stopPropagation()}
-                  >
-                    Recall
-                  </a>
+                  {(['wiki', 'recall'] as const).map(target => (
+                    servable
+                      ? (
+                        <a
+                          key={target}
+                          class="btn btn-sm"
+                          href={routeHash({tab: target, target: node.targetId})}
+                          onClick={event => event.stopPropagation()}
+                          onKeyDown={event => event.stopPropagation()}
+                        >
+                          {target === 'wiki' ? 'Wiki' : 'Recall'}
+                        </a>
+                      )
+                      : (
+                        <span key={target} class="btn btn-sm" aria-disabled="true" title={blocked}>
+                          {target === 'wiki' ? 'Wiki' : 'Recall'}
+                        </span>
+                      )
+                  ))}
                 </div>
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -414,12 +448,13 @@ function ErrorList({errors, projectName, totals}: ErrorListProps) {
 }
 
 export function OverviewPage({overview, selected, tab, reconciling, onReconcile}: Props) {
-  const [showDormant, setShowDormant] = useState(false);
+  const [showDormant, setShowDormant] = useShowDormant();
   const scoped = nodesInScope(overview.projects, selected);
-  // Only active checkouts show by default; a selected dormant row always shows itself.
-  const hidden = scoped.filter(node => isDormant(node) && node.targetId !== selected?.targetId);
-  const nodes = showDormant ? scoped : scoped.filter(node => !hidden.includes(node));
-  const installIds = new Set(nodes.map(node => node.installId));
+  // The sidebar's rule: active rows, the selected row, and a dormant main heading a shown worktree.
+  const selectedId = selected?.targetId ?? null;
+  const hidden = scoped.length - shownNodes(overview.projects, scoped, false, selectedId).length;
+  const nodes = shownNodes(overview.projects, scoped, showDormant, selectedId);
+  const installIds = new Set(scoped.map(node => node.installId));
   const errors = overview.recentErrors.filter(item => installIds.has(item.installId)
     && (selected?.kind !== 'worktree' || item.targetId === null || item.targetId === selected.targetId));
   const names = new Map(overview.installs.map(install => [install.installId, install.projectName]));
@@ -429,7 +464,7 @@ export function OverviewPage({overview, selected, tab, reconciling, onReconcile}
     .map(install => [install.installId, install.errors24h] as const));
   return (
     <>
-      <Kpis nodes={nodes} overview={overview} />
+      <Kpis scoped={scoped} overview={overview} />
       <section class="card" aria-label="프로젝트와 워크트리 현황">
         <div class="card-header">
           <div>
@@ -438,16 +473,16 @@ export function OverviewPage({overview, selected, tab, reconciling, onReconcile}
           </div>
           <div class="card-actions">
             <span class="card-sub mono">마지막 재스캔 {formatRelative(overview.snapshot.lastReconcileAt)}</span>
-            {hidden.length > 0
+            {hidden > 0
               ? (
                 <button
                   type="button"
                   class="btn btn-sm"
                   aria-pressed={showDormant}
-                  title="경로 없음·해제됨·이동됨·충돌 상태의 체크아웃"
+                  title={DORMANT_TOGGLE_TITLE}
                   onClick={() => setShowDormant(!showDormant)}
                 >
-                  {dormantToggleLabel(hidden.length, showDormant)}
+                  {dormantToggleLabel(hidden, showDormant)}
                 </button>
               )
               : null}

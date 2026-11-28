@@ -188,7 +188,7 @@ flowchart TD
 - **좌측 사이드바 (`S1-sidebar-tree`, 오르카 스타일 프로젝트·워크트리 트리)**:
   - 최상단 고정 항목: **`All Projects` (전체 현황판)**
   - 검색 필터 입력(프로젝트명/워크트리/브랜치).
-  - **온보딩된 프로젝트 그룹(`main` checkout 단위)** → 프로젝트 이름과 함께 **현재 체크아웃의 git 브랜치명**을 2행 서브라인으로 명시한다(`main` checkout도 작업 중 다른 브랜치나 detached HEAD로 전환될 수 있으므로 고정 라벨로 가정하지 않는다). 그룹을 펼치면 하위 **연결 git worktree 목록**(디렉터리/표시명, **현재 git 브랜치명**, `linked` view 준비 상태 배지)이 트리 노드로 표시된다.
+  - **온보딩된 프로젝트 그룹(`main` checkout 단위)** → 프로젝트 이름과 함께 **현재 체크아웃의 git 브랜치명**을 2행 서브라인으로 명시한다(`main` checkout도 작업 중 다른 브랜치나 detached HEAD로 전환될 수 있으므로 고정 라벨로 가정하지 않는다). 그룹을 펼치면 하위 **연결 git worktree 목록**(디렉터리/표시명, **현재 git 브랜치명**, 체크아웃 상태 배지)이 트리 노드로 표시된다. 노드의 점은 체크아웃 상태(`viewState`)만 나타낸다(정상 녹색, 준비 중·확인 불가·알 수 없음 amber, 증명 실패·경로 없음·충돌 빨강, 해제됨·이동됨 muted). SLO는 Overview의 SLO 칸과 배지에만 있다. 경로 없음·해제됨·이동됨·충돌 행은 기본으로 숨기고 "해제·없는 체크아웃 n개 보기" 토글(Overview와 공용, localStorage 저장)로 펼친다. 선택된 행과 보이는 worktree가 남은 숨김 main은 늘 보인다. 토글이 꺼진 채 검색어가 숨긴 행과만 맞으면 "숨긴 체크아웃에서 n개 일치, 펼치기"를 보인다. 정상·준비 중이 아닌 노드는 선택할 수 없고 툴팁에 상태와 이유 코드를 적는다.
   - *(사용자 피드백 반영)* 미활성·원격 초기 빌드 섹션(`Initial Builds`)은 좌측 사이드바에 별도 고정 항목으로 두지 않는다(로컬에서 진행 중인 초기 빌드가 관측되면 Overview 상단 알림으로만 선택 표시).
   - 사용자가 사이드바에서 `All Projects`, 특정 프로젝트(main), 또는 특정 worktree 노드를 클릭하면 URL hash(`#tab?target=<targetId>`)가 갱신되고, 4개 탭이 해당 컨텍스트에 맞춰 즉시 전환된다.
 - **상단 글로벌 상태바 (`T1-topbar`) & 경고 배너 (`O1-alert-banner`)**:
@@ -198,7 +198,7 @@ flowchart TD
     - `needs_extractor`, `candidate_storage_full`, `selected_recall_settings_changed` / `reader_settings_resealing`
     - `laya_vector_*` / `laya_vector_selected_provider_start_failed`(lexical 폴백) / CPU 폴백 / `inconsistent` vector cache, `sync consecutive failed passes`
     - `worker_attestation_unavailable`(provider 파일 일시 읽기 불가), 설치별 `attestation_invalid`(1시간 뒤 자동 재증명 카운트다운)
-    - 대량 삭제 가드 보류, `view_preparing` cold worktree view, 구버전 resident 잔존
+    - 대량 삭제 가드 보류, recall 이벤트의 `view_preparing` 코드(cold worktree view), 구버전 resident 잔존. Overview 체크아웃 상태는 레지스트리만 읽어 `view_preparing`을 내지 않는다
 
 ### 4.3 Phase 1: 읽기 전용 관측 MVP (4개 화면 전체 출시 목표)
 
@@ -206,9 +206,9 @@ flowchart TD
 
 #### 1) Overview — 멀티 프로젝트 통합 현황판
 - **데이터 원천**: `memvane.registry.api.snapshot(reconcile=False)` + 설치별 최근 `events.jsonl` 요약. (기본 조회는 `reconcile=False`로 git 실행 없이 즉시 응답하고, `"상태 재스캔"` 버튼 클릭 시에만 `POST /api/overview/reconcile` 호출. `MAX_ROWS` 절단 여부와 `stale`/`complete` 상태를 명시 표시)
-  - **체크아웃 현재 브랜치명 해석**: 기본 조회(`reconcile=False`)의 무-git 프로세스 원칙을 유지하기 위해 각 proved `target_root`의 `<gitdir>/HEAD` 파일을 `O_NOFOLLOW` · 4 KiB 상한으로 경량 read-only 읽기한다(`ref: refs/heads/<name>` → `<name>`, commit SHA → `detached@<short7>`, `.git` 없음 → `non-git`, 읽기 불가 → `unknown`).
+  - **체크아웃 현재 브랜치명 해석**: 기본 조회(`reconcile=False`)의 무-git 프로세스 원칙을 유지하기 위해, 레지스트리 `active`이고 루트 디렉터리가 있는 행만 루트에서 위로 올라가며 처음 만난 `.git`의 `<gitdir>/HEAD` 파일을 `O_NOFOLLOW` · 4 KiB 상한으로 경량 read-only 읽기한다. 탐색은 파일 시스템 경계에서 멈추고 HOME 아래 루트는 HOME 위로 올라가지 않는다. 결과는 `ref: refs/heads/<name>` → `<name>`, commit SHA → `detached@<short7>`, 탐색 범위에 `.git` 없음 → `non-git`, 읽기 불가·`.git` 심볼릭 링크 → `unknown`이다. 그 밖의 행은 `unknown`이고 화면에는 상태 라벨이 대신 보인다.
 - **내용**:
-  - 전체 온보딩 프로젝트 및 하위 worktree 상태 그리드(카드 `verified`/`generated`/`pending` 수, 마지막 `wake.sync` 게시 시각, 24h recall 건수, p50/p95 지연, SLO 판정 `ok`/`over`/`no-data`).
+  - 전체 온보딩 프로젝트 및 하위 worktree 상태 그리드(체크아웃 상태, 카드 `verified`/`generated`/`pending` 수, 마지막 `wake.sync` 게시 시각, 24h recall 건수, p50/p95 지연, SLO 판정 `ok`/`over`/`no-data`). 체크아웃 상태는 `viewState` 9종(`ready`·`view_preparing`·`proof_failed`·`unreadable`·`unknown`·`path_missing`·`released`·`moved`·`conflict`)이다. 그리드는 사이드바와 같은 규칙으로 숨김 행을 토글로 펼치고, KPI는 토글과 상관없이 숨기지 않은 행만 세며 숨긴 수를 따로 적는다. `ready`·`view_preparing`이 아닌 행은 행 선택과 Wiki·Recall 바로 가기를 막는다.
   - `installId` 단위 통합/개별 에러 요약(기본은 메타만, `"상세 오류 로드"` 클릭 시 `diagnostic.part` 재조립).
 
 #### 2) Recall 인스펙터 & 라이브 Query Playground

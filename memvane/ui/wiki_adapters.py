@@ -243,30 +243,42 @@ def _string_list(value):
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
-def _stale_reason(revisions, root, config):
-    """``source_deleted``, ``source_changed`` or None from ``wiki.card.check_card``.
+_INVALID_PROVENANCE = ('invalid_card', 'missing_source_revisions', 'invalid_source_revision')
 
-    Only a ``stale`` card has a reason; ``unknown`` freshness is not shown as
-    stale. ``check_card`` stops at the first stale source, so a stale card of
-    several sources is checked source by source for a deleted one.
+
+def _stale_reason(revisions, root, config):
+    """``source_deleted``, ``source_changed`` or None, one ``wiki.card.check_card`` per source.
+
+    Same verdict as one ``check_card`` over the whole card: the card is stale
+    when its first non-fresh source is stale, and ``unknown`` freshness or an
+    invalid provenance entry is not shown as stale. One pass also finds a
+    deleted source after the first changed one; each source is hashed at most
+    once and a deleted source is not hashed.
     """
     from memvane.wiki.card import api as card
     if not revisions:
         return None
+    changed = False
     try:
-        allow = card.allow_roots_of(config)
-        state = card.check_card({'sourceRevisions': revisions}, root, allow)
-        if not isinstance(state, dict) or state.get('state') != 'stale':
+        # ``check_card`` refuses the whole card before reading any source when one entry is invalid.
+        if any(card.normalize_source_revision(revision) is None for revision in revisions):
             return None
-        if state.get('reason') == 'missing':
-            return 'source_deleted'
-        for revision in revisions if len(revisions) > 1 else ():
-            one = card.check_card({'sourceRevisions': [revision]}, root, allow)
-            if isinstance(one, dict) and one.get('state') == 'stale' and one.get('reason') == 'missing':
-                return 'source_deleted'
+        allow = card.allow_roots_of(config)
+        for revision in revisions:
+            state = card.check_card({'sourceRevisions': [revision]}, root, allow)
+            verdict = state.get('state') if isinstance(state, dict) else None
+            reason = state.get('reason') if isinstance(state, dict) else None
+            if reason in _INVALID_PROVENANCE:
+                return None
+            if verdict == 'stale':
+                if reason == 'missing':
+                    return 'source_deleted'
+                changed = True
+            elif verdict != 'fresh' and not changed:
+                return None
     except Exception:  # noqa: BLE001 - an unknown freshness is not shown as stale
         return None
-    return 'source_changed'
+    return 'source_changed' if changed else None
 
 
 def _is_denied_rel(rel, parts=None):

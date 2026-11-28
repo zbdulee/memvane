@@ -74,6 +74,14 @@ class OverviewStateTests(FixtureCase):
         moved, moved_install, _ = self.onboard('moved', '5' * 32)
         broken, broken_install, _ = self.onboard('broken', '6' * 32)
         contested, contested_install, _ = self.onboard('contested', '7' * 32, register=False)
+        # A worktree under a directory that later denies access: its root cannot be observed.
+        lockdir = self.home / 'lockdir'
+        lockdir.mkdir()
+        locked_root = lockdir / 'locked'
+        live.git('worktree', 'add', '-q', '-b', 'locked-branch', str(locked_root))
+        outcome = registry.after_setup('activate-index-origin', str(live.root), str(live_install.state),
+                                       {'status': 'selected', 'phase': 'selected'})
+        self.assertIn(outcome['status'], ('registered', 'unchanged'), outcome)
 
         # Two installs claim one root. Onboarding refuses a second selected install
         # at a selected root (``project_selection_already_exists``), so the other
@@ -114,13 +122,15 @@ class OverviewStateTests(FixtureCase):
 
         self.assertEqual({key: (row(*key)['status'], row(*key)['reason']) for key in (
             (live_install, live.root), (live_install, ready_wt.root), (live_install, gone_wt.root),
-            (live_install, pruned_wt.root), (pending_install, pending.root), (missing_install, missing.root),
+            (live_install, pruned_wt.root), (live_install, locked_root), (pending_install, pending.root),
+            (missing_install, missing.root),
             (released_install, released.root), (moved_install, moved.root), (broken_install, broken.root),
             (contested_install, contested.root), (FOREIGN, contested.root))}, {
             (live_install, live.root): ('active', None),
             (live_install, ready_wt.root): ('active', None),
             (live_install, gone_wt.root): ('active', None),
             (live_install, pruned_wt.root): ('detached', 'released'),
+            (live_install, locked_root): ('active', None),
             (pending_install, pending.root): ('missing_pending', None),
             (missing_install, missing.root): ('detached', 'missing'),
             (released_install, released.root): ('detached', 'released'),
@@ -131,7 +141,19 @@ class OverviewStateTests(FixtureCase):
         })
         self.assertTrue(row(broken_install, broken.root)['proof'].startswith('unproved'))
 
-        view = read_adapters.overview(home=self.home)
+        # Past ``max_installs`` no live proof runs: the registry's recorded proof decides.
+        capped = self.nodes(read_adapters.overview(home=self.home, max_installs=0))
+        recorded = row(broken_install, broken.root)['proof'].split(':', 1)[1]
+        self.assertEqual((capped[broken_install.install_id]['viewState'],
+                          capped[broken_install.install_id]['stateReason']), ('proof_failed', recorded))
+        self.assertEqual((capped[live_install.install_id]['viewState'],
+                          capped[live_install.install_id]['stateReason']), ('ready', None))
+
+        os.chmod(lockdir, 0)
+        try:
+            view = read_adapters.overview(home=self.home)
+        finally:
+            os.chmod(lockdir, 0o700)
         nodes = self.nodes(view)
 
         def node(install, root, kind='main'):
@@ -142,6 +164,7 @@ class OverviewStateTests(FixtureCase):
             ('ready', 'worktree'): (node(live_install, ready_wt.root, 'worktree'), 'ready', 'ready-branch'),
             ('gone', 'worktree'): (node(live_install, gone_wt.root, 'worktree'), 'path_missing', 'unknown'),
             ('pruned', 'worktree'): (node(live_install, pruned_wt.root, 'worktree'), 'released', 'unknown'),
+            ('locked', 'worktree'): (node(live_install, locked_root, 'worktree'), 'unreadable', 'unknown'),
             ('pending', 'main'): (node(pending_install, pending.root), 'path_missing', 'unknown'),
             ('missing', 'main'): (node(missing_install, missing.root), 'path_missing', 'unknown'),
             ('released', 'main'): (node(released_install, released.root), 'released', 'unknown'),
@@ -154,9 +177,11 @@ class OverviewStateTests(FixtureCase):
             self.assertEqual((found['viewState'], found['branch']), (state, branch), key)
             self.assertNotEqual(found['branch'], 'non-git', key)
         broken_node = node(broken_install, broken.root)
-        self.assertTrue(broken_node['proofReason'].startswith('route_'), broken_node['proofReason'])
-        self.assertEqual([found['proofReason'] for key, (found, _, _) in expected.items()
-                          if key != ('broken', 'main') and found['proofReason'] is not None], [])
+        self.assertTrue(broken_node['stateReason'].startswith('route_'), broken_node['stateReason'])
+        self.assertEqual(node(live_install, locked_root, 'worktree')['stateReason'], 'EACCES')
+        self.assertEqual([found['stateReason'] for key, (found, _, _) in expected.items()
+                          if key not in (('broken', 'main'), ('locked', 'worktree'))
+                          and found['stateReason'] is not None], [])
         # The SLO stays on the install line; a failed proof has no digest.
         self.assertEqual(broken_node['slo'], 'no-data')
         self.assertEqual(len(nodes), len(expected))
@@ -165,7 +190,7 @@ class OverviewStateTests(FixtureCase):
         route.write_bytes(saved_route)
         self.assertTrue(self.rows()[(broken_install.install_id, str(broken.root))]['proof'].startswith('unproved'))
         healed = self.nodes(read_adapters.overview(home=self.home))[broken_install.install_id]
-        self.assertEqual((healed['viewState'], healed['proofReason'], healed['branch']), ('ready', None, 'main'))
+        self.assertEqual((healed['viewState'], healed['stateReason'], healed['branch']), ('ready', None, 'main'))
 
     def test_a_project_folder_inside_a_repository_reads_the_repository_branch(self):
         from tests.support.project import Project
@@ -182,3 +207,14 @@ class OverviewStateTests(FixtureCase):
                          ('ready', 'main', str(project.root)))
         self.assertFalse((project.root / '.git').exists())
         self.assertEqual(Path(main['displayRoot']).parent, mono)
+
+
+class ViewStateMappingTests(FixtureCase):
+    """Combinations the registry DDL does not allow today still read as ``unknown``, never hidden."""
+
+    def test_an_unknown_status_or_reason_is_unknown_with_its_values(self):
+        for status, reason in (('detached', None), ('archived', None), ('missing_pending', 'released'),
+                               ('conflict', 'missing')):
+            with self.subTest(status=status, reason=reason):
+                self.assertEqual(read_adapters._view_state({'status': status, 'reason': reason}),
+                                 ('unknown', f'{status}/{reason}'))

@@ -60,14 +60,17 @@ export type BranchLabel = string;
 /**
  * Checkout state from the registry row and the route proof: `ready` (active, proved),
  * `view_preparing` (cold worktree view), `proof_failed` (root present, route re-proof failed),
+ * `unreadable` (active row whose root cannot be observed, e.g. permission denied),
  * `path_missing` (`missing_pending`, `detached/missing`, or an active row whose root is gone),
  * `released` (`detached/released`, `detached/withdrawn`), `moved` (`detached/root_moved`),
- * `conflict` (two installs claim the root).
+ * `conflict` (two installs claim the root), `unknown` (any other registry status/reason).
  */
 export type CheckoutViewState =
   | 'ready'
   | 'view_preparing'
   | 'proof_failed'
+  | 'unreadable'
+  | 'unknown'
   | 'path_missing'
   | 'released'
   | 'moved'
@@ -81,8 +84,11 @@ interface CheckoutNodeBase {
   /** `unknown` for a row that is not active or whose root is gone. */
   branch: BranchLabel;
   viewState: CheckoutViewState;
-  /** Reason code of a failed route proof (`proof_failed` only), else null. */
-  proofReason: string | null;
+  /**
+   * `proof_failed`: reason code of the failed route proof; `unreadable`: errno name;
+   * `unknown`: the registry's `<status>/<reason>`; else null.
+   */
+  stateReason: string | null;
   hosts: HostName[];
   cards: CardCounts;
   /** Last published `wake.sync`, or null when none was seen. */

@@ -11,6 +11,7 @@ the registry, and branch names come from ``<gitdir>/HEAD`` of the nearest
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import errno
 import json
 import os
 from pathlib import Path
@@ -56,26 +57,38 @@ def _read_small(path, limit):
         os.close(fd)
 
 
-def _dotgit(target_root):
-    """The first ``.git`` entry at or above ``target_root`` (the checkout's own rule), or None.
+def _dotgit(target_root, home=None):
+    """The first ``.git`` entry at or above ``target_root``, or None.
 
-    Same walk as ``store.checkout.checkout_view._dotgit``: a project folder
-    inside a repository reads the branch of that repository.
+    A project folder inside a repository reads the branch of that repository.
+    The walk stops where git's own discovery stops: at a file system boundary
+    (``GIT_DISCOVERY_ACROSS_FILESYSTEM`` unset), and it never goes above HOME
+    for a root under HOME. ``store.checkout.checkout_view._dotgit`` walks to
+    ``/`` without those stops; past a boundary its ``git rev-parse`` then fails,
+    so the capture yields no branch either.
     """
     root = Path(target_root)
+    home = Path(home if home is not None else os.path.expanduser('~'))
+    device = os.lstat(root).st_dev
+    ceiling = home if home == root or home in root.parents else None
     for directory in (root, *root.parents):
+        if os.lstat(directory).st_dev != device:
+            return None
         path = directory / '.git'
         try:
             info = os.lstat(path)
         except FileNotFoundError:
-            continue
-        return path, info
+            info = None
+        if info is not None:
+            return path, info
+        if directory == ceiling:
+            return None
     return None
 
 
-def git_dir(target_root):
+def git_dir(target_root, home=None):
     """The git directory of the nearest ``.git`` at or above the checkout, or None when there is none."""
-    found = _dotgit(target_root)
+    found = _dotgit(target_root, home)
     if found is None:
         return None
     dotgit, info = found
@@ -90,10 +103,10 @@ def git_dir(target_root):
     return pointer if pointer.is_absolute() else dotgit.parent / pointer
 
 
-def read_branch(target_root):
+def read_branch(target_root, home=None):
     """``<name>``, ``detached@<short7>``, ``non-git`` or ``unknown`` from ``<gitdir>/HEAD``."""
     try:
-        directory = git_dir(target_root)
+        directory = git_dir(target_root, home)
     except (OSError, ValueError):
         return 'unknown'
     if directory is None:
@@ -390,31 +403,39 @@ def install_digest(state_root, *, now=None):
 
 
 def _view_state(row, failure=None, *, proved_live=False):
-    """``(viewState, proofReason)`` of one checkout row from its registry status, reason and proof.
+    """``(viewState, stateReason)`` of one checkout row from its registry status, reason and proof.
 
     ``proved_live`` says a live route proof ran for the row; ``failure`` is its
     reason code when it failed. Without a live proof the registry's recorded
-    ``proof`` (``unproved:<code>``) stands in. A row whose
-    root is present but whose route no longer proves is ``proof_failed``; the
-    others follow the registry: ``missing_pending`` and ``detached/missing`` are
+    ``proof`` (``unproved:<code>``) stands in. A row whose root is present but
+    whose route no longer proves is ``proof_failed``; an active row whose root
+    cannot be observed is ``unreadable`` (reason: errno name). The others follow
+    the registry: ``missing_pending`` and ``detached/missing`` are
     ``path_missing``, ``detached/released`` and ``detached/withdrawn`` are
-    ``released``, ``detached/root_moved`` is ``moved``, ``conflict`` is ``conflict``.
+    ``released``, ``detached/root_moved`` is ``moved``, ``conflict`` is
+    ``conflict``. Any other combination is ``unknown`` with ``<status>/<reason>``.
     """
     status, reason = row.get('status'), row.get('reason')
     if status == 'active':
         if row.get('present') is False:
             return 'path_missing', None
+        if row.get('present') is None and row.get('rootError'):
+            return 'unreadable', row['rootError']
         recorded = row.get('proof')
         if not proved_live and isinstance(recorded, str) and recorded.startswith('unproved'):
             failure = recorded.split(':', 1)[1] if ':' in recorded else recorded
         return ('proof_failed', failure) if failure is not None else ('ready', None)
-    if status == 'missing_pending' or (status == 'detached' and reason == 'missing'):
+    if status == 'missing_pending' and reason is None:
         return 'path_missing', None
+    if status == 'detached' and reason == 'missing':
+        return 'path_missing', None
+    if status == 'detached' and reason in ('released', 'withdrawn'):
+        return 'released', None
     if status == 'detached' and reason == 'root_moved':
         return 'moved', None
-    if status == 'conflict':
+    if status == 'conflict' and reason is None:
         return 'conflict', None
-    return 'released', None
+    return 'unknown', f'{status}/{reason}'
 
 
 def _node_view(row, *, digest=None, pending=0, parent_id=None, failure=None, proved_live=False):
@@ -422,7 +443,7 @@ def _node_view(row, *, digest=None, pending=0, parent_id=None, failure=None, pro
     cards = {'verified': int(raw_cards.get('verified', 0)),
              'generated': int(raw_cards.get('generated', 0)),
              'pending': int(pending)}
-    view_state, proof_reason = _view_state(row, failure, proved_live=proved_live)
+    view_state, state_reason = _view_state(row, failure, proved_live=proved_live)
     node = {
         'targetId': row['targetId'],
         'installId': row['installId'],
@@ -431,7 +452,7 @@ def _node_view(row, *, digest=None, pending=0, parent_id=None, failure=None, pro
         'displayRoot': row['displayPath'],
         'branch': row['branch'],
         'viewState': view_state,
-        'proofReason': proof_reason,
+        'stateReason': state_reason,
         'hosts': digest['hosts'] if digest else [],
         'cards': cards,
         'lastSyncAt': digest['lastPublishAt'] if digest else None,
@@ -476,24 +497,29 @@ def _snapshot_meta(snapshot):
     }
 
 
-def _present(target_root):
+def _root_state(target_root):
+    """``(True, None)`` for a root directory, ``(False, None)`` when it is gone, ``(None, errno name)``
+    when it cannot be observed (permission and other errors are not a missing root)."""
     try:
-        return stat.S_ISDIR(os.lstat(target_root).st_mode)
-    except OSError:
-        return False
+        info = os.lstat(target_root)
+    except (FileNotFoundError, NotADirectoryError):
+        return False, None
+    except OSError as exc:
+        return None, errno.errorcode.get(exc.errno, type(exc).__name__)
+    return stat.S_ISDIR(info.st_mode), None
 
 
-def _target_row(row):
+def _target_row(row, home=None):
     kind = row.get('kind')
-    # Only a live row whose root is still a directory reads a branch and cards: a
-    # missing root would otherwise read the branch of a repository above it.
-    present = _present(row['targetRoot']) if row.get('status') == 'active' else None
+    # Only a live row whose root is an observable directory reads a branch and
+    # cards: a missing root would otherwise read the branch of a repository above it.
+    present, root_error = _root_state(row['targetRoot']) if row.get('status') == 'active' else (None, None)
     live = present is True
     return {'targetId': target_id(row['installId'], row['targetRoot'], kind), 'installId': row['installId'],
             'kind': kind, 'status': row.get('status'), 'reason': row.get('reason'), 'proof': row.get('proof'),
-            'present': present,
+            'present': present, 'rootError': root_error,
             'displayPath': row['targetRoot'], 'projectRoot': row.get('projectRoot'),
-            'branch': read_branch(row['targetRoot']) if live else 'unknown',
+            'branch': read_branch(row['targetRoot'], home) if live else 'unknown',
             'observedAt': row.get('observedAt'), 'cards': card_counts(row['targetRoot']) if live else None}
 
 
@@ -504,7 +530,7 @@ def overview(*, home=None, reconcile=False, now=None, max_installs=64, observe=N
     groups = {}
     for row in _rows(snapshot):
         group = groups.setdefault(row['installId'], {'installId': row['installId'], 'main': None, 'worktrees': []})
-        target = _target_row(row)
+        target = _target_row(row, home)
         if row.get('kind') == 'main':
             group['main'] = target
         else:
