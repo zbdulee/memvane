@@ -1579,6 +1579,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/compile/supersession.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/compile/types.py": {
       "context": "wiki/compile",
       "layer": "domain",
@@ -1755,6 +1760,11 @@
       "pinned": false
     },
     "memvane/wiki/lifecycle/api.py": {
+      "context": "wiki/lifecycle",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/lifecycle/branch_tips.py": {
       "context": "wiki/lifecycle",
       "layer": "adapter",
       "pinned": false
@@ -2025,6 +2035,11 @@
       "pinned": false
     },
     "memvane/wiki/pipeline/migrate.py": {
+      "context": "wiki/pipeline",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/pipeline/review_reload.py": {
       "context": "wiki/pipeline",
       "layer": "adapter",
       "pinned": false

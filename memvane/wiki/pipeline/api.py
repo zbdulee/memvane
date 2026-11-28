@@ -50,9 +50,26 @@ def v1_migration_marked(project_root):
     return implementation(project_root)
 
 
-def migrate_from_v1(project_root, *, wiki_root=None):
+def migrate_from_v1(project_root, *, wiki_root=None, reviews=None):
     from memvane.wiki.pipeline.migrate import migrate_from_v1 as implementation
-    return implementation(project_root, wiki_root=wiki_root)
+    return implementation(project_root, wiki_root=wiki_root, reviews=reviews)
+
+
+def review_reload_marked(project_root):
+    """True once the one-time review reload committed (absent ledger: False)."""
+    from memvane.wiki.pipeline.store import open_pipeline, pipeline_db_path
+    from memvane.wiki.pipeline.types import REVIEW_RELOAD_MARKER
+    if not pipeline_db_path(project_root).exists():
+        return False
+    with open_pipeline(project_root, readonly=True) as store:
+        return store.meta_get(REVIEW_RELOAD_MARKER) is not None
+
+
+def reload_reviews(project_root, payloads):
+    from memvane.wiki.pipeline.review_reload import reload_reviews as implementation
+    from memvane.wiki.pipeline.store import open_pipeline
+    with open_pipeline(project_root) as store:
+        return implementation(store, payloads)
 
 
 def audit_log(project_root, kind):

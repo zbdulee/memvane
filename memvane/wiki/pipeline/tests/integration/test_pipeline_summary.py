@@ -160,7 +160,7 @@ class PipelineSummaryTests(FixtureCase):
         self.assertEqual(tables['refreshEvents'], {'total': 3, 'byState': {
             'pending': 1, 'settled': 1, 'resolved': 1}})
         self.assertEqual(tables['dedupPairs'], {'total': 2, 'byState': {'queued': 1, 'claimed': 0, 'done': 1}})
-        self.assertEqual(tables['suppressions'], {'total': 2, 'byKind': {'verify': 1, 'dedup': 1}})
+        self.assertEqual(tables['suppressions'], {'total': 2, 'byKind': {'verify': 1, 'dedup': 1, 'supersession': 0}})
         self.assertEqual(tables['publishTxns'], {'total': 4, 'byState': {
             'publishing': 1, 'published': 2, 'published_user_edited': 0, 'conflict_user_edited': 1,
             'aborted': 0}})

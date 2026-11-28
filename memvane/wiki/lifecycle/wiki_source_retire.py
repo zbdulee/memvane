@@ -57,15 +57,67 @@ def _lineage_for(root: Path):
     return judge, reason
 
 
-def lineage_hold(lineage, rel: str, cards) -> str | None:
-    """First reason any of ``cards`` must keep ``rel``; None when all may retire."""
+def _lineage_blockers(lineage, rel: str, cards) -> list:
+    """``[(card, reason)]`` of every one of ``cards`` that must keep ``rel``."""
     if lineage is None:
-        return None
+        return []
+    blockers = []
     for card in cards:
         verdict, reason = lineage.judge(rel, card)
         if verdict != 'retire':
-            return reason
-    return None
+            blockers.append((card, reason))
+    return blockers
+
+
+HELD_STATE_VERSION = 1
+MAX_HELD_STATE = 4096
+
+
+def _held_state_path(root: Path) -> Path:
+    """Last logged hold per source: a derived, rebuildable file outside the 1.x contract."""
+    return workspace_files.state_dir() / (
+        workspace_files.project_key(str(root), None) + '-wiki-held.json')
+
+
+def _held_state(root: Path) -> tuple[Path, dict]:
+    path = _held_state_path(root)
+    state = workspace_files.read_state(path)
+    held = state.get('held') if state.get('version') == HELD_STATE_VERSION else None
+    return path, held if isinstance(held, dict) else {}
+
+
+def _save_held_state(path: Path, held: dict) -> None:
+    if len(held) > MAX_HELD_STATE:
+        held = dict(sorted(held.items())[-MAX_HELD_STATE:])
+    try:
+        # Ignored: losing it only logs one held line again on the next pass.
+        workspace_files.write_state_atomic(path, {'version': HELD_STATE_VERSION, 'held': held})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _log_held_change(root, selected, rel, citing, blockers, wiki_root) -> None:
+    """Log the cards that hold a citing bundle once per change of that set.
+
+    Runs under the card and wiki locks, so the lifecycle and the compile
+    worker see one state; repeated passes over the same held bundle, in one
+    lifecycle run or across runs, log nothing new.
+    """
+    path, held = _held_state(root)
+    names = sorted(Path(card).relative_to(wiki_root).as_posix() for card, _ in blockers)
+    if not blockers or len(citing) < 2:
+        if rel in held:
+            del held[rel]
+            _save_held_state(path, held)
+        return
+    if held.get(rel) == names:
+        return
+    texts = dict(citing)
+    written = [_record_held(root, selected, card, texts[card], reason, wiki_root)
+               for card, reason in blockers]
+    if all(written):
+        held[rel] = names
+        _save_held_state(path, held)
 
 
 def retire_deleted_source(root: Path, config: dict, selected, collection: str,
@@ -151,10 +203,13 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
                 continue
             retiring.append((card, text))
 
-        hold = lineage_hold(lineage, rel, [card for card, _ in retiring] +
-                            [card for card, _, _ in shared_cards])
-        if hold is not None:
-            return {'state': 'held_branch', 'survivors': [], 'reason': hold}
+        citing = retiring + [(card, text) for card, text, _ in shared_cards]
+        blockers = _lineage_blockers(lineage, rel, [card for card, _ in citing])
+        if lineage is not None:
+            # The whole bundle stays while any card holds; name those cards.
+            _log_held_change(root, selected, rel, citing, blockers, wiki_root)
+        if blockers:
+            return {'state': 'held_branch', 'survivors': [], 'reason': blockers[0][1]}
         shared = set()
         if shared_cards:
             from memvane.wiki.card.api import verified_wiki_row
@@ -262,6 +317,20 @@ def retire_card(root: Path, wiki_root: Path, selected, card: Path,
             os.close(directory)
     _record_retired(root, None, selected, card, text, proof_hash, wiki_root=wiki_root)
     return 'retired'
+
+
+def _record_held(root, selected, card, text, reason, wiki_root) -> bool:
+    """One ``wiki`` held event naming a card that kept a citing bundle; never raises."""
+    try:
+        rel = Path(card).relative_to(wiki_root).as_posix()
+        meta, _ = wiki_card.parse_frontmatter(text)
+        title = str(meta.get('title') or Path(card).stem)
+        # Checked only to keep the held state unchanged on failure, so the next
+        # pass logs it again; no decision reads the line.
+        return bool(workspace_files.append_activity(root, 'held', rel, title, bound=selected,
+                                                    reason=reason))
+    except Exception:
+        return False
 
 
 def _record_retired(root, config, selected, card, text, reason, *, wiki_root=None) -> None:

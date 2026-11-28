@@ -129,12 +129,16 @@ class RetentionTests(FixtureCase):
                 self.assertTrue(pipeline.set_suppression(self.root, 'verify', key, 'h', {}))
             for key in ('concepts/a.md\nconcepts/b.md', 'concepts/a.md\nconcepts/missing.md'):
                 self.assertTrue(pipeline.set_suppression(self.root, 'dedup', key, 'h:h', {}))
+            # A compile supersession attempt is keyed by its source path, like a verify row.
+            for key in ('docs/kept.md', 'docs/gone.md'):
+                self.assertTrue(pipeline.set_suppression(self.root, 'supersession', key, 'h', {'outcome': 'settled'}))
         self.assertTrue(pipeline.set_suppression(self.root, 'verify', 'docs/kept.md', 'newer', {}))
         self.maintain(source_roots=[self.root, other_root])
         self.assertEqual(pipeline.suppressions(self.root, 'verify'),
                          {'docs/kept.md': 'newer', 'docs/second.md': 'h', '../docs/gone.md': 'h',
                           '/abs/gone.md': 'h'})
         self.assertEqual(set(pipeline.suppressions(self.root, 'dedup')), {'concepts/a.md\nconcepts/b.md'})
+        self.assertEqual(set(pipeline.suppressions(self.root, 'supersession')), {'docs/kept.md'})
 
     def test_rt5_unknown_or_rewritten_suppressions_are_kept(self):
         self.assertTrue(pipeline.set_suppression(self.root, 'verify', 'docs/gone.md', 'h', {}))

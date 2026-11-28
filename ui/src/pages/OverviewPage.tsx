@@ -8,6 +8,19 @@ import type {
   TabId,
   WorktreeNode,
 } from '../api/types';
+import {
+  CHECKOUT_STATE,
+  DORMANT_TOGGLE_TITLE,
+  branchText,
+  dormantToggleLabel,
+  dotTone,
+  isDormant,
+  isServable,
+  shownNodes,
+  stateTitle,
+  unservableTitle,
+} from '../checkoutState';
+import {useShowDormant} from '../dormantPref';
 import {Badge, Dot, type Tone} from '../components/Badge';
 import {navigate, routeHash} from '../router';
 import {nodesInScope} from '../scope';
@@ -48,20 +61,17 @@ function latest(values: readonly (string | null)[]): string | null {
 }
 
 function StateBadge({node}: {node: WorktreeNode}) {
-  if (node.kind === 'main') return <Badge tone="blue">main</Badge>;
-  switch (node.viewState) {
-    case 'ready':
-      return <Badge tone="green">linked</Badge>;
-    case 'view_preparing':
-      return <Badge tone="amber" mono>view_preparing</Badge>;
-    case 'absent':
-      return <Badge tone="muted">view 없음</Badge>;
-    case 'unproved':
-      return <Badge tone="red">미증명</Badge>;
+  const info = CHECKOUT_STATE[node.viewState];
+  if (node.viewState === 'ready') {
+    return <Badge tone={node.kind === 'main' ? 'blue' : 'green'} title={stateTitle(node)}>{node.kind === 'main' ? 'main' : 'linked'}</Badge>;
   }
+  return <Badge tone={info.tone} title={stateTitle(node)}>{info.label}</Badge>;
 }
 
-function Kpis({nodes, overview}: {nodes: readonly WorktreeNode[]; overview: OverviewResponse}) {
+function Kpis({scoped, overview}: {scoped: readonly WorktreeNode[]; overview: OverviewResponse}) {
+  // Counts are the active checkouts whatever the toggle shows; hidden ones are counted apart.
+  const nodes = scoped.filter(node => !isDormant(node));
+  const dormant = scoped.length - nodes.length;
   const mains = nodes.filter(node => node.kind === 'main');
   const worktrees = nodes.length - mains.length;
   // Main checkouts own the install's published cards; a worktree-only scope counts its own view.
@@ -86,7 +96,11 @@ function Kpis({nodes, overview}: {nodes: readonly WorktreeNode[]; overview: Over
       <div class="kpi-box">
         <div class="kpi-label"><span>선택 범위 체크아웃</span><Badge tone="muted" mono>{overview.snapshot.state}</Badge></div>
         <div class="kpi-value num">{formatCount(nodes.length)}</div>
-        <div class="kpi-foot"><span>프로젝트 {formatCount(mains.length)}</span><span>워크트리 {formatCount(worktrees)}</span></div>
+        <div class="kpi-foot">
+          <span>프로젝트 {formatCount(mains.length)}</span>
+          <span>워크트리 {formatCount(worktrees)}</span>
+          {dormant > 0 ? <span title={DORMANT_TOGGLE_TITLE}>해제·없음 {formatCount(dormant)}</span> : null}
+        </div>
       </div>
       <div class="kpi-box">
         <div class="kpi-label"><span>24h Recall</span><SloBadge slo={slo} /></div>
@@ -128,21 +142,32 @@ function CheckoutTable({nodes, selected, tab}: {nodes: readonly WorktreeNode[]; 
           </tr>
         </thead>
         <tbody>
-          {nodes.map(node => (
+          {nodes.map(node => {
+            // A checkout the server cannot prove (404/409) opens neither a scope nor a shortcut.
+            const servable = isServable(node);
+            const blocked = servable ? undefined : unservableTitle(node);
+            const rowClass = [servable ? 'clickable' : 'disabled-row', node.kind === 'worktree' ? 'wt-row' : '',
+              isDormant(node) ? 'dormant-row' : '', selected?.targetId === node.targetId ? 'selected-row' : '']
+              .filter(Boolean).join(' ');
+            return (
             <tr
               key={node.targetId}
-              class={`clickable${node.kind === 'worktree' ? ' wt-row' : ''}${selected?.targetId === node.targetId ? ' selected-row' : ''}`}
+              class={rowClass}
               tabIndex={0}
-              onClick={() => navigate({tab, target: node.targetId})}
+              aria-disabled={servable ? undefined : true}
+              {...(blocked !== undefined ? {title: blocked} : {})}
+              onClick={() => {
+                if (servable) navigate({tab, target: node.targetId});
+              }}
               onKeyDown={event => {
-                if (event.key === 'Enter') navigate({tab, target: node.targetId});
+                if (servable && event.key === 'Enter') navigate({tab, target: node.targetId});
               }}
             >
               <td>
                 <div class="cell-name">
-                  <Dot tone={node.kind === 'worktree' && node.viewState !== 'ready' ? 'amber' : 'green'} />
+                  <Dot tone={dotTone(node)} />
                   <strong>{safeText(node.name)}</strong>
-                  <Badge tone="muted" mono>⎇ {safeText(node.branch)}</Badge>
+                  <Badge tone="muted" mono={!isDormant(node)}>{safeText(branchText(node))}</Badge>
                 </div>
                 <div class="cell-sub mono" title={safeText(node.displayRoot)}>{safeText(node.displayRoot)}</div>
               </td>
@@ -174,26 +199,30 @@ function CheckoutTable({nodes, selected, tab}: {nodes: readonly WorktreeNode[]; 
                 )}
               <td class="cell-action nowrap">
                 <div class="row-links">
-                  <a
-                    class="btn btn-sm"
-                    href={routeHash({tab: 'wiki', target: node.targetId})}
-                    onClick={event => event.stopPropagation()}
-                    onKeyDown={event => event.stopPropagation()}
-                  >
-                    Wiki
-                  </a>
-                  <a
-                    class="btn btn-sm"
-                    href={routeHash({tab: 'recall', target: node.targetId})}
-                    onClick={event => event.stopPropagation()}
-                    onKeyDown={event => event.stopPropagation()}
-                  >
-                    Recall
-                  </a>
+                  {(['wiki', 'recall'] as const).map(target => (
+                    servable
+                      ? (
+                        <a
+                          key={target}
+                          class="btn btn-sm"
+                          href={routeHash({tab: target, target: node.targetId})}
+                          onClick={event => event.stopPropagation()}
+                          onKeyDown={event => event.stopPropagation()}
+                        >
+                          {target === 'wiki' ? 'Wiki' : 'Recall'}
+                        </a>
+                      )
+                      : (
+                        <span key={target} class="btn btn-sm" aria-disabled="true" title={blocked}>
+                          {target === 'wiki' ? 'Wiki' : 'Recall'}
+                        </span>
+                      )
+                  ))}
                 </div>
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -419,8 +448,13 @@ function ErrorList({errors, projectName, totals}: ErrorListProps) {
 }
 
 export function OverviewPage({overview, selected, tab, reconciling, onReconcile}: Props) {
-  const nodes = nodesInScope(overview.projects, selected);
-  const installIds = new Set(nodes.map(node => node.installId));
+  const [showDormant, setShowDormant] = useShowDormant();
+  const scoped = nodesInScope(overview.projects, selected);
+  // The sidebar's rule: active rows, the selected row, and a dormant main heading a shown worktree.
+  const selectedId = selected?.targetId ?? null;
+  const hidden = scoped.length - shownNodes(overview.projects, scoped, false, selectedId).length;
+  const nodes = shownNodes(overview.projects, scoped, showDormant, selectedId);
+  const installIds = new Set(scoped.map(node => node.installId));
   const errors = overview.recentErrors.filter(item => installIds.has(item.installId)
     && (selected?.kind !== 'worktree' || item.targetId === null || item.targetId === selected.targetId));
   const names = new Map(overview.installs.map(install => [install.installId, install.projectName]));
@@ -430,7 +464,7 @@ export function OverviewPage({overview, selected, tab, reconciling, onReconcile}
     .map(install => [install.installId, install.errors24h] as const));
   return (
     <>
-      <Kpis nodes={nodes} overview={overview} />
+      <Kpis scoped={scoped} overview={overview} />
       <section class="card" aria-label="프로젝트와 워크트리 현황">
         <div class="card-header">
           <div>
@@ -439,6 +473,19 @@ export function OverviewPage({overview, selected, tab, reconciling, onReconcile}
           </div>
           <div class="card-actions">
             <span class="card-sub mono">마지막 재스캔 {formatRelative(overview.snapshot.lastReconcileAt)}</span>
+            {hidden > 0
+              ? (
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  aria-pressed={showDormant}
+                  title={DORMANT_TOGGLE_TITLE}
+                  onClick={() => setShowDormant(!showDormant)}
+                >
+                  {dormantToggleLabel(hidden, showDormant)}
+                </button>
+              )
+              : null}
             <button type="button" class="btn btn-sm" onClick={onReconcile} disabled={reconciling}>
               {reconciling ? '재스캔 중…' : '상태 재스캔'}
             </button>

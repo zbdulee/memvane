@@ -42,19 +42,30 @@ def insert_generation(cur, row: dict, origin_key: str | None, now: int) -> int:
 
 class DecisionLedgerMixin:
     def import_v1_ledgers(self, manifest: list[tuple[str, dict]], verify_skips: list[dict],
-                          dedup_skips: list[dict], marker: str) -> dict:
+                          dedup_skips: list[dict], marker: str, *, reviews: list[dict] = (),
+                          extra_markers: tuple[str, ...] = ()) -> dict:
         """Import the 1.x decision ledgers and set ``marker`` in one transaction.
 
         ``manifest`` items are ``(origin_key, row)``; a repeated origin key is ignored, so a
         rerun after a crash before the commit imports the same rows exactly once.
+        ``reviews`` are ``kind: review`` verify payloads queued with the marker; a target
+        that already has an open row keeps that row instead. ``extra_markers`` are set in
+        the same transaction (a cutover that imports the 1.x reviews also closes the
+        one-time review reload).
         """
-        counts = {'generations': 0, 'verifySuppressions': 0, 'dedupSuppressions': 0}
+        counts = {'generations': 0, 'verifySuppressions': 0, 'dedupSuppressions': 0, 'reviews': 0}
         now = time.time_ns()
         with self._write_tx() as cur:
             if cur.execute('SELECT 1 FROM pipeline_meta WHERE key = ?', (marker,)).fetchone():
                 return {**counts, 'alreadyMigrated': True}
             for origin_key, row in manifest:
                 counts['generations'] += insert_generation(cur, row, origin_key, now)
+            for index, payload in enumerate(reviews):
+                if cur.execute("SELECT 1 FROM verify_jobs WHERE target_path = ? AND state IN ('queued', 'claimed')",
+                               (payload['targetPath'],)).fetchone():
+                    continue
+                self._insert_job(cur, 'verify', payload, now + index)
+                counts['reviews'] += 1
             for kind, rows, counter in (('verify', verify_skips, 'verifySuppressions'),
                                         ('dedup', dedup_skips, 'dedupSuppressions')):
                 for item in rows:
@@ -66,7 +77,9 @@ class DecisionLedgerMixin:
                         (kind, item['key'], item['bodyHash'], _dumps(item['row']), now),
                     )
                     counts[counter] += 1
-            cur.execute('INSERT INTO pipeline_meta(key, value) VALUES(?, ?)', (marker, str(time.time())))
+            stamp = str(time.time())
+            for key in (marker, *extra_markers):
+                cur.execute('INSERT OR IGNORE INTO pipeline_meta(key, value) VALUES(?, ?)', (key, stamp))
         return {**counts, 'alreadyMigrated': False}
 
     def append_generation(self, row: dict, *, origin_key: str | None = None) -> int | None:

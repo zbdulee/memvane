@@ -8,6 +8,7 @@
   - `review`: 첫 카드. compile은 `review` 행을 먼저 넣고 `publish_card(expected=None)`로 `generated` 카드를 바로 게시한다(`publish_first_card`). 카드는 검수 전에도 보이고, `recallVerifiedOnly` 기본값 아래에서는 recall에 나오지 않는다. 행만 있고 게시 전에 멈추면 worker는 `card_missing`으로 행을 닫고, claim이 남은 compile job은 다음 claim이 되돌려 다시 compile한다.
   - `replace`: 기존 카드의 교체본. 새 이미지는 행의 `pending_blob`에 있고 `expectedTargetHash`는 교체 대상 카드의 SHA-256이다. 보이는 카드는 통과 게시 전까지 그대로다.
 - 종결 상태: `done`(+`reason`: `verified`·`kept`·`card_missing`·`changed_before_verify`·`changed_during_verify`·`stale_revision`·`stale_job`·`superseded`·`invalid_verdict`·`replacement_invalid`·`not_generated`·`source_folder_excluded`·`unsafe_target_path`), `queued`(식힘·127·timeout·잠금 경합·게시 보류로 보존), `dropped`(`requeue_exhausted`). `done`과 `dropped` 행은 `pending_blob`을 비운다.
+- 검수 행 없이 남은 `generated` 카드(1.x cutover가 `verify-queue.jsonl`을 가져오지 않던 프로젝트)는 `review_queue.py`가 compile과 같은 모양의 `review` 행으로 되살린다. 이 버전의 cutover 때는 `v1_reviews`가 1.x 큐에 남은 행만 고르고(재적재 마커를 함께 쓴다), 출시된 1.1.4~1.1.6 cutover를 이미 지난 프로젝트에서는 한 번 `reload_unreviewed`가 기계 소유·fresh 카드를 고른다(조건과 마커는 [pipeline](../pipeline/README.md)의 마이그레이션·재적재 절). 원문이 바뀐 카드는 넣지 않고 refresh compile이 이어받는다. 생산 엔진을 알 수 없는 카드도 넣지 않는다(다른 엔진으로 검수하지 않는다).
 - compile은 같은 원문 revision의 열린 `replace` 행이 있고 live 카드가 그 행의 기대값과 같으면 다시 추출하지 않는다(`pending_source_review`, `awaiting_pending_verification`).
 
 ## 한 run

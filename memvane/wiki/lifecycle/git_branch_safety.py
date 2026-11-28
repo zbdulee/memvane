@@ -30,15 +30,15 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import time
-import unicodedata
 
 from memvane.kernel.persistent_identity import persistent_identity_equal
+from memvane.wiki.lifecycle.branch_tips import (MAX_PATHSPECS_PER_CALL, BranchTips,
+                                                _nfc, _z_paths)
 from memvane.kernel.paths import (GIT_TIMEOUT_SECONDS, GitUnavailable, _env,
                                   find_dotgit, linked_worktree, repo_facts, run_git)
 
 RUN_BUDGET_SECONDS = 20.0
 MAX_BRANCH_TIPS = 64
-MAX_PATHSPECS_PER_CALL = 200
 # Per-worktree markers of a history operation that rewrites the checkout in
 # several steps. A source can be absent only for the middle of one.
 OPERATION_MARKERS = ('rebase-merge', 'rebase-apply', 'MERGE_HEAD',
@@ -68,15 +68,6 @@ def operation_in_progress(facts: dict) -> str | None:
             if os.path.lexists(Path(base) / marker):
                 return marker
     return None
-
-
-def _nfc(path: str) -> str:
-    # macOS git stores precomposed names; a card may record either form.
-    return unicodedata.normalize('NFC', path)
-
-
-def _z_paths(raw: bytes) -> set[str]:
-    return {_nfc(item.decode('utf-8', 'surrogateescape')) for item in raw.split(b'\0') if item}
 
 
 def _chunks(paths):
@@ -144,7 +135,7 @@ def tracked_states(root, paths, head_oid: str | None, *,
             for path, name in names.items()}
 
 
-class LineageJudge:
+class LineageJudge(BranchTips):
     """Per-run judgement of missing wiki sources against HEAD's lineage.
 
     Rules (``judge`` returns ``(RETIRE|HOLD, reason)``):
@@ -154,8 +145,10 @@ class LineageJudge:
     2. Card tracked in HEAD (C = last HEAD commit touching the card):
        a. source in C's tree, absent from HEAD: deleted in this lineage. Retire.
        b. a source deletion reachable from HEAD at or after C. Retire.
-       c. source on a local branch tip not merged into HEAD. Hold.
-       d. otherwise the source was never tracked and the committed card lost
+       c. source on a local branch tip not merged into HEAD (see below). Hold.
+       d. a source deletion reachable from HEAD before C, and no branch tip
+          owns the source. Retire (``deleted_before_card_commit``).
+       e. otherwise the source was never tracked and the committed card lost
           it in this checkout. Retire.
     3. Card not tracked in HEAD (uncommitted or from another branch):
        a. source on a local branch tip not merged into HEAD, or in the card's
@@ -163,6 +156,8 @@ class LineageJudge:
        b. a source deletion reachable from HEAD. Retire.
        c. otherwise neither the source nor the card was ever committed. Hold:
           nothing proves this checkout, not another one, owned that source.
+
+    Which branch tips own a source (2c/3a) is ``branch_tips.BranchTips``.
 
     Paths outside the repository, more than ``MAX_BRANCH_TIPS`` unmerged
     branch tips (for 2c/3a) and an exhausted git budget all hold.
@@ -180,7 +175,12 @@ class LineageJudge:
                 ['ls-tree', '-r', '--name-only', '-z', self.head]).stdout)
         self._index: dict[str, bool] = {}
         self._tips: list[str] | None = None
-        self._on_tips: dict[str, bool] = {}
+        self._paths: set[str] = set()
+        self._tip_entries: dict[str, dict[str, str | None]] = {}
+        self._touched: set[str] | None = None
+        self._busy: frozenset | None = None
+        self._bases: dict[str, tuple[str, ...]] = {}
+        self._base_entries: dict[tuple[str, str], str | None] = {}
         self._card_commit: dict[tuple[str, bool], str | None] = {}
         self._deletion: dict[str, str | None] = {}
         self._in_commit: dict[tuple[str, str], bool] = {}
@@ -220,21 +220,15 @@ class LineageJudge:
         return _chunks(paths)
 
     def prefetch(self, paths) -> None:
-        """Batch the index and branch-tip lookups for every path of a run."""
-        pending = {path for path in paths if path is not None and path not in self._index}
+        """Batch the index lookups and register every path of a run for the tip lookups."""
+        wanted = {path for path in paths if path is not None}
+        pending = wanted - set(self._index)
         for chunk in self._chunks(pending):
             found = self._index_lookup(chunk)
             self._index.update({path: path in found for path in chunk})
-        tips = self._unmerged_tips()
-        pending = {path for path in paths if path is not None and path not in self._on_tips}
-        if tips is None or not pending:
-            return
-        seen: set[str] = set()
-        for tip in tips:
-            for chunk in self._chunks(pending):
-                seen |= _z_paths(self._git(
-                    ['ls-tree', '-r', '--name-only', '-z', tip, '--', *chunk]).stdout)
-        self._on_tips.update({path: path in seen for path in pending})
+        if not wanted <= self._paths:
+            self._paths |= wanted
+            self._touched = None  # a later lookup covers the new paths too
 
     def _index_lookup(self, paths) -> set[str]:
         """Paths of ``paths`` the index lists now; one call per chunk, no cache."""
@@ -257,13 +251,6 @@ class LineageJudge:
             raw = self._git([*args, 'refs/heads']).stdout.decode().split()
             self._tips = sorted(set(raw))
         return None if len(self._tips) > MAX_BRANCH_TIPS else self._tips
-
-    def _on_other_branch(self, path: str) -> bool:
-        if self._unmerged_tips() is None:
-            return True
-        if path not in self._on_tips:
-            self.prefetch([path])
-        return self._on_tips.get(path, True)
 
     def _last_card_commit(self, card: str, in_head: bool) -> str | None:
         key = (card, in_head)
@@ -322,6 +309,8 @@ class LineageJudge:
                 return RETIRE, 'deleted_in_lineage'
             if self._on_other_branch(src):
                 return HOLD, 'source_on_other_branch'
+            if deletion is not None:
+                return RETIRE, 'deleted_before_card_commit'
             return RETIRE, 'untracked_source_gone'
         if self._on_other_branch(src):
             return HOLD, 'source_on_other_branch'

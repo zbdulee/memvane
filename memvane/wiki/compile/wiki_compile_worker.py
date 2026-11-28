@@ -39,7 +39,7 @@ from memvane.wiki.intake.api import source_record as _source_record
 from memvane.wiki.workspace.api import (queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path,
                                         read_queue, claim_queue,
                                         parse_ts as _parse_ts)
-from memvane.wiki.compile import backfill_work, wiki_compile as wc
+from memvane.wiki.compile import backfill_work, supersession, wiki_compile as wc
 from memvane.wiki.verify import api as wiki_verify
 from memvane.learning.api import card_prompt_budget, emit_card_budget
 from memvane.wiki.card import api as wiki_freshness, types as wiki_markers
@@ -685,6 +685,19 @@ def _reuse_source_revision(root, config, job, source_revision, selected_route, b
     reuse = job.get('partialCompile') is not True and job.get('forceRecompile') is not True
     proof_card = (selected_compiled_revision_card(root, selected_route, source_revision, content_only=True)
                   if reuse else None)
+    tried = reuse and supersession.recorded(root, source_revision)
+    if proof_card is not None:
+        found = supersession.scan(root, selected_route, source_revision)
+        if found is None or ((found['superseded'] or found['refreshable']) and not tried):
+            # A card of this source still cites an older revision and these bytes were
+            # not tried for it yet: one extraction rewrites or retires it (``supersession``).
+            proof_card = None
+    if proof_card is None and tried:
+        # These exact bytes were extracted already and the attempt's outcome is recorded:
+        # another extraction would buy the same answer (a new edit is a new sha256).
+        wiki_selected_laya.recheck(selected_route)
+        cpath.append(bounded_failure('skipped', job, 'supersession_recorded'))
+        return True, False, []
     if proof_card is not None:
         wiki_selected_laya.recheck(selected_route)
         if bound_pending is not None and not wiki_freshness.resolve_pending_refresh(
@@ -704,6 +717,7 @@ def _reuse_source_revision(root, config, job, source_revision, selected_route, b
     if claimed:
         # This source can produce a target the verifier holds. Keep the job until the claim returns.
         return False, True, []
+    supersession.mark_attempt(source_revision)
     return None
 
 
@@ -1112,6 +1126,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         # Persist the complete answer before the first writer can change a card.
         extracted = frozen.prepare(extracted, engine)
         candidates = extracted['candidates']
+    superseding = supersession.Outcomes(root, source_revision, candidates, max_cards)
     candidates = _bounded_candidates(candidates, max_cards, job, cpath)
     failed_compile = False
     refresh_complete = bool(candidates)
@@ -1205,7 +1220,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
                 outcomes.append(result.get("action") if isinstance(result, dict)
                                 and isinstance(result.get("action"), str) else "rejected")
                 continue
-            result = _write_round_candidate(root, candidate, final_reason, frozen, index, original)
+            result = superseding.note(_write_round_candidate(root, candidate, final_reason, frozen, index, original))
             action = result.get("action") if isinstance(result, dict) else None
             outcomes.append("written" if action in ("created", "updated")
                             else action if isinstance(action, str) else "rejected")
@@ -1270,6 +1285,12 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         # before the retry, and the revision guard must not read that as done.
         job["partialCompile"] = True
         return False, True, verify_targets
+    supersession.record_after(root, job, source_revision, selected_route, cpath, superseding, source_truncated)
+    return _finish_refresh(root, refresh_complete, bound_pending, source_revision, verify_targets)
+
+
+def _finish_refresh(root, refresh_complete, bound_pending, source_revision, verify_targets):
+    """The finished job's result; a complete refresh first resolves its pending event."""
     if refresh_complete and bound_pending is not None:
         if not wiki_freshness.resolve_pending_refresh(
             root, bound_pending, source_revision, [source_revision],
@@ -1388,7 +1409,12 @@ _NOT_AN_ATTEMPT = frozenset(('initial_backfill_already_settled', 'initial_backfi
 _SETTLING = frozenset(('not_refreshed', 'verify_inconclusive_suppressed', 'source_unreadable', 'invalid_source_scope',
                        'unsafe_source_path', 'missing_source_path', 'missing_extractor', 'missing_candidates',
                        'extractor_unavailable', 'writer_rejected', 'unknown_host_exhausted',
-                       'source_folder_excluded', 'already_compiled_revision', 'awaiting_pending_verification'))
+                       'source_folder_excluded', 'already_compiled_revision', 'awaiting_pending_verification',
+                       'supersession_recorded'))
+
+
+# A dropped job whose paid answer cannot be used: the same bytes would fail the same way.
+_UNUSABLE_ANSWER = frozenset(('invalid_extractor_json', 'missing_candidates'))
 
 
 def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, *,
@@ -1404,6 +1430,7 @@ def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, 
     attempt, extractor call included, on every pass.
     """
     token = _LAST_REASON.set(None)
+    attempt = supersession._ATTEMPT.set(None)
     previous_revision = job.get('_processedContentRevision')
     try:
         result = process_job(root, config, compile_cfg, job, checkout=checkout)
@@ -1411,7 +1438,10 @@ def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, 
             # A deferral before the stable read still owes the previous partial extraction.
             job.setdefault('_processedContentRevision', previous_revision)
         reason = _LAST_REASON.get()
+        if result[0] and not result[1] and reason in _UNUSABLE_ANSWER:
+            supersession.record_failure(root, reason, candidate_log(root), job)
     finally:
+        supersession._ATTEMPT.reset(attempt)
         _LAST_REASON.reset(token)
     if result[0] and not result[1] and reason not in _NOT_AN_ATTEMPT:
         raw_source = job.get("source")
@@ -1505,6 +1535,8 @@ def _run_verify_pass(
     """
     try:
         wiki_verify.run(root, config, compile_cfg, produced_targets=produced_targets or [])
+        # After the reviews: superseded cards retire once their source's rewritten cards passed.
+        supersession.settle(root)
     except Exception as exc:
         # Exception class and failing frame only; the message may name paths.
         from memvane.diagnostics import api as event_log
@@ -1656,6 +1688,7 @@ def _main():
             if args.json:
                 print(json.dumps({'processed': 0, 'remaining': 0, 'migration': migrated}, ensure_ascii=False))
             return 0
+        reload_unreviewed_cards(root, config)
         return _main_locked(args, root, config, compile_cfg, queue, selected_route)
     finally:
         os.close(run_lock)
@@ -1676,12 +1709,29 @@ def migrate_v1_state(root: Path, config: dict):
         if pipeline.v1_migration_marked(root) and not pipeline.needs_v1_migration(root, wiki_root=wiki_root):
             return True
         with cp.card_write_lock(root), cp.mutation_lock(root):
-            counts = pipeline.migrate_from_v1(root, wiki_root=wiki_root)
+            counts = pipeline.migrate_from_v1(root, wiki_root=wiki_root,
+                                              reviews=wiki_verify.v1_reviews(root, config))
     except (OSError, ValueError, sqlite3.Error) as exc:
         return 'failed:' + type(exc).__name__
     # Log row only (working-rules 3): the marker, not this line, records the cutover.
     pipeline.audit_log(root, 'migration').append(counts)
     return True
+
+
+def reload_unreviewed_cards(root: Path, config: dict):
+    """The one-time review reload right after the cutover check (verify ``review_queue``).
+
+    A failure leaves the marker unset, so a later pass reloads; compile continues either way.
+    """
+    from memvane.wiki.pipeline import api as pipeline
+    try:
+        counts = wiki_verify.reload_unreviewed(root, config)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        counts = {'reviewReloadFailed': type(exc).__name__}
+    if counts is not None:
+        # Log row only (working-rules 3): the marker, not this line, records the reload.
+        pipeline.audit_log(root, 'migration').append({'reviewReload': counts})
+    return counts
 
 
 def _retention_pass(root: Path, config: dict, selected_route) -> dict:

@@ -43,7 +43,7 @@ SSE 연결이 0개이고 마지막 연결 종료 후 `reconnectGraceSeconds`가 
 | `GET /api/installs/<id>/summary` | 세션 | SLO 줄, summary 줄, 위키 원장 대기 수 |
 | `GET /api/installs/<id>/recalls` | 세션 | `recall`·`recall.edit` 타임라인(`hours`·`limit`·`outcome`·`host`·`target`) |
 | `GET /api/installs/<id>/errors?details=0\|1` | 세션 | 오류·거절 행, `details=1`일 때만 진단 본문 재조립 |
-| `GET /api/targets/<targetId>/wiki` | 세션 | 위키 카드 목록(`status`·`q`·`limit`)과 원장 요약 |
+| `GET /api/targets/<targetId>/wiki` | 세션 | 위키 카드 목록(`status`·`q`·`limit`)과 원장 요약. 카드마다 `wiki.card.check_card`의 `stale` 판정과 `staleReason`(`source_deleted`: 원문 파일 없음, `source_changed`: 해시 불일치)을 준다. `unknown` 판정은 stale이 아니다 |
 | `GET /api/targets/<targetId>/wiki/card?rel=` | 세션 | 카드 메타데이터·auto/수동 블록·연관 카드·근거 위치 |
 | `GET /api/targets/<targetId>/wiki/source?rel=&highlights=` | 세션 | 체크아웃 경계(`O_NOFOLLOW`) 내 원문 파일과 강조 범위 |
 | `POST /api/targets/<targetId>/query-playground` | 세션 | 부작용 없는 dry run(`prompt`·`useSemantic`·`useSelector`) 4단계 비교 |
@@ -58,7 +58,9 @@ SSE 연결이 0개이고 마지막 연결 종료 후 `reconnectGraceSeconds`가 
 
 ## 조회 경계
 
-`read_adapters.py`는 쓰기·잠금·프로세스 기동을 하지 않는다. `targetId`는 main checkout이 `<installId>`, 연결 worktree가 `<installId>:<target_root SHA-256 앞 12 hex>`다. 요청마다 레지스트리 행으로 후보 경로를 찾고 `journal.api.select_route`로 route 상태·`installId`·`scopeId`를 다시 증명한 뒤에만 그 설치의 파일을 읽는다. Overview는 git 프로세스를 실행하지 않는다. main checkout은 연결 worktree 탐색 없이 증명하고, worktree 행은 레지스트리 행으로 나열하며, 브랜치명은 `<gitdir>/HEAD`를 `O_NOFOLLOW`로 4 KiB까지 읽어 `<name>`·`detached@<short7>`·`non-git`·`unknown`으로 표시한다. 이벤트 행은 `diagnostics.api`의 가시성 규칙(`diagnostic.part`·저장된 `prompt.text` 제외)을 거친다.
+`read_adapters.py`는 쓰기·잠금·프로세스 기동을 하지 않는다. `targetId`는 main checkout이 `<installId>`, 연결 worktree가 `<installId>:<target_root SHA-256 앞 12 hex>`다. 요청마다 레지스트리 행으로 후보 경로를 찾고 `journal.api.select_route`로 route 상태·`installId`·`scopeId`를 다시 증명한 뒤에만 그 설치의 파일을 읽는다. Overview는 git 프로세스를 실행하지 않는다. main checkout은 연결 worktree 탐색 없이 증명하고, worktree 행은 레지스트리 행으로 나열하며, 브랜치명은 체크아웃 루트에서 위로 올라가며 처음 만난 `.git`의 `<gitdir>/HEAD`를 `O_NOFOLLOW`로 4 KiB까지 읽어 `<name>`·`detached@<short7>`·`non-git`·`unknown`으로 표시한다. 탐색은 git의 기본 탐색처럼 파일 시스템 경계에서 멈추고, HOME 아래 루트는 HOME 위로 올라가지 않는다(코어 `checkout_view._dotgit`은 `/`까지 올라가지만 경계 너머에서는 `git rev-parse`가 실패해 브랜치를 얻지 못한다). 저장소 하위 폴더 프로젝트는 그 저장소의 브랜치를 보인다. `non-git`은 그 범위에 `.git`이 없다는 뜻이다. 브랜치와 카드 수는 루트 디렉터리가 있는 `active` 행만 읽고, 그 밖의 행은 `unknown`이며 프런트가 상태 라벨로 바꿔 보인다.
+
+체크아웃 노드(main·worktree)의 `viewState`는 레지스트리 status·reason과 route 증명으로 정한다. `ready`(active, 증명됨), `proof_failed`(루트는 있으나 route 재증명 실패), `unreadable`(active인데 루트를 관측할 수 없음, 예: 권한 거부), `path_missing`(`missing_pending`, `detached/missing`, 루트가 사라진 active 행), `released`(`detached/released`·`detached/withdrawn`), `moved`(`detached/root_moved`), `conflict`, `unknown`(그 밖의 status·reason 조합)이다. `stateReason`은 `proof_failed`의 이유 코드, `unreadable`의 errno 이름, `unknown`의 `<status>/<reason>`을 담는다. main은 Overview가 실시간으로 증명하고, 증명을 건너뛴 행(`max_installs` 초과)은 레지스트리의 `proof`(`unproved:<code>`)를 쓴다. `view_preparing`은 프런트 계약에 있으나 레지스트리만 읽는 Overview는 내지 않는다. 프런트는 `path_missing`·`released`·`moved`·`conflict` 행을 기본으로 숨기고 "해제·없는 체크아웃 n개 보기" 토글(사이드바·Overview 공용, 브라우저 localStorage에 저장)로 펼친다. 선택된 행과, 보이는 worktree가 남은 숨김 main(그룹 머리)은 늘 보인다. `ready`·`view_preparing`이 아닌 행은 서버 target 증명에 실패하므로 선택과 Wiki·Recall 바로 가기를 막고 툴팁에 상태를 적는다. 이벤트 행은 `diagnostics.api`의 가시성 규칙(`diagnostic.part`·저장된 `prompt.text` 제외)을 거친다.
 
 ## 명령
 

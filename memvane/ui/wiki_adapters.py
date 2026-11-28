@@ -243,15 +243,42 @@ def _string_list(value):
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
-def _is_stale(revisions, root, config):
+_INVALID_PROVENANCE = ('invalid_card', 'missing_source_revisions', 'invalid_source_revision')
+
+
+def _stale_reason(revisions, root, config):
+    """``source_deleted``, ``source_changed`` or None, one ``wiki.card.check_card`` per source.
+
+    Same verdict as one ``check_card`` over the whole card: the card is stale
+    when its first non-fresh source is stale, and ``unknown`` freshness or an
+    invalid provenance entry is not shown as stale. One pass also finds a
+    deleted source after the first changed one; each source is hashed at most
+    once and a deleted source is not hashed.
+    """
     from memvane.wiki.card import api as card
     if not revisions:
-        return False
+        return None
+    changed = False
     try:
-        state = card.check_card({'sourceRevisions': revisions}, root, card.allow_roots_of(config))
+        # ``check_card`` refuses the whole card before reading any source when one entry is invalid.
+        if any(card.normalize_source_revision(revision) is None for revision in revisions):
+            return None
+        allow = card.allow_roots_of(config)
+        for revision in revisions:
+            state = card.check_card({'sourceRevisions': [revision]}, root, allow)
+            verdict = state.get('state') if isinstance(state, dict) else None
+            reason = state.get('reason') if isinstance(state, dict) else None
+            if reason in _INVALID_PROVENANCE:
+                return None
+            if verdict == 'stale':
+                if reason == 'missing':
+                    return 'source_deleted'
+                changed = True
+            elif verdict != 'fresh' and not changed:
+                return None
     except Exception:  # noqa: BLE001 - an unknown freshness is not shown as stale
-        return False
-    return isinstance(state, dict) and state.get('state') == 'stale'
+        return None
+    return 'source_changed' if changed else None
 
 
 def _is_denied_rel(rel, parts=None):
@@ -378,6 +405,7 @@ def _card_meta(rel, path, root, *, config, skip, publishing):
     revisions = _revisions(parsed['block'])
     paths = [item['path'] for item in revisions] + [span['path'] for span in _spans(parsed['block'])]
     tokens = estimate_tokens(parsed['body'])
+    stale_reason = _stale_reason(revisions, root, config)
     title = parsed['scalars'].get('title')
     return {
         'rel': rel,
@@ -385,7 +413,8 @@ def _card_meta(rel, path, root, *, config, skip, publishing):
         'status': status,
         'tokens': tokens,
         'overBudget': tokens > TOKEN_BUDGET or len(raw) > CARD_LIMIT,
-        'stale': _is_stale(revisions, root, config),
+        'stale': stale_reason is not None,
+        'staleReason': stale_reason,
         'hidden': _is_hidden(paths, skip),
         'updatedAt': _iso(mtime),
         '_pending': status == 'generated' or rel in publishing,
