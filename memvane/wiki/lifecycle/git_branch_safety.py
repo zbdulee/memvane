@@ -79,6 +79,16 @@ def _z_paths(raw: bytes) -> set[str]:
     return {_nfc(item.decode('utf-8', 'surrogateescape')) for item in raw.split(b'\0') if item}
 
 
+def _z_entries(raw: bytes) -> dict[str, str]:
+    """``{path: '<mode> <type> <object>'}`` from ``git ls-tree -z`` (no ``--name-only``)."""
+    entries: dict[str, str] = {}
+    for item in raw.split(b'\0'):
+        meta, sep, name = item.partition(b'\t')
+        if sep and name:
+            entries[_nfc(name.decode('utf-8', 'surrogateescape'))] = meta.decode('ascii', 'replace')
+    return entries
+
+
 def _chunks(paths):
     ordered = sorted(paths)
     for start in range(0, len(ordered), MAX_PATHSPECS_PER_CALL):
@@ -154,7 +164,7 @@ class LineageJudge:
     2. Card tracked in HEAD (C = last HEAD commit touching the card):
        a. source in C's tree, absent from HEAD: deleted in this lineage. Retire.
        b. a source deletion reachable from HEAD at or after C. Retire.
-       c. source on a local branch tip not merged into HEAD. Hold.
+       c. source on a local branch tip not merged into HEAD (see below). Hold.
        d. otherwise the source was never tracked and the committed card lost
           it in this checkout. Retire.
     3. Card not tracked in HEAD (uncommitted or from another branch):
@@ -163,6 +173,12 @@ class LineageJudge:
        b. a source deletion reachable from HEAD. Retire.
        c. otherwise neither the source nor the card was ever committed. Hold:
           nothing proves this checkout, not another one, owned that source.
+
+    A branch tip counts for 2c/3a unless HEAD's lineage has a deletion commit
+    for the path and the tip holds the path exactly as every merge base of the
+    tip and HEAD does (same mode, type and blob): such a tip is a snapshot from
+    before the deletion, and merging it keeps the deletion. A tip that added
+    the path (no merge base has it) or changed it still holds.
 
     Paths outside the repository, more than ``MAX_BRANCH_TIPS`` unmerged
     branch tips (for 2c/3a) and an exhausted git budget all hold.
@@ -181,6 +197,9 @@ class LineageJudge:
         self._index: dict[str, bool] = {}
         self._tips: list[str] | None = None
         self._on_tips: dict[str, bool] = {}
+        self._tip_entries: dict[str, dict[str, str]] = {}
+        self._bases: dict[str, tuple[str, ...]] = {}
+        self._base_entries: dict[tuple[str, str], str | None] = {}
         self._card_commit: dict[tuple[str, bool], str | None] = {}
         self._deletion: dict[str, str | None] = {}
         self._in_commit: dict[tuple[str, str], bool] = {}
@@ -232,8 +251,10 @@ class LineageJudge:
         seen: set[str] = set()
         for tip in tips:
             for chunk in self._chunks(pending):
-                seen |= _z_paths(self._git(
-                    ['ls-tree', '-r', '--name-only', '-z', tip, '--', *chunk]).stdout)
+                found = _z_entries(self._git(['ls-tree', '-r', '-z', tip, '--', *chunk]).stdout)
+                if found:
+                    self._tip_entries.setdefault(tip, {}).update(found)
+                seen |= set(found)
         self._on_tips.update({path: path in seen for path in pending})
 
     def _index_lookup(self, paths) -> set[str]:
@@ -259,11 +280,40 @@ class LineageJudge:
         return None if len(self._tips) > MAX_BRANCH_TIPS else self._tips
 
     def _on_other_branch(self, path: str) -> bool:
-        if self._unmerged_tips() is None:
+        """An unmerged branch tip that may still own ``path`` (rules 2c/3a)."""
+        tips = self._unmerged_tips()
+        if tips is None:
             return True
         if path not in self._on_tips:
             self.prefetch([path])
-        return self._on_tips.get(path, True)
+        if not self._on_tips.get(path, True):
+            return False
+        holding = [tip for tip in tips if path in self._tip_entries.get(tip, {})]
+        if not holding or self._deletion_commit(path) is None:
+            return True
+        return not all(self._unchanged_since_base(tip, path) for tip in holding)
+
+    def _unchanged_since_base(self, tip: str, path: str) -> bool:
+        """``tip`` holds ``path`` exactly as every merge base of ``tip`` and HEAD does."""
+        bases = self._merge_bases(tip)
+        entry = self._tip_entries[tip][path]
+        return bool(bases) and all(self._base_entry(base, tip, path) == entry for base in bases)
+
+    def _merge_bases(self, tip: str) -> tuple[str, ...]:
+        if tip not in self._bases:
+            out = self._git(['merge-base', '--all', tip, self.head], ok=(0, 1))
+            self._bases[tip] = tuple(out.stdout.decode().split()) if out.returncode == 0 else ()
+        return self._bases[tip]
+
+    def _base_entry(self, base: str, tip: str, path: str) -> str | None:
+        """``path``'s entry in ``base``; one lookup covers every path ``tip`` holds."""
+        if (base, path) not in self._base_entries:
+            wanted = {item for item in self._tip_entries[tip]
+                      if (base, item) not in self._base_entries}
+            for chunk in self._chunks(wanted):
+                found = _z_entries(self._git(['ls-tree', '-r', '-z', base, '--', *chunk]).stdout)
+                self._base_entries.update({(base, item): found.get(item) for item in chunk})
+        return self._base_entries[(base, path)]
 
     def _last_card_commit(self, card: str, in_head: bool) -> str | None:
         key = (card, in_head)
