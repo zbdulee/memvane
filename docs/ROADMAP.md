@@ -49,7 +49,7 @@
 | 1.1.2 | 구조적 식별자 단독 어휘 검색, resident 증명 EIO 훅 보호·냉기동·반복 adopt 진단 정리, discovery lock 경합 grant 건너뛰기와 번들 조회 재시도, 예약 실패 롤백·고아 hold 회수·hold 스캔 상한(첫 카드 게시 정체 복구), 출시 smoke 도구와 shim 예열 보강 |
 | 1.1.4 | 위키 파이프라인 v2(`stateFormat` 2, `~/.local/state/memvane/v2` 0700 생성·넓은 권한 복구), 훅 경량화(`edit-inbox.jsonl` 단일 append·discovery 중복 스킵), 단일 SQLite 원장(`.memvane/compile/wiki-pipeline.sqlite3`·큐/검수/게시/억제/쿨다운/dedup/생성 이력/보존 정리), 단일 교환 게시·행 단위 복구·교환 미지원 파일시스템 보호, tombstone 제거와 dedup 이름표 이전, 1.x 일회성 마이그레이션, `entry/run.py wiki-ledger` 조회 CLI |
 | 1.1.5 | 학습·색인 경합 및 sync owner 점유 계측, 연결 worktree view 대기 분리, recall 지시문 문장 필터링(표지어·코드 펜스 보호), ingest delta와 `source_fingerprints` 재사용, `checkout_view.py`·`shared.py` 분해, 학습 안정화 4종(이중 고장 되돌리기·손상 기본 모델·재시도 계수 영속과 진척·실측 trainer peak 승인과 유휴 모델 해제) |
-| 1.1.6 | 로컬 웹 대시보드(UI) Phase 1(좌측 프로젝트·worktree 트리, Overview, Wiki Browser·원문 대조·SafeMarkdown, Recall 인스펙터·무오염 4단계 Query Playground, Runtime·Learning 모니터, opt-in SessionStart 자동 오픈, `memvane:ui` 스킬 및 온디맨드 보안 싱글톤 서버, `diagnostics`·`recall`·`learning`·`resident`·`wiki/pipeline` read-only 파사드) |
+| 1.1.6 | 로컬 웹 대시보드(UI) Phase 1(좌측 프로젝트·worktree 트리, Overview, Wiki Browser·원문 대조·SafeMarkdown, Recall 인스펙터·무오염 4단계 Query Playground, Runtime·Learning 모니터, opt-in SessionStart 자동 오픈, `memvane:ui` 스킬 및 온디맨드 보안 싱글톤 서버, `diagnostics`·`recall`·`learning`·`resident`·`wiki/pipeline` read-only 파사드), 대시보드 체크아웃 상태 표시(해제·경로 없음 숨김, 상위 `.git` 브랜치)·원문 삭제/변경 배지·디스크 집계 분리, 원문을 고치지 않은 옛 브랜치를 보유 근거에서 뺀 원문 삭제 카드 은퇴, 옛 revision 카드 재추출과 `superseded_by_revision` 은퇴, 검수 행 없는 generated 카드의 cutover 이관과 1회 재적재 |
 
 ## 한눈에
 
