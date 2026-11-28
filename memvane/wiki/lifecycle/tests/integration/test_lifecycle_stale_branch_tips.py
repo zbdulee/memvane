@@ -51,6 +51,13 @@ class StaleBranchTips(FixtureCase):
         self.commit('work on ' + name, marker, *paths)
         self.project.git('checkout', '-q', 'main')
 
+    def snapshot_tips(self, names, fork):
+        """One unmerged branch per name, each a distinct empty commit on ``fork``."""
+        tree = self.project.git('rev-parse', fork + '^{tree}').strip()
+        for name in names:
+            oid = self.project.git('commit-tree', tree, '-p', fork, '-m', 'tip ' + name).strip()
+            self.project.git('update-ref', 'refs/heads/' + name, oid)
+
     def delete_source(self, rel=SOURCE):
         self.project.git('rm', '-q', '--', rel)
         self.project.git('commit', '-qm', 'delete ' + rel)
@@ -128,6 +135,8 @@ class StaleBranchTips(FixtureCase):
 
     def test_d2_stale_snapshot_tip_no_longer_holds_committed_card(self):
         card = self.d2_history()
+        judge = gbs.LineageJudge.open(self.root)
+        self.assertEqual(judge.judge(SOURCE, card), (gbs.RETIRE, 'deleted_before_card_commit'))
         result = self.run_selected()
         self.assertFalse(card.exists())
         self.assertEqual((result['retired'], result['held']), (1, 0))
@@ -200,6 +209,49 @@ class StaleBranchTips(FixtureCase):
         self.assertEqual((result['retired'], result['held']), (2, 0))
         self.assertEqual(len(self.archives()), 2)
 
+    def test_d7_held_bundle_logs_once_per_change_of_blocking_cards(self):
+        source = self.commit_source()
+        self.branch('old', source_text='edited on the old branch\n')
+        early = [self.create_card(f'gone-{index}.md', source) for index in range(2)]
+        for card in early:
+            self.commit_card(card)
+        blocker = self.create_card('gone-late.md', source)
+        second = self.create_card('gone-later.md', source)
+        second_text = second.read_text(encoding='utf-8')
+        second.unlink()  # cites the same source; joins the bundle later
+        self.delete_source()
+        self.commit_card(blocker)
+        state = self.state_root()
+
+        def run():
+            with patch.object(workspace, 'selected', return_value=self.bound(state)), \
+                 patch.object(workspace, 'recheck'), \
+                 patch.object(workspace, 'request_sync', return_value=True), \
+                 patch.object(workspace, 'request_compile'):
+                return lifecycle.run(str(self.root))
+        # Two retirable cards reach the held bundle in one run; a second run repeats it.
+        for _ in range(2):
+            self.assertEqual(run()['held'], 3)
+        self.assertEqual([row['path'] for row in self.wiki_events(state, 'held')],
+                         ['concepts/gone-late.md'])
+        # A second blocking card changes the set: both are logged once.
+        second.write_text(second_text, encoding='utf-8')
+        self.commit_card(second)
+        for _ in range(2):
+            self.assertEqual(run()['held'], 4)
+        self.assertEqual(sorted(row['path'] for row in self.wiki_events(state, 'held')),
+                         ['concepts/gone-late.md', 'concepts/gone-late.md', 'concepts/gone-later.md'])
+        # The edited branch goes away: every card retires and nothing more is logged.
+        # Live cards keep four retirements under the mass-deletion guard.
+        live = self.project.write_note('docs/live.md', 'live\n')
+        for index in range(13):
+            self.create_card(f'live-{index}.md', live)
+        self.project.git('branch', '-D', 'old')
+        result = run()
+        self.assertEqual((result['retired'], result['held']), (4, 0))
+        self.assertEqual(len(self.wiki_events(state, 'held')), 3)
+        self.assertEqual(len(self.wiki_events(state, 'retired')), 4)
+
     def test_d7_bundle_with_edited_tip_holds_and_names_the_blocking_card(self):
         source = self.commit_source()
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
@@ -246,8 +298,84 @@ class StaleBranchTips(FixtureCase):
         self.assertEqual((result['retired'], result['held']), (1, 0))
         self.assertEqual(len(self.archives()), 1)
 
+    # -- other tip shapes ---------------------------------------------------------
+    def test_d13_stale_tip_checked_out_in_another_worktree_holds(self):
+        card = self.d2_history()
+        other = self.root.with_name(self.root.name + '-old')
+        self.project.git('worktree', 'add', '-q', str(other), 'old')
+        # That checkout may hold uncommitted edits of the source.
+        (other / SOURCE).write_text('uncommitted edit in the other worktree\n', encoding='utf-8')
+        report = lifecycle.dry_run(str(self.root))
+        self.assertEqual((report['held'], report['guard']['wouldDelete']), (1, 0))
+        self.assertEqual(report['heldReasons'], {'source_on_other_branch': 1})
+        self.project.git('worktree', 'remove', '--force', str(other))
+        result = self.run_selected()
+        self.assertFalse(card.exists())
+        self.assertEqual((result['retired'], result['held']), (1, 0))
+
+    def criss_cross(self, *, edit_side=False, touch_and_revert=False):
+        """main and ``tip`` merged each other's first commits: two merge bases."""
+        source = self.commit_source()
+        for name in ('side-a', 'side-b'):
+            self.project.git('checkout', '-qb', name, 'main')
+            paths = ['notes/' + name + '.txt']
+            self.project.write_note(paths[0], name + '\n')
+            if edit_side and name == 'side-b':
+                self.project.write_note(SOURCE, 'edited on side b\n')
+                paths.append(SOURCE)
+            self.commit(name, *paths)
+        self.project.git('checkout', '-qb', 'tip', 'side-b')
+        self.project.git('merge', '-q', '--no-ff', '--no-edit', 'side-a')
+        self.project.git('checkout', '-q', 'main')
+        self.project.git('merge', '-q', '--no-ff', '--no-edit', 'side-a')
+        self.project.git('merge', '-q', '--no-ff', '--no-edit', 'side-b')
+        self.project.git('branch', '-D', 'side-a', 'side-b')
+        if touch_and_revert:
+            self.project.git('checkout', '-q', 'tip')
+            text = (self.root / SOURCE).read_text(encoding='utf-8')
+            self.project.write_note(SOURCE, 'temporary\n')
+            self.commit('touch', SOURCE)
+            self.project.write_note(SOURCE, text)
+            self.commit('revert', SOURCE)
+            self.project.git('checkout', '-q', 'main')
+        bases = self.project.git('merge-base', '--all', 'tip', 'main').split()
+        self.assertEqual(len(bases), 2)
+        card = self.create_card('gone.md', source)
+        self.delete_source()
+        self.commit_card(card)
+        return card
+
+    def test_criss_cross_tip_that_restored_the_source_retires(self):
+        card = self.criss_cross(touch_and_revert=True)
+        judge = gbs.LineageJudge.open(self.root)
+        self.assertEqual(judge.judge(SOURCE, card), (gbs.RETIRE, 'deleted_before_card_commit'))
+        self.assertEqual(len(judge._bases), 1)  # the precise per-tip path ran
+        result = self.run_selected()
+        self.assertEqual((result['retired'], result['held']), (1, 0))
+
+    def test_criss_cross_tip_matching_only_one_merge_base_holds(self):
+        card = self.criss_cross(edit_side=True)
+        result = self.run_selected()
+        self.assertTrue(card.exists())
+        self.assertEqual((result['retired'], result['held']), (0, 1))
+
+    def test_tip_that_only_changed_the_mode_holds(self):
+        source = self.commit_source()
+        self.project.git('checkout', '-qb', 'old')
+        source.chmod(0o755)
+        self.project.git('update-index', '--chmod=+x', '--', SOURCE)
+        self.project.git('commit', '-qm', 'mode only')
+        self.project.git('checkout', '-q', 'main')
+        self.assertEqual(self.project.git('diff', '--name-only', 'main', 'old').split(), [SOURCE])
+        card = self.create_card('gone.md', source)
+        self.delete_source()
+        self.commit_card(card)
+        result = self.run_selected()
+        self.assertTrue(card.exists())
+        self.assertEqual((result['retired'], result['held']), (0, 1))
+
     # -- bounds ------------------------------------------------------------------
-    def test_stale_tip_lookups_are_cached_per_run(self):
+    def test_stale_tips_are_proved_with_one_log_call_per_run(self):
         source = self.commit_source()
         self.branch('old-a')
         self.project.write_note('notes/main.txt', 'main\n')
@@ -266,14 +394,24 @@ class StaleBranchTips(FixtureCase):
             calls.append(tuple(args))
             return real(args, *rest, **kwargs)
         with patch.object(gbs, 'run_git', side_effect=counting):
-            verdicts = [judge.judge(SOURCE, card)[0] for card in cards]
-        self.assertEqual(verdicts, [gbs.RETIRE] * 3)
-        self.assertEqual(sum(1 for args in calls if args[:2] == ('merge-base', '--all')), 2)
-        self.assertEqual(sum(1 for args in calls if args[:3] == ('ls-tree', '-r', '-z')), 2)
+            verdicts = [judge.judge(SOURCE, card) for card in cards]
+        self.assertEqual(verdicts, [(gbs.RETIRE, 'deleted_before_card_commit')] * 3)
+        self.assertEqual(sum(1 for args in calls if args[:2] == ('log', '--full-history')), 1)
+        self.assertEqual(sum(1 for args in calls if args[:2] == ('worktree', 'list')), 1)
+        self.assertEqual(sum(1 for args in calls if args[0] == 'for-each-ref'), 1)
+        self.assertEqual(sum(1 for args in calls if args[:2] == ('merge-base', '--all')), 0)
+        self.assertEqual(sum(1 for args in calls if args[:3] == ('ls-tree', '-r', '-z')), 0)
 
-    def test_too_many_unmerged_tips_still_holds(self):
-        card = self.d2_history()
-        with patch.object(gbs, 'MAX_BRANCH_TIPS', 0):
-            result = self.run_selected()
-        self.assertTrue(card.exists())
-        self.assertEqual((result['retired'], result['held']), (0, 1))
+    def test_branch_tip_bound_is_exact_at_max_branch_tips(self):
+        source = self.commit_source()
+        fork = self.project.git('rev-parse', 'HEAD').strip()
+        self.snapshot_tips([f'snap-{index:03d}' for index in range(gbs.MAX_BRANCH_TIPS)], fork)
+        card = self.create_card('gone.md', source)
+        self.delete_source()
+        self.commit_card(card)
+        report = lifecycle.dry_run(str(self.root))
+        self.assertEqual((report['held'], report['guard']['wouldDelete']), (0, 1))
+        self.snapshot_tips(['snap-extra'], fork)  # one more unmerged tip than the bound
+        report = lifecycle.dry_run(str(self.root))
+        self.assertEqual((report['held'], report['guard']['wouldDelete']), (1, 0))
+        self.assertEqual(report['heldReasons'], {'source_on_other_branch': 1})
