@@ -4,11 +4,23 @@
 import type {
   ApiErrorBody,
   AuthExchangeResponse,
+  DryRunRecallResponse,
   ErrorsResponse,
+  HostName,
   InstallId,
   OverviewResponse,
+  RecallOutcome,
+  RecallsResponse,
+  RuntimeResponse,
   SessionMeta,
+  TargetId,
+  UiPreferences,
+  WikiCardDetail,
+  WikiListFilter,
+  WikiListResponse,
+  WikiSourceResponse,
 } from './types';
+import type {LearningView} from '../pages/RuntimePage';
 
 export const UI_HEADER = 'X-MemVane-UI';
 
@@ -66,11 +78,25 @@ function postJson<T>(path: string, payload: unknown): Promise<T> {
   });
 }
 
+function putJson<T>(path: string, payload: unknown): Promise<T> {
+  return requestJson<T>(path, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+}
+
 const INSTALL_ID = /^[0-9a-f]{32}$/;
+const TARGET_ID = /^[0-9a-f]{32}(:[0-9a-f]{12})?$/;
 
 function installPath(installId: InstallId): string {
   if (!INSTALL_ID.test(installId)) throw new Error('invalid installId');
   return `/api/installs/${installId}`;
+}
+
+function targetPath(targetId: TargetId): string {
+  if (!TARGET_ID.test(targetId)) throw new Error('invalid targetId');
+  return `/api/targets/${encodeURIComponent(targetId)}`;
 }
 
 // ---------------------------------------------------------------- one-time code exchange
@@ -143,4 +169,71 @@ export function reconcileOverview(): Promise<OverviewResponse> {
 export function getInstallErrors(installId: InstallId, opts: {details: boolean; hours?: number}): Promise<ErrorsResponse> {
   const query = new URLSearchParams({hours: String(opts.hours ?? 24), details: opts.details ? '1' : '0'});
   return requestJson<ErrorsResponse>(`${installPath(installId)}/errors?${query.toString()}`);
+}
+
+export function getInstallRecalls(query: {
+  installId: InstallId;
+  hours: number;
+  outcome: RecallOutcome | null;
+  host: HostName | null;
+  target: TargetId | null;
+}): Promise<RecallsResponse> {
+  const params = new URLSearchParams({hours: String(query.hours)});
+  if (query.outcome !== null) params.set('outcome', query.outcome);
+  if (query.host !== null) params.set('host', query.host);
+  if (query.target !== null) params.set('target', query.target);
+  return requestJson<RecallsResponse>(`${installPath(query.installId)}/recalls?${params.toString()}`);
+}
+
+export function getWikiList(
+  targetId: TargetId,
+  query: {status?: WikiListFilter; q?: string; limit?: number},
+): Promise<WikiListResponse> {
+  const params = new URLSearchParams();
+  if (query.status !== undefined) params.set('status', query.status);
+  if (query.q !== undefined && query.q !== '') params.set('q', query.q);
+  if (query.limit !== undefined) params.set('limit', String(query.limit));
+  const qs = params.toString();
+  return requestJson<WikiListResponse>(`${targetPath(targetId)}/wiki${qs === '' ? '' : `?${qs}`}`);
+}
+
+export function getWikiCard(targetId: TargetId, rel: string): Promise<WikiCardDetail> {
+  const params = new URLSearchParams({rel});
+  return requestJson<WikiCardDetail>(`${targetPath(targetId)}/wiki/card?${params.toString()}`);
+}
+
+export function getWikiSource(
+  targetId: TargetId,
+  rel: string,
+  highlights: readonly {startLine: number; endLine: number}[],
+): Promise<WikiSourceResponse> {
+  const params = new URLSearchParams({rel});
+  if (highlights.length > 0) {
+    params.set('highlights', highlights.map(range => `${range.startLine}-${range.endLine}`).join(','));
+  }
+  return requestJson<WikiSourceResponse>(`${targetPath(targetId)}/wiki/source?${params.toString()}`);
+}
+
+export function runQueryPlayground(
+  targetId: TargetId,
+  body: {prompt: string; useSemantic: boolean; useSelector: boolean; timeoutMs?: number},
+): Promise<DryRunRecallResponse> {
+  return postJson<DryRunRecallResponse>(`${targetPath(targetId)}/query-playground`, body);
+}
+
+export function getRuntime(): Promise<RuntimeResponse> {
+  return requestJson<RuntimeResponse>('/api/runtime');
+}
+
+export function getInstallLearning(installId: InstallId): Promise<LearningView> {
+  return requestJson<LearningView>(`${installPath(installId)}/learning`);
+}
+
+export function checkInstallLearning(installId: InstallId): Promise<LearningView> {
+  return postJson<LearningView>(`${installPath(installId)}/learning/check`, {});
+}
+
+export async function putPreferences(changes: Partial<UiPreferences>): Promise<UiPreferences> {
+  const response = await putJson<{preferences: UiPreferences}>('/api/preferences', changes);
+  return response.preferences;
 }

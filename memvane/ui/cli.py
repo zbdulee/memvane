@@ -67,7 +67,7 @@ def _session_start_refusal(home):
 
 
 def open_dashboard(*, cwd=None, tab='overview', no_open=False, port=0, from_session_start=False,
-                   home=None, opener=None):
+                   host=None, home=None, opener=None):
     """Start or reuse the server and open (or describe) the dashboard; returns the JSON result."""
     from memvane.ui import lifecycle, local_client, platform_io
     from memvane.ui.server import page_url
@@ -83,8 +83,10 @@ def open_dashboard(*, cwd=None, tab='overview', no_open=False, port=0, from_sess
               'replaced': started['replaced'], 'bundleVersion': server['bundleVersion'],
               'url': page_url(server['port'], target=target, tab=tab), 'opened': False}
     if from_session_start and status.get('activeClients'):
-        code, value = local_client.control(server, 'POST', '/api/internal/session-started',
-                                           {'targetId': target})
+        payload = {'targetId': target}
+        if host is not None:
+            payload['host'] = host
+        code, value = local_client.control(server, 'POST', '/api/internal/session-started', payload)
         result.update(sessionStarted=code == 200, delivered=(value or {}).get('delivered'))
         return result
     blocked = 'no_open' if no_open else platform_io.browser_blocker()
@@ -154,6 +156,7 @@ def _parser():
     opened.add_argument('--no-open', action='store_true')
     opened.add_argument('--port', type=int, default=0)
     opened.add_argument('--from-session-start', action='store_true')
+    opened.add_argument('--host', choices=('claude', 'codex', 'hermes', 'gemini'), default=None)
     commands.add_parser('status', help='the running server and the preferences')
     commands.add_parser('stop', help='stop the running server')
     served = commands.add_parser('serve', help='run the server in the foreground')
@@ -188,7 +191,7 @@ def main(argv=None):
     try:
         if args.command == 'open':
             _print(open_dashboard(cwd=args.cwd or os.getcwd(), tab=args.tab, no_open=args.no_open,
-                                  port=args.port, from_session_start=args.from_session_start))
+                                  port=args.port, from_session_start=args.from_session_start, host=args.host))
             return 0
         if args.command == 'status':
             _print(status())

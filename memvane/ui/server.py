@@ -23,7 +23,8 @@ import threading
 import time
 from urllib.parse import parse_qs
 
-from memvane.ui import auth, lifecycle, platform_io, preferences, read_adapters
+from memvane.ui import (auth, lifecycle, platform_io, preferences, read_adapters, recall_adapters,
+                        runtime_adapters, wiki_adapters)
 from memvane.ui.sse import FileWatcher, SseHub, now_iso
 from memvane.ui.types import (BIND_HOST, CODE_TTLS, DRAIN_REASONS, HEARTBEAT_SECONDS, MANUAL_CODE_TTL_SECONDS,
                               MAX_BODY_BYTES, MAX_STATIC_BYTES, MAX_WORKERS, REQUEST_TIMEOUT_SECONDS,
@@ -205,11 +206,25 @@ class UiServer(ThreadingHTTPServer):
             self._slots.release()
 
 
+_TARGET_RE = r'([0-9a-f]{32}(?:(?::|%3[Aa])[0-9a-f]{12})?)'
+
+
+def _norm_target(raw):
+    return raw.replace('%3A', ':').replace('%3a', ':')
+
+
 ROUTES = (
     ('GET', re.compile(r'/api/session'), 'session'),
     ('GET', re.compile(r'/api/overview'), 'overview'),
     ('POST', re.compile(r'/api/overview/reconcile'), 'reconcile'),
     ('GET', re.compile(r'/api/installs/([0-9a-f]{32})/(summary|recalls|errors)'), 'install'),
+    ('GET', re.compile(rf'/api/targets/{_TARGET_RE}/wiki'), 'wiki_list'),
+    ('GET', re.compile(rf'/api/targets/{_TARGET_RE}/wiki/card'), 'wiki_card'),
+    ('GET', re.compile(rf'/api/targets/{_TARGET_RE}/wiki/source'), 'wiki_source'),
+    ('POST', re.compile(rf'/api/targets/{_TARGET_RE}/query-playground'), 'query_playground'),
+    ('GET', re.compile(r'/api/runtime'), 'runtime'),
+    ('GET', re.compile(r'/api/installs/([0-9a-f]{32})/learning'), 'learning'),
+    ('POST', re.compile(r'/api/installs/([0-9a-f]{32})/learning/check'), 'learning_check'),
     ('GET', re.compile(r'/api/events/stream'), 'stream'),
     ('PUT', re.compile(r'/api/preferences'), 'put_preferences'),
     ('POST', re.compile(r'/api/shutdown'), 'shutdown'),
@@ -381,6 +396,44 @@ class Handler(BaseHTTPRequestHandler):
                                                  home=home)
         return self._json(200, value)
 
+    def _wiki_list(self, target_id, query):
+        first = {key: values[0] for key, values in query.items() if values}
+        return self._json(200, wiki_adapters.wiki_list(
+            _norm_target(target_id), status=first.get('status', ''), q=first.get('q', ''),
+            limit=first.get('limit', 200), home=self.app.home))
+
+    def _wiki_card(self, target_id, query):
+        first = {key: values[0] for key, values in query.items() if values}
+        return self._json(200, wiki_adapters.wiki_card(
+            _norm_target(target_id), first.get('rel'), home=self.app.home))
+
+    def _wiki_source(self, target_id, query):
+        first = {key: values[0] for key, values in query.items() if values}
+        return self._json(200, wiki_adapters.wiki_source(
+            _norm_target(target_id), first.get('rel'), highlights=first.get('highlights'),
+            home=self.app.home))
+
+    def _query_playground(self, target_id, query):
+        body = self._body()
+        if body is None:
+            return None
+        return self._json(200, recall_adapters.query_playground(
+            _norm_target(target_id), body, home=self.app.home))
+
+    def _runtime(self, query):
+        return self._json(200, runtime_adapters.runtime_overview(home=self.app.home))
+
+    def _learning(self, install_id, query):
+        return self._json(200, runtime_adapters.learning_overview(
+            install_id, check_invariants=False, home=self.app.home))
+
+    def _learning_check(self, install_id, query):
+        body = self._body()
+        if body is None:
+            return None
+        return self._json(200, runtime_adapters.learning_overview(
+            install_id, check_invariants=True, home=self.app.home))
+
     def _put_preferences(self, query):
         body = self._body()
         if body is None:
@@ -473,7 +526,7 @@ class Handler(BaseHTTPRequestHandler):
         host = body.get('host')
         if target is not None and parse_target_id(target) is None:
             return self._error(400, 'target_id_invalid')
-        if host not in (None, 'claude', 'codex', 'hermes'):
+        if host not in (None, 'claude', 'codex', 'hermes', 'gemini'):
             return self._error(400, 'host_invalid')
         parsed = parse_target_id(target) if target else None
         delivered = self.app.hub.broadcast('session_started', {
