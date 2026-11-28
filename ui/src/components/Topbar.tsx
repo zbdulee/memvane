@@ -4,6 +4,7 @@ import {navigate, TABS} from '../router';
 import {formatDuration, safeText} from '../text';
 import type {Theme} from '../theme';
 import {Dot, type Tone} from './Badge';
+import {branchText, isDormant} from '../checkoutState';
 
 interface Props {
   tab: TabId;
@@ -29,6 +30,10 @@ const SSE_LABEL: Record<SseStatus, {tone: Tone; label: string; title: string}> =
 export function Topbar(props: Props) {
   const {tab, selected, projectName, session, sse, idleSecondsRemaining, theme, onToggleTheme} = props;
   const sseLabel = SSE_LABEL[sse];
+  // The idle countdown changes every second, so it stays in the tooltip instead of the bar.
+  const sseTitle = idleSecondsRemaining === null
+    ? sseLabel.title
+    : `${sseLabel.title}\n모든 창이 닫힌 뒤 서버 자동 종료까지 ${formatDuration(idleSecondsRemaining)}`;
   return (
     <header class="topbar">
       <div class="topbar-left">
@@ -46,7 +51,7 @@ export function Topbar(props: Props) {
                   : null}
                 <strong>{safeText(selected.name)}</strong>
                 <span class="badge badge-muted">{selected.kind === 'main' ? 'main' : 'worktree'}</span>
-                <span class="badge badge-muted mono">⎇ {safeText(selected.branch)}</span>
+                <span class={`badge badge-muted${isDormant(selected) ? '' : ' mono'}`}>{safeText(branchText(selected))}</span>
               </>
             )}
         </nav>
@@ -65,13 +70,10 @@ export function Topbar(props: Props) {
         </nav>
       </div>
       <div class="topbar-right">
-        <span class="pill" title={sseLabel.title}><Dot tone={sseLabel.tone} />SSE {sseLabel.label}</span>
+        <span class="pill" title={sseTitle}><Dot tone={sseLabel.tone} />SSE {sseLabel.label}</span>
         {session !== null ? <span class="pill mono" title="서버 번들 버전">v{safeText(session.bundleVersion)}</span> : null}
         {session !== null && !session.isInstalledPluginCache
           ? <span class="pill pill-warn" title="설치된 플러그인 캐시가 아닌 개발 체크아웃에서 실행 중">Read-Only (Dev Checkout)</span>
-          : null}
-        {idleSecondsRemaining !== null
-          ? <span class="pill mono" title="모든 창이 닫힌 뒤 서버가 스스로 종료하기까지 남은 시간">유휴 {formatDuration(idleSecondsRemaining)}</span>
           : null}
         <button type="button" class="btn btn-sm" onClick={onToggleTheme} aria-label="테마 전환">
           {theme === 'dark' ? '라이트 테마' : '다크 테마'}

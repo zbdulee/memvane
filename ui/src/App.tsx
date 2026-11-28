@@ -7,6 +7,7 @@ import {
   getInstallRecalls,
   getOverview,
   getRuntime,
+  getRuntimeDisk,
   getSession,
   getWikiCard,
   getWikiList,
@@ -37,6 +38,9 @@ type Boot =
   | {state: 'ready'; session: SessionMeta};
 
 const REFRESH_DEBOUNCE_MS = 500;
+// The wiki list endpoint's limits (`wiki_adapters.MAX_QUERY_CHARS`, `MAX_LIST`).
+const WIKI_QUERY_MAX_CHARS = 256;
+const WIKI_LIST_MAX = 1000;
 
 function describe(error: unknown): string {
   if (error instanceof ApiError) return `${error.code} (${error.status})`;
@@ -172,17 +176,42 @@ function Dashboard({session, theme, onToggleTheme}: {session: SessionMeta; theme
     return getRuntime();
   }, [runtimeRefreshToken]);
 
+  const loadDisk = useCallback(async (refreshDisk = false) => (await getRuntimeDisk(refreshDisk)).disk, []);
+
   const savePreferences = useCallback(async (changes: Partial<Pick<UiPreferences, 'autoOpenOnSessionStart'>>) => {
     const updated = await putPreferences(changes);
     setPreferences(updated);
     return updated;
   }, []);
 
+  const openCardRequest = useRef(0);
   const openWikiCard = useCallback((path: string) => {
     if (selected === null) return;
+    const targetId = selected.targetId;
+    const request = ++openCardRequest.current;
     const rel = path.startsWith('.memvane/wiki/') ? path.slice('.memvane/wiki/'.length) : path;
-    const hash = cardHash(selected.targetId, rel);
-    if (hash !== null) window.location.hash = hash;
+    // Recall events may name a card as `<wiki_collection>/<rel>`; the Wiki list keys cards by `<rel>`.
+    // A card that really lives under such a directory keeps its rel: the list is asked first.
+    const parts = rel.split('/');
+    const prefixed = parts.length >= 2 && (parts[0]?.endsWith('-wiki') === true || parts[0] === selected.name);
+    const open = (cardRel: string) => {
+      if (request !== openCardRequest.current) return;
+      const hash = cardHash(targetId, cardRel);
+      if (hash !== null) window.location.hash = hash;
+    };
+    if (!prefixed) {
+      open(rel);
+      return;
+    }
+    const stripped = parts.slice(1).join('/');
+    if (rel.length > WIKI_QUERY_MAX_CHARS) {
+      open(stripped);
+      return;
+    }
+    getWikiList(targetId, {status: 'all', q: rel, limit: WIKI_LIST_MAX}).then(
+      response => open(response.cards.some(card => card.rel === rel) ? rel : stripped),
+      () => open(stripped),
+    );
   }, [selected]);
 
   return (
@@ -197,10 +226,21 @@ function Dashboard({session, theme, onToggleTheme}: {session: SessionMeta; theme
         theme={theme}
         onToggleTheme={onToggleTheme}
       />
-      <SidebarTree projects={projects} tab={route.tab} selected={selected?.targetId ?? null} />
+      <SidebarTree
+        projects={projects}
+        tab={route.tab}
+        selected={selected?.targetId ?? null}
+        loading={overview === null && loadError === null}
+      />
       <main class="main-wrap">
         <div class="main-scroll">
-          <AlertBanner alerts={alerts} snapshot={overview?.snapshot ?? null} sse={sse} />
+          <AlertBanner
+            alerts={alerts}
+            snapshot={overview?.snapshot ?? null}
+            sse={sse}
+            onReconcile={() => void reconcile()}
+            reconciling={reconciling}
+          />
           {loadError !== null
             ? <div class="inline-error" role="alert">현황을 불러오지 못했습니다: {safeText(loadError)}</div>
             : null}
@@ -219,7 +259,18 @@ function Dashboard({session, theme, onToggleTheme}: {session: SessionMeta; theme
             ? <RecallPage selected={selected} loadRecalls={getInstallRecalls} runPlayground={runQueryPlayground} onOpenCard={openWikiCard} refreshToken={eventsRefreshToken} />
             : null}
           {route.tab === 'runtime'
-            ? <RuntimePage installId={selected?.installId ?? null} preferences={preferences} loadRuntime={loadRuntime} loadLearning={getInstallLearning} runLearningCheck={checkInstallLearning} savePreferences={savePreferences} />
+            ? (
+              <RuntimePage
+                installId={selected?.installId ?? null}
+                preferences={preferences}
+                idleSecondsRemaining={idle}
+                loadRuntime={loadRuntime}
+                loadDisk={loadDisk}
+                loadLearning={getInstallLearning}
+                runLearningCheck={checkInstallLearning}
+                savePreferences={savePreferences}
+              />
+            )
             : null}
         </div>
       </main>

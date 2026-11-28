@@ -11,6 +11,7 @@ import hashlib
 import os
 from pathlib import Path
 import tempfile
+from unittest import mock
 
 from memvane.registry import api as registry
 from memvane.ui import wiki_adapters
@@ -76,8 +77,9 @@ class WikiApiTests(FixtureCase):
                                                'dedupPairs'})
         self.assertTrue(all(isinstance(count, int) for count in view['ledger'].values()))
         alpha = view['cards'][0]
-        self.assertEqual(set(alpha), {'rel', 'title', 'status', 'tokens', 'overBudget', 'stale', 'hidden',
-                                      'updatedAt'})
+        self.assertEqual(set(alpha), {'rel', 'title', 'status', 'tokens', 'overBudget', 'stale', 'staleReason',
+                                      'hidden', 'updatedAt'})
+        self.assertIsNone(alpha['staleReason'])
         self.assertEqual((alpha['title'], alpha['status'], alpha['stale'], alpha['hidden']),
                          ('Alpha', 'verified', False, False))
         expected = {
@@ -98,6 +100,53 @@ class WikiApiTests(FixtureCase):
             with self.assertRaises(TargetError) as caught:
                 self.list(**kwargs)
             self.assertEqual((str(caught.exception), caught.exception.status), (code, 400))
+
+    def test_stale_cards_name_a_deleted_or_a_changed_source(self):
+        self.project.write_note('gone.md', 'about to go\n')
+        self.project.write_card('concepts/gone.md', title='Gone', body='Gone.\n',
+                                sources=[self.project.root / 'gone.md'])
+        # Two sources: the changed one comes first, the deleted one still names the card.
+        self.project.write_card('concepts/mixed.md', title='Mixed', body='Mixed.\n',
+                                sources=[self.project.root / 'drift.md', self.project.root / 'gone.md'],
+                                status='generated')
+        (self.project.root / 'drift.md').write_text('original\n', encoding='utf-8')
+        self.project.write_card('concepts/drift.md', title='Drift', body='Drift.\n',
+                                sources=[self.project.root / 'drift.md'])
+        (self.project.root / 'drift.md').write_text('changed again\n', encoding='utf-8')
+        (self.project.root / 'gone.md').unlink()
+        view = self.list(status='stale')
+        self.assertEqual({card['rel']: (card['stale'], card['staleReason']) for card in view['cards']}, {
+            'concepts/drift.md': (True, 'source_changed'),
+            'concepts/gone.md': (True, 'source_deleted'),
+            'concepts/mixed.md': (True, 'source_deleted'),
+        })
+        fresh = {card['rel']: (card['stale'], card['staleReason']) for card in self.list()['cards']
+                 if card['rel'] in ('concepts/alpha.md', 'concepts/beta.md')}
+        self.assertEqual(fresh, {'concepts/alpha.md': (False, None), 'concepts/beta.md': (False, None)})
+
+    def test_each_source_is_checked_once_in_one_pass(self):
+        from memvane.settings import api as settings
+        from memvane.wiki.card import api as card_api
+        root = self.project.root
+        names = ('a.md', 'b.md', 'c.md', 'd.md')
+        for name in names:
+            self.project.write_note(name, f'{name} first\n')
+        rev = {name: self.project.revision(root / name) for name in names}
+        self.project.write_note('a.md', 'a changed\n')
+        self.project.write_note('d.md', 'd changed\n')
+        (root / 'b.md').unlink()
+        config = settings.load_project_config(str(root))
+        for order, reason, calls in (
+                (('a.md', 'b.md', 'c.md'), 'source_deleted', 2),  # changed, then deleted: stop there
+                (('a.md', 'c.md', 'd.md'), 'source_changed', 3),  # each source once, none twice
+                (('c.md', 'b.md'), 'source_deleted', 2),
+                (('c.md',), None, 1)):
+            with self.subTest(order=order), mock.patch.object(card_api, 'check_card',
+                                                              wraps=card_api.check_card) as spy:
+                self.assertEqual(wiki_adapters._stale_reason([rev[name] for name in order], root, config), reason)
+                self.assertEqual(spy.call_count, calls)
+                self.assertEqual([len(call.args[0]['sourceRevisions']) for call in spy.call_args_list],
+                                 [1] * calls)
 
     def test_worktree_lists_its_own_cards_and_reads_the_ledger_from_main(self):
         self.worktree.write_card('concepts/feature.md', title='Feature', body='Only here.\n')

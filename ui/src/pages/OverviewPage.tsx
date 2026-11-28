@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'preact/hooks';
+import {useEffect, useMemo, useState} from 'preact/hooks';
 import {ApiError, getInstallErrors} from '../api/client';
 import type {
   ErrorEventItem,
@@ -8,8 +8,21 @@ import type {
   TabId,
   WorktreeNode,
 } from '../api/types';
+import {
+  CHECKOUT_STATE,
+  DORMANT_TOGGLE_TITLE,
+  branchText,
+  dormantToggleLabel,
+  dotTone,
+  isDormant,
+  isServable,
+  shownNodes,
+  stateTitle,
+  unservableTitle,
+} from '../checkoutState';
+import {useShowDormant} from '../dormantPref';
 import {Badge, Dot, type Tone} from '../components/Badge';
-import {navigate} from '../router';
+import {navigate, routeHash} from '../router';
 import {nodesInScope} from '../scope';
 import {formatClock, formatCount, formatMs, formatRelative, safeMultiline, safeText} from '../text';
 
@@ -48,20 +61,17 @@ function latest(values: readonly (string | null)[]): string | null {
 }
 
 function StateBadge({node}: {node: WorktreeNode}) {
-  if (node.kind === 'main') return <Badge tone="blue">main</Badge>;
-  switch (node.viewState) {
-    case 'ready':
-      return <Badge tone="green">linked</Badge>;
-    case 'view_preparing':
-      return <Badge tone="amber" mono>view_preparing</Badge>;
-    case 'absent':
-      return <Badge tone="muted">view 없음</Badge>;
-    case 'unproved':
-      return <Badge tone="red">미증명</Badge>;
+  const info = CHECKOUT_STATE[node.viewState];
+  if (node.viewState === 'ready') {
+    return <Badge tone={node.kind === 'main' ? 'blue' : 'green'} title={stateTitle(node)}>{node.kind === 'main' ? 'main' : 'linked'}</Badge>;
   }
+  return <Badge tone={info.tone} title={stateTitle(node)}>{info.label}</Badge>;
 }
 
-function Kpis({nodes, overview}: {nodes: readonly WorktreeNode[]; overview: OverviewResponse}) {
+function Kpis({scoped, overview}: {scoped: readonly WorktreeNode[]; overview: OverviewResponse}) {
+  // Counts are the active checkouts whatever the toggle shows; hidden ones are counted apart.
+  const nodes = scoped.filter(node => !isDormant(node));
+  const dormant = scoped.length - nodes.length;
   const mains = nodes.filter(node => node.kind === 'main');
   const worktrees = nodes.length - mains.length;
   // Main checkouts own the install's published cards; a worktree-only scope counts its own view.
@@ -77,15 +87,20 @@ function Kpis({nodes, overview}: {nodes: readonly WorktreeNode[]; overview: Over
   const installIds = new Set(nodes.map(node => node.installId));
   const installs = overview.installs.filter(install => installIds.has(install.installId));
   const single = installs.length === 1 ? installs[0] : undefined;
-  const recalls = nodes.reduce((sum, node) => sum + node.recalls24h, 0);
-  const slo = worstSlo(nodes.map(node => node.slo));
+  // Recall counts belong to the install; every checkout row repeats its install's number.
+  const recalls = installs.reduce((sum, install) => sum + install.recalls24h, 0);
+  const slo = worstSlo(installs.length > 0 ? installs.map(install => install.slo) : nodes.map(node => node.slo));
   const lastSync = latest(nodes.map(node => node.lastSyncAt));
   return (
     <section class="kpi-grid" aria-label="핵심 지표">
       <div class="kpi-box">
         <div class="kpi-label"><span>선택 범위 체크아웃</span><Badge tone="muted" mono>{overview.snapshot.state}</Badge></div>
         <div class="kpi-value num">{formatCount(nodes.length)}</div>
-        <div class="kpi-foot"><span>프로젝트 {formatCount(mains.length)}</span><span>워크트리 {formatCount(worktrees)}</span></div>
+        <div class="kpi-foot">
+          <span>프로젝트 {formatCount(mains.length)}</span>
+          <span>워크트리 {formatCount(worktrees)}</span>
+          {dormant > 0 ? <span title={DORMANT_TOGGLE_TITLE}>해제·없음 {formatCount(dormant)}</span> : null}
+        </div>
       </div>
       <div class="kpi-box">
         <div class="kpi-label"><span>24h Recall</span><SloBadge slo={slo} /></div>
@@ -123,24 +138,36 @@ function CheckoutTable({nodes, selected, tab}: {nodes: readonly WorktreeNode[]; 
             <th>마지막 wake.sync</th>
             <th>24h Recall · p50 / p95</th>
             <th>SLO</th>
+            <th><span class="sr-only">바로 가기</span></th>
           </tr>
         </thead>
         <tbody>
-          {nodes.map(node => (
+          {nodes.map(node => {
+            // A checkout the server cannot prove (404/409) opens neither a scope nor a shortcut.
+            const servable = isServable(node);
+            const blocked = servable ? undefined : unservableTitle(node);
+            const rowClass = [servable ? 'clickable' : 'disabled-row', node.kind === 'worktree' ? 'wt-row' : '',
+              isDormant(node) ? 'dormant-row' : '', selected?.targetId === node.targetId ? 'selected-row' : '']
+              .filter(Boolean).join(' ');
+            return (
             <tr
               key={node.targetId}
-              class={`clickable${node.kind === 'worktree' ? ' wt-row' : ''}${selected?.targetId === node.targetId ? ' selected-row' : ''}`}
+              class={rowClass}
               tabIndex={0}
-              onClick={() => navigate({tab, target: node.targetId})}
+              aria-disabled={servable ? undefined : true}
+              {...(blocked !== undefined ? {title: blocked} : {})}
+              onClick={() => {
+                if (servable) navigate({tab, target: node.targetId});
+              }}
               onKeyDown={event => {
-                if (event.key === 'Enter') navigate({tab, target: node.targetId});
+                if (servable && event.key === 'Enter') navigate({tab, target: node.targetId});
               }}
             >
               <td>
                 <div class="cell-name">
-                  <Dot tone={node.kind === 'worktree' && node.viewState !== 'ready' ? 'amber' : 'green'} />
+                  <Dot tone={dotTone(node)} />
                   <strong>{safeText(node.name)}</strong>
-                  <Badge tone="muted" mono>⎇ {safeText(node.branch)}</Badge>
+                  <Badge tone="muted" mono={!isDormant(node)}>{safeText(branchText(node))}</Badge>
                 </div>
                 <div class="cell-sub mono" title={safeText(node.displayRoot)}>{safeText(node.displayRoot)}</div>
               </td>
@@ -155,12 +182,47 @@ function CheckoutTable({nodes, selected, tab}: {nodes: readonly WorktreeNode[]; 
                 <span class="muted"> / {formatCount(node.cards.generated)} / {formatCount(node.cards.pending)}</span>
               </td>
               <td title={formatClock(node.lastSyncAt)}>{formatRelative(node.lastSyncAt)}</td>
-              <td class="mono num nowrap">
-                {formatCount(node.recalls24h)}건 · {formatMs(node.p50Ms)} / {formatMs(node.p95Ms)}
+              {node.kind === 'main'
+                ? (
+                  <>
+                    <td class="mono num nowrap">
+                      {formatCount(node.recalls24h)}건 · {formatMs(node.p50Ms)} / {formatMs(node.p95Ms)}
+                    </td>
+                    <td><SloBadge slo={node.slo} /></td>
+                  </>
+                )
+                : (
+                  <>
+                    <td><span class="muted" title="recall 수치는 main checkout과 같은 설치 단위로 집계됩니다">설치 공유</span></td>
+                    <td><span class="muted" title="SLO는 설치 단위로 판정됩니다">설치 공유</span></td>
+                  </>
+                )}
+              <td class="cell-action nowrap">
+                <div class="row-links">
+                  {(['wiki', 'recall'] as const).map(target => (
+                    servable
+                      ? (
+                        <a
+                          key={target}
+                          class="btn btn-sm"
+                          href={routeHash({tab: target, target: node.targetId})}
+                          onClick={event => event.stopPropagation()}
+                          onKeyDown={event => event.stopPropagation()}
+                        >
+                          {target === 'wiki' ? 'Wiki' : 'Recall'}
+                        </a>
+                      )
+                      : (
+                        <span key={target} class="btn btn-sm" aria-disabled="true" title={blocked}>
+                          {target === 'wiki' ? 'Wiki' : 'Recall'}
+                        </span>
+                      )
+                  ))}
+                </div>
               </td>
-              <td><SloBadge slo={node.slo} /></td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -172,15 +234,68 @@ type DetailState =
   | {state: 'loaded'; sig: string; items: ErrorEventItem[]}
   | {state: 'failed'; sig: string; message: string};
 
+type ErrorKind = 'all' | 'refused' | 'error';
+
+const ERROR_FILTERS: readonly {id: ErrorKind; label: string; title: string}[] = [
+  {id: 'all', label: '전체', title: '모든 오류·거절 이벤트'},
+  {id: 'refused', label: '거절', title: 'recall이 거절·축소된 이벤트(recall*)'},
+  {id: 'error', label: '오류', title: 'recall 밖의 오류 이벤트(색인·위키·런타임 등)'},
+];
+
+function errorKind(item: ErrorEventItem): Exclude<ErrorKind, 'all'> {
+  return item.event === 'recall' || item.event.startsWith('recall.') ? 'refused' : 'error';
+}
+
+interface ErrorGroup {
+  key: string;
+  /** The newest event of the group; its diagnostics stand for the group. */
+  head: ErrorEventItem;
+  count: number;
+  hosts: string[];
+}
+
+function groupErrors(errors: readonly ErrorEventItem[]): ErrorGroup[] {
+  const groups = new Map<string, ErrorGroup>();
+  for (const item of errors) {
+    const key = `${item.installId}|${item.event}|${item.reason}`;
+    const group = groups.get(key);
+    if (group === undefined) {
+      groups.set(key, {key, head: item, count: 1, hosts: item.host === null ? [] : [item.host]});
+      continue;
+    }
+    group.count += 1;
+    if (item.ts > group.head.ts) group.head = item;
+    if (item.host !== null && !group.hosts.includes(item.host)) group.hosts.push(item.host);
+  }
+  return [...groups.values()].sort((a, b) => (a.head.ts < b.head.ts ? 1 : a.head.ts > b.head.ts ? -1 : 0));
+}
+
 function errorKey(item: ErrorEventItem): string {
   return `${item.installId}|${item.diagId ?? ''}|${item.ts}|${item.event}`;
 }
 
-function ErrorList({errors, projectName}: {errors: readonly ErrorEventItem[]; projectName: (id: InstallId) => string}) {
+interface ErrorListProps {
+  errors: readonly ErrorEventItem[];
+  projectName: (id: InstallId) => string;
+  /** `errors24h` of each install in scope: the whole 24 h count, of which `errors` shows the newest part. */
+  totals: ReadonlyMap<InstallId, number>;
+}
+
+function ErrorList({errors, projectName, totals}: ErrorListProps) {
   const [details, setDetails] = useState<Readonly<Record<InstallId, DetailState>>>({});
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
+  const [kind, setKind] = useState<ErrorKind>('all');
 
   const sigOf = (id: InstallId): string => errors.filter(row => row.installId === id).map(errorKey).join('\n');
+  const counts = useMemo(() => {
+    const result: Record<ErrorKind, number> = {all: errors.length, refused: 0, error: 0};
+    for (const item of errors) result[errorKind(item)] += 1;
+    return result;
+  }, [errors]);
+  const groups = useMemo(
+    () => groupErrors(kind === 'all' ? errors : errors.filter(item => errorKind(item) === kind)),
+    [errors, kind],
+  );
 
   const fetchInstall = async (installId: InstallId, sig: string) => {
     setDetails(prev => ({...prev, [installId]: {state: 'loading', sig}}));
@@ -214,20 +329,20 @@ function ErrorList({errors, projectName}: {errors: readonly ErrorEventItem[]; pr
     }
   }, [errors]);
 
-  const load = async (item: ErrorEventItem) => {
-    const key = errorKey(item);
+  const load = async (group: ErrorGroup) => {
     const next = new Set(open);
-    if (next.has(key)) {
-      next.delete(key);
+    if (next.has(group.key)) {
+      next.delete(group.key);
       setOpen(next);
       return;
     }
-    next.add(key);
+    next.add(group.key);
     setOpen(next);
-    const sig = sigOf(item.installId);
-    const current = details[item.installId];
+    const installId = group.head.installId;
+    const sig = sigOf(installId);
+    const current = details[installId];
     if (current !== undefined && current.sig === sig && current.state !== 'failed') return;
-    await fetchInstall(item.installId, sig);
+    await fetchInstall(installId, sig);
   };
 
   const detailFor = (item: ErrorEventItem) => {
@@ -241,48 +356,115 @@ function ErrorList({errors, projectName}: {errors: readonly ErrorEventItem[]; pr
       : <pre class="code-block">{safeMultiline(match.detail)}</pre>;
   };
 
+  const totalLine = [...totals]
+    .filter(([, total]) => total > 0)
+    .map(([id, total]) => `${projectName(id)} ${formatCount(total)}건`)
+    .join(', ');
+  const sameEventTitle = (group: ErrorGroup): string => {
+    const total = totals.get(group.head.installId);
+    const suffix = total === undefined ? '' : ` · 이 설치의 24시간 오류·거절 합계 ${formatCount(total)}건`;
+    return `표시된 최근 오류 중 같은 이벤트 ${formatCount(group.count)}건${suffix}`;
+  };
+
   if (errors.length === 0) return <div class="empty-note">최근 24시간 오류·거부 이벤트가 없습니다.</div>;
   return (
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>시각</th><th>프로젝트</th><th>호스트</th><th>이벤트 · 사유</th><th /></tr>
-        </thead>
-        <tbody>
-          {errors.map(item => {
-            const key = errorKey(item);
-            const expanded = open.has(key);
-            return [
-              <tr key={key}>
-                <td class="mono">{formatClock(item.ts)}</td>
-                <td><strong>{safeText(projectName(item.installId))}</strong></td>
-                <td>{item.host === null ? '—' : <Badge tone="muted">{item.host}</Badge>}</td>
-                <td class="mono">{safeText(item.event)} · {safeText(item.reason)}</td>
-                <td class="cell-action">
-                  <button type="button" class="btn btn-sm" onClick={() => void load(item)} aria-expanded={expanded}>
-                    {expanded ? '접기' : '상세 오류 로드'}
-                  </button>
-                </td>
-              </tr>,
-              expanded ? <tr key={`${key}-detail`} class="detail-row"><td colSpan={5}>{detailFor(item)}</td></tr> : null,
-            ];
-          })}
-        </tbody>
-      </table>
-    </div>
+    <>
+      <div class="card-actions filter-row" role="group" aria-label="이벤트 종류 필터">
+        {ERROR_FILTERS.map(item => (
+          <button
+            key={item.id}
+            type="button"
+            class={`btn btn-sm${kind === item.id ? ' active' : ''}`}
+            aria-pressed={kind === item.id}
+            title={`${item.title} · 개수는 표시된 최근 목록 기준`}
+            onClick={() => setKind(item.id)}
+          >
+            {item.label} <span class="mono muted">{formatCount(counts[item.id])}</span>
+          </button>
+        ))}
+      </div>
+      <div class="card-sub">
+        표시된 최근 {formatCount(errors.length)}건 기준 개수입니다.
+        {totalLine === '' ? null : <> 설치별 24시간 오류·거절 합계: {safeText(totalLine)}</>}
+      </div>
+      {groups.length === 0
+        ? <div class="empty-note">이 종류의 이벤트가 없습니다.</div>
+        : (
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>최근 시각</th><th>프로젝트</th><th>호스트</th><th>이벤트 · 사유</th><th /></tr>
+              </thead>
+              <tbody>
+                {groups.map(group => {
+                  const item = group.head;
+                  const expanded = open.has(group.key);
+                  return [
+                    <tr key={group.key}>
+                      <td class="mono nowrap">{formatClock(item.ts)}</td>
+                      <td><strong>{safeText(projectName(item.installId))}</strong></td>
+                      <td>
+                        <div class="cell-badges">
+                          {group.hosts.length === 0 ? '—' : group.hosts.map(host => <Badge key={host} tone="muted">{host}</Badge>)}
+                        </div>
+                      </td>
+                      <td>
+                        <div class="cell-badges">
+                          <Badge tone={errorKind(item) === 'refused' ? 'amber' : 'red'}>
+                            {errorKind(item) === 'refused' ? '거절' : '오류'}
+                          </Badge>
+                          <span class="mono">{safeText(item.event)} · {safeText(item.reason)}</span>
+                          {group.count > 1
+                            ? <Badge tone="muted" mono title={sameEventTitle(group)}>×{group.count}</Badge>
+                            : null}
+                        </div>
+                      </td>
+                      <td class="cell-action">
+                        <button type="button" class="btn btn-sm" onClick={() => void load(group)} aria-expanded={expanded}>
+                          {expanded ? '접기' : '상세 진단'}
+                        </button>
+                      </td>
+                    </tr>,
+                    expanded
+                      ? (
+                        <tr key={`${group.key}-detail`} class="detail-row">
+                          <td colSpan={5}>
+                            {group.count > 1
+                              ? <div class="card-sub">가장 최근 이벤트({formatClock(item.ts)})의 진단입니다.</div>
+                              : null}
+                            {detailFor(item)}
+                          </td>
+                        </tr>
+                      )
+                      : null,
+                  ];
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+    </>
   );
 }
 
 export function OverviewPage({overview, selected, tab, reconciling, onReconcile}: Props) {
-  const nodes = nodesInScope(overview.projects, selected);
-  const installIds = new Set(nodes.map(node => node.installId));
+  const [showDormant, setShowDormant] = useShowDormant();
+  const scoped = nodesInScope(overview.projects, selected);
+  // The sidebar's rule: active rows, the selected row, and a dormant main heading a shown worktree.
+  const selectedId = selected?.targetId ?? null;
+  const hidden = scoped.length - shownNodes(overview.projects, scoped, false, selectedId).length;
+  const nodes = shownNodes(overview.projects, scoped, showDormant, selectedId);
+  const installIds = new Set(scoped.map(node => node.installId));
   const errors = overview.recentErrors.filter(item => installIds.has(item.installId)
     && (selected?.kind !== 'worktree' || item.targetId === null || item.targetId === selected.targetId));
   const names = new Map(overview.installs.map(install => [install.installId, install.projectName]));
   const projectName = (id: InstallId) => names.get(id) ?? id.slice(0, 8);
+  const totals = new Map(overview.installs
+    .filter(install => installIds.has(install.installId))
+    .map(install => [install.installId, install.errors24h] as const));
   return (
     <>
-      <Kpis nodes={nodes} overview={overview} />
+      <Kpis scoped={scoped} overview={overview} />
       <section class="card" aria-label="프로젝트와 워크트리 현황">
         <div class="card-header">
           <div>
@@ -291,6 +473,19 @@ export function OverviewPage({overview, selected, tab, reconciling, onReconcile}
           </div>
           <div class="card-actions">
             <span class="card-sub mono">마지막 재스캔 {formatRelative(overview.snapshot.lastReconcileAt)}</span>
+            {hidden > 0
+              ? (
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  aria-pressed={showDormant}
+                  title={DORMANT_TOGGLE_TITLE}
+                  onClick={() => setShowDormant(!showDormant)}
+                >
+                  {dormantToggleLabel(hidden, showDormant)}
+                </button>
+              )
+              : null}
             <button type="button" class="btn btn-sm" onClick={onReconcile} disabled={reconciling}>
               {reconciling ? '재스캔 중…' : '상태 재스캔'}
             </button>
@@ -307,7 +502,7 @@ export function OverviewPage({overview, selected, tab, reconciling, onReconcile}
             <div class="card-sub">기본은 요약만 보여 주고, 상세 진단은 요청할 때만 불러옵니다.</div>
           </div>
         </div>
-        <ErrorList errors={errors} projectName={projectName} />
+        <ErrorList errors={errors} projectName={projectName} totals={totals} />
       </section>
     </>
   );

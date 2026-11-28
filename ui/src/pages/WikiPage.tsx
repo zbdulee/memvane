@@ -11,6 +11,7 @@ import type {
   WikiCardMeta,
   WikiLedgerSummary,
   WikiListFilter,
+  WikiStaleReason,
   WikiListResponse,
   WikiSourceResponse,
   WorktreeNode,
@@ -42,23 +43,35 @@ type Load<T> = {state: 'idle'} | {state: 'loading'} | {state: 'loaded'; data: T}
 const LIST_LIMIT = 200;
 const SEARCH_DELAY_MS = 300;
 
-const FILTERS: readonly {id: WikiListFilter; label: string}[] = [
+const FILTERS: readonly {id: WikiListFilter; label: string; title?: string}[] = [
   {id: 'all', label: '전체'},
   {id: 'verified', label: 'verified'},
   {id: 'generated', label: 'generated'},
   {id: 'pending', label: '검수·교체 대기'},
-  {id: 'stale', label: '원문 불일치'},
+  {
+    id: 'stale',
+    label: '원문 불일치',
+    title: '원문 삭제: 카드가 인용한 원문 파일이 사라짐 · 원문 변경: 원문 내용이 카드가 기록한 해시와 다름',
+  },
   {id: 'hidden', label: 'skipPaths 숨김'},
   {id: 'over_budget', label: '700토큰 초과'},
 ];
 
-const LEDGER_LABELS: readonly {key: keyof WikiLedgerSummary; label: string}[] = [
-  {key: 'compileJobs', label: 'Compile 대기'},
-  {key: 'verifyJobs', label: '검수 대기'},
-  {key: 'publishTxns', label: '게시 진행'},
-  {key: 'refreshEvents', label: '원문 변경 대기'},
-  {key: 'dedupPairs', label: '중복 후보'},
+const STALE_BADGE: Record<WikiStaleReason, {tone: 'red' | 'amber'; label: string; title: string}> = {
+  source_deleted: {tone: 'red', label: '원문 삭제', title: '카드가 인용한 원문 파일이 이 체크아웃에 없습니다.'},
+  source_changed: {tone: 'amber', label: '원문 변경', title: '원문 내용이 카드가 기록한 해시와 다릅니다.'},
+};
+
+/** Ledger counts; `filter` names the card list filter that shows the affected cards, when one does. */
+const LEDGER_LABELS: readonly {key: keyof WikiLedgerSummary; label: string; filter: WikiListFilter | null; hint: string}[] = [
+  {key: 'compileJobs', label: 'Compile 대기', filter: null, hint: '아직 카드로 만들어지지 않은 compile 작업입니다. 게시되면 목록에 나타납니다.'},
+  {key: 'verifyJobs', label: '검수 대기', filter: 'pending', hint: '누르면 검수·교체 대기 카드만 봅니다.'},
+  {key: 'publishTxns', label: '게시 진행', filter: null, hint: '게시 중인 트랜잭션입니다. 끝나면 목록에 반영됩니다.'},
+  {key: 'refreshEvents', label: '원문 변경 대기', filter: 'stale', hint: '누르면 원문과 어긋난 카드만 봅니다.'},
+  {key: 'dedupPairs', label: '중복 후보', filter: null, hint: '중복 후보 쌍은 "위키 중복 정리해줘" 요청(wiki-dedup)으로 정리합니다. 목록 필터는 없습니다.'},
 ];
+
+const WIDE_LAYOUT = '(min-width: 1200px)';
 
 function failure(error: unknown): string {
   if (error instanceof Error) {
@@ -99,7 +112,9 @@ function CardBadges({card}: {card: WikiCardMeta}) {
   return (
     <div class="cell-badges">
       <Badge tone={card.status === 'verified' ? 'green' : 'amber'}>{card.status}</Badge>
-      {card.stale ? <Badge tone="red">원문 불일치</Badge> : null}
+      {card.staleReason !== null
+        ? <Badge tone={STALE_BADGE[card.staleReason].tone} title={STALE_BADGE[card.staleReason].title}>{STALE_BADGE[card.staleReason].label}</Badge>
+        : null}
       {card.hidden ? <Badge tone="muted">skipPaths 숨김</Badge> : null}
       {card.overBudget ? <Badge tone="purple">700토큰 초과</Badge> : null}
     </div>
@@ -109,7 +124,7 @@ function CardBadges({card}: {card: WikiCardMeta}) {
 function CardList(props: {cards: readonly WikiCardMeta[]; active: string | null; onOpen: (rel: string) => void}) {
   if (props.cards.length === 0) return <div class="empty-note">조건에 맞는 카드가 없습니다.</div>;
   return (
-    <div class="table-wrap">
+    <div class="table-wrap wiki-list-scroll">
       <table>
         <thead><tr><th>카드</th><th>상태</th><th>토큰(추정)</th><th>수정</th></tr></thead>
         <tbody>
@@ -139,18 +154,41 @@ function CardList(props: {cards: readonly WikiCardMeta[]; active: string | null;
   );
 }
 
-function LedgerSummary(props: {ledger: WikiLedgerSummary; worktree: boolean; ledgerFrom: TargetId}) {
+function LedgerSummary(props: {
+  ledger: WikiLedgerSummary;
+  worktree: boolean;
+  ledgerFrom: TargetId;
+  filter: WikiListFilter;
+  onFilter: (filter: WikiListFilter) => void;
+}) {
   return (
     <div class="wiki-ledger" aria-label="위키 원장 요약">
       {props.worktree
         ? <Badge tone="amber" title={`ledger: ${props.ledgerFrom}`}>Compile·Backfill·위키 원장 기록은 main checkout 기준</Badge>
         : null}
       <div class="cell-badges">
-        {LEDGER_LABELS.map(item => (
-          <Badge key={item.key} tone={props.ledger[item.key] > 0 ? 'blue' : 'muted'}>
-            {item.label} {formatCount(props.ledger[item.key])}
-          </Badge>
-        ))}
+        {LEDGER_LABELS.map(item => {
+          const count = props.ledger[item.key];
+          const tone = count > 0 ? 'blue' : 'muted';
+          const target = item.filter;
+          const active = target !== null && props.filter === target;
+          // An active filter keeps its button at zero, so it can be turned off where it was turned on.
+          if (target === null || (count === 0 && !active)) {
+            return <Badge key={item.key} tone={tone} title={item.hint}>{item.label} {formatCount(count)}</Badge>;
+          }
+          return (
+            <button
+              key={item.key}
+              type="button"
+              class={`badge badge-${tone} badge-btn${active ? ' badge-btn-active' : ''}`}
+              title={item.hint}
+              aria-pressed={active}
+              onClick={() => props.onFilter(active ? 'all' : target)}
+            >
+              {item.label} {formatCount(count)}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -168,7 +206,26 @@ function spansOf(spans: readonly SourceSpan[], path: string): LineRange[] {
   return spans.filter(span => span.path === path).map(span => ({startLine: span.startLine, endLine: span.endLine}));
 }
 
-function Frontmatter({detail, targetId}: {detail: WikiCardDetail; targetId: TargetId}) {
+/** The card rel a frontmatter `related` entry names, or null when it is not a known card. */
+function relatedRel(item: string, resolveCard: (name: string) => string | null): string | null {
+  let clean = item.trim();
+  if (clean.startsWith('[[') && clean.endsWith(']]')) clean = clean.slice(2, -2).split('|')[0]?.trim() ?? '';
+  if (clean.startsWith('.memvane/wiki/')) clean = clean.slice('.memvane/wiki/'.length);
+  if (clean === '') return null;
+  const direct = resolveCard(clean);
+  if (direct !== null) return direct;
+  const stem = clean.split('/').pop()?.replace(/\.md$/, '') ?? '';
+  const byStem = stem === '' ? null : resolveCard(stem);
+  if (byStem !== null) return byStem;
+  // A `.md` path outside the loaded list (filtered or truncated) still opens through the card endpoint.
+  return clean.endsWith('.md') ? clean : null;
+}
+
+function Frontmatter({detail, targetId, resolveCard}: {
+  detail: WikiCardDetail;
+  targetId: TargetId;
+  resolveCard: (name: string) => string | null;
+}) {
   const front = detail.frontmatter;
   const revisions = Object.entries(front.sourceRevisions);
   return (
@@ -199,10 +256,11 @@ function Frontmatter({detail, targetId}: {detail: WikiCardDetail; targetId: Targ
               {front.related.length === 0 ? '—' : (
                 <div class="cell-badges">
                   {front.related.map(item => {
-                    const href = item.endsWith('.md') ? cardHash(targetId, item) : null;
+                    const rel = relatedRel(item, resolveCard);
+                    const href = rel === null ? null : cardHash(targetId, rel);
                     return href === null
                       ? <Badge key={item} tone="muted" mono>{safeText(item)}</Badge>
-                      : <a key={item} href={href} class="md-link md-link-card mono">{safeText(item)}</a>;
+                      : <a key={item} href={href} class="badge badge-blue badge-btn mono" title={safeText(rel)}>{safeText(item)}</a>;
                   })}
                 </div>
               )}
@@ -226,7 +284,7 @@ function CardDetail(props: {
   const paths = sourcePaths(detail);
   return (
     <div class="wiki-detail">
-      <Frontmatter detail={detail} targetId={targetId} />
+      <Frontmatter detail={detail} targetId={targetId} resolveCard={props.resolveCard} />
       {paths.length > 0 ? (
         <div class="card-actions wiki-sources">
           {paths.map(path => (
@@ -310,6 +368,7 @@ export function WikiPage({selected, loadList, loadCard, loadSource}: WikiPagePro
   const [sourcePath, setSourcePath] = useState<string | null>(null);
   const [source, setSource] = useState<Load<WikiSourceResponse>>({state: 'idle'});
   const activeCard = useCardParam(targetId);
+  const detailRef = useRef<HTMLDivElement | null>(null);
   const listRequest = useRef(0);
   const cardRequest = useRef(0);
   const sourceRequest = useRef(0);
@@ -323,6 +382,20 @@ export function WikiPage({selected, loadList, loadCard, loadSource}: WikiPagePro
     setSourcePath(null);
     setSource({state: 'idle'});
   }, [targetId, activeCard]);
+
+  // Narrow screens stack the detail under a list of up to 200 rows; bring it into view on open.
+  // Wide screens show it beside the list, so only its top needs to be visible: a detail whose top
+  // was scrolled above the scroll area (a long card read to its end) is brought back to its top,
+  // since 'nearest' leaves an element taller than the viewport where it is.
+  useEffect(() => {
+    const element = detailRef.current;
+    if (activeCard === null || element === null) return;
+    const wide = typeof window.matchMedia === 'function' && window.matchMedia(WIDE_LAYOUT).matches;
+    const scroller = element.closest('.main-scroll');
+    const areaTop = scroller === null ? 0 : scroller.getBoundingClientRect().top;
+    const topHidden = element.getBoundingClientRect().top < areaTop;
+    element.scrollIntoView({block: wide && !topHidden ? 'nearest' : 'start'});
+  }, [activeCard]);
 
   useEffect(() => {
     if (targetId === null) {
@@ -402,9 +475,10 @@ export function WikiPage({selected, loadList, loadCard, loadSource}: WikiPagePro
   }
 
   const worktree = selected.kind === 'worktree';
+  const open = activeCard !== null;
   return (
-    <>
-      <section class="card" aria-label="Wiki 카드 목록">
+    <div class={`wiki-layout${open ? ' wiki-layout-open' : ''}`}>
+      <section class="card wiki-list-card" aria-label="Wiki 카드 목록">
         <div class="card-header">
           <div>
             <div class="card-title">Wiki 카드 · {safeText(selected.name)}</div>
@@ -415,7 +489,15 @@ export function WikiPage({selected, loadList, loadCard, loadSource}: WikiPagePro
           </div>
         </div>
         {list.state === 'loaded'
-          ? <LedgerSummary ledger={list.data.ledger} worktree={worktree} ledgerFrom={list.data.ledgerFrom} />
+          ? (
+            <LedgerSummary
+              ledger={list.data.ledger}
+              worktree={worktree}
+              ledgerFrom={list.data.ledgerFrom}
+              filter={filter}
+              onFilter={setFilter}
+            />
+          )
           : worktree ? <Badge tone="amber">Compile·Backfill·위키 원장 기록은 main checkout 기준</Badge> : null}
         <div class="wiki-toolbar">
           <div class="card-actions" role="group" aria-label="카드 필터">
@@ -425,6 +507,7 @@ export function WikiPage({selected, loadList, loadCard, loadSource}: WikiPagePro
                 type="button"
                 class={`btn btn-sm${filter === item.id ? ' active' : ''}`}
                 aria-pressed={filter === item.id}
+                {...(item.title !== undefined ? {title: item.title} : {})}
                 onClick={() => setFilter(item.id)}
               >
                 {item.label}
@@ -453,7 +536,7 @@ export function WikiPage({selected, loadList, loadCard, loadSource}: WikiPagePro
         ) : null}
       </section>
       {activeCard !== null ? (
-        <div class={`wiki-split${sourcePath !== null ? ' wiki-split-open' : ''}`}>
+        <div class={`wiki-split${sourcePath !== null ? ' wiki-split-open' : ''}`} ref={detailRef}>
           <section class="card" aria-label="카드 상세">
             <div class="card-header">
               <div>
@@ -482,6 +565,6 @@ export function WikiPage({selected, loadList, loadCard, loadSource}: WikiPagePro
           />
         </div>
       ) : null}
-    </>
+    </div>
   );
 }

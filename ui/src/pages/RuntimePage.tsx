@@ -28,7 +28,11 @@ export interface RuntimePageProps {
   /** Install of the selected checkout; null shows the runtime part only. */
   installId: InstallId | null;
   preferences: UiPreferences | null;
+  /** Seconds until the idle server stops itself once every window closes; null when unknown. */
+  idleSecondsRemaining?: number | null;
   loadRuntime: () => Promise<RuntimeResponse>;
+  /** Disk usage loads apart from the runtime snapshot; `refresh` asks the server to recompute. */
+  loadDisk: (refresh?: boolean) => Promise<DiskUsageItem[]>;
   loadLearning: (installId: InstallId) => Promise<LearningView>;
   runLearningCheck: (installId: InstallId) => Promise<LearningView>;
   savePreferences: (changes: Partial<Pick<UiPreferences, 'autoOpenOnSessionStart'>>) => Promise<UiPreferences>;
@@ -201,9 +205,65 @@ export function formatBytes(bytes: number): string {
   return `${unit === 0 ? value : value.toFixed(1)} ${BYTE_UNITS[unit]}`;
 }
 
-function DiskCard(props: {
-  disk: readonly DiskUsageItem[];
+function DiskCard({loadDisk}: {loadDisk: RuntimePageProps['loadDisk']}) {
+  const [disk, setDisk] = useState<Load<DiskUsageItem[]>>({state: 'loading'});
+  const ticketRef = useRef(0);
+
+  const run = (refresh: boolean) => {
+    const ticket = ++ticketRef.current;
+    setDisk({state: 'loading'});
+    loadDisk(refresh).then(
+      value => ticket === ticketRef.current && setDisk({state: 'ready', value}),
+      (reason: unknown) => ticket === ticketRef.current && setDisk({state: 'failed', message: failure(reason)}),
+    );
+  };
+
+  useEffect(() => {
+    run(false);
+    return () => {
+      ticketRef.current += 1;
+    };
+  }, [loadDisk]);
+
+  const total = disk.state === 'ready' ? disk.value.reduce((sum, item) => sum + item.bytes, 0) : null;
+  return (
+    <section class="card" aria-label="디스크 사용량">
+      <div class="card-header">
+        <div>
+          <div class="card-title">디스크 사용량</div>
+          <p class="card-sub">MemVane가 이 계정에 둔 상태와 런타임의 크기입니다. 링크는 따라가지 않습니다.</p>
+        </div>
+        <div class="card-actions">
+          {total !== null && total > 0 ? <span class="card-sub mono">합계 {formatBytes(total)}</span> : null}
+          <button type="button" class="btn btn-sm" disabled={disk.state === 'loading'} onClick={() => run(true)}>
+            {disk.state === 'loading' ? '계산 중…' : '다시 계산'}
+          </button>
+        </div>
+      </div>
+      {disk.state === 'loading' ? <div class="empty-note" role="status">디스크 사용량을 계산하는 중…</div> : null}
+      {disk.state === 'failed' ? <div class="inline-error">디스크 사용량을 계산하지 못했습니다: {disk.message}</div> : null}
+      {disk.state === 'ready' && disk.value.length === 0 ? <div class="empty-note">집계할 디렉터리가 없습니다.</div> : null}
+      {disk.state === 'ready' && disk.value.length > 0 ? (
+        <div class="table-wrap">
+          <table>
+            <tbody>
+              {disk.value.map(item => (
+                <tr key={item.label}>
+                  <td>{safeText(item.label)}</td>
+                  <td class="cell-action mono num">{formatBytes(item.bytes)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function SettingsCard(props: {
   preferences: UiPreferences | null;
+  idleSecondsRemaining: number | null;
   savePreferences: RuntimePageProps['savePreferences'];
 }) {
   const [autoOpen, setAutoOpen] = useState<boolean | null>(props.preferences?.autoOpenOnSessionStart ?? null);
@@ -229,38 +289,22 @@ function DiskCard(props: {
   };
 
   return (
-    <section class="card">
+    <section class="card" aria-label="대시보드 설정">
       <div class="card-header">
         <div>
-          <div class="card-title">디스크 사용량</div>
-          <p class="card-sub">MemVane가 이 계정에 둔 상태와 런타임의 크기입니다. 링크는 따라가지 않습니다.</p>
+          <div class="card-title">대시보드 설정</div>
+          <p class="card-sub">이 계정의 MemVane 대시보드 동작입니다.</p>
         </div>
       </div>
-      {props.disk.length === 0 ? (
-        <div class="empty-note">집계할 디렉터리가 없습니다.</div>
-      ) : (
-        <div class="table-wrap">
-          <table>
-            <tbody>
-              {props.disk.map(item => (
-                <tr key={item.label}>
-                  <td>{safeText(item.label)}</td>
-                  <td class="cell-action">{formatBytes(item.bytes)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <div class="card-header">
-        <label>
+      <div class="setting-row">
+        <label title="autoOpenOnSessionStart">
           <input
             type="checkbox"
             checked={autoOpen === true}
             disabled={autoOpen === null || saving}
             onChange={event => toggle((event.currentTarget as HTMLInputElement).checked)}
           />{' '}
-          세션 시작 시 대시보드 자동으로 열기 <span class="muted mono">autoOpenOnSessionStart</span>
+          세션 시작 시 대시보드 자동으로 열기
         </label>
         {saving ? <span class="muted">저장 중…</span> : null}
       </div>
@@ -268,6 +312,11 @@ function DiskCard(props: {
         온보딩된 프로젝트의 세션이 시작될 때 대시보드가 닫혀 있으면 한 창만 엽니다. 쿨다운
         {props.preferences === null ? '' : ` ${formatCount(props.preferences.autoOpenCooldownMinutes)}분`} 안에는 다시 열지 않습니다.
       </p>
+      {props.idleSecondsRemaining === null ? null : (
+        <p class="card-sub" title="모든 창이 닫힌 뒤 서버가 스스로 종료하기까지 남은 시간">
+          유휴 자동 종료까지 <span class="mono">{formatDuration(props.idleSecondsRemaining)}</span>
+        </p>
+      )}
       {error === null ? null : <div class="inline-error">{error}</div>}
     </section>
   );
@@ -291,9 +340,9 @@ function GateRow({gate}: {gate: PromotionGate}) {
   const done = gate.current >= gate.required;
   return (
     <div class="kpi-box">
-      <div class="kpi-label">
+      <div class="kpi-label kpi-label-wrap" title={gate.code}>
         <span>{text.title}</span>
-        <span class="mono">{gate.code}</span>
+        <span class="mono kpi-code">{gate.code}</span>
       </div>
       <div class="kpi-value">
         {formatCount(gate.current)}<span class="kpi-unit"> / {formatCount(gate.required)}</span>
@@ -303,6 +352,15 @@ function GateRow({gate}: {gate: PromotionGate}) {
         {done ? <Badge tone="green">충족</Badge> : null}
         <span>{text.meaning}</span>
       </div>
+    </div>
+  );
+}
+
+function MetricChip({label, code, value}: {label: string; code: string; value: number | null}) {
+  return (
+    <div class="metric-chip" title={code}>
+      <span class="metric-chip-label">{label}</span>
+      <span class="metric-chip-value mono">{percent(value)}</span>
     </div>
   );
 }
@@ -398,10 +456,10 @@ function LearningCard(props: {installId: InstallId} & Pick<RuntimePageProps, 'lo
               사례 {formatCount(learning.value.caseRows)} / {formatCount(learning.value.caseRowsCap)} 순환 보관
             </span>
           </div>
-          <div class="kpi-foot">
-            <span>정확 일치율 <span class="mono">exactRate</span> {percent(learning.value.metrics.exactRate)}</span>
-            <span>카드 F1 <span class="mono">microF1</span> {percent(learning.value.metrics.microF1)}</span>
-            <span>기본 순위 기준선 <span class="mono">rankExactRate</span> {percent(learning.value.metrics.rankExactRate)}</span>
+          <div class="metric-chips" aria-label="평가 지표">
+            <MetricChip label="정확 일치율" code="exactRate" value={learning.value.metrics.exactRate} />
+            <MetricChip label="카드 F1" code="microF1" value={learning.value.metrics.microF1} />
+            <MetricChip label="기본 순위 기준선" code="rankExactRate" value={learning.value.metrics.rankExactRate} />
           </div>
           {learning.value.teacher.length === 0 ? null : (
             <div class="table-wrap">
@@ -409,7 +467,7 @@ function LearningCard(props: {installId: InstallId} & Pick<RuntimePageProps, 'lo
                 <thead>
                   <tr>
                     <th>Teacher 호스트</th>
-                    <th>대기 중 라벨링</th>
+                    <th>오늘 라벨링 호출</th>
                     <th>대기 사유</th>
                   </tr>
                 </thead>
@@ -465,9 +523,10 @@ export function RuntimePage(props: RuntimePageProps) {
       ) : (
         <LearningCard installId={props.installId} loadLearning={props.loadLearning} runLearningCheck={props.runLearningCheck} />
       )}
-      <DiskCard
-        disk={runtime.state === 'ready' ? runtime.value.disk : []}
+      <DiskCard loadDisk={props.loadDisk} />
+      <SettingsCard
         preferences={props.preferences}
+        idleSecondsRemaining={props.idleSecondsRemaining ?? null}
         savePreferences={props.savePreferences}
       />
     </>

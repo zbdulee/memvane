@@ -1,6 +1,20 @@
 import {useMemo, useState} from 'preact/hooks';
-import type {LinkedWorktreeNode, ProjectGroup, TabId, TargetId, WorktreeNode} from '../api/types';
+import type {ProjectGroup, TabId, TargetId, WorktreeNode} from '../api/types';
+import {
+  CHECKOUT_STATE,
+  DORMANT_TOGGLE_TITLE,
+  branchText,
+  dormantToggleLabel,
+  dotTone,
+  isDormant,
+  isServable,
+  shownNodes,
+  stateTitle,
+  unservableTitle,
+} from '../checkoutState';
+import {useShowDormant} from '../dormantPref';
 import {navigate} from '../router';
+import {allNodes} from '../scope';
 import {safeText} from '../text';
 import {Badge, Dot, type Tone} from './Badge';
 
@@ -8,14 +22,9 @@ interface Props {
   projects: readonly ProjectGroup[];
   tab: TabId;
   selected: TargetId | null;
+  /** True until the first overview answer arrives; distinguishes "loading" from "no projects". */
+  loading?: boolean;
 }
-
-const VIEW_BADGE: Record<LinkedWorktreeNode['viewState'], {tone: Tone; label: string; title: string}> = {
-  ready: {tone: 'green', label: 'linked', title: '연결 worktree의 자체 위키 view가 준비됨'},
-  view_preparing: {tone: 'amber', label: 'linked · 준비 중', title: '첫 sync 게시를 기다리는 cold view'},
-  absent: {tone: 'muted', label: 'linked · 없음', title: '이 worktree의 view가 아직 없음'},
-  unproved: {tone: 'red', label: 'linked · 미증명', title: 'route 재증명에 실패한 worktree'},
-};
 
 function matches(node: WorktreeNode, query: string): boolean {
   if (query === '') return true;
@@ -23,22 +32,29 @@ function matches(node: WorktreeNode, query: string): boolean {
   return hay.includes(query);
 }
 
-function nodeTone(node: WorktreeNode): Tone {
-  if (node.kind === 'worktree' && node.viewState !== 'ready') return VIEW_BADGE[node.viewState].tone;
-  return node.slo === 'over' ? 'red' : 'green';
+/** Worktree badge: `linked` for a live view, the state label otherwise. */
+function viewBadge(node: WorktreeNode): {tone: Tone; label: string} | null {
+  const info = CHECKOUT_STATE[node.viewState];
+  if (node.kind === 'main') return node.viewState === 'ready' ? null : {tone: info.tone, label: info.label};
+  return {tone: info.tone, label: node.viewState === 'ready' ? 'linked' : `linked · ${info.label}`};
 }
 
 function TreeNode(props: {node: WorktreeNode; active: boolean; tab: TabId; toggle?: {open: boolean; onToggle: () => void}}) {
   const {node, active, tab, toggle} = props;
-  const select = () => navigate({tab, target: node.targetId});
-  const view = node.kind === 'worktree' ? VIEW_BADGE[node.viewState] : null;
+  const servable = isServable(node);
+  // A checkout the server cannot prove (404/409) is not selectable; its state says why.
+  const select = () => {
+    if (servable) navigate({tab, target: node.targetId});
+  };
+  const view = viewBadge(node);
   return (
     <div
-      class={`tree-item${node.kind === 'worktree' ? ' tree-wt' : ''}${active ? ' active' : ''}`}
+      class={`tree-item${node.kind === 'worktree' ? ' tree-wt' : ''}${active ? ' active' : ''}${servable ? '' : ' tree-disabled'}`}
       role="treeitem"
       aria-selected={active}
+      aria-disabled={servable ? undefined : true}
       tabIndex={0}
-      title={safeText(node.displayRoot)}
+      title={safeText(servable ? node.displayRoot : `${node.displayRoot}\n${unservableTitle(node)}`)}
       onClick={select}
       onKeyDown={event => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -63,28 +79,41 @@ function TreeNode(props: {node: WorktreeNode; active: boolean; tab: TabId; toggl
               {toggle.open ? '▾' : '▸'}
             </button>
           )
-          : <Dot tone={nodeTone(node)} />}
+          : null}
+        <Dot tone={dotTone(node)} />
         <div class="tree-item-text">
           <span class="tree-name">{safeText(node.name)}</span>
-          <span class="tree-branch mono">⎇ {safeText(node.branch)}</span>
+          <span class={`tree-branch${isDormant(node) ? '' : ' mono'}`}>{safeText(branchText(node))}</span>
         </div>
       </div>
-      {view !== null ? <Badge tone={view.tone} title={view.title}>{view.label}</Badge> : null}
+      {view !== null ? <Badge tone={view.tone} title={stateTitle(node)}>{view.label}</Badge> : null}
     </div>
   );
 }
 
-export function SidebarTree({projects, tab, selected}: Props) {
+export function SidebarTree({projects, tab, selected, loading = false}: Props) {
   const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const [showDormant, setShowDormant] = useShowDormant();
   const needle = query.trim().toLowerCase();
+  const nodes = useMemo(() => allNodes(projects), [projects]);
+  const shownByDefault = useMemo(() => new Set(shownNodes(projects, nodes, false, selected)), [projects, nodes, selected]);
+  const hidden = nodes.length - shownByDefault.size;
 
   const visible = useMemo(() => projects.flatMap(group => {
-    if (needle === '') return [{group, worktrees: group.worktrees}];
+    // Only active checkouts show by default (plus the selected one); a dormant main
+    // stays as the header of a group that still has a shown worktree.
+    const shown = shownNodes(projects, [group.main, ...group.worktrees], showDormant, selected);
+    if (!shown.includes(group.main)) return [];
+    const live = group.worktrees.filter(node => shown.includes(node));
+    if (needle === '') return [{group, worktrees: live}];
     const mainHit = matches(group.main, needle);
-    const worktrees = mainHit ? group.worktrees : group.worktrees.filter(node => matches(node, needle));
+    const worktrees = mainHit ? live : live.filter(node => matches(node, needle));
     return mainHit || worktrees.length > 0 ? [{group, worktrees}] : [];
-  }), [projects, needle]);
+  }), [projects, needle, showDormant, selected]);
+  // Hidden rows the search would match: offered instead of a bare "no results".
+  const hiddenMatches = showDormant || needle === '' ? 0
+    : nodes.filter(node => !shownByDefault.has(node) && matches(node, needle)).length;
 
   const toggle = (installId: string) => {
     const next = new Set(collapsed);
@@ -128,9 +157,11 @@ export function SidebarTree({projects, tab, selected}: Props) {
         </div>
         <div class="nav-section-label">
           <span>온보딩 프로젝트</span>
-          <span class="mono">{projects.length}</span>
+          <span class="mono">{loading ? '…' : projects.filter(group => shownNodes(projects, [group.main, ...group.worktrees], false, selected).length > 0).length}</span>
         </div>
-        {visible.length === 0
+        {loading
+          ? <div class="sidebar-empty" role="status">프로젝트 목록을 불러오는 중…</div>
+          : visible.length === 0
           ? <div class="sidebar-empty">{needle === '' ? '온보딩된 프로젝트가 없습니다.' : '검색 결과가 없습니다.'}</div>
           : visible.map(({group, worktrees}) => {
             const open = needle !== '' || !collapsed.has(group.installId);
@@ -140,7 +171,7 @@ export function SidebarTree({projects, tab, selected}: Props) {
                   node={group.main}
                   active={selected === group.main.targetId}
                   tab={tab}
-                  {...(group.worktrees.length > 0 ? {toggle: {open, onToggle: () => toggle(group.installId)}} : {})}
+                  {...(worktrees.length > 0 ? {toggle: {open, onToggle: () => toggle(group.installId)}} : {})}
                 />
                 {open && worktrees.length > 0
                   ? (
@@ -154,6 +185,26 @@ export function SidebarTree({projects, tab, selected}: Props) {
               </div>
             );
           })}
+        {!loading && hiddenMatches > 0
+          ? (
+            <button type="button" class="btn btn-sm sidebar-dormant" onClick={() => setShowDormant(true)}>
+              숨긴 체크아웃에서 {hiddenMatches}개 일치, 펼치기
+            </button>
+          )
+          : null}
+        {!loading && hidden > 0
+          ? (
+            <button
+              type="button"
+              class="btn btn-sm sidebar-dormant"
+              aria-pressed={showDormant}
+              title={DORMANT_TOGGLE_TITLE}
+              onClick={() => setShowDormant(!showDormant)}
+            >
+              {dormantToggleLabel(hidden, showDormant)}
+            </button>
+          )
+          : null}
       </div>
     </aside>
   );

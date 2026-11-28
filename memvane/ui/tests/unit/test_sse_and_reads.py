@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import subprocess
+import types
+from unittest import mock
 
 from memvane.ui import read_adapters, sse
 from memvane.ui.types import MAX_SSE_CLIENTS, parse_target_id, target_id, worktree_hash
@@ -116,6 +119,53 @@ class BranchTests(FixtureCase):
         plain = self.tmp / 'plain'
         plain.mkdir()
         self.assertEqual(read_adapters.read_branch(plain), 'non-git')
+
+    def test_a_folder_inside_a_checkout_reads_the_nearest_git_above_it(self):
+        repo = self.tmp / 'mono'
+        repo.mkdir()
+        self.git(repo, 'init', '-q')
+        self.git(repo, 'commit', '--allow-empty', '-qm', 'one')
+        (repo / 'apps' / 'novel').mkdir(parents=True)
+        self.assertEqual(read_adapters.read_branch(repo / 'apps' / 'novel'), 'main')
+        linked = self.tmp / 'mono-wt'
+        self.git(repo, 'worktree', 'add', '-q', '-b', 'side', str(linked))
+        (linked / 'apps' / 'novel').mkdir(parents=True)
+        self.assertEqual(read_adapters.read_branch(linked / 'apps' / 'novel'), 'side')
+        # The nearest entry decides: a symlinked ``.git`` above the folder is refused, never followed.
+        outer = self.tmp / 'outer'
+        (outer / 'inner').mkdir(parents=True)
+        os.symlink(repo / '.git', outer / '.git')
+        self.assertEqual(read_adapters.read_branch(outer / 'inner'), 'unknown')
+
+    def test_the_walk_stops_above_home_and_at_a_file_system_boundary(self):
+        outer = self.tmp / 'outer'
+        outer.mkdir()
+        self.git(outer, 'init', '-q')
+        self.git(outer, 'commit', '--allow-empty', '-qm', 'one')
+        home = outer / 'home'
+        (home / 'proj').mkdir(parents=True)
+        # A repository above HOME is never read for a root under HOME.
+        self.assertEqual(read_adapters.read_branch(home / 'proj', home), 'non-git')
+        self.assertEqual(read_adapters.read_branch(home / 'proj', self.tmp), 'main')
+        # HOME itself is still a repository root git would find.
+        self.git(home, 'init', '-q')
+        self.git(home, 'commit', '--allow-empty', '-qm', 'home')
+        self.git(home, 'branch', '-m', 'dotfiles')
+        self.assertEqual(read_adapters.read_branch(home / 'proj', home), 'dotfiles')
+        # Another device between the root and the repository ends the walk, as git's discovery does.
+        mounted = outer / 'mnt'
+        (mounted / 'proj').mkdir(parents=True)
+        real_lstat = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            info = real_lstat(path, *args, **kwargs)
+            if Path(path) in (mounted, mounted / 'proj'):
+                return types.SimpleNamespace(st_mode=info.st_mode, st_dev=info.st_dev + 1)
+            return info
+
+        self.assertEqual(read_adapters.read_branch(mounted / 'proj', self.tmp), 'main')
+        with mock.patch.object(read_adapters.os, 'lstat', side_effect=lstat):
+            self.assertEqual(read_adapters.read_branch(mounted / 'proj', self.tmp), 'non-git')
 
     def test_unreadable_or_symlinked_head_is_unknown(self):
         repo = self.tmp / 'fake'
