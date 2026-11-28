@@ -170,7 +170,7 @@ def _absent(base: Path, rel: PurePosixPath) -> bool | None:
 def source_gone(kind: str, key: str, *, wiki_root: Path | None,
                 source_roots: tuple[Path, ...]) -> bool:
     """A suppression's source is gone only on proof; unknown keeps the row."""
-    if kind == 'verify':
+    if kind in ('verify', 'supersession'):
         rel = _relative(key)
         if rel is None or not source_roots:
             return False

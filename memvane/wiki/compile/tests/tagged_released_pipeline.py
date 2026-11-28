@@ -2,6 +2,8 @@
 
 Run with the release first on PYTHONPATH (cwd = its archive):
   migrate <root>          -> the release's ``migrate_from_v1`` (1.x review rows discarded)
+  maintain <root>         -> the release's retention pass; prints its report and the rows left per suppression kind
+  summary <root>          -> the release's ``pipeline_summary`` (1.1.6+)
   verify <root> <runs> [verdict]
                           -> the release's verify ``run`` that many times, the host CLI answering
                              ``verdict`` (default ``pass``); prints the paid calls
@@ -24,6 +26,12 @@ root = Path(root)
 if command == 'migrate':
     counts = pipeline.migrate_from_v1(root, wiki_root=root / '.memvane/wiki')
     print(json.dumps(counts))
+elif command == 'maintain':
+    report = pipeline.maintain(root, wiki_root=root / '.memvane/wiki', source_roots=[root])
+    kinds = {kind: len(pipeline.suppressions(root, kind)) for kind in ('verify', 'dedup', 'supersession')}
+    print(json.dumps({'report': report, 'rows': kinds}, default=str))
+elif command == 'summary':
+    print(json.dumps(pipeline.pipeline_summary(root)['tables']['suppressions'], default=str))
 else:
     project = Project(root, 'project', [])
     config = expanded(project, compile={'semanticDedup': {'enabled': False}})

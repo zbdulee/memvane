@@ -12,4 +12,4 @@
 
 같은 원문을 인용한 카드는 묶어서 판정한다(`wiki_source_retire.retire_deleted_source`). 한 장이라도 보류면 전부 보류한다. 인용 카드가 둘 이상이면 막은 카드마다 `wiki` 활동 이벤트(`outcome: held`)를 남긴다. 같은 원문의 막은 카드 집합이 바뀔 때만 남기고, 마지막으로 남긴 집합은 scan-state 디렉터리의 `<project key>-wiki-held.json`에 둔다. 이 파일은 지워도 다시 만들어지는 파생물이다. 이벤트는 추출기 `logTail`에 들어가지 않는다.
 
-compile worker도 같은 은퇴 writer(`retire_card`)를 쓴다. 원문의 새 revision 추출이 다시 내지 않은 대체 대상 카드를 `superseded_by_revision` 사유로 은퇴시킨다([compile 문서](../compile/README.md)).
+compile worker도 같은 은퇴 writer(`retire_card`)를 쓴다. 원문의 새 revision 추출이 다시 내지 않은 대체 대상 카드를, 다시 쓴 카드가 검수를 통과한 뒤 `superseded_by_revision` 사유로 은퇴시킨다([compile 문서](../compile/README.md)).

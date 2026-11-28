@@ -686,10 +686,12 @@ def _reuse_source_revision(root, config, job, source_revision, selected_route, b
     proof_card = (selected_compiled_revision_card(root, selected_route, source_revision, content_only=True)
                   if reuse else None)
     if proof_card is not None:
-        superseded = supersession.scan(root, selected_route, source_revision)
-        if superseded is None or superseded[0]:
-            # A card of this source still cites an older revision: one extraction of
-            # these bytes rewrites or retires it (``supersession.retire_after``).
+        found = supersession.scan(root, selected_route, source_revision)
+        if found is None or ((found['superseded'] or found['refreshable'])
+                             and not supersession.recorded(root, source_revision)):
+            # A card of this source still cites an older revision and these bytes were
+            # not tried for it yet: one extraction rewrites or retires it (``supersession``).
+            supersession.mark_attempt(source_revision)
             proof_card = None
     if proof_card is not None:
         wiki_selected_laya.recheck(selected_route)
@@ -1277,7 +1279,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         # before the retry, and the revision guard must not read that as done.
         job["partialCompile"] = True
         return False, True, verify_targets
-    supersession.retire_after(root, job, src, source_revision, selected_route, cpath, superseding)
+    supersession.record_after(root, job, source_revision, selected_route, cpath, superseding, source_truncated)
     return _finish_refresh(root, refresh_complete, bound_pending, source_revision, verify_targets)
 
 
@@ -1404,6 +1406,10 @@ _SETTLING = frozenset(('not_refreshed', 'verify_inconclusive_suppressed', 'sourc
                        'source_folder_excluded', 'already_compiled_revision', 'awaiting_pending_verification'))
 
 
+# A dropped job whose paid answer cannot be used: the same bytes would fail the same way.
+_UNUSABLE_ANSWER = frozenset(('invalid_extractor_json', 'missing_candidates'))
+
+
 def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, *,
                         checkout=None) -> tuple[bool, bool, list[str]]:
     """``process_job``, then settle the refresh event a finished job left unresolved.
@@ -1417,6 +1423,7 @@ def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, 
     attempt, extractor call included, on every pass.
     """
     token = _LAST_REASON.set(None)
+    attempt = supersession._ATTEMPT.set(None)
     previous_revision = job.get('_processedContentRevision')
     try:
         result = process_job(root, config, compile_cfg, job, checkout=checkout)
@@ -1424,7 +1431,10 @@ def process_job_settled(root: Path, config: dict, compile_cfg: dict, job: dict, 
             # A deferral before the stable read still owes the previous partial extraction.
             job.setdefault('_processedContentRevision', previous_revision)
         reason = _LAST_REASON.get()
+        if result[0] and not result[1] and reason in _UNUSABLE_ANSWER:
+            supersession.record_failure(root, reason, candidate_log(root), job)
     finally:
+        supersession._ATTEMPT.reset(attempt)
         _LAST_REASON.reset(token)
     if result[0] and not result[1] and reason not in _NOT_AN_ATTEMPT:
         raw_source = job.get("source")
@@ -1518,6 +1528,8 @@ def _run_verify_pass(
     """
     try:
         wiki_verify.run(root, config, compile_cfg, produced_targets=produced_targets or [])
+        # After the reviews: superseded cards retire once their source's rewritten cards passed.
+        supersession.settle(root)
     except Exception as exc:
         # Exception class and failing frame only; the message may name paths.
         from memvane.diagnostics import api as event_log

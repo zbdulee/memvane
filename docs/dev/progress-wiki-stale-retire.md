@@ -203,85 +203,97 @@ D10(사람이 고친 카드)·D11(카드 2,048장 초과)·D12(rename)는 보고
 
 ### 규칙
 
-- 대체 대상(`SUPERSEDED`): 원문의 옛 revision만 인용하고 다음을 모두 만족하는 카드다(`memvane/wiki/compile/supersession.citation`). 플러그인 소유(`auto_writable_text`), `triggers`가 비어 있지 않고 `post_tool_source`·`post_sync_source`·`session_start_source` 안, `sourceRevisions` 1개, `verifiedBodyHash`가 없거나 본문과 일치, 관리 블록 밖에 상투구·HTML 주석 말고 본문 없음. 원문의 옛 revision을 인용한 나머지 카드는 `PROTECTED`다. 판정 입력은 카드 바이트뿐이고 원장 행은 읽지 않는다.
-- short-circuit: 현재 revision을 증명하는 verified 카드가 있어도 `supersession.scan`이 대체 대상을 하나라도 찾거나 스캔이 실패하면 `already_compiled_revision`으로 끝내지 않는다. 그다음 기존 `pending_source_review` 검사(`awaiting_pending_verification`)와 추출로 간다. 스캔 상한은 증명 스캔과 같다(카드 2,048장·24MB·카드당 5MB).
-- 은퇴: 추출이 끝나고 `failed_compile`이 아닐 때 `supersession.retire_after`가 돈다. 답의 후보가 1개 이상이고 `cardsPerSource` 이하이며, 모든 writer 결과가 카드 경로를 남겨야 한다(`created`·`updated`는 이번 revision으로 쓴 카드, `merge-needed`는 `targetPath`·`matchedPath`·`targetMatches`, `split-required`는 뒤 회차가 결정). 그 경로에 없는 대체 대상 카드를 `wiki_source_retire.retire_card(..., 'superseded_by_revision')`로 은퇴시킨다. 보관(`retired-wiki/`, sidecar `proofHash: superseded_by_revision`), 잠금 아래 바이트 재대조, unlink, `retired` 활동 이벤트(`reason: superseded_by_revision`)는 기존 writer 그대로다. 은퇴가 있으면 `laya-sync` wake 1회.
-- 대량 가드: 한 원문의 은퇴 수가 `MASS_DELETE_MIN`(3) 초과이면서 위키 기계 카드 수의 `MASS_DELETE_FRACTION`(25%) 초과면 그 원문 전체를 보류하고 `superseded_retire_guarded` 행(`wouldRetire`·`decidedCards`·`cards`)을 남긴다. 분모를 원문별이 아니라 위키 전체 기계 카드로 둔 이유: 원문별 비율이면 카드 27장 중 10장만 다시 나오는 정상 H3가 매번 보류되어 영구 보류 칸이 된다.
-- 은퇴 직전에 원문을 다시 대조한다. 추출 뒤 바뀌었으면 `superseded_source_changed` 행만 남기고 은퇴하지 않는다.
-- 쓰기 반환값 분류: `retire_card` 결과는 3번(남은 카드는 옛 revision을 계속 인용하므로 다음 refresh가 추출 1회 뒤 다시 은퇴시킨다), `request_sync` 실패는 3번(다음 full scan이 부재 파일을 뺀다), 진단 행(`superseded_*`)은 3번.
-- 예산(설정 기본값): `extractorPerRun` 10(상한 50), `cardsPerSource` 10(상한 `MAX_CARDS_PER_SOURCE`), `verifyPerRun` 3(이번 run이 만든 카드만큼 늘고 `VERIFY_PRODUCED_HARD_CAP` 30), 추출 실패 식힘 `cooldownSeconds` 600초, lifecycle refresh 재시도 `REFRESH_RETRY_SECONDS` 7일. 한 원문의 추출은 1회이고 split 재요청이 있으면 같은 run 예산 안에서 1회 더 든다. 새 카드는 기존 write-time dedup judge를 거친다(`semanticDedup` 설정).
+- 분류(`memvane/wiki/compile/supersession.citation`, 카드 바이트만 읽는다). 원문의 옛 revision만 인용한 카드를 셋으로 나눈다.
+  - `SUPERSEDED`(은퇴 가능): 플러그인 소유(`auto_writable_text`), `triggers`가 비어 있지 않고 `post_tool_source`·`post_sync_source`·`session_start_source` 안, `sourceRevisions` 1개, 관리 블록 밖에 상투구·HTML 주석 말고 본문 없음, `status: verified`이면서 `verifiedBodyHash`가 본문과 일치.
+  - `REFRESHABLE`: 위 조건에서 검수 지문만 없는 카드(`generated` 또는 지문 이전 verified). 관리 블록 안 사람 편집과 구별할 수 없어 은퇴하지 않는다. 추출을 부르고 답에 나오면 다시 쓴다.
+  - `PROTECTED`: 나머지(지문 불일치, 관리 블록 밖 본문, `createdBy` 변경, manual trigger, 여러 원문, 읽을 수 없는 provenance). 추출을 부르지도 은퇴하지도 않는다.
+- short-circuit(`wiki_compile_worker._reuse_source_revision`): 현재 revision의 verified 증명 카드가 있으면 `already_compiled_revision`으로 끝낸다. 단, `SUPERSEDED`·`REFRESHABLE` 카드가 있고 원장에 이 원문 바이트(경로·sha256)의 시도 기록이 없으면 추출한다(`supersession.recorded`). 원문이 바뀌면 sha256이 달라 다시 시도한다.
+- 시도 기록: 원장 `suppressions`의 새 kind `supersession`. 키는 원문 경로, `body_hash`는 원문 sha256, payload는 `outcome`·`collection`·`size`·`written`·`named`(카드 경로, 각 20개까지)·`wouldRetire`·`superseded`. DDL은 그대로다. 경로당 한 행이고 새 sha256이 옛 행을 바꾼다. 보존 정리는 `verify` 억제처럼 원문이 모든 수집 root에서 없다고 증명될 때만 지운다.
+- 추출 뒤 기록(`supersession.record_after`, 추출이 끝나고 `failed_compile`이 아닐 때):
+  - `incomplete`: 후보가 없음, `cardsPerSource` 초과, 객체가 아닌 후보, 경로 없는 writer 결과(거절·실패·다른 revision).
+  - `held_truncated`: 원문이 `maxSourceChars`(기본 12,000자)로 잘렸다. 추출기는 잘린 원문에서 없다고 단정하지 말라는 지시를 받으므로, 다시 나오지 않은 카드가 사라졌다는 근거가 아니다. 진단 행 `superseded_held_truncated`.
+  - `held_ratio`: 다시 나오지 않은 대체 대상이 3장 이상이고 대체 대상의 50%를 넘는다. 진단 행 `superseded_retire_guarded`(`wouldRetire`·`supersededCards`). 근거: 완전한 답은 `cardsPerSource`(10)장까지라 한두 장이 빠지는 것은 보통의 주제 병합이다. 큰 원문에서 대부분이 빠지는 것은 나쁜 답이나 좁은 답의 모양이고, 은퇴는 운영자 없이 되돌릴 수 없다. 이 규칙이면 대체 대상이 20장을 넘는 원문은 10장 답으로 항상 보류된다.
+  - `settled`: 다시 나오지 않은 대체 대상이 없다.
+  - `pending`: 그 밖. 바로 은퇴하지 않는다.
+  - `failed`: 대체 대상 때문에 시작한 추출의 답을 쓸 수 없어 job을 버린 경우(`invalid_extractor_json`·`missing_candidates`, `process_job_settled`가 기록).
+  - 일시적 실패(timeout, 예산 유예, 식힘, 추출 중 원문 변경, writer 거절의 partial 재시도)는 기록하지 않고 기존 재시도를 따른다.
+- 은퇴(`supersession.settle`, `_run_verify_pass`가 검수 run 직후 부른다): `pending` 행마다 원문이 같은 sha256인지 본다. 다르면 `source_changed`. `written` 카드가 모두 새 revision으로 verified(지문 일치)가 되면 은퇴한다. 열린 검수 행이 있으면 기다린다. 그 밖(검수 `fail`·`inconclusive`·`stale_revision`)은 `held_review_failed`로 끝나 아무것도 은퇴하지 않는다. 은퇴 직전에 비율 가드를 다시 본다(분모는 기록 시점 대체 대상 수와 현재 수 중 큰 값). 은퇴는 `lifecycle.api.retire_card(..., 'superseded_by_revision')`(보관, 잠금 아래 바이트 재대조, unlink, `retired` 활동 이벤트)이다. 한 pass에 최대 25장(`MAX_RETIRE_PER_RUN`, lifecycle과 같음)이고 남은 카드는 다음 pass가 잇는다. 다 끝나면 `retired`. pass당 `pending` 행은 64개까지 본다.
+- 예외: `settle`은 `OSError`·`ValueError`·`RuntimeError`·`sqlite3.Error`를 행·카드 단위로 잡아 진단 행(`superseded_retire_error`·`superseded_settle_error`)으로 남기고 다음 행으로 간다. `_run_verify_pass`는 검수 run이 끝난 뒤 `settle`을 부르므로 은퇴 오류가 검수를 건너뛰게 하지 않는다.
+- 쓰기 반환값 분류: 시도 기록 쓰기는 1번(실패하면 같은 바이트의 다음 refresh가 추출을 한 번 더 산다. `supersession_record_failed` 진단 행을 남기고 은퇴하지 않는다). `retire_card` 결과는 3번(남은 카드는 다음 `settle` pass가 유료 호출 없이 다시 은퇴시킨다). `request_sync` 실패와 진단 행은 3번.
+- 예산(설정 기본값): `extractorPerRun` 10(상한 50), `cardsPerSource` 10(상한 50), `verifyPerRun` 3(이번 run이 만든 카드만큼 늘고 `VERIFY_PRODUCED_HARD_CAP` 30), 추출 실패 식힘 600초, 은퇴 pass당 25장. split 재요청이 있으면 같은 run 예산 안에서 추출 1회가 더 든다. 새 카드는 기존 write-time dedup judge를 거친다.
 
 ### 상태 조합표 (보고서 5.2 확정)
 
-E = 추출 호출, V = 검수 호출. "다음 pass"는 같은 입력(같은 원문 바이트)으로 한 번 더 돌린 결과다. 시험은 모두 `memvane/wiki/compile/tests/integration/test_superseded_revision.py`다. 시험 입력은 현재 compile writer(`_compile_locked`, worker의 `wiki-compile` child와 같은 호출)와 출시 1.1.6 writer(`tagged_superseded_cards.py`)가 쓴 카드, 실제 verify worker가 쓴 행이다. "형제 증명 상태"는 출시 worker가 새 revision 추출에서 일부 카드만 냈을 때 남긴 상태로, 그 카드에만 writer를 호출해 만든다.
+E = 추출, V = 검수. 유료 열은 첫 시도와 원문이 그대로일 때의 재시도(lifecycle refresh 7일 주기)를 함께 적는다. 시험은 모두 `memvane/wiki/compile/tests/integration/test_superseded_revision.py`다. 입력 카드는 현재 compile writer(`_compile_locked`, worker의 `wiki-compile` child와 같은 호출)와 출시 1.1.6 writer(`tagged_superseded_cards.py`)가 쓴다. 검수 행은 실제 verify worker가 쓴다. 원장 기록은 `supersession._record`가 쓴다. "형제 증명 상태"는 출시 worker가 새 revision 추출에서 일부 카드만 냈을 때 남긴 상태로, 그 카드에만 writer를 호출해 만든다.
 
-| # | 상황 | 수정 전 | 기대(수정 후) | 유료 | 다음 pass | 시험 |
+| # | 상황 | 수정 전 | 기대 | 첫 시도 | 재시도(같은 바이트) | 시험 |
 |---|---|---|---|---|---|---|
-| H1 | 원문 1 ↔ 카드 1, 추출이 다시 냄 | replace → 검수 | 같음, 은퇴 0 | E1 + V1 | 검수 뒤 `already_compiled_revision`, 0 | `test_h1_single_card_refresh_replaces_it_and_retires_nothing` |
-| H2 | 원문 1 ↔ 카드 N(현재 1 verified + 옛 2), 추출이 옛 2장을 다 냄 | `already_compiled_revision`, 옛 2장 영구 stale | replace 2, 은퇴 0 | E1 + V2 | 0 | `test_h2_every_card_returned_is_replaced_and_none_retires` |
-| H3 | 원문 1 ↔ 카드 N(현재 1 verified + 옛 2), 추출이 옛 1장만 냄 | `already_compiled_revision`, 옛 2장 영구 stale | replace 1, 나머지 1장 은퇴(`superseded_by_revision`), 현재 카드 바이트 불변 | E1 + V1 | 검수 전 `awaiting_pending_verification`, 검수 뒤 `already_compiled_revision`, 둘 다 0 | `test_h3_h4_superseded_card_retires_and_the_next_passes_pay_nothing` |
-| H3r | H3인데 카드 전부를 출시 1.1.6 writer가 씀 | 같음 | 같음 | E1 + V1 | 0 | `test_h3_cards_of_the_released_writer_converge_the_same_way` |
-| H4 | H3 뒤 refresh | 0, 계속 stale | H3의 다음 pass 열 | 0 | 0 | H3 시험 |
-| H5 | H3에서 다시 나온 카드의 교체 검수가 `fail` | 형제 증명이면 skip | 은퇴된 카드는 그대로, 실패한 카드는 옛 revision으로 남음. lifecycle 재시도(7일 뒤)가 추출 1회 더, 그 카드는 다시 나오므로 은퇴하지 않음 | 재시도당 E1 + V1 | 7일 안에는 lifecycle이 넣지 않음 | `test_h5_failed_replacement_stays_and_is_extracted_again_on_retry` |
-| H6 | 검수 중 원문 변경 | `stale_revision` 뒤 형제 증명이면 skip | 새 revision 추출이 H1~H3 중 하나로 수렴 | E1 + V | 0 | G5 시험(같은 경로) |
-| G5 | 첫 카드 검수가 모두 `done/stale_revision`, 한 장만 새 revision으로 verified | skip, 영구 generated | 다시 나온 1장 replace, 나머지 은퇴 | E1 + V1 | 0 | `test_g5_stale_revision_generated_cards_converge` |
-| G3 | G5에서 보존 정리로 검수 행이 모두 지워짐(행 없는 generated) | skip | 같음(판정은 카드만 읽음) | E1 + V1 | 0 | `test_g3_rowless_generated_cards_converge` |
-| P1 | 옛 revision 카드가 사람 편집(관리 블록 밖 본문, `verifiedBodyHash` 불일치, `createdBy` 변경)·manual trigger·공유 원문 | skip | 추출을 요구하지 않음(`already_compiled_revision`), 은퇴하지 않음 | 0 | 0 | `test_human_manual_and_shared_cards_neither_force_extraction_nor_retire` |
-| P2 | P1 카드 옆에 대체 대상 1장 | skip | 추출 1회, 대체 대상만 은퇴, P1 카드 바이트 불변 | E1 + V1 | 0 | 같은 시험 |
-| F1 | 추출 실패(timeout) | skip | 은퇴 0, 행 유지, 식힘 | E1 | 식힘 뒤 재시도 | `test_failed_extraction_retires_nothing` |
-| F2 | run 추출 예산 소진 | skip | `extractor_budget_deferred`, 은퇴 0, 행 유지 | 0 | 다음 run | `test_budget_deferral_retires_nothing` |
-| F3 | 답이 `cardsPerSource`를 넘음 | skip | 상한까지 쓰고 은퇴 0 | E1 + V(≤ 상한) | lifecycle 재시도마다 E1 | `test_capped_answer_retires_nothing` |
-| F4 | 빈 답 | skip | 은퇴 0 | E1 | lifecycle 재시도마다 E1 | `test_empty_answer_retires_nothing` |
-| F5 | writer 거절(부분 결과) | skip | `partialCompile`로 행 유지, 은퇴 0 | E1 | 기존 partial 재시도 | `test_rejected_candidate_retires_nothing` |
-| F6 | 추출 중 원문 변경 | skip | `source_changed_during_extract`, 은퇴 0 | E1 | 새 revision으로 재처리 | `test_source_change_during_extraction_retires_nothing` |
-| F7 | `merge-needed`(이름 모호) | skip | 이름 붙은 카드는 남고 나머지 대체 대상은 은퇴 | E1 | 남은 카드 때문에 lifecycle 재시도마다 E1 | `test_merge_needed_cards_stay_and_the_rest_retire` |
-| M1 | 한 원문 은퇴 4장 / 기계 카드 6장 | skip | 전부 보류, `superseded_retire_guarded`(4, 6) | E1 + V1 | lifecycle 재시도마다 E1, 운영자 확인 대상 | `test_mass_guard_holds_a_source_that_would_retire_too_many_cards` |
-| M2 | 같은 은퇴 4장 / 기계 카드 18장 | skip | 4장 은퇴 | E1 + V1 | 0 | `test_mass_guard_lets_the_same_retirement_through_in_a_larger_wiki` |
-| I1 | writer 뒤, 은퇴 전 중단 | — | 다음 pass는 열린 replace 행으로 `awaiting_pending_verification`. 검수 뒤 남은 대체 대상 때문에 추출 1회 더, 그때 은퇴 | 1회 더 E1 + V(다시 나온 카드) | 0 | 판정 경로가 H3와 같음(별도 시험 없음) |
-| I2 | 보관 뒤 unlink 전 중단 | — | 다음 은퇴가 같은 보관본을 재사용(`archive_card` 멱등) | I1과 같음 | 0 | 기존 writer 시험 |
+| H1 | 원문 1 ↔ 카드 1, 다시 나옴 | replace → 검수 | 같음, 은퇴 0 | E1 + V1 | 0 | `test_h1_single_card_refresh_replaces_it_and_retires_nothing` |
+| H2 | 현재 1 verified + 옛 2, 둘 다 다시 나옴 | skip, 영구 stale | replace 2, `settled` | E1 + V2 | 0 | `test_h2_every_card_returned_is_replaced_and_none_retires` |
+| H3 | 현재 1 verified + 옛 2, 1장만 다시 나옴 | skip, 영구 stale | replace 1, `pending`. 그 카드 검수 통과 뒤 나머지 1장 은퇴(`retired`) | E1 + V1 | 0 | `test_h3_h4_superseded_card_retires_after_the_rewrite_passes_review` |
+| H3r | H3, 카드 전부 출시 1.1.6 writer | 같음 | 같음 | E1 + V1 | 0 | `test_h3_cards_of_the_released_writer_converge_the_same_way` |
+| H4 | H3 뒤 같은 바이트 refresh(검수 전·후) | skip | 기록으로 `already_compiled_revision` | 0 | 0 | H3 시험 |
+| H5 | H3에서 다시 쓴 카드 검수 `fail` | skip | `held_review_failed`, 아무것도 은퇴 안 함(verified 카드 recall 범위 유지). 새 편집은 다시 시도 | E1 + V1 | 0 | `test_h5_failed_replacement_keeps_every_card_and_is_not_extracted_again` |
+| H6 | 검수 중 원문 변경 | `stale_revision` 뒤 skip | 옛 `pending`은 `source_changed`로 끝나고 은퇴 0. 새 바이트는 H1~H5 중 하나 | E1 + V | 0 | `test_h6_source_change_ends_a_pending_attempt_without_retirement` |
+| G5 | 첫 카드 검수가 모두 `done/stale_revision`, 한 장만 새 revision verified | skip, 영구 generated | `REFRESHABLE`이 추출을 부름. 다시 나온 카드는 replace, 나머지 generated는 은퇴 안 함, `settled` | E1 + V1 | 0 | `test_g5_stale_revision_generated_cards_converge_without_retirement` |
+| G3 | G5에서 보존 정리로 검수 행 모두 삭제 | skip | 같음 | E1 + V1 | 0 | `test_g3_rowless_generated_cards_converge_without_retirement` |
+| P1 | 옛 카드가 모두 `PROTECTED`(관리 블록 밖 본문, 지문 불일치, `createdBy` 변경, manual trigger, 공유 원문) | skip | 추출 안 함, 은퇴 안 함 | 0 | 0 | `test_human_manual_and_shared_cards_neither_force_extraction_nor_retire` |
+| P2 | P1 카드 옆에 `SUPERSEDED` 1장 | skip | 추출 1회, 그 카드만 은퇴, P1 바이트 불변 | E1 + V1 | 0 | 같은 시험 |
+| F1 | 추출 timeout | skip | 기록 없음, 은퇴 0, job 유지 | E1 | 식힘 뒤 기존 재시도 E1 | `test_failed_extraction_retires_nothing_and_keeps_the_job` |
+| F1b | 쓸 수 없는 답(job 버림) | skip | `failed`, 은퇴 0 | E1 | 0 | `test_unusable_answer_is_recorded_and_not_bought_again` |
+| F2 | run 추출 예산 소진 | skip | 기록 없음, job 유지 | 0 | 다음 run | `test_budget_deferral_retires_nothing` |
+| F3 | 답이 `cardsPerSource` 초과 | skip | 상한까지 쓰고 `incomplete`, 은퇴 0 | E1 + V(≤10) | 0 | `test_capped_answer_retires_nothing_and_is_not_bought_again` |
+| F4 | 빈 답 | skip | `incomplete` | E1 | 0 | `test_empty_answer_retires_nothing_and_is_not_bought_again` |
+| F4b | 객체가 아닌 후보 섞임 | skip | `incomplete`, 은퇴 0 | E1 + V | 0 | `test_non_object_candidate_makes_the_answer_incomplete` |
+| F5 | writer 거절 | skip | partial 재시도(기존), 은퇴 0 | E1 | 기존 partial 재시도 | `test_rejected_candidate_retires_nothing` |
+| F6 | 추출 중 원문 변경 | skip | 은퇴 0, 새 바이트로 재처리 | E1 | 새 바이트 | `test_source_change_during_extraction_retires_nothing` |
+| F7 | `merge-needed`(이름 모호) | skip | 이름 붙은 카드는 남고 나머지는 은퇴 | E1 | 0 | `test_merge_needed_cards_stay_and_the_rest_retire` |
+| T1 | 원문이 `maxSourceChars`로 잘림 | skip | `held_truncated`, 은퇴 0 | E1 + V | 0 | `test_truncated_source_holds_retirement_and_is_not_bought_again` |
+| M1 | 대체 대상 5, 다시 나오지 않은 4(위키 기계 카드 18장) | skip | `held_ratio`, 은퇴 0 | E1 + V1 | 0 | `test_ratio_guard_holds_a_source_whose_answer_drops_most_cards` |
+| M2 | 대체 대상 6, 다시 나오지 않은 3 | skip | 3장 은퇴 | E1 + V3 | 0 | `test_ratio_guard_lets_half_of_the_cards_retire` |
+| C1 | 은퇴할 카드가 pass 상한보다 많음 | — | 상한만큼 은퇴, 나머지 `pending`으로 다음 pass | 0 | 0 | `test_settle_retires_at_most_the_pass_cap_and_finishes_on_the_next_pass`(상한 1로 patch) |
+| X1 | 은퇴 writer가 `ValueError` | — | 진단 행, 검수는 그대로, `pending` 유지, 다음 pass 은퇴 | 0 | 0 | `test_settle_error_is_logged_and_the_pass_goes_on` |
+| I1 | writer 뒤 기록 전 중단 | — | 기록 없음. 다음 pass는 열린 replace 행으로 `awaiting_pending_verification`(E0). 검수 뒤 같은 바이트 refresh에서 추출 1회 더 | 1회 더 E1 + V | 0 | 판정 경로가 H3와 같음 |
+| I2 | 기록 뒤 은퇴 전 중단 | — | `pending`이 남아 다음 `settle`이 잇는다 | 0 | 0 | C1 시험 |
+| R1 | 출시 1.1.4·1.1.6 retention·1.1.6 요약이 `supersession` 행을 만남 | — | 지우지 않고(행 1개 유지) 요약은 종류별 수에 센다 | 0 | 0 | `test_released_ledger_readers_keep_and_ignore_the_supersession_row` |
 
-같은 입력으로 다음 pass에서 계속 보류되는 칸: H2·H3·G3·G5·P1·P2·M2는 0회로 수렴한다. F3·F4·F7·M1·H5는 원문이 그대로면 lifecycle refresh 재시도(7일)마다 E1이 든다. 이 칸들은 추출 답이나 운영자 확인이 바뀌어야 수렴한다. 수정 전 현재 경로에서 형제 증명 없는 단일 카드의 H5와 같은 비용 구조다.
+같은 바이트로 다음 pass나 lifecycle 재시도에서 다시 과금하는 칸은 F1(일시적 실패의 기존 재시도), F5(기존 partial 재시도), I1(1회)뿐이다. 나머지는 기록으로 0이 된다. 보류 칸(`held_truncated`·`held_ratio`·`held_review_failed`·`incomplete`)은 원문이 바뀔 때만 다시 시도한다. 그동안 카드는 stale로 남고 UI의 원문 변경 배지로 보인다.
 
-쓴 버전: 1.0.x~1.1.6 카드 frontmatter(`sourceRevisions`·`triggers`·`createdBy`·관리 블록)는 같은 모양이다. 1.1.6 writer 카드로 H3r을 시험했다. 판정은 원장을 읽지 않으므로 원장 버전 축의 차이가 없다.
+쓴 버전: 1.0.x~1.1.6 카드 frontmatter는 같은 모양이고 1.1.6 writer 카드로 H3r을 시험했다. `supersession` 행은 이번 릴리스만 쓰고 읽는다.
 
 ### 호출부 (CodeGraphContext `find_callers`, repo_path=이 worktree, `rg` 보완)
 
-바뀐 기호: `wiki_compile_worker._reuse_source_revision`(대체 대상 검사 추가), `wiki_compile_worker.process_job`(`Outcomes` 기록과 `retire_after` 호출, 꼬리를 새 `_finish_refresh`로 분리). 새 기호: `supersession.citation`·`machine_card`·`guard_tripped`·`scan`·`Outcomes`·`retire_after`·`_diagnostic_row`, `lifecycle.api.retire_card`.
+바뀐 기호: `_reuse_source_revision`(기록 확인, `mark_attempt`), `process_job`(`Outcomes`·`record_after`, 꼬리 `_finish_refresh`), `process_job_settled`(`record_failure`), `_run_verify_pass`(`settle`), `pipeline.types.SUPPRESSION_KINDS`(`supersession` 추가), `pipeline.retention.source_gone`(`supersession` 키를 원문 경로로 판정). 새 기호: `supersession.citation`·`scan`·`recorded`·`mark_attempt`·`record_failure`·`record_after`·`settle`·`_settle_one`·`Outcomes`·`ratio_held`, `lifecycle.api.retire_card`.
 
-- `_reuse_source_revision`: 제품 `process_job` 하나. 시험 없음(직접 호출).
-- `selected_compiled_revision_card`: 바꾸지 않았다. 제품 `_reuse_source_revision`. 시험 `test_revision_skip.py` 6곳.
-- `process_job`: 제품 `process_job_settled` ← `_main_locked`(worker main). 시험 `test_checkout_fingerprints.py` 7곳, `test_revision_skip.py` 12곳, `test_summary_history.py` 2곳, `test_retrieval_overlay.py` 1곳, `test_compile_loop_110.py` 1곳, 새 `test_superseded_revision.py`. 기존 시험의 fake writer 카드는 관리 블록이 없어 대체 대상이 아니므로 결과가 같다.
-- `wiki_source_retire.retire_card`: 제품 `wiki_lifecycle.run`(`LEGACY_MISSING`·`UNPROVEN`), 새 `supersession.retire_after`(`lifecycle.api.retire_card` 경유). 시험 `test_wiki_source_retire.py` 3곳. 서명·동작 불변.
+- 제품: `_reuse_source_revision`·`record_after` ← `process_job` ← `process_job_settled` ← `_main_locked`. `settle` ← `_run_verify_pass` ← `_main_locked`(4곳). `lifecycle.api.retire_card` ← `supersession._settle_one`. `wiki_source_retire.retire_card`의 다른 제품 호출부는 `wiki_lifecycle.run` 2곳이고 서명·동작 불변.
+- `SUPPRESSION_KINDS` reader: `decisions.set_suppression`(허용 검사), `summary`(종류별 수). 기존 `suppressions('verify')`(`verify_suppression_hash`)·`suppressions('dedup')` reader는 kind로 걸러 영향이 없다.
+- 시험: `test_superseded_revision.py` 24개. `process_job` 기존 호출 시험(`test_revision_skip.py`·`test_checkout_fingerprints.py`·`test_summary_history.py`·`test_retrieval_overlay.py`·`test_compile_loop_110.py`)은 fake writer 카드가 관리 블록이 없어 분류 대상이 아니다. `test_pipeline_summary.py` 기대값에 `supersession: 0`, `test_retention.py` rt5에 `supersession` 행 판정을 더했다.
 - 영속 데이터 writer·reader:
-  - `retired-wiki/` 보관본과 sidecar: writer `card.archive_card`(`retire_card`·`retire_deleted_source`). 새 `proofHash` 값 `superseded_by_revision`. 제품 reader 없음(운영자 복구용).
-  - `wiki` 활동 이벤트 `retired`: writer `wiki_activity_log.append`. reader `event_log.wiki_tail`(`_WIKI_OUTCOMES`에 `retired` 포함, 추출기 `logTail`에 나타난다)과 `memvane:logs`.
-  - compile `candidate` 감사 행의 새 reason(`superseded_retire_guarded`·`superseded_scan_unavailable`·`superseded_source_changed`·`retired/superseded_by_revision`): writer `retire_after`. reader `pipeline.summary`(kind별 집계), `retention`, `wiki-ledger` CLI. 판정에 쓰이지 않는다.
-  - 카드 frontmatter: 읽기만 한다.
+  - `suppressions` kind `supersession`: writer `supersession._record`(현재만). reader `supersession._attempt`·`_pending`, `summary`, `retention`. 출시 1.1.4~1.1.6은 쓰지 않고, retention은 모르는 kind를 남기며(`source_gone`이 `False`), 1.1.6 요약은 종류별 수에 센다(R1 시험).
+  - `retired-wiki/` 보관본(sidecar `proofHash: superseded_by_revision`)과 `retired` 활동 이벤트: writer는 기존 `archive_card`·`wiki_activity_log.append`. reader는 `event_log.wiki_tail`과 `memvane:logs`.
+  - compile `candidate` 감사 행의 진단 reason(`superseded_held_truncated`·`superseded_retire_guarded`·`superseded_review_failed`·`superseded_retire_error`·`superseded_settle_error`·`superseded_scan_unavailable`·`supersession_record_failed`·`retired/superseded_by_revision`): 판정에 쓰이지 않는다.
 
 ### 실제 저장소 추정 (읽기 전용, 11-28)
 
-`/Users/dulee/work/qmd-auto-context` main checkout의 카드를 `python3 -B -I`로 읽어 `supersession.citation`으로 분류했다. 원문 파일은 읽기만 했고 원장·큐·카드에는 쓰지 않았다. 스크립트: `/private/tmp/claude-501/-Users-dulee-work-qmd-auto-context--orca-worktrees-qmd-auto-context-wiki-fix-c/d6de69bf-3fb4-4671-9951-5711202138a8/scratchpad/est/estimate.py`.
+`/Users/dulee/work/qmd-auto-context` main checkout의 카드를 `python3 -B -I`로 읽어 `supersession.citation`으로 분류했다. 원장·큐·카드에는 쓰지 않았다. 스크립트: `/private/tmp/claude-501/-Users-dulee-work-qmd-auto-context--orca-worktrees-qmd-auto-context-wiki-fix-c/d6de69bf-3fb4-4671-9951-5711202138a8/scratchpad/est/estimate2.py`.
 
-- 카드 648장, 전부 기계 카드. 대체 대상 카드 342장, 보호된 옛 revision 카드 0장.
-- 대체 대상이 있는 원문 45개. 그중 41개는 현재 revision의 verified 카드가 있어 지금까지 `already_compiled_revision`으로 끝나던 원문이다(이번 변경으로 추출이 다시 돈다). 나머지 4개는 원래도 추출하던 원문이고 이번 변경으로 은퇴가 붙는다.
-- 은퇴 후보 상한 342장(답이 모두 완전할 때 하한 69장 = 원문별 `max(0, 대체 대상 − 10)`의 합). 원문당 최대 27장(`docs/ROADMAP.md`). 대량 가드 기준 162장(648의 25%)을 넘는 원문은 없다.
-- 유료 호출 상한: 추출 41회(split 재요청이 붙으면 원문당 1회 더, 최대 82회), 검수 343회(원문별 `min(10, 대체 대상 + 현재 카드)`의 합). run당 추출 10회 예산이라 최소 5 run에 나뉜다.
-- service-engineering(카드 5,828장)은 증명 스캔과 같은 2,048장 상한에 걸려 형제 증명 skip 자체가 없다. 이번 변경으로 추출 수는 늘지 않고, 은퇴는 스캔 상한 때문에 돌지 않는다(`superseded_scan_unavailable` 행).
+- 카드 648장. 옛 revision 카드 342장: `SUPERSEDED` 325, `REFRESHABLE` 17(지문 없는 generated), `PROTECTED` 0.
+- 다시 추출하는 원문 41개(현재 verified 증명이 있어 지금까지 skip하던 원문). 4개는 원래 추출하던 원문이다.
+- 잘린 원문(12,000자 초과) 15개, 그 `SUPERSEDED` 162장(`REFRESHABLE` 포함 175장)은 `held_truncated`로 은퇴하지 않는다.
+- 은퇴 후보 상한 85장(잘리지 않은 원문에서 비율 가드가 허용하는 최대: 대체 대상 2장 이하면 전부, 3~20장이면 절반, 20장 초과면 0), 하한 0장(답이 모두 다시 내거나 검수가 실패하는 경우). 잘리지 않은 원문 중 대체 대상 20장 초과는 없다.
+- 유료 상한: 추출 41회(split 재요청 포함 82회), 검수 343회(원문별 `min(10, 대체·갱신 대상 + 현재 카드)`의 합). run당 추출 10회라 최소 5 run에 나뉜다. 같은 바이트의 재시도 비용은 0이다.
+- service-engineering(카드 5,828장)은 증명 스캔 상한 2,048장에 걸려 skip 자체가 없으므로 이번 변경으로 추출 수가 늘지 않고, 은퇴 스캔도 돌지 않는다.
 
 ### 검사
 
-- 수정 전 코드(`2fbf4339`)에서 새 시험 17개 중 15개 실패(red). 통과한 2개(H1, 빈 답)는 수정 전후 같은 결과여야 하는 칸이다.
-- `npm run test:focused -- --test-name-pattern test_superseded_revision memvane/wiki/compile/tests/run.test.mjs`: 17/17 통과.
-- teeth: `citation`의 보호 판정과 `guard_tripped`를 끄면 P1 시험과 M1 시험이 실패한다(원복 후 통과).
-- `npm run test:focused -- memvane/wiki/compile/tests/run.test.mjs`: 모듈 26/26, Python 시험 209개 통과.
-- `npm run test:focused -- memvane/wiki/lifecycle/tests/run.test.mjs memvane/wiki/verify/tests/run.test.mjs memvane/wiki/pipeline/tests/run.test.mjs`: 모듈 22/22, Python 시험 248개 통과.
-- `tests/structure/v1_guard.py --strict`·`--tests`: 모든 규칙 0. 새 모듈 `supersession.py`를 `context-map.json`에 등록했다.
-- 레인 D `b7ac41c3`·레인 A `55b3dd43`을 병합한 `4973a5f1`에서 다시 돌렸다. compile(`run.test.mjs`·`stale-1015.test.mjs`) 모듈 27/27·Python 시험 219개, lifecycle·verify·pipeline 모듈 22/22·Python 시험 250개, `wiki-db-provenance` e2e 통과. `static.test.mjs`는 G4 1건 실패: `memvane/wiki/lifecycle/git_branch_safety.py` 913줄이 기준선 871줄을 넘는다. 레인 A 브랜치 단독에서도 같은 값이다. 레인 C 파일은 기준선 안이다(`wiki_compile_worker.py` 1,895/2,006줄).
+- 리뷰 반영 전 코드(`6023b1d6`의 `supersession.py`·`wiki_compile_worker.py`·`pipeline/types.py`·`retention.py`)에서 새 시험 23개 중 16개 실패(red: 13 failure + 3 error, H6 시험은 그 뒤에 추가).
+- `npm run test:focused -- --test-name-pattern test_superseded_revision memvane/wiki/compile/tests/run.test.mjs`: 24/24 통과.
+- `npm run test:focused -- memvane/wiki/compile/tests/run.test.mjs memvane/wiki/compile/tests/stale-1015.test.mjs`: 모듈 27/27, Python 시험 225개 통과.
+- `npm run test:focused -- memvane/wiki/pipeline/tests/run.test.mjs memvane/wiki/lifecycle/tests/run.test.mjs memvane/wiki/verify/tests/run.test.mjs`: 모듈 22/22, Python 시험 250개 통과.
+- `tests/structure/v1_guard.py --strict`·`--tests`: 모든 규칙 0.
 
 ### 남은 위험
 
-- `docs/git-worktree-search-sync-policy.md` 47행은 "신뢰 카드가 있으면 `already_compiled_revision`"으로 적혀 있다. 이 레인의 수정 범위 밖이라 통합 때 대체 대상 조건을 함께 적어야 한다.
-- F3·F4·F7·M1·H5는 원문이 바뀌지 않으면 7일마다 추출 1회가 든다.
-- I1(writer 뒤 은퇴 전 중단)은 추출 1회와 다시 나온 카드 검수를 한 번 더 산다.
-- 은퇴는 추출 답이 원문의 현재 전체 설명이라는 전제에 기댄다. 모델이 주제를 빠뜨리면 그 카드는 은퇴한다(보관본은 `retired-wiki/`에 남는다).
-- "사람이 편집한 카드" 판정은 바이트로 보이는 흔적(관리 블록 밖 본문, 검수 지문 불일치, `createdBy`)만 본다. 관리 블록 안을 고치고 검수 지문이 없는 generated 카드는 기계 카드로 본다.
+- 보류 칸은 원문이 바뀔 때까지 stale 카드를 남긴다. 특히 잘린 큰 원문(15개, 175장)과 대체 대상이 20장을 넘는 원문은 이 규칙으로는 은퇴하지 않는다. 운영자가 원문을 나누거나 `maxSourceChars`를 조정해야 수렴한다.
+- I1(writer 뒤 기록 전 중단)은 추출 1회를 더 산다.
+- 모델이 주제를 빠뜨린 답이 비율 가드 안(3장 미만 또는 절반 이하)이면 그 카드는 검수 통과 뒤 은퇴한다. 보관본은 `retired-wiki/`에 남는다.
