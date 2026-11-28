@@ -721,8 +721,28 @@ def process_row(root: Path, config: dict, compile_cfg: dict, vcfg: dict, store, 
                              remember=lambda value: store.record_verify_verdict(row['jobId'], token, value))
     # fail·inconclusive: 카드를 지우지 않는다. 첫 카드는 generated로 남아 recallVerifiedOnly
     # 기본값 아래 recall에서 빠지고, 교체본은 행의 종결과 함께 버려진다.
+    try:
+        _record_kept(store, job, text, recorded)
+    except (OSError, ValueError, sqlite3.Error):
+        # 1번 기준: 억제 없이 행을 닫으면 보존 정리 뒤 같은 바이트를 다시 유료 검수할 수 있다.
+        # 판정은 행에 기록돼 있으므로 다음 run은 추가 호출 없이 억제부터 다시 쓴다.
+        log_verdict(log_path, {**record, "result": "deferred", "reason": "kept_suppression_write_failed"})
+        return "queued", "kept_suppression_write_failed", False
     log_verdict(log_path, {**record, "result": "inconclusive" if recorded["verdict"] == "inconclusive" else "kept"})
     return "done", "kept", True
+
+
+def _record_kept(store, job: dict, text: str, recorded: dict) -> None:
+    """Key the reviewed bytes' SHA-256 to this negative verdict (``verify_kept`` suppression).
+
+    The terminal row goes with retention after 30 days; the suppression stays, so the one-time
+    review reload never pays for the same bytes again.
+    """
+    from memvane.wiki.pipeline.types import KEPT_SUPPRESSION
+    sha = _sha(text.encode('utf-8'))
+    store.set_suppression(KEPT_SUPPRESSION, sha, sha, {
+        'targetPath': job.get('targetPath', ''), 'kind': job.get('kind', 'review'),
+        'verdict': recorded['verdict'], 'engine': recorded.get('engine', ''), 'ts': now_iso()})
 
 
 def run(

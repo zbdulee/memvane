@@ -33,7 +33,12 @@ TERMINAL_RETENTION_NS = 30 * DAY_NS
 GENERATIONS_PER_CARD = 5
 RETENTION_BATCH = 500
 VACUUM_PAGES = 256
-SUPPRESSION_KINDS = ('verify', 'dedup')
+# ``verify``: a source body judged before (no re-extraction); ``dedup``: a judged page pair;
+# ``verify_kept``: card bytes (SHA-256 key) a negative review already settled (no re-review).
+SUPPRESSION_KINDS = ('verify', 'dedup', 'verify_kept')
+KEPT_SUPPRESSION = 'verify_kept'
+# ``pipeline_meta`` key set once the one-time review reload of unreviewed generated cards ran.
+REVIEW_RELOAD_MARKER = 'review_reload_v1_at'
 # Cooldown scopes; ``GLOBAL_COOLDOWN_KEY`` keys a scope-wide pause.
 COOLDOWN_SCOPES = ('compile', 'verify_engine', 'dedup_judge', 'dedup_judge_engine')
 GLOBAL_COOLDOWN_KEY = 'global'

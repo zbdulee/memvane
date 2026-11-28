@@ -41,3 +41,13 @@ def stamp_verification(path, status, engine, mode, body_hash, source_spans=None)
     from memvane.wiki.verify.verification_stamp import stamp_verification as implementation
     return implementation(path, status, engine, mode, body_hash, source_spans=source_spans)
 
+
+
+def v1_reviews(root, config):
+    from memvane.wiki.verify.review_queue import v1_reviews as implementation
+    return implementation(root, config)
+
+
+def reload_unreviewed(root, config):
+    from memvane.wiki.verify.review_queue import reload_unreviewed as implementation
+    return implementation(root, config)

@@ -2029,6 +2029,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/pipeline/review_reload.py": {
+      "context": "wiki/pipeline",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/pipeline/api.py": {
       "context": "wiki/pipeline",
       "layer": "application",

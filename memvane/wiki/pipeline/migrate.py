@@ -1,10 +1,13 @@
 """One-time 1.x -> 2.0 cutover of a project's wiki compile state.
 
-Only the decision ledgers come across: ``generated-manifest.jsonl`` (machine
+The decision ledgers come across: ``generated-manifest.jsonl`` (machine
 retirement of generated cards when their source is deleted) and the paid-call
-suppressions ``verify-skipped.jsonl`` / ``dedup-skipped.jsonl``. Every 1.x
-in-progress artifact is discarded: a source change or a full-scan sync
-recreates the work. The import and its marker commit in one transaction; the
+suppressions ``verify-skipped.jsonl`` / ``dedup-skipped.jsonl``. Unfinished 1.x
+review rows (``verify-queue.jsonl`` and its ``.claimed.*`` files) come across only
+as the ``kind: review`` payloads the caller's ``reviews`` filter returns for them:
+a generated card is otherwise never queued again while its source stays the
+same. Every other 1.x in-progress artifact is discarded: a source change or a
+full-scan sync recreates the work. The import and its marker commit in one transaction; the
 1.x files are removed only after that commit, so a crash at any point either
 leaves everything to import again or leaves only removal to repeat.
 """
@@ -14,6 +17,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+from typing import Callable
 
 from memvane.wiki.pipeline.store import open_pipeline, pipeline_db_path
 
@@ -65,6 +69,13 @@ def _verify_skips(compile_dir: Path) -> list[dict]:
         if isinstance(source, str) and source and isinstance(body, str) and body:
             items.append({'key': source, 'bodyHash': body, 'row': row})
     return items
+
+
+def v1_review_rows(compile_dir: Path) -> list[dict]:
+    """Unfinished 1.x verify rows: the queue file, then each claimed file in name order."""
+    paths = [compile_dir / 'verify-queue.jsonl',
+             *sorted(p for p in compile_dir.glob('verify-queue.jsonl.claimed.*') if p.is_file())]
+    return [row for path in paths for _, _, row in _rows(path)]
 
 
 def _dedup_skips(compile_dir: Path) -> list[dict]:
@@ -137,18 +148,26 @@ def _marked(root: Path) -> bool:
         return store.meta_get(MARKER) is not None
 
 
-def migrate_from_v1(project_root: Path | str, *, wiki_root: Path | str | None = None) -> dict:
+def migrate_from_v1(project_root: Path | str, *, wiki_root: Path | str | None = None,
+                    reviews: Callable[[list[dict]], list[dict]] | None = None) -> dict:
     """Import the decision ledgers, commit the marker, then remove every 1.x artifact.
 
     Callers hold ``.compile-run.lock`` and the card/wiki locks, so no 1.1.4 writer runs
     concurrently and an in-flight 1.x worker has already released the run lock.
+    ``reviews`` maps the unfinished 1.x verify rows to the review payloads queued with
+    the marker; without it those rows are discarded.
     """
     root = Path(project_root)
     compile_dir = root / '.memvane/compile'
     wiki = _wiki_root(root, wiki_root)
+    if reviews is not None and not v1_migration_marked(root):
+        payloads = reviews(v1_review_rows(compile_dir))
+    else:
+        payloads = []
     with open_pipeline(root) as store:
         counts = store.import_v1_ledgers(
-            _manifest(compile_dir), _verify_skips(compile_dir), _dedup_skips(compile_dir), MARKER)
+            _manifest(compile_dir), _verify_skips(compile_dir), _dedup_skips(compile_dir), MARKER,
+            reviews=payloads)
     counts['removed'] = _remove_legacy(compile_dir, wiki)
     return counts
 

@@ -1656,6 +1656,7 @@ def _main():
             if args.json:
                 print(json.dumps({'processed': 0, 'remaining': 0, 'migration': migrated}, ensure_ascii=False))
             return 0
+        reload_unreviewed_cards(root, config)
         return _main_locked(args, root, config, compile_cfg, queue, selected_route)
     finally:
         os.close(run_lock)
@@ -1676,12 +1677,29 @@ def migrate_v1_state(root: Path, config: dict):
         if pipeline.v1_migration_marked(root) and not pipeline.needs_v1_migration(root, wiki_root=wiki_root):
             return True
         with cp.card_write_lock(root), cp.mutation_lock(root):
-            counts = pipeline.migrate_from_v1(root, wiki_root=wiki_root)
+            counts = pipeline.migrate_from_v1(root, wiki_root=wiki_root,
+                                              reviews=wiki_verify.v1_reviews(root, config))
     except (OSError, ValueError, sqlite3.Error) as exc:
         return 'failed:' + type(exc).__name__
     # Log row only (working-rules 3): the marker, not this line, records the cutover.
     pipeline.audit_log(root, 'migration').append(counts)
     return True
+
+
+def reload_unreviewed_cards(root: Path, config: dict):
+    """The one-time review reload right after the cutover check (verify ``review_queue``).
+
+    A failure leaves the marker unset, so a later pass reloads; compile continues either way.
+    """
+    from memvane.wiki.pipeline import api as pipeline
+    try:
+        counts = wiki_verify.reload_unreviewed(root, config)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        counts = {'reviewReloadFailed': type(exc).__name__}
+    if counts is not None:
+        # Log row only (working-rules 3): the marker, not this line, records the reload.
+        pipeline.audit_log(root, 'migration').append({'reviewReload': counts})
+    return counts
 
 
 def _retention_pass(root: Path, config: dict, selected_route) -> dict:
