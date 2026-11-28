@@ -66,6 +66,8 @@ D10(사람이 고친 카드)·D11(카드 2,048장 초과)·D12(rename)는 보고
 
 바뀐 기호: `LineageJudge.prefetch`(tip 조회를 하지 않고 경로만 등록), `LineageJudge._on_other_branch`, `LineageJudge._judge`(사유 `deleted_before_card_commit`), 새 `_tip_entry`·`_touched_on_tips`·`_touching_tips`·`_busy_tips`·`_is_here`·`_unchanged_since_base`·`_merge_bases`·`_base_entry`·`_z_entries`. `wiki_source_retire`: 새 `_lineage_blockers`·`_log_held_change`·`_held_state`·`_save_held_state`·`_held_state_path`, `_record_held`(bool 반환). `lineage_hold`는 제품·테스트 호출부가 0이라 지웠다(`rg -n lineage_hold` 0건).
 
+모듈 배치: tip 소유 판정(`_on_other_branch`·`_tip_entry`·`_touched_on_tips`·`_touching_tips`·`_busy_tips`·`_is_here`·`_unchanged_since_base`·`_merge_bases`·`_base_entry`)과 git 출력 파서(`_nfc`·`_z_paths`·`_z_entries`), `MAX_PATHSPECS_PER_CALL`은 `memvane/wiki/lifecycle/branch_tips.py`의 mixin `BranchTips`에 있다. `LineageJudge(BranchTips)`가 `_git`(run deadline)·캐시·`_unmerged_tips`·`_deletion_commit`을 제공한다. G4 파일 상한 800줄 안에 두기 위한 배치다(`git_branch_safety.py` 779줄, `branch_tips.py` 153줄).
+
 제품 호출부:
 
 - `LineageJudge._judge` → `_on_other_branch`(규칙 2c·3a). `judge`는 `wiki_lifecycle.hold_invisible_sources`(`run`·`dry_run`)와 `wiki_source_retire._lineage_blockers`(`retire_deleted_source`)가 부른다.

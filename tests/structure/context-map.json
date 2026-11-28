@@ -1759,6 +1759,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/lifecycle/branch_tips.py": {
+      "context": "wiki/lifecycle",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/lifecycle/git_branch_safety.py": {
       "context": "wiki/lifecycle",
       "layer": "adapter",
