@@ -166,16 +166,15 @@ D10(사람이 고친 카드)·D11(카드 2,048장 초과)·D12(rename)는 보고
 
 | 프로젝트 | 상태 | 1.x 큐 줄 | 이관 행 | 재적재 행 | 비고 |
 |---|---|---:|---:|---:|---|
-| ktlo-check | 1.x(이관 전) | 27 | 25 | 0 | 승인 27 이내. 이관과 함께 마커 |
-| 무림을 리팩토링합니다 | 1.x(이관 전) | 91 | 87 | 0 | 승인 91 이내. 이관과 함께 마커 |
-| service-engineering | 1.1.4~1.1.6 cutover 완료 | — | 0 | 425 | generated 492, stale 36, 열린 행 18, review 종결 행 13. 425 중 10은 `replace` 종결 행만 있던 카드(m1) |
-| qmd-auto-context | 1.1.4~1.1.6 cutover 완료 | — | 0 | 4 | generated 24, stale 19, review 종결 행 1. 4 중 2는 m1 카드 |
+| 1.x 설치 A | 1.x(이관 전) | 27 | 25 | 0 | 이관과 함께 마커 |
+| 1.x 설치 B | 1.x(이관 전) | 91 | 87 | 0 | 이관과 함께 마커 |
+| 대형 설치 | 1.1.4~1.1.6 cutover 완료 | — | 0 | 425 | generated 492, stale 36, 열린 행 18, review 종결 행 13. 425 중 10은 `replace` 종결 행만 있던 카드(m1) |
+| 카나리 설치 | 1.1.4~1.1.6 cutover 완료 | — | 0 | 4 | generated 24, stale 19, review 종결 행 1. 4 중 2는 m1 카드 |
 
-승인 대비: ktlo-check와 무림은 승인 안이다. service-engineering은 승인 418보다 7, qmd-auto-context는 승인 2보다 2 많다. 초과분은 m1 수정으로 "검수된 것"에서 빠진 카드(SE 10, qmd 2)와 집계 시점 차이(SE는 운영 중이라 열린 행·generated 수가 바뀐다)다.
 
-### SE `queued` 9·`claimed` 6 정체 (읽기 전용 확인, 11-28)
+### 대형 설치 `queued` 9·`claimed` 6 정체 (읽기 전용 확인, 11-28)
 
-`errors._query_only_uri`와 `PRAGMA query_only=1`로 service-engineering 원장을 읽었다. 정체가 아니라 진행 중인 backlog다.
+`errors._query_only_uri`와 `PRAGMA query_only=1`로 대형 설치 원장을 읽었다. 정체가 아니라 진행 중인 backlog다.
 
 - 관측 시점의 열린 행은 `queued` 9(`review` 8·`replace` 1, 모두 `attempt_count` 0, 생성 1.4~1.5시간 전, 엔진 `claude`)이고 `claimed`는 0이다. verify 쿨다운·fence는 없다.
 - 최근 12시간에 verify 행 311개가 생기고 302개가 종결됐다. 마지막 `verify_log`는 12분 전이고 최근 40행은 `verified` 35·`inconclusive` 5다.
@@ -192,12 +191,11 @@ D10(사람이 고친 카드)·D11(카드 2,048장 초과)·D12(rename)는 보고
 
 ### 남은 위험
 
-- 재적재 행 수가 승인치를 넘는다: service-engineering 425(승인 418), qmd-auto-context 4(승인 2). m1 카드(SE 10, qmd 2)가 더해졌고, SE는 운영 중이라 집계가 바뀐다.
 - 생산 엔진을 원장에서 찾을 수 없는 카드는 재적재하지 않는다(G2e).
 - G4b: 출시된 1.1.4~1.1.6 verifier가 `done/kept`로 닫은 행이 재적재 첫 실행 전에 보존 정리로 지워졌다면 그 카드는 한 번 다시 유료 검수된다. 현재 관측된 원장은 11-27 생성이라 30일에 닿지 않았다.
 - 1.x 판정 제외는 `verify-log.jsonl`에 기대므로, 로그가 trim돼 판정 기록이 없는 claim 파일 행은 가져온다. 관측한 1.x 프로젝트 6개에는 claim 파일이 없다.
 - 1.1.1~1.1.2의 첫 카드 검수 대기(`.handoff/v1/hold/`)는 cutover가 가져오지 않고, 이 버전의 cutover는 재적재도 하지 않는다. 그 카드는 원문이 바뀌어 refresh되기 전까지 `generated`로 남는다. 관측한 1.x 프로젝트의 큐는 `verify-queue.jsonl`에 있다.
-- service-engineering(카드 5,828장)은 재적재 첫 회차에 위키 카드 전체를 한 번 읽는다. 유료 호출은 없다.
+- 대형 설치(카드 5,828장)는 재적재 첫 회차에 위키 카드 전체를 한 번 읽는다. 유료 호출은 없다.
 
 ## 레인 C: 형제 증명 short-circuit 축소와 옛 revision 카드 은퇴
 
@@ -290,14 +288,14 @@ E = 추출, V = 검수. 유료 열은 첫 시도와 원문이 그대로일 때�
 
 ### 실제 저장소 추정 (읽기 전용, 11-28)
 
-`/Users/dulee/work/qmd-auto-context` main checkout의 카드를 `python3 -B -I`로 읽어 `supersession.citation`으로 분류했다. 원장·큐·카드에는 쓰지 않았다. 스크립트: `/private/tmp/claude-501/-Users-dulee-work-qmd-auto-context--orca-worktrees-qmd-auto-context-wiki-fix-c/d6de69bf-3fb4-4671-9951-5711202138a8/scratchpad/est/estimate2.py`.
+카나리 저장소 main checkout의 카드를 `python3 -B -I`로 읽어 `supersession.citation`으로 분류했다. 원장·큐·카드에는 쓰지 않았다. 스크립트는 이 레인 scratchpad에 두었다.
 
 - 카드 648장. 옛 revision 카드 342장: `SUPERSEDED` 325, `REFRESHABLE` 17(지문 없는 generated), `PROTECTED` 0.
 - 다시 추출하는 원문 41개(현재 verified 증명이 있어 지금까지 skip하던 원문). 4개는 원래 추출하던 원문이다.
 - 잘린 원문(12,000자 초과) 15개, 그 `SUPERSEDED` 162장(`REFRESHABLE` 포함 175장)은 `held_truncated`로 은퇴하지 않는다.
 - 은퇴 후보 상한 85장(잘리지 않은 원문에서 비율 가드가 허용하는 최대: 대체 대상 2장 이하면 전부, 3~20장이면 절반, 20장 초과면 0), 하한 0장(답이 모두 다시 내거나 검수가 실패하는 경우). 잘리지 않은 원문 중 대체 대상 20장 초과는 없다.
 - 유료 상한: 추출 41회(split 재요청 포함 82회), 검수 343회(원문별 `min(10, 대체·갱신 대상 + 현재 카드)`의 합). run당 추출 10회라 최소 5 run에 나뉜다. 같은 바이트의 재시도 비용은 0이다.
-- service-engineering(카드 5,828장)은 증명 스캔 상한 2,048장에 걸려 skip 자체가 없으므로 이번 변경으로 추출 수가 늘지 않고, 은퇴 스캔도 돌지 않는다.
+- 대형 설치(카드 5,828장)는 증명 스캔 상한 2,048장에 걸려 skip 자체가 없으므로 이번 변경으로 추출 수가 늘지 않고, 은퇴 스캔도 돌지 않는다.
 
 ### 검사
 
@@ -370,7 +368,7 @@ E = 추출, V = 검수. 유료 열은 첫 시도와 원문이 그대로일 때�
 
 `read_adapters._dotgit`은 루트에서 위로 첫 `.git`을 찾는다. git 기본 탐색처럼 파일 시스템 경계에서 멈추고, HOME 아래 루트는 HOME 위로 올라가지 않는다. 코어는 import하지 않는다. `.git`이 디렉터리면 그대로, 일반 파일이면 `gitdir:` 포인터를 4 KiB 상한으로 읽고, 그 밖(심볼릭 링크 등)이면 `unknown`이다. `HEAD`는 `O_NOFOLLOW`·4 KiB 상한으로 읽는다. 루트가 없거나 관측할 수 없는 행은 브랜치를 읽지 않는다.
 
-코어와의 차이: `store.checkout.checkout_view._dotgit`은 경계·HOME 없이 `/`까지 올라간다. 장치 경계 너머의 `.git`은 코어도 뒤이은 `git rev-parse`가 실패해 브랜치를 얻지 못하므로 결과는 같다. HOME 위 저장소(예: `/Users/.git`)는 코어와 git이 찾지만 UI는 `non-git`으로 보인다. 코어는 고치지 않았다.
+코어와의 차이: `store.checkout.checkout_view._dotgit`은 경계·HOME 없이 `/`까지 올라간다. 장치 경계 너머의 `.git`은 코어도 뒤이은 `git rev-parse`가 실패해 브랜치를 얻지 못하므로 결과는 같다. HOME 위 저장소(예: 사용자 홈 상위 디렉터리의 `.git`)는 코어와 git이 찾지만 UI는 `non-git`으로 보인다. 코어는 고치지 않았다.
 
 - 시험: `test_sse_and_reads.py::test_the_walk_stops_above_home_and_at_a_file_system_boundary`(HOME 위 저장소 → `non-git`, HOME 자체 저장소 → 그 브랜치, `os.lstat`의 `st_dev`를 바꾼 경계 → `non-git`), `test_sse_and_reads.py::test_a_folder_inside_a_checkout_reads_the_nearest_git_above_it`(저장소 하위 폴더 → `main`, 연결 worktree 하위 폴더 → `side`, 상위 `.git` 심볼릭 링크 → `unknown`), `test_overview_states.py::test_a_project_folder_inside_a_repository_reads_the_repository_branch`(저장소 하위 폴더에 온보딩한 실제 설치 → Overview `main`).
 
