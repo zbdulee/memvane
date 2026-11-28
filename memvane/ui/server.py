@@ -223,6 +223,7 @@ ROUTES = (
     ('GET', re.compile(rf'/api/targets/{_TARGET_RE}/wiki/source'), 'wiki_source'),
     ('POST', re.compile(rf'/api/targets/{_TARGET_RE}/query-playground'), 'query_playground'),
     ('GET', re.compile(r'/api/runtime'), 'runtime'),
+    ('GET', re.compile(r'/api/runtime/disk'), 'runtime_disk'),
     ('GET', re.compile(r'/api/installs/([0-9a-f]{32})/learning'), 'learning'),
     ('POST', re.compile(r'/api/installs/([0-9a-f]{32})/learning/check'), 'learning_check'),
     ('GET', re.compile(r'/api/events/stream'), 'stream'),
@@ -421,7 +422,14 @@ class Handler(BaseHTTPRequestHandler):
             _norm_target(target_id), body, home=self.app.home))
 
     def _runtime(self, query):
-        return self._json(200, runtime_adapters.runtime_overview(home=self.app.home))
+        return self._json(200, runtime_adapters.runtime_overview(home=self.app.home, include_disk=False))
+
+    def _runtime_disk(self, query):
+        first = {key: values[0] for key, values in query.items() if values}
+        refresh = first.get('refresh', '0')
+        if refresh not in ('0', '1'):
+            return self._error(400, 'refresh_invalid')
+        return self._json(200, runtime_adapters.disk_overview(home=self.app.home, refresh=refresh == '1'))
 
     def _learning(self, install_id, query):
         return self._json(200, runtime_adapters.learning_overview(

@@ -8,6 +8,8 @@ interface Props {
   projects: readonly ProjectGroup[];
   tab: TabId;
   selected: TargetId | null;
+  /** True until the first overview answer arrives; distinguishes "loading" from "no projects". */
+  loading?: boolean;
 }
 
 const VIEW_BADGE: Record<LinkedWorktreeNode['viewState'], {tone: Tone; label: string; title: string}> = {
@@ -74,7 +76,7 @@ function TreeNode(props: {node: WorktreeNode; active: boolean; tab: TabId; toggl
   );
 }
 
-export function SidebarTree({projects, tab, selected}: Props) {
+export function SidebarTree({projects, tab, selected, loading = false}: Props) {
   const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const needle = query.trim().toLowerCase();
@@ -128,9 +130,11 @@ export function SidebarTree({projects, tab, selected}: Props) {
         </div>
         <div class="nav-section-label">
           <span>온보딩 프로젝트</span>
-          <span class="mono">{projects.length}</span>
+          <span class="mono">{loading ? '…' : projects.length}</span>
         </div>
-        {visible.length === 0
+        {loading
+          ? <div class="sidebar-empty" role="status">프로젝트 목록을 불러오는 중…</div>
+          : visible.length === 0
           ? <div class="sidebar-empty">{needle === '' ? '온보딩된 프로젝트가 없습니다.' : '검색 결과가 없습니다.'}</div>
           : visible.map(({group, worktrees}) => {
             const open = needle !== '' || !collapsed.has(group.installId);

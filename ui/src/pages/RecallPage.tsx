@@ -119,14 +119,17 @@ const STAGES: readonly {key: keyof RecallStageTimings; label: string; color: str
 ];
 
 function LatencyBar({timings, totalMs}: {timings: RecallStageTimings; totalMs: number | null}) {
-  const parts = STAGES.flatMap(stage => {
+  const parts: {id: string; label: string; color: string; ms: number}[] = STAGES.flatMap(stage => {
     const raw = timings[stage.key];
     if (raw === null || raw === undefined || !Number.isFinite(raw) || raw <= 0) return [];
-    return [{...stage, ms: stage.seconds === true ? raw * 1000 : raw}];
+    return [{id: stage.key, label: stage.label, color: stage.color, ms: stage.seconds === true ? raw * 1000 : raw}];
   });
   const staged = parts.reduce((sum, part) => sum + part.ms, 0);
   const scale = Math.max(staged, totalMs ?? 0);
   if (parts.length === 0 || scale <= 0) return <span class="muted">단계 시간 없음</span>;
+  // Time the stages do not account for (hook start-up, I/O, rendering) as its own segment.
+  const rest = totalMs === null ? 0 : totalMs - staged;
+  if (rest >= 1) parts.push({id: 'overhead', label: '기타/오버헤드', color: 'var(--text-secondary)', ms: rest});
   const summary = parts.map(part => `${part.label} ${formatMs(part.ms)}`).join(' · ');
   return (
     <div ref={styled({display: 'flex', 'flex-direction': 'column', gap: '3px', 'min-width': '180px'})}>
@@ -138,7 +141,7 @@ function LatencyBar({timings, totalMs}: {timings: RecallStageTimings; totalMs: n
           background: 'var(--bg-surface-2)', border: '1px solid var(--border)'})}
       >
         {parts.map(part => (
-          <span key={part.key} title={`${part.label} ${formatMs(part.ms)}`}
+          <span key={part.id} title={`${part.label} ${formatMs(part.ms)}`}
             ref={styled({width: `${((part.ms / scale) * 100).toFixed(2)}%`, background: part.color, height: '100%'})} />
         ))}
       </div>
@@ -384,6 +387,15 @@ function StageTable({result, onOpenCard}: {result: DryRunRecallResponse; onOpenC
   );
 }
 
+const GENERATION_CHARS = 14;
+
+function GenerationBadge({generation}: {generation: string}) {
+  const short = generation.length > GENERATION_CHARS ? `${generation.slice(0, GENERATION_CHARS)}…` : generation;
+  return <Badge tone="muted" mono title={`generation ${safeText(generation)}`}>gen {safeText(short)}</Badge>;
+}
+
+const RUN_SHORTCUT = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘ + Enter' : 'Ctrl + Enter';
+
 function PlaygroundResult({result, onOpenCard}: {result: DryRunRecallResponse; onOpenCard: (path: string) => void}) {
   const selector = result.selectorResult;
   const total = result.timings['totalMs'];
@@ -396,7 +408,7 @@ function PlaygroundResult({result, onOpenCard}: {result: DryRunRecallResponse; o
         <Badge tone="muted" mono>reason: {safeText(result.reason) || '—'}</Badge>
         <SemanticBadge status={result.semanticStatus} covered={result.vectorCoveredMembers} eligible={result.vectorEligibleMembers} />
         {result.fallbackReason !== null ? <Badge tone="amber" mono>fallback: {safeText(result.fallbackReason)}</Badge> : null}
-        {result.generation !== null ? <Badge tone="muted" mono>gen {safeText(result.generation)}</Badge> : null}
+        {result.generation !== null ? <GenerationBadge generation={result.generation} /> : null}
         {total !== undefined ? <Badge tone="muted" mono>{formatMs(total)}</Badge> : null}
       </div>
       {result.notes.length > 0
@@ -486,18 +498,19 @@ function Playground({selected, runPlayground, onOpenCard}: {
             'font-family': 'var(--font-mono)', 'font-size': '12px', color: 'var(--text-primary)'})}
         />
         <div ref={styled(ROW)}>
-          <label ref={styled(ROW)}>
+          <label ref={styled(ROW)} title="useSemantic: 임베딩 코사인 단계를 함께 실행합니다">
             <input type="checkbox" checked={useSemantic} onChange={event => setUseSemantic(event.currentTarget.checked)} />
-            semantic (useSemantic)
+            Semantic 검색
           </label>
-          <label ref={styled(ROW)}>
+          <label ref={styled(ROW)} title="useSelector: 학습된 Selector로 최종 카드를 고릅니다">
             <input type="checkbox" checked={useSelector} onChange={event => setUseSelector(event.currentTarget.checked)} />
-            selector (useSelector)
+            Selector 적용
           </label>
           <span class="muted mono">{formatCount(prompt.length)} / {formatCount(MAX_PROMPT_CHARS)}</span>
-          <button type="button" class="btn" disabled={trimmed === '' || tooLong || running} onClick={run}>
+          <button type="button" class="btn" disabled={trimmed === '' || tooLong || running} onClick={run} title={RUN_SHORTCUT}>
             {running ? '실행 중…' : '실행'}
           </button>
+          <span class="muted kbd-hint" aria-hidden="true"><kbd>{RUN_SHORTCUT}</kbd>로 실행</span>
         </div>
         {error !== null ? <div class="inline-error mono">dry run 실패: {safeText(error)}</div> : null}
         {result !== null ? <PlaygroundResult result={result} onOpenCard={onOpenCard} /> : null}

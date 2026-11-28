@@ -47,7 +47,8 @@ SSE 연결이 0개이고 마지막 연결 종료 후 `reconnectGraceSeconds`가 
 | `GET /api/targets/<targetId>/wiki/card?rel=` | 세션 | 카드 메타데이터·auto/수동 블록·연관 카드·근거 위치 |
 | `GET /api/targets/<targetId>/wiki/source?rel=&highlights=` | 세션 | 체크아웃 경계(`O_NOFOLLOW`) 내 원문 파일과 강조 범위 |
 | `POST /api/targets/<targetId>/query-playground` | 세션 | 부작용 없는 dry run(`prompt`·`useSemantic`·`useSelector`) 4단계 비교 |
-| `GET /api/runtime` | 세션 | wake 대기열(read-only), resident 증명·worker, 디스크 사용량 |
+| `GET /api/runtime` | 세션 | wake 대기열(read-only), resident 증명·worker. 디스크 집계 없이 즉시 응답하며 `disk`는 빈 배열 |
+| `GET /api/runtime/disk` | 세션 | 디스크 사용량. 60초 TTL 프로세스 캐시를 쓰고 `?refresh=1`이면 다시 집계(`refresh`는 `0`·`1`만, 그 밖은 400 `refresh_invalid`) |
 | `GET /api/installs/<id>/learning`, `POST /api/installs/<id>/learning/check` | 세션 | Selector 승격 게이트·지표·teacher 및 on-demand 무결성 점검 |
 | `GET /api/events/stream` | 세션 | SSE(`heartbeat`·`session_started`·`events_updated`·`runtime_updated`·`server_draining`) |
 | `PUT /api/preferences`, `POST /api/shutdown` | 세션 | preferences 변경, 서버 종료 |
