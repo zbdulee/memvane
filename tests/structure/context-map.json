@@ -1579,6 +1579,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/compile/supersession.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/compile/types.py": {
       "context": "wiki/compile",
       "layer": "domain",

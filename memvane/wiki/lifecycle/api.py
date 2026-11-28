@@ -15,6 +15,11 @@ def run_lifecycle(project):
     return implementation(project)
 
 
+def retire_card(root, wiki_root, selected, card, expected, proof_hash):
+    from memvane.wiki.lifecycle.wiki_source_retire import retire_card as implementation
+    return implementation(root, wiki_root, selected, card, expected, proof_hash)
+
+
 def retire_deleted_source(root, config, selected, collection, rel, prior_hash, *, lineage=None):
     from memvane.wiki.lifecycle.wiki_source_retire import retire_deleted_source as implementation
     return implementation(root, config, selected, collection, rel, prior_hash, lineage=lineage)

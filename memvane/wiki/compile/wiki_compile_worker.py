@@ -39,7 +39,7 @@ from memvane.wiki.intake.api import source_record as _source_record
 from memvane.wiki.workspace.api import (queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path,
                                         read_queue, claim_queue,
                                         parse_ts as _parse_ts)
-from memvane.wiki.compile import backfill_work, wiki_compile as wc
+from memvane.wiki.compile import backfill_work, supersession, wiki_compile as wc
 from memvane.wiki.verify import api as wiki_verify
 from memvane.learning.api import card_prompt_budget, emit_card_budget
 from memvane.wiki.card import api as wiki_freshness, types as wiki_markers
@@ -686,6 +686,12 @@ def _reuse_source_revision(root, config, job, source_revision, selected_route, b
     proof_card = (selected_compiled_revision_card(root, selected_route, source_revision, content_only=True)
                   if reuse else None)
     if proof_card is not None:
+        superseded = supersession.scan(root, selected_route, source_revision)
+        if superseded is None or superseded[0]:
+            # A card of this source still cites an older revision: one extraction of
+            # these bytes rewrites or retires it (``supersession.retire_after``).
+            proof_card = None
+    if proof_card is not None:
         wiki_selected_laya.recheck(selected_route)
         if bound_pending is not None and not wiki_freshness.resolve_pending_refresh(
                 root, bound_pending, source_revision, [source_revision],
@@ -1112,6 +1118,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         # Persist the complete answer before the first writer can change a card.
         extracted = frozen.prepare(extracted, engine)
         candidates = extracted['candidates']
+    superseding = supersession.Outcomes(root, source_revision, candidates, max_cards)
     candidates = _bounded_candidates(candidates, max_cards, job, cpath)
     failed_compile = False
     refresh_complete = bool(candidates)
@@ -1205,7 +1212,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
                 outcomes.append(result.get("action") if isinstance(result, dict)
                                 and isinstance(result.get("action"), str) else "rejected")
                 continue
-            result = _write_round_candidate(root, candidate, final_reason, frozen, index, original)
+            result = superseding.note(_write_round_candidate(root, candidate, final_reason, frozen, index, original))
             action = result.get("action") if isinstance(result, dict) else None
             outcomes.append("written" if action in ("created", "updated")
                             else action if isinstance(action, str) else "rejected")
@@ -1270,6 +1277,12 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         # before the retry, and the revision guard must not read that as done.
         job["partialCompile"] = True
         return False, True, verify_targets
+    supersession.retire_after(root, job, src, source_revision, selected_route, cpath, superseding)
+    return _finish_refresh(root, refresh_complete, bound_pending, source_revision, verify_targets)
+
+
+def _finish_refresh(root, refresh_complete, bound_pending, source_revision, verify_targets):
+    """The finished job's result; a complete refresh first resolves its pending event."""
     if refresh_complete and bound_pending is not None:
         if not wiki_freshness.resolve_pending_refresh(
             root, bound_pending, source_revision, [source_revision],
