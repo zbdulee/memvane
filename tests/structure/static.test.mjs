@@ -4,6 +4,7 @@ import {existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathS
 import {tmpdir} from 'node:os';
 import {extname, join, resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
+import {gzipSync} from 'node:zlib';
 
 const python = process.env.STRUCTURE_TEST_PYTHON || 'python3';
 const here = resolve('tests/structure');
@@ -540,4 +541,57 @@ test('documents and instructions name the state base the product writes', () => 
     });
   }
   assert.deepEqual(stale, []);
+});
+
+// ui/: the dashboard frontend is a build-time-only package; the plugin serves
+// the committed ui/dist/ and never runs npm or vite (docs/design-local-web-ui.md §3).
+function uiFiles(dir) {
+  return readdirSync(dir, {withFileTypes: true}).flatMap(entry => {
+    const path = join(dir, entry.name);
+    return entry.isDirectory() ? uiFiles(path) : [path];
+  });
+}
+
+// XML namespace URIs that Preact and SVG markup carry; they are never fetched.
+const UI_NAMESPACES = new Set(['http://www.w3.org/2000/svg', 'http://www.w3.org/1999/xhtml',
+  'http://www.w3.org/1998/Math/MathML']);
+
+test('ui/dist references no external address', () => {
+  const files = uiFiles('ui/dist');
+  assert.ok(files.includes(join('ui', 'dist', 'index.html')), 'ui/dist/index.html is committed');
+  const external = [];
+  for (const file of files) {
+    for (const match of readFileSync(file, 'latin1').matchAll(/https?:\/\/[^\s"'`<>)\\]*/g)) {
+      if (!UI_NAMESPACES.has(match[0])) external.push(`${file}: ${match[0]}`);
+    }
+  }
+  assert.deepEqual(external, []);
+});
+
+test('ui/src renders no raw HTML and evaluates no strings', () => {
+  const forbidden = [/dangerouslySetInnerHTML/, /innerHTML/, /\beval\(/, /new Function\(/,
+    // style-src 'self': styles come from classes or style.setProperty, never a style attribute.
+    /\sstyle=/];
+  const sources = [...uiFiles('ui/src'), 'ui/index.html'].filter(file => /\.(tsx?|html)$/.test(file));
+  assert.ok(sources.length > 5, `only ${sources.length} ui sources found`);
+  const hits = [];
+  for (const file of sources) {
+    readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+      for (const pattern of forbidden) if (pattern.test(line)) hits.push(`${file}:${index + 1}: ${pattern}`);
+    });
+  }
+  assert.deepEqual(hits, []);
+});
+
+test('ui/dist stays within its size budget', () => {
+  let raw = 0;
+  let gzip = 0;
+  for (const file of uiFiles('ui/dist')) {
+    const bytes = readFileSync(file);
+    raw += bytes.length;
+    gzip += gzipSync(bytes, {level: 9}).length;
+  }
+  assert.ok(raw > 0, 'ui/dist is empty');
+  assert.ok(gzip <= 100 * 1024, `ui/dist is ${gzip} bytes gzipped (limit 100 KiB)`);
+  assert.ok(raw <= 400 * 1024, `ui/dist is ${raw} bytes uncompressed (limit 400 KiB)`);
 });

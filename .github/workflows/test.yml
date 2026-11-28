@@ -96,3 +96,23 @@ jobs:
           name: module-results-macos-${{ matrix.shard }}
           path: ${{ runner.temp }}/module-results.jsonl
           if-no-files-found: ignore
+
+  # ui/: the committed ui/dist/ must equal a fresh build from the lockfile on both platforms.
+  ui:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build ui/dist and compare with the committed copy
+        run: |
+          npm --prefix ui ci --ignore-scripts
+          npm --prefix ui run typecheck
+          npm --prefix ui run build
+          git diff --exit-code ui/dist
+          test -z "$(git status --porcelain --untracked-files=all ui/dist)"

@@ -1,0 +1,20 @@
+{
+  "name": "memvane-ui",
+  "private": true,
+  "version": "0.0.0",
+  "description": "MemVane local web dashboard frontend. Build-time only: the plugin serves the prebuilt ui/dist/.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "preact": "10.29.8"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "2.10.6",
+    "typescript": "5.9.3",
+    "vite": "7.3.8"
+  }
+}

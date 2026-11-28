@@ -9,7 +9,7 @@ test("manual skills expose setup and existing skills; review and hint are not sk
     .filter((name) => name !== "qmd")
     .sort();
 
-  assert.deepEqual(skillDirs, ["logs", "query", "setup", "update", "wiki-compile", "wiki-dedup"]);
+  assert.deepEqual(skillDirs, ["logs", "query", "setup", "ui", "update", "wiki-compile", "wiki-dedup"]);
   assert.equal(existsSync("skills/sync"), false);
   assert.equal(existsSync("skills/wiki-source-repair"), false);
   assert.equal(existsSync("skills/hint"), false);
@@ -26,7 +26,7 @@ test("plugin descriptions list manual skills without hint", () => {
 
   for (const file of files) {
     const text = readFileSync(file, "utf8");
-    assert.match(text, /setup\/query\/update\/wiki-compile\/wiki-dedup\/logs manual skills/);
+    assert.match(text, /setup\/query\/update\/wiki-compile\/wiki-dedup\/logs\/ui manual skills/);
     assert.doesNotMatch(text, /wiki-source-repair/);
     assert.doesNotMatch(text, /wiki-review/);
   }
@@ -38,6 +38,21 @@ test("setup skill exposes the Laya onboarding entry", () => {
   assert.match(skill, /entry\/setup\.py/);
   assert.match(skill, /plan-fresh-wiki-origin.*review-index-provider.*prepare-fresh-wiki-origin.*finalize-index-origin.*activate-index-origin/s);
   assert.doesNotMatch(skill, /install_update|plan-install|enroll-store/);
+});
+
+test("ui skill forwards to entry/run.py ui through a Python wrapper", () => {
+  const skill = readFileSync("skills/ui/SKILL.md", "utf8");
+  assert.match(skill, /^name: ui$/m);
+  assert.match(skill, /skills\/ui\/scripts\/ui\.py" open --cwd "\$PWD"/);
+  assert.match(skill, /manualUrl/);
+  assert.equal(existsSync("skills/ui/scripts/ui.sh"), false);
+  const wrapper = readFileSync("skills/ui/scripts/ui.py", "utf8");
+  assert.match(wrapper, /parents\[3\]/);
+  assert.match(wrapper, /'entry' \/ 'run\.py'\), 'ui'/);
+  assert.match(wrapper, /'-B'/);
+  assert.doesNotMatch(wrapper, /shell=True/);
+  const entry = readFileSync("entry/run.py", "utf8");
+  assert.match(entry, /'ui': \('memvane\.ui\.cli:main', \(\), True\)/);
 });
 
 test("wiki-compile skill metadata and wrapper contract", () => {

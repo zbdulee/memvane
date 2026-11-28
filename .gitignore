@@ -1,4 +1,7 @@
 node_modules/
+ui/node_modules/
+# ui/dist/ is committed build output, even where a global ignore lists dist/.
+!ui/dist/
 .worktrees
 *.bak
 *.bak-*
