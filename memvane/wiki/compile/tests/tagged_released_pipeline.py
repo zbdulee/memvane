@@ -2,8 +2,9 @@
 
 Run with the release first on PYTHONPATH (cwd = its archive):
   migrate <root>          -> the release's ``migrate_from_v1`` (1.x review rows discarded)
-  verify <root> <runs>    -> the release's verify ``run`` that many times, the host CLI answering
-                             ``pass``; prints the number of paid calls
+  verify <root> <runs> [verdict]
+                          -> the release's verify ``run`` that many times, the host CLI answering
+                             ``verdict`` (default ``pass``); prints the paid calls
 """
 import contextlib
 import io
@@ -30,7 +31,8 @@ else:
 
     def answer(argv, payload, timeout, cwd):
         calls.append(payload['card']['path'])
-        return ({'verdict': 'pass', 'claims': [{'claim': 'c', 'supported': True, 'quote': 'q'}],
+        verdict = sys.argv[5] if len(sys.argv) > 5 else 'pass'
+        return ({'verdict': verdict, 'claims': [{'claim': 'c', 'supported': verdict == 'pass', 'quote': 'q'}],
                  'reasons': []}, None, 0)
     with mock.patch('memvane.wiki.engines.api.run_extractor', answer), \
             contextlib.redirect_stdout(io.StringIO()):

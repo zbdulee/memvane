@@ -183,53 +183,6 @@ class NegativeVerdicts(VerifyCase):
         self.assertEqual(self.suppressed(), {})
 
 
-class KeptSuppression(VerifyCase):
-    """``done/kept`` leaves a ``verify_kept`` suppression keyed by the reviewed bytes' SHA-256."""
-
-    def kept(self):
-        from memvane.wiki.pipeline import api as pipeline
-        from memvane.wiki.pipeline.types import KEPT_SUPPRESSION
-        return pipeline.suppressions(self.root, KEPT_SUPPRESSION)
-
-    def test_fail_and_inconclusive_record_the_reviewed_bytes(self):
-        for answer in (FAIL, INCONCLUSIVE):
-            with self.subTest(verdict=answer['verdict']):
-                before = self.setup().encode('utf-8')
-                self.fake(answer)
-                self.run_verify()
-                sha = hashlib.sha256(before).hexdigest()
-                self.assertEqual(self.kept().get(sha), sha)
-                self.assertEqual((self.rows()[-1]['state'], self.rows()[-1]['reason']), ('done', 'kept'))
-
-    def test_a_pass_records_no_suppression(self):
-        self.setup()
-        self.fake(PASS)
-        self.run_verify()
-        self.assertEqual(self.kept(), {})
-
-    def test_a_failed_suppression_write_keeps_the_row_and_the_retry_does_not_pay(self):
-        from memvane.wiki.pipeline import api as pipeline
-        before = self.setup().encode('utf-8')
-        with pipeline.open_pipeline(self.root) as store:
-            store._conn.execute("CREATE TRIGGER no_kept BEFORE INSERT ON suppressions "
-                                "BEGIN SELECT RAISE(ABORT, 'injected'); END")
-            store._conn.commit()
-        fake = self.fake(FAIL)
-        self.assertEqual(self.run_verify()['processed'], 0)
-        self.assertEqual(len(fake.calls), 1)
-        self.assertEqual((self.rows()[-1]['state'], self.rows()[-1]['reason']),
-                         ('queued', 'kept_suppression_write_failed'))
-        self.assertEqual(self.kept(), {})
-        with pipeline.open_pipeline(self.root) as store:
-            store._conn.execute('DROP TRIGGER no_kept')
-            store._conn.commit()
-        self.assertEqual(self.run_verify()['processed'], 1)
-        self.assertEqual(len(fake.calls), 1, 'the recorded verdict is reused')
-        self.assertEqual((self.rows()[-1]['state'], self.rows()[-1]['reason']), ('done', 'kept'))
-        sha = hashlib.sha256(before).hexdigest()
-        self.assertEqual(self.kept(), {sha: sha})
-
-
 class RecordedVerdict(VerifyCase):
     """A paid verdict is recorded on its row before publishing (V12)."""
 

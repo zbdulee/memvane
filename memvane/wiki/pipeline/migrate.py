@@ -3,16 +3,20 @@
 The decision ledgers come across: ``generated-manifest.jsonl`` (machine
 retirement of generated cards when their source is deleted) and the paid-call
 suppressions ``verify-skipped.jsonl`` / ``dedup-skipped.jsonl``. Unfinished 1.x
-review rows (``verify-queue.jsonl`` and its ``.claimed.*`` files) come across only
-as the ``kind: review`` payloads the caller's ``reviews`` filter returns for them:
-a generated card is otherwise never queued again while its source stays the
-same. Every other 1.x in-progress artifact is discarded: a source change or a
-full-scan sync recreates the work. The import and its marker commit in one transaction; the
-1.x files are removed only after that commit, so a crash at any point either
-leaves everything to import again or leaves only removal to repeat.
+review rows (``verify-queue.jsonl`` and its ``.claimed.*`` files, minus the rows the
+1.x ``verify-log.jsonl`` already settled) come across only as the ``kind: review``
+payloads the caller's ``reviews`` filter returns for them: a generated card is
+otherwise never queued again while its source stays the same. A cutover given that
+filter also sets the one-time review reload marker, so a card the 1.x verifier
+already judged (its row consumed) is never paid for again. Every other 1.x
+in-progress artifact is discarded: a source change or a full-scan sync recreates the
+work. The import and its markers commit in one transaction; the 1.x files are
+removed only after that commit, so a crash at any point either leaves everything to
+import again or leaves only removal to repeat.
 """
 from __future__ import annotations
 
+from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -20,6 +24,7 @@ import shutil
 from typing import Callable
 
 from memvane.wiki.pipeline.store import open_pipeline, pipeline_db_path
+from memvane.wiki.pipeline.types import REVIEW_RELOAD_MARKER
 
 MARKER = 'migrated_from_v1_at'
 
@@ -71,11 +76,77 @@ def _verify_skips(compile_dir: Path) -> list[dict]:
     return items
 
 
+def _strict_object(pairs):
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError('duplicate key')  # The line is dropped, as an edit-inbox line is.
+    return dict(pairs)
+
+
+def _strict_rows(path: Path) -> list[dict]:
+    rows = []
+    for _, line in _lines(path):
+        try:
+            row = json.loads(line, object_pairs_hook=_strict_object)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _instant(value) -> datetime | None:
+    """A 1.x ISO 8601 UTC time (``Z``, with or without fractional seconds), or None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value[:-1] + '+00:00' if value.endswith('Z') else value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else None
+
+
+def _settled_at(compile_dir: Path) -> dict[str, datetime]:
+    """Latest 1.x ``verify-log.jsonl`` time per target of a row the verifier closed.
+
+    Only ``deferred`` keeps a 1.x row queued; every other result (a verdict, a skip,
+    a deletion) ended the row that was being reviewed at that time.
+    """
+    latest: dict[str, datetime] = {}
+    for row in _strict_rows(compile_dir / 'verify-log.jsonl'):
+        target, moment = row.get('targetPath'), _instant(row.get('ts'))
+        if (isinstance(target, str) and moment is not None and row.get('result') != 'deferred'
+                and (target not in latest or moment > latest[target])):
+            latest[target] = moment
+    return latest
+
+
 def v1_review_rows(compile_dir: Path) -> list[dict]:
-    """Unfinished 1.x verify rows: the queue file, then each claimed file in name order."""
-    paths = [compile_dir / 'verify-queue.jsonl',
-             *sorted(p for p in compile_dir.glob('verify-queue.jsonl.claimed.*') if p.is_file())]
-    return [row for path in paths for _, _, row in _rows(path)]
+    """Unfinished 1.x verify rows, oldest first.
+
+    A claimed file is the queue as it was at its claim, so the claimed files come first
+    (oldest modification first) and the queue file last. A 1.x verifier that died, or
+    could not clean up, leaves a claimed file whose rows it may already have judged: a
+    row whose target has a closing ``verify-log.jsonl`` entry at or after the row's own
+    ``ts`` (whole seconds in a 1.x row) is settled and left out; so is a row of such a
+    target whose ``ts`` cannot be read. A line with a repeated key is dropped.
+    """
+    def mtime(path):
+        try:
+            return path.stat().st_mtime_ns
+        except OSError:
+            return 0
+    claimed = sorted((p for p in compile_dir.glob('verify-queue.jsonl.claimed.*') if p.is_file()),
+                     key=lambda p: (mtime(p), p.name))
+    settled = _settled_at(compile_dir)
+    rows = []
+    for path in (*claimed, compile_dir / 'verify-queue.jsonl'):
+        for row in _strict_rows(path):
+            target, moment = row.get('targetPath'), _instant(row.get('ts'))
+            if isinstance(target, str) and target in settled and (moment is None or settled[target] >= moment):
+                continue
+            rows.append(row)
+    return rows
 
 
 def _dedup_skips(compile_dir: Path) -> list[dict]:
@@ -155,7 +226,9 @@ def migrate_from_v1(project_root: Path | str, *, wiki_root: Path | str | None = 
     Callers hold ``.compile-run.lock`` and the card/wiki locks, so no 1.1.4 writer runs
     concurrently and an in-flight 1.x worker has already released the run lock.
     ``reviews`` maps the unfinished 1.x verify rows to the review payloads queued with
-    the marker; without it those rows are discarded.
+    the marker, and its presence also sets ``REVIEW_RELOAD_MARKER``: a project this
+    release cuts over never runs the one-time reload. Without it the 1.x rows are
+    discarded (the released 1.1.4~1.1.6 cutover).
     """
     root = Path(project_root)
     compile_dir = root / '.memvane/compile'
@@ -167,7 +240,7 @@ def migrate_from_v1(project_root: Path | str, *, wiki_root: Path | str | None = 
     with open_pipeline(root) as store:
         counts = store.import_v1_ledgers(
             _manifest(compile_dir), _verify_skips(compile_dir), _dedup_skips(compile_dir), MARKER,
-            reviews=payloads)
+            reviews=payloads, extra_markers=(REVIEW_RELOAD_MARKER,) if reviews is not None else ())
     counts['removed'] = _remove_legacy(compile_dir, wiki)
     return counts
 
