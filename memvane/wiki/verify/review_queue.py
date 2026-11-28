@@ -137,8 +137,9 @@ def pending_source_review(root, config, revision, *, reuse=True):
 # A card the 1.x cutover left without its review (``verify-queue.jsonl`` was not imported) has no
 # other path back into review while its source is unchanged. Two entries queue the ``kind: review``
 # row compile would have written, with ``expectedTargetHash`` = the live bytes, so released 1.1.4+
-# verifiers process it unchanged: ``v1_reviews`` at the cutover (marker transaction), and
-# ``reload_unreviewed`` once afterwards (``pipeline_meta`` ``review_reload_v1_at``).
+# verifiers process it unchanged: ``v1_reviews`` at this release's cutover (which also sets the
+# reload marker), and ``reload_unreviewed`` once in a project a released 1.1.4~1.1.6 cutover
+# already migrated (``pipeline_meta`` ``review_reload_v1_at``).
 REVIEW_RELOAD_TRIGGER = 'review_reload'
 
 
@@ -200,7 +201,9 @@ def v1_reviews(root: Path, config: dict):
     is a machine-owned ``generated`` card whose managed block and ``sourceRevisions`` are the
     row's, its bytes equal the row's ``expectedTargetHash`` when the row has one, its source
     is fresh (a stale card waits for its refresh), and the verifier can call the row's engine
-    (an unresolvable engine would keep the row queued every pass). The last row of a target wins.
+    (an unresolvable engine would keep the row queued every pass). Rows come oldest first
+    (``pipeline.migrate.v1_review_rows``); the newest row of a target that matches its card
+    wins, and a row that does not match never hides an older one that does.
     """
     root = Path(root)
     wiki = _wiki_dir(root, config)
@@ -212,7 +215,6 @@ def v1_reviews(root: Path, config: dict):
             target = row.get('targetPath')
             if target in seen or 'pendingPath' in row or not resolvable(row.get('engine')):
                 continue
-            seen.add(target)
             card = _card_at(root, wiki, target)
             if card is None:
                 continue
@@ -221,6 +223,7 @@ def v1_reviews(root: Path, config: dict):
             if (row.get('expectedTargetHash') not in (None, sha) or _machine_generated(text) is None
                     or not candidate_matches_job(text, row) or not _fresh(root, config, job_revisions(row))):
                 continue
+            seen.add(target)
             payloads.append({**row, 'kind': 'review', 'expectedTargetHash': sha})
         return payloads[::-1]
     return convert

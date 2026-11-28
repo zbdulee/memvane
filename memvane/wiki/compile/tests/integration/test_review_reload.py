@@ -1,9 +1,9 @@
-"""Generated cards left without a review row: cutover import, one-time reload, kept suppression.
+"""Generated cards left without a review row: cutover import and the one-time reload.
 
 State table: ``docs/dev/progress-wiki-stale-retire.md`` (lane D). Every card and row here is
-written by a real writer: the 1.0.24/1.1.0 compile writer for 1.x review rows, the released
-1.1.4/1.1.6 cutover for the rowless state it leaves, and this release's compile writer for
-2.0 rows. Paid calls are the fake host CLI's call count.
+written by a real writer: the 1.0.24/1.1.0 compile writer and verifier for 1.x review rows
+and verdicts, the released 1.1.4/1.1.6 cutover for the rowless state it leaves and their
+verifiers for 2.0 verdicts, and this release's compile writer for 2.0 rows. Paid calls are the fake host CLI's call count.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from unittest import mock
 from memvane.wiki.compile import wiki_compile as writer, wiki_compile_worker as worker
 from memvane.wiki.compile.tests.release_tags import archived_tag
 from memvane.wiki.pipeline import api as pipeline
-from memvane.wiki.pipeline.types import DAY_NS, KEPT_SUPPRESSION
+from memvane.wiki.pipeline.types import DAY_NS
 from memvane.wiki.verify import api as verify
 from memvane.wiki.workspace import api as workspace
 from tests.support.case import FixtureCase
@@ -113,10 +113,6 @@ class ReviewReload(FixtureCase):
     def sha(self, name):
         return hashlib.sha256((self.wiki / f'concepts/{name}.md').read_bytes()).hexdigest()
 
-    def kept(self):
-        with pipeline.open_pipeline(self.root, readonly=True) as store:
-            return store.suppressions(KEPT_SUPPRESSION)
-
     def retention(self, days=31):
         """The retention step that removes terminal rows, run as if ``days`` had passed."""
         with pipeline.open_pipeline(self.root) as store:
@@ -148,10 +144,10 @@ class ReviewReload(FixtureCase):
                                  ('verified', 'verified', 'generated'))
                 self.run_verify()
                 self.assertEqual(len(fake.calls), 2)
-                # The reload after the cutover finds only the stale card: nothing to queue.
-                counts = self.reload()
-                self.assertEqual((counts['cards'], counts['stale'], counts['queued']), (1, 1, 0))
+                # This release's cutover closes the one-time reload with its import.
+                self.assertTrue(pipeline.review_reload_marked(self.root))
                 self.assertIsNone(self.reload())
+                self.assertEqual(len(self.rows()), 2)
 
     def test_g2_cutover_without_a_filter_discards_the_rows(self):
         self.v1_project('v1.1.0')
@@ -195,17 +191,6 @@ class ReviewReload(FixtureCase):
         self.assertIsNone(self.reload())
         self.assertEqual(self.rows(), [])
 
-    def test_g4_a_kept_card_whose_engine_is_gone_counts_as_kept(self):
-        # Retention removed every row, so no engine is known; the suppression still settles it.
-        self.fresh_project()
-        self.compile_card('alpha')
-        fake = self.fake(FAIL)
-        self.run_verify()
-        self.retention()
-        counts = self.reload()
-        self.assertEqual((counts['kept'], counts['engineUnknown'], counts['queued']), (1, 0, 0))
-        self.assertEqual(len(fake.calls), 1)
-
     def test_a_failed_reload_writes_nothing_and_the_next_pass_reloads_once(self):
         self.v1_project('v1.1.0')
         self.released_cutover()
@@ -227,27 +212,73 @@ class ReviewReload(FixtureCase):
         self.assertIsNone(self.reload())
         self.assertFalse(pipeline.review_reload_marked(self.root))
 
-    # -- G1/G4: a negative verdict and retention -------------------------------------------------------
-    def test_g1_g4_a_kept_card_is_never_reviewed_again_before_or_after_retention(self):
+    # -- B1: a project this release cuts over is never reloaded ----------------------------------
+    def test_b1_cutover_imports_queued_rows_only_and_never_pays_for_consumed_or_rowless_cards(self):
+        for tag in ('v1.0.24', 'v1.1.0'):
+            with self.subTest(tag=tag):
+                scratch = self.tmp / f'{tag}-consumed-{self.next()}'
+                scratch.mkdir()
+                data = self.released(tag, 'tagged_v1_consumed.py', scratch)
+                self.assertEqual(data['actions'], ['created', 'created', 'updated', 'created', 'created'])
+                self.assertEqual(data['log'], [['.memvane/wiki/concepts/alpha.md', 'inconclusive']])
+                self.use(Project(Path(data['root']), 'project', []))
+                fake = self.fake(PASS)
+                self.assertIs(worker.migrate_v1_state(self.root, self.config), True)
+                # beta waits in the queue; gamma's queue row is newer than its claimed row.
+                # alpha's claimed row was judged by 1.x (log); delta never had a row.
+                self.assertEqual(self.open_rows(), ['beta.md', 'gamma.md'])
+                self.assertEqual({sha for _, _, sha in self.rows()}, {self.sha('beta'), self.sha('gamma')})
+                self.assertIsNone(self.reload())
+                self.run_verify(2)
+                self.assertEqual(len(fake.calls), 2)
+                self.assertEqual([self.status(n) for n in ('alpha', 'beta', 'gamma', 'delta')],
+                                 ['generated', 'verified', 'verified', 'generated'])
+                self.assertEqual(self.open_rows(), [])
+
+    def test_a_1x_line_with_a_repeated_key_is_dropped(self):
+        self.v1_project('v1.1.0')
+        queue = self.root / '.memvane/compile/verify-queue.jsonl'
+        lines = queue.read_text(encoding='utf-8').splitlines()
+        # The release's alpha line with one key written twice: the line is dropped.
+        lines[0] = '{"engine": "claude", ' + lines[0][1:]
+        queue.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+        self.assertIs(worker.migrate_v1_state(self.root, self.config), True)
+        self.assertEqual(self.open_rows(), ['beta.md', 'delta.md', 'gamma.md'])
+
+    # -- G4: a negative verdict by a released verifier, before and after retention ----------------
+    def test_g4_a_kept_card_is_skipped_until_retention_removes_its_row(self):
         for retained in (False, True):
             with self.subTest(retention=retained):
-                self.fresh_project()
-                self.compile_card('alpha')
-                fake = self.fake(FAIL)
-                self.run_verify()
-                self.assertEqual(len(fake.calls), 1)
-                self.assertEqual(self.rows(), [('alpha.md', 'done', self.sha('alpha'))])
-                self.assertEqual(self.kept(), {self.sha('alpha'): self.sha('alpha')})
+                self.v1_project('v1.1.0')
+                self.released_cutover()
+                self.compile_card('zeta')
+                calls = self.released('v1.1.6', 'tagged_released_pipeline.py', 'verify', self.root, 1, 'fail')['calls']
+                self.assertEqual([Path(c).name for c in calls], ['zeta.md'])
+                self.assertEqual(self.rows(), [('zeta.md', 'done', self.sha('zeta'))])
                 if retained:
                     self.assertEqual(self.retention()['verifyJobs'], 1)
-                    self.assertEqual(self.rows(), [])
+                    # A later compile names the project's engine again.
+                    self.compile_card('eta')
                 counts = self.reload()
-                self.assertEqual((counts['queued'], counts['reviewed'], counts['kept'], counts['engineUnknown']),
-                                 (0, 0, 1, 0) if retained else (0, 1, 0, 0))
-                self.run_verify()
-                self.assertEqual(len(fake.calls), 1)
-                self.assertEqual(self.kept(), {self.sha('alpha'): self.sha('alpha')}, 'retention keeps it')
-                self.assertEqual(self.status('alpha'), 'generated')
+                # Retention took the only record of the kept verdict: the reload pays once more.
+                self.assertEqual((counts['reviewed'], counts['queued']), (0, 5) if retained else (1, 4))
+                self.assertIsNone(self.reload())
+
+    # -- m1: a replace row reviewed its pending image, not the live card ---------------------------
+    def test_a_settled_replace_row_does_not_count_as_a_review_of_the_live_card(self):
+        self.v1_project('v1.1.0')
+        self.released_cutover()
+        live = self.sha('alpha')
+        self.compile_card('alpha', 'Alpha source, revised.')
+        self.assertEqual(self.sha('alpha'), live, 'a replacement waits in its row')
+        fake = self.fake(FAIL)
+        self.run_verify()
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(self.rows(), [('alpha.md', 'done', live)])
+        self.project.write_note('docs/alpha.md', 'Alpha source.')
+        counts = self.reload()
+        self.assertEqual((counts['reviewed'], counts['queued']), (0, 4))
+        self.assertIn('alpha.md', self.open_rows())
 
     # -- G5: stale_revision ---------------------------------------------------------------------------
     def test_g5_stale_revision_cards_wait_for_their_refresh_and_a_reverted_source_is_not_paid_twice(self):
