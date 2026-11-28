@@ -38,6 +38,9 @@ type Boot =
   | {state: 'ready'; session: SessionMeta};
 
 const REFRESH_DEBOUNCE_MS = 500;
+// The wiki list endpoint's limits (`wiki_adapters.MAX_QUERY_CHARS`, `MAX_LIST`).
+const WIKI_QUERY_MAX_CHARS = 256;
+const WIKI_LIST_MAX = 1000;
 
 function describe(error: unknown): string {
   if (error instanceof ApiError) return `${error.code} (${error.status})`;
@@ -181,16 +184,34 @@ function Dashboard({session, theme, onToggleTheme}: {session: SessionMeta; theme
     return updated;
   }, []);
 
+  const openCardRequest = useRef(0);
   const openWikiCard = useCallback((path: string) => {
     if (selected === null) return;
-    let rel = path.startsWith('.memvane/wiki/') ? path.slice('.memvane/wiki/'.length) : path;
+    const targetId = selected.targetId;
+    const request = ++openCardRequest.current;
+    const rel = path.startsWith('.memvane/wiki/') ? path.slice('.memvane/wiki/'.length) : path;
     // Recall events may name a card as `<wiki_collection>/<rel>`; the Wiki list keys cards by `<rel>`.
+    // A card that really lives under such a directory keeps its rel: the list is asked first.
     const parts = rel.split('/');
-    if (parts.length >= 2 && (parts[0]?.endsWith('-wiki') === true || parts[0] === selected.name)) {
-      rel = parts.slice(1).join('/');
+    const prefixed = parts.length >= 2 && (parts[0]?.endsWith('-wiki') === true || parts[0] === selected.name);
+    const open = (cardRel: string) => {
+      if (request !== openCardRequest.current) return;
+      const hash = cardHash(targetId, cardRel);
+      if (hash !== null) window.location.hash = hash;
+    };
+    if (!prefixed) {
+      open(rel);
+      return;
     }
-    const hash = cardHash(selected.targetId, rel);
-    if (hash !== null) window.location.hash = hash;
+    const stripped = parts.slice(1).join('/');
+    if (rel.length > WIKI_QUERY_MAX_CHARS) {
+      open(stripped);
+      return;
+    }
+    getWikiList(targetId, {status: 'all', q: rel, limit: WIKI_LIST_MAX}).then(
+      response => open(response.cards.some(card => card.rel === rel) ? rel : stripped),
+      () => open(stripped),
+    );
   }, [selected]);
 
   return (

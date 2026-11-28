@@ -159,10 +159,11 @@ function LedgerSummary(props: {
           const count = props.ledger[item.key];
           const tone = count > 0 ? 'blue' : 'muted';
           const target = item.filter;
-          if (target === null || count === 0) {
+          const active = target !== null && props.filter === target;
+          // An active filter keeps its button at zero, so it can be turned off where it was turned on.
+          if (target === null || (count === 0 && !active)) {
             return <Badge key={item.key} tone={tone} title={item.hint}>{item.label} {formatCount(count)}</Badge>;
           }
-          const active = props.filter === target;
           return (
             <button
               key={item.key}
@@ -371,11 +372,17 @@ export function WikiPage({selected, loadList, loadCard, loadSource}: WikiPagePro
   }, [targetId, activeCard]);
 
   // Narrow screens stack the detail under a list of up to 200 rows; bring it into view on open.
-  // Wide screens show it beside the list, so only its top needs to be visible.
+  // Wide screens show it beside the list, so only its top needs to be visible: a detail whose top
+  // was scrolled above the scroll area (a long card read to its end) is brought back to its top,
+  // since 'nearest' leaves an element taller than the viewport where it is.
   useEffect(() => {
-    if (activeCard === null || detailRef.current === null) return;
+    const element = detailRef.current;
+    if (activeCard === null || element === null) return;
     const wide = typeof window.matchMedia === 'function' && window.matchMedia(WIDE_LAYOUT).matches;
-    detailRef.current.scrollIntoView({block: wide ? 'nearest' : 'start'});
+    const scroller = element.closest('.main-scroll');
+    const areaTop = scroller === null ? 0 : scroller.getBoundingClientRect().top;
+    const topHidden = element.getBoundingClientRect().top < areaTop;
+    element.scrollIntoView({block: wide && !topHidden ? 'nearest' : 'start'});
   }, [activeCard]);
 
   useEffect(() => {

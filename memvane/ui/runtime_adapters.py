@@ -37,7 +37,9 @@ SCAN_ENTRY_LIMIT = 200000
 SCAN_DEPTH_LIMIT = 64
 DISK_CACHE_TTL_SECONDS = 60.0
 _DISK_CACHE = {}
-_DISK_LOCK = threading.Lock()
+# One lock per home key; the guard only protects the dict of locks, never a scan.
+_DISK_LOCKS = {}
+_DISK_LOCKS_GUARD = threading.Lock()
 
 
 # ----------------------------------------------------------------- helpers
@@ -299,17 +301,30 @@ def disk_usage(home=None):
 # ----------------------------------------------------------------- runtime
 
 
+def _disk_lock(key):
+    """The lock serializing scans of one home key; scans of different homes do not block each other."""
+    with _DISK_LOCKS_GUARD:
+        lock = _DISK_LOCKS.get(key)
+        if lock is None:
+            lock = _DISK_LOCKS[key] = threading.Lock()
+        return lock
+
+
 def disk_overview(*, home=None, refresh=False, ttl_seconds=DISK_CACHE_TTL_SECONDS):
     """``{'disk': [DiskUsageItem]}`` from a per-home in-process cache that rescans only on refresh or expiry.
 
-    The lock is held across the scan, so concurrent requests share one walk
-    instead of each starting their own. A scan that raises is not cached.
+    The home's lock is held across the scan, so concurrent requests share one
+    walk instead of each starting their own. A cache stored after this request
+    arrived (a scan that finished while it waited for the lock) answers it
+    even on refresh. A scan that raises is not cached.
     """
+    entered = time.monotonic()
     key = os.fspath(home) if home is not None else ''
-    with _DISK_LOCK:
+    with _disk_lock(key):
         cached = _DISK_CACHE.get(key)
         now = time.monotonic()
-        if refresh or cached is None or now - cached[0] >= ttl_seconds:
+        stored_after_entry = cached is not None and cached[0] > entered
+        if not stored_after_entry and (refresh or cached is None or now - cached[0] >= ttl_seconds):
             items = disk_usage(home)
             cached = (time.monotonic(), [dict(item) for item in items])
             _DISK_CACHE[key] = cached

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import threading
 from unittest import mock
 
 from memvane.kernel import bundle_paths
@@ -33,6 +34,113 @@ def tree_digest(*roots):
             else:
                 digest.update(str(path).encode())
     return digest.hexdigest()
+
+
+# Hang guard for event waits and joins; every assertion is on counts and thread state.
+WAIT_SECONDS = 30
+
+
+class LockArrivals:
+    """Counts threads that reached a home's disk lock (after taking their entry time)."""
+
+    def __init__(self):
+        self.count = 0
+        self.changed = threading.Condition()
+
+    def wrap(self, lock):
+        arrivals = self
+
+        class Arriving:
+            def __enter__(self):
+                with arrivals.changed:
+                    arrivals.count += 1
+                    arrivals.changed.notify_all()
+                lock.acquire()
+                return self
+
+            def __exit__(self, *exc):
+                lock.release()
+                return False
+
+        return Arriving()
+
+    def wait_for(self, count):
+        with self.changed:
+            return self.changed.wait_for(lambda: self.count >= count, timeout=WAIT_SECONDS)
+
+
+class DiskCacheConcurrencyTests(FixtureCase):
+    def run_in_thread(self, results, name, **kwargs):
+        def call():
+            results[name] = runtime_adapters.disk_overview(**kwargs)
+        thread = threading.Thread(target=call, daemon=True)
+        thread.start()
+        return thread
+
+    def test_a_refresh_that_waited_for_an_in_flight_scan_reuses_it(self):
+        home = self.home / 'disk-single-flight'
+        started, release = threading.Event(), threading.Event()
+
+        def scan(_home):
+            started.set()
+            release.wait(WAIT_SECONDS)
+            return [{'label': 'x', 'bytes': 7}]
+
+        arrivals = LockArrivals()
+        real_lock = runtime_adapters._disk_lock
+        results = {}
+        with mock.patch.object(runtime_adapters, 'disk_usage', side_effect=scan) as walk, \
+                mock.patch.object(runtime_adapters, '_disk_lock', side_effect=lambda key: arrivals.wrap(real_lock(key))):
+            try:
+                first = self.run_in_thread(results, 'first', home=home, refresh=True)
+                self.assertTrue(started.wait(WAIT_SECONDS))
+                second = self.run_in_thread(results, 'second', home=home, refresh=True)
+                self.assertTrue(arrivals.wait_for(2))
+                self.assertEqual(walk.call_count, 1)
+            finally:
+                release.set()
+            first.join(WAIT_SECONDS)
+            second.join(WAIT_SECONDS)
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(walk.call_count, 1)
+            self.assertEqual(results['first'], {'disk': [{'label': 'x', 'bytes': 7}]})
+            self.assertEqual(results['second'], results['first'])
+            # A refresh that arrives after the stored scan walks again.
+            runtime_adapters.disk_overview(home=home, refresh=True)
+            self.assertEqual(walk.call_count, 2)
+
+    def test_scans_of_different_homes_do_not_block_each_other(self):
+        slow_home, fast_home = self.home / 'disk-slow', self.home / 'disk-fast'
+        started, release = threading.Event(), threading.Event()
+
+        def scan(home):
+            if home == slow_home:
+                started.set()
+                release.wait(WAIT_SECONDS)
+                return [{'label': 'slow', 'bytes': 1}]
+            return [{'label': 'fast', 'bytes': 2}]
+
+        results = {}
+        with mock.patch.object(runtime_adapters, 'disk_usage', side_effect=scan) as walk:
+            try:
+                slow = self.run_in_thread(results, 'slow', home=slow_home, refresh=True)
+                self.assertTrue(started.wait(WAIT_SECONDS))
+                fast = self.run_in_thread(results, 'fast', home=fast_home, refresh=True)
+                fast.join(WAIT_SECONDS)
+                self.assertFalse(fast.is_alive())
+                self.assertTrue(slow.is_alive())
+                self.assertNotIn('slow', results)
+                self.assertEqual(results['fast'], {'disk': [{'label': 'fast', 'bytes': 2}]})
+            finally:
+                release.set()
+            slow.join(WAIT_SECONDS)
+            self.assertFalse(slow.is_alive())
+        self.assertEqual(results['slow'], {'disk': [{'label': 'slow', 'bytes': 1}]})
+        self.assertEqual(walk.call_count, 2)
+        slow_key, fast_key = os.fspath(slow_home), os.fspath(fast_home)
+        self.assertIs(runtime_adapters._disk_lock(slow_key), runtime_adapters._disk_lock(slow_key))
+        self.assertIsNot(runtime_adapters._disk_lock(slow_key), runtime_adapters._disk_lock(fast_key))
 
 
 class RuntimeMonitorTests(FixtureCase):

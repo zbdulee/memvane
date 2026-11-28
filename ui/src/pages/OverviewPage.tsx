@@ -245,7 +245,14 @@ function errorKey(item: ErrorEventItem): string {
   return `${item.installId}|${item.diagId ?? ''}|${item.ts}|${item.event}`;
 }
 
-function ErrorList({errors, projectName}: {errors: readonly ErrorEventItem[]; projectName: (id: InstallId) => string}) {
+interface ErrorListProps {
+  errors: readonly ErrorEventItem[];
+  projectName: (id: InstallId) => string;
+  /** `errors24h` of each install in scope: the whole 24 h count, of which `errors` shows the newest part. */
+  totals: ReadonlyMap<InstallId, number>;
+}
+
+function ErrorList({errors, projectName, totals}: ErrorListProps) {
   const [details, setDetails] = useState<Readonly<Record<InstallId, DetailState>>>({});
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const [kind, setKind] = useState<ErrorKind>('all');
@@ -320,6 +327,16 @@ function ErrorList({errors, projectName}: {errors: readonly ErrorEventItem[]; pr
       : <pre class="code-block">{safeMultiline(match.detail)}</pre>;
   };
 
+  const totalLine = [...totals]
+    .filter(([, total]) => total > 0)
+    .map(([id, total]) => `${projectName(id)} ${formatCount(total)}건`)
+    .join(', ');
+  const sameEventTitle = (group: ErrorGroup): string => {
+    const total = totals.get(group.head.installId);
+    const suffix = total === undefined ? '' : ` · 이 설치의 24시간 오류·거절 합계 ${formatCount(total)}건`;
+    return `표시된 최근 오류 중 같은 이벤트 ${formatCount(group.count)}건${suffix}`;
+  };
+
   if (errors.length === 0) return <div class="empty-note">최근 24시간 오류·거부 이벤트가 없습니다.</div>;
   return (
     <>
@@ -330,12 +347,16 @@ function ErrorList({errors, projectName}: {errors: readonly ErrorEventItem[]; pr
             type="button"
             class={`btn btn-sm${kind === item.id ? ' active' : ''}`}
             aria-pressed={kind === item.id}
-            title={item.title}
+            title={`${item.title} · 개수는 표시된 최근 목록 기준`}
             onClick={() => setKind(item.id)}
           >
             {item.label} <span class="mono muted">{formatCount(counts[item.id])}</span>
           </button>
         ))}
+      </div>
+      <div class="card-sub">
+        표시된 최근 {formatCount(errors.length)}건 기준 개수입니다.
+        {totalLine === '' ? null : <> 설치별 24시간 오류·거절 합계: {safeText(totalLine)}</>}
       </div>
       {groups.length === 0
         ? <div class="empty-note">이 종류의 이벤트가 없습니다.</div>
@@ -365,7 +386,7 @@ function ErrorList({errors, projectName}: {errors: readonly ErrorEventItem[]; pr
                           </Badge>
                           <span class="mono">{safeText(item.event)} · {safeText(item.reason)}</span>
                           {group.count > 1
-                            ? <Badge tone="muted" mono title={`최근 24시간 같은 이벤트 ${group.count}건`}>×{group.count}</Badge>
+                            ? <Badge tone="muted" mono title={sameEventTitle(group)}>×{group.count}</Badge>
                             : null}
                         </div>
                       </td>
@@ -404,6 +425,9 @@ export function OverviewPage({overview, selected, tab, reconciling, onReconcile}
     && (selected?.kind !== 'worktree' || item.targetId === null || item.targetId === selected.targetId));
   const names = new Map(overview.installs.map(install => [install.installId, install.projectName]));
   const projectName = (id: InstallId) => names.get(id) ?? id.slice(0, 8);
+  const totals = new Map(overview.installs
+    .filter(install => installIds.has(install.installId))
+    .map(install => [install.installId, install.errors24h] as const));
   return (
     <>
       <Kpis nodes={nodes} overview={overview} />
@@ -431,7 +455,7 @@ export function OverviewPage({overview, selected, tab, reconciling, onReconcile}
             <div class="card-sub">기본은 요약만 보여 주고, 상세 진단은 요청할 때만 불러옵니다.</div>
           </div>
         </div>
-        <ErrorList errors={errors} projectName={projectName} />
+        <ErrorList errors={errors} projectName={projectName} totals={totals} />
       </section>
     </>
   );

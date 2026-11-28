@@ -467,7 +467,7 @@ function LearningCard(props: {installId: InstallId} & Pick<RuntimePageProps, 'lo
                 <thead>
                   <tr>
                     <th>Teacher 호스트</th>
-                    <th>오늘 / 대기 라벨링</th>
+                    <th>오늘 라벨링 호출</th>
                     <th>대기 사유</th>
                   </tr>
                 </thead>
