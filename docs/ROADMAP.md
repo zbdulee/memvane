@@ -49,6 +49,7 @@
 | 1.1.2 | 구조적 식별자 단독 어휘 검색, resident 증명 EIO 훅 보호·냉기동·반복 adopt 진단 정리, discovery lock 경합 grant 건너뛰기와 번들 조회 재시도, 예약 실패 롤백·고아 hold 회수·hold 스캔 상한(첫 카드 게시 정체 복구), 출시 smoke 도구와 shim 예열 보강 |
 | 1.1.4 | 위키 파이프라인 v2(`stateFormat` 2, `~/.local/state/memvane/v2` 0700 생성·넓은 권한 복구), 훅 경량화(`edit-inbox.jsonl` 단일 append·discovery 중복 스킵), 단일 SQLite 원장(`.memvane/compile/wiki-pipeline.sqlite3`·큐/검수/게시/억제/쿨다운/dedup/생성 이력/보존 정리), 단일 교환 게시·행 단위 복구·교환 미지원 파일시스템 보호, tombstone 제거와 dedup 이름표 이전, 1.x 일회성 마이그레이션, `entry/run.py wiki-ledger` 조회 CLI |
 | 1.1.5 | 학습·색인 경합 및 sync owner 점유 계측, 연결 worktree view 대기 분리, recall 지시문 문장 필터링(표지어·코드 펜스 보호), ingest delta와 `source_fingerprints` 재사용, `checkout_view.py`·`shared.py` 분해, 학습 안정화 4종(이중 고장 되돌리기·손상 기본 모델·재시도 계수 영속과 진척·실측 trainer peak 승인과 유휴 모델 해제) |
+| 1.1.6 | 로컬 웹 대시보드(UI) Phase 1(좌측 프로젝트·worktree 트리, Overview, Wiki Browser·원문 대조·SafeMarkdown, Recall 인스펙터·무오염 4단계 Query Playground, Runtime·Learning 모니터, opt-in SessionStart 자동 오픈, `memvane:ui` 스킬 및 온디맨드 보안 싱글톤 서버, `diagnostics`·`recall`·`learning`·`resident`·`wiki/pipeline` read-only 파사드) |
 
 ## 한눈에
 
@@ -56,7 +57,6 @@
 |---|---|---|---|
 | 1.1.x | L3 검색 필요 판단기 | M | 없음 |
 | 1.1.x | 1.1.0 이월 항목 | S~M | 확인 |
-| 1.1.x | 로컬 웹 대시보드(UI) ([설계](design-local-web-ui.md)) | L | 없음 |
 | 1.0.x | 2 resident 선행 요청 | M | 없음 |
 | 1.0.x | 6 재봉인·온보딩 안내 정리 | S | 없음 |
 | 1.0.x | 7 GPU 폴백 후속 | S | 없음 |
@@ -94,15 +94,6 @@ L2 후속 ── L3
 - **합격(live).** 판단기가 건너뛴 프롬프트의 비율과 건너뛴 뒤 같은 세션에서 수동 query가 늘지 않는지를 로그로 본다.
 
 ## 1.1.x 열린 항목 (1.1.0 이월)
-
-### 로컬 웹 대시보드(UI) (1.1.x)
-
-- **목표.** 멀티 프로젝트·연결 git worktree를 한 창에서 통합 조회하는 로컬 웹 대시보드(Preact + TypeScript + Vite 사전 빌드 `ui/dist/` + Python `memvane/ui/` 온디맨드 싱글톤 서버)와 `memvane:ui` 스킬을 제공한다.
-- **설계 · 리뷰.** [설계 문서(r5)](design-local-web-ui.md), [독립 리뷰](reviews/2026-11-24-local-web-ui-design-review.md), [UI 가안 프로토타입](mockups/local-web-ui-prototype.html).
-- **범위.** Phase 1(1.1.x 목표, 읽기 전용 4개 화면 전체 — 좌측 오르카 스타일 프로젝트·worktree 트리, Overview, Recall 인스펙터·무오염 4단계 Query Playground, Wiki Browser·원문 대조, Runtime·Learning 모니터·opt-in `onboarded_sessions` SessionStart 자동 오픈)을 M0(기반 정리: `diagnostics` 로그·SLO 승격, `recall.dry_run_recall` `partial` 지원, `learning.inspect_project` 슬롯 확보, `resident` read-only 상태 파사드, `wiki/pipeline` 원장 요약, `runtime_main(['snapshot-readonly'])`) → M1a(보안 서버·Overview·`skills/ui`) → M1b(Wiki Browser) → M1c(Recall·Playground) → M1d(Runtime·Learning·SessionStart opt-in)로 분할 구현한다. Phase 2(제어 액션, M2)는 기존 `entry/setup.py` `previewSha256` 승인 계약을 래핑해 후속 진행한다.
-- **의존.** `1.1.5` 출시 완료(현행 기준 반영). **크기.** L.
-- **불변.** 없음(1.x 영속 계약·`.memvane/settings.json` 5키·`hook_closures` 무변경, `$HOME/.local/state/memvane/v2/ui/`만 계약 밖 파생물로 등재; `manual-skills.test.mjs`·5개 매니페스트·`context-map.json`·`ui/` 정적 가드 갱신).
-- **합격(live).** `v1_guard.py --strict`, `static.test.mjs`(외부 URL 금지·`ui/dist/` drift·번들 100KB gzip 이하), `/usr/bin/python3`(3.9) import, 보안·무오염 테스트를 통과한다. `skills/ui`로 열어 카나리·service-engineering 및 연결 worktree를 4개 화면에서 조회할 때 `events.jsonl`·`edit-recall-sessions/`·학습 DB 무변경, `activeClients == 0` 유휴 30분 뒤 서버 자동 종료.
 
 - **학습 검사.** 여러 조각에 걸친 cursor 재개의 실제 모델 시험, 학습 점검의 일관성 읽기, 쌍 예산의 정확 비교와 12→20 복귀 기준.
 - **wiki.** 편집 뒤 원문이 root 안 symlink로 바뀌면 refresh pending이 해결·종결되지 않는다.
@@ -262,7 +253,7 @@ L2 후속 ── L3
 |---|---|---|---|
 | 세션 위치와 무관한 recall(미온보딩 루트, 프로젝트 간 편집) | L | 확인 | 1.1-7 뒤. 설계 문서 선행 |
 | 연결 worktree의 카드 수명 주기 | L | 확인 | 위 항목 뒤 |
-| 대시보드 제어 액션·편집·알림 ([설계](design-local-web-ui.md) M2) | M | 확인 | 1.1.x Phase 1 대시보드·1.1-7 뒤 |
+| 대시보드 제어 액션·편집·알림 ([설계](design-local-web-ui.md) M2) | M | 확인 | 1.1.6 Phase 1 대시보드·1.1-7 뒤 |
 | 도메인 `domain/` 층 실체화 | L | 없음 | 패치 릴리스 간격이 1주 이상으로 안정된 뒤. 도메인 단위로 나눈다 |
 | 원문 소실 보류(`held_missing`)와 삭제 receipt | L | 확인 | 삭제 근거를 store에서 찾아야 하는 사례가 생길 때 |
 | 학습 중지·재개의 end-to-end 증거, 학습 자식 부하 측정 | M | 없음 | 1.1-3과 함께 |

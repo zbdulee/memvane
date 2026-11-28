@@ -47,7 +47,7 @@ class CodeBook:
             self._expire()
             found = None
             for known in list(self._codes):
-                if hmac.compare_digest(known.encode(), code.encode()):
+                if _safe_eq(known, code):
                     found = known
             if found is None:
                 return False
@@ -87,7 +87,7 @@ class SessionStore:
         with self._lock:
             found = None
             for known in list(self._tokens):
-                if hmac.compare_digest(known.encode(), token.encode()):
+                if _safe_eq(known, token):
                     found = known
             if found is None:
                 return False
@@ -149,11 +149,18 @@ def browser_refusal(headers, port, *, api=True):
     return None
 
 
+def _safe_eq(left, right):
+    try:
+        return hmac.compare_digest(left.encode('utf-8'), right.encode('utf-8'))
+    except UnicodeEncodeError:
+        return False
+
+
 def control_ok(headers, secret):
     given = headers.get(CONTROL_HEADER)
     if not isinstance(given, str) or not isinstance(secret, str) or not secret:
         return False
-    return hmac.compare_digest(given.encode(), secret.encode())
+    return _safe_eq(given, secret)
 
 
 def response_headers(*, html=False):

@@ -289,3 +289,27 @@ class Phase1RouteTests(ServerCase):
         status, value = self.control('POST', '/api/internal/session-started',
                                      {'targetId': 'b' * 32, 'host': 'gemini'})
         self.assertEqual((status, value['delivered']), (200, 0))
+
+    def test_non_ascii_content_length_and_surrogate_code_are_rejected(self):
+        cookie = self.login()
+        lines = [
+            'PUT /api/preferences HTTP/1.1',
+            'Connection: close',
+            f'Host: 127.0.0.1:{self.port}',
+            'X-MemVane-UI: 1',
+            f'Origin: http://127.0.0.1:{self.port}',
+            f'Cookie: memvane_ui_session={cookie}',
+            'Content-Length: ²',
+        ]
+        with socket.create_connection(('127.0.0.1', self.port), scaled(10)) as conn:
+            conn.sendall(('\r\n'.join(lines) + '\r\n\r\n').encode('utf-8'))
+            chunks = []
+            while True:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        status, _f, body = local_client.parse_response(b''.join(chunks))
+        self.assertEqual((status, json.loads(body)['error']), (400, 'content_length_invalid'))
+        self.app.codes.issue(60)
+        self.assertFalse(self.app.codes.consume('\ud800'))

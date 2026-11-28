@@ -1,4 +1,4 @@
-import {useState} from 'preact/hooks';
+import {useEffect, useState} from 'preact/hooks';
 import {ApiError, getInstallErrors} from '../api/client';
 import type {
   ErrorEventItem,
@@ -167,7 +167,10 @@ function CheckoutTable({nodes, selected, tab}: {nodes: readonly WorktreeNode[]; 
   );
 }
 
-type DetailState = {state: 'loading'} | {state: 'loaded'; items: ErrorEventItem[]} | {state: 'failed'; message: string};
+type DetailState =
+  | {state: 'loading'; sig: string}
+  | {state: 'loaded'; sig: string; items: ErrorEventItem[]}
+  | {state: 'failed'; sig: string; message: string};
 
 function errorKey(item: ErrorEventItem): string {
   return `${item.installId}|${item.diagId ?? ''}|${item.ts}|${item.event}`;
@@ -176,6 +179,40 @@ function errorKey(item: ErrorEventItem): string {
 function ErrorList({errors, projectName}: {errors: readonly ErrorEventItem[]; projectName: (id: InstallId) => string}) {
   const [details, setDetails] = useState<Readonly<Record<InstallId, DetailState>>>({});
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
+
+  const sigOf = (id: InstallId): string => errors.filter(row => row.installId === id).map(errorKey).join('\n');
+
+  const fetchInstall = async (installId: InstallId, sig: string) => {
+    setDetails(prev => ({...prev, [installId]: {state: 'loading', sig}}));
+    try {
+      const response = await getInstallErrors(installId, {details: true});
+      setDetails(prev => (prev[installId]?.sig === sig
+        ? {...prev, [installId]: {state: 'loaded', sig, items: response.items}}
+        : prev));
+    } catch (error) {
+      const message = error instanceof ApiError ? `${error.code}: ${error.message}` : '불러오지 못했습니다.';
+      setDetails(prev => (prev[installId]?.sig === sig
+        ? {...prev, [installId]: {state: 'failed', sig, message}}
+        : prev));
+    }
+  };
+
+  useEffect(() => {
+    const staleIds = Object.keys(details).filter(id => details[id]?.sig !== sigOf(id));
+    if (staleIds.length === 0) return;
+    setDetails(prev => {
+      const next = {...prev};
+      for (const id of staleIds) delete next[id];
+      return next;
+    });
+    for (const id of staleIds) {
+      const prefix = `${id}|`;
+      if (Array.from(open).some(key => key.startsWith(prefix))) {
+        const sig = sigOf(id);
+        if (sig !== '') void fetchInstall(id, sig);
+      }
+    }
+  }, [errors]);
 
   const load = async (item: ErrorEventItem) => {
     const key = errorKey(item);
@@ -187,16 +224,10 @@ function ErrorList({errors, projectName}: {errors: readonly ErrorEventItem[]; pr
     }
     next.add(key);
     setOpen(next);
+    const sig = sigOf(item.installId);
     const current = details[item.installId];
-    if (current !== undefined && current.state !== 'failed') return;
-    setDetails(prev => ({...prev, [item.installId]: {state: 'loading'}}));
-    try {
-      const response = await getInstallErrors(item.installId, {details: true});
-      setDetails(prev => ({...prev, [item.installId]: {state: 'loaded', items: response.items}}));
-    } catch (error) {
-      const message = error instanceof ApiError ? `${error.code}: ${error.message}` : '불러오지 못했습니다.';
-      setDetails(prev => ({...prev, [item.installId]: {state: 'failed', message}}));
-    }
+    if (current !== undefined && current.sig === sig && current.state !== 'failed') return;
+    await fetchInstall(item.installId, sig);
   };
 
   const detailFor = (item: ErrorEventItem) => {

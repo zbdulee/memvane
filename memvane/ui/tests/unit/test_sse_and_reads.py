@@ -154,3 +154,18 @@ class CardCountTests(FixtureCase):
         self.assertTrue(read_adapters.card_counts(self.tmp / 'proj', limit=2)['truncated'])
         self.assertEqual(read_adapters.card_counts(self.tmp / 'missing'),
                          {'verified': 0, 'generated': 0, 'other': 0, 'truncated': False})
+
+    def test_card_counts_ignores_symlinked_memvane_or_wiki_root(self):
+        outside = self.tmp / 'outside_wiki'
+        (outside / 'concepts').mkdir(parents=True)
+        (outside / 'concepts' / 'x.md').write_text('---\nstatus: verified\n---\n')
+        sym_wiki = self.tmp / 'sym_wiki_proj'
+        (sym_wiki / '.memvane').mkdir(parents=True)
+        os.symlink(outside, sym_wiki / '.memvane' / 'wiki')
+        self.assertEqual(read_adapters.card_counts(sym_wiki),
+                         {'verified': 0, 'generated': 0, 'other': 0, 'truncated': False})
+        sym_mv = self.tmp / 'sym_mv_proj'
+        sym_mv.mkdir()
+        os.symlink(outside, sym_mv / '.memvane')
+        self.assertEqual(read_adapters.card_counts(sym_mv),
+                         {'verified': 0, 'generated': 0, 'other': 0, 'truncated': False})
