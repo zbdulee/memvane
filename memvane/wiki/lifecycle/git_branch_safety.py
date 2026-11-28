@@ -165,7 +165,9 @@ class LineageJudge:
        a. source in C's tree, absent from HEAD: deleted in this lineage. Retire.
        b. a source deletion reachable from HEAD at or after C. Retire.
        c. source on a local branch tip not merged into HEAD (see below). Hold.
-       d. otherwise the source was never tracked and the committed card lost
+       d. a source deletion reachable from HEAD before C, and no branch tip
+          owns the source. Retire (``deleted_before_card_commit``).
+       e. otherwise the source was never tracked and the committed card lost
           it in this checkout. Retire.
     3. Card not tracked in HEAD (uncommitted or from another branch):
        a. source on a local branch tip not merged into HEAD, or in the card's
@@ -178,7 +180,12 @@ class LineageJudge:
     for the path and the tip holds the path exactly as every merge base of the
     tip and HEAD does (same mode, type and blob): such a tip is a snapshot from
     before the deletion, and merging it keeps the deletion. A tip that added
-    the path (no merge base has it) or changed it still holds.
+    the path (no merge base has it) or changed it still holds, and so does a
+    tip checked out in another worktree, whose uncommitted edits git cannot
+    see. One ``git log`` over all tips (``^HEAD``) proves the common case:
+    when no commit reachable only from the tips touches the path, every tip
+    holds it as its merge bases do. A touched path falls back to per-tip
+    merge bases.
 
     Paths outside the repository, more than ``MAX_BRANCH_TIPS`` unmerged
     branch tips (for 2c/3a) and an exhausted git budget all hold.
@@ -196,8 +203,10 @@ class LineageJudge:
                 ['ls-tree', '-r', '--name-only', '-z', self.head]).stdout)
         self._index: dict[str, bool] = {}
         self._tips: list[str] | None = None
-        self._on_tips: dict[str, bool] = {}
-        self._tip_entries: dict[str, dict[str, str]] = {}
+        self._paths: set[str] = set()
+        self._tip_entries: dict[str, dict[str, str | None]] = {}
+        self._touched: set[str] | None = None
+        self._busy: frozenset | None = None
         self._bases: dict[str, tuple[str, ...]] = {}
         self._base_entries: dict[tuple[str, str], str | None] = {}
         self._card_commit: dict[tuple[str, bool], str | None] = {}
@@ -239,23 +248,15 @@ class LineageJudge:
         return _chunks(paths)
 
     def prefetch(self, paths) -> None:
-        """Batch the index and branch-tip lookups for every path of a run."""
-        pending = {path for path in paths if path is not None and path not in self._index}
+        """Batch the index lookups and register every path of a run for the tip lookups."""
+        wanted = {path for path in paths if path is not None}
+        pending = wanted - set(self._index)
         for chunk in self._chunks(pending):
             found = self._index_lookup(chunk)
             self._index.update({path: path in found for path in chunk})
-        tips = self._unmerged_tips()
-        pending = {path for path in paths if path is not None and path not in self._on_tips}
-        if tips is None or not pending:
-            return
-        seen: set[str] = set()
-        for tip in tips:
-            for chunk in self._chunks(pending):
-                found = _z_entries(self._git(['ls-tree', '-r', '-z', tip, '--', *chunk]).stdout)
-                if found:
-                    self._tip_entries.setdefault(tip, {}).update(found)
-                seen |= set(found)
-        self._on_tips.update({path: path in seen for path in pending})
+        if not wanted <= self._paths:
+            self._paths |= wanted
+            self._touched = None  # a later lookup covers the new paths too
 
     def _index_lookup(self, paths) -> set[str]:
         """Paths of ``paths`` the index lists now; one call per chunk, no cache."""
@@ -284,19 +285,89 @@ class LineageJudge:
         tips = self._unmerged_tips()
         if tips is None:
             return True
-        if path not in self._on_tips:
+        if path not in self._paths:
             self.prefetch([path])
-        if not self._on_tips.get(path, True):
-            return False
-        holding = [tip for tip in tips if path in self._tip_entries.get(tip, {})]
-        if not holding or self._deletion_commit(path) is None:
+        if self._deletion_commit(path) is None:
+            return any(self._tip_entry(tip, path) is not None for tip in tips)
+        busy = self._busy_tips()
+        if any(self._tip_entry(tip, path) is not None for tip in tips if tip in busy):
             return True
-        return not all(self._unchanged_since_base(tip, path) for tip in holding)
+        if path not in self._touched_on_tips():
+            return False
+        return any(self._tip_entry(tip, path) is not None
+                   and not self._unchanged_since_base(tip, path)
+                   for tip in self._touching_tips(path))
+
+    def _tip_entry(self, tip: str, path: str) -> str | None:
+        """``path``'s entry in ``tip``; one lookup covers every registered path."""
+        entries = self._tip_entries.setdefault(tip, {})
+        if path not in entries:
+            wanted = (self._paths | {path}) - set(entries)
+            for chunk in self._chunks(wanted):
+                found = _z_entries(self._git(['ls-tree', '-r', '-z', tip, '--', *chunk]).stdout)
+                entries.update({item: found.get(item) for item in chunk})
+        return entries[path]
+
+    def _touched_on_tips(self) -> set[str]:
+        """Registered paths some commit reachable from a tip but not HEAD changes.
+
+        ``--full-history -m`` lists a merge that differs from any parent, so an
+        empty answer means every such commit keeps the path as its parents do.
+        """
+        if self._touched is None:
+            touched: set[str] = set()
+            for chunk in self._chunks(self._paths):
+                touched |= _z_paths(self._git(
+                    ['log', '--full-history', '--no-renames', '-m', '--format=', '--name-only',
+                     '-z', *self._tips, '--not', self.head, '--', *chunk]).stdout)
+            self._touched = touched
+        return self._touched
+
+    def _touching_tips(self, path: str) -> list[str]:
+        """Tips that contain a commit (reachable only from tips) changing ``path``.
+
+        A tip outside this list keeps ``path`` as its merge bases do (the
+        ``_touched_on_tips`` argument restricted to that tip).
+        """
+        commits = self._git(['log', '--full-history', '--no-renames', '-m', '--format=%H',
+                             *self._tips, '--not', self.head, '--', path]).stdout.decode().split()
+        commits = sorted(set(commits))
+        if not commits or len(commits) > MAX_PATHSPECS_PER_CALL:
+            return list(self._tips)
+        contains = [arg for commit in commits for arg in ('--contains', commit)]
+        raw = self._git(['for-each-ref', '--format=%(objectname)', *contains,
+                         'refs/heads']).stdout.decode().split()
+        return [tip for tip in self._tips if tip in set(raw)]
+
+    def _busy_tips(self) -> frozenset:
+        """Commits checked out in another worktree of this repository."""
+        if self._busy is None:
+            # No ``-z`` (git 2.36+). A path git cannot print on one line parses
+            # as some other worktree: its commit holds, never retires.
+            out = self._git(['worktree', 'list', '--porcelain']).stdout
+            busy, path, head = set(), None, None
+            for line in [*out.decode('utf-8', 'surrogateescape').split('\n'), '']:
+                if line.startswith('worktree '):
+                    path = line[len('worktree '):]
+                elif line.startswith('HEAD '):
+                    head = line[len('HEAD '):]
+                elif not line:
+                    if path is not None and head is not None and not self._is_here(path):
+                        busy.add(head)
+                    path = head = None
+            self._busy = frozenset(busy)
+        return self._busy
+
+    def _is_here(self, path: str) -> bool:
+        try:
+            return Path(path).resolve() == Path(self.top).resolve()
+        except (OSError, RuntimeError):
+            return False
 
     def _unchanged_since_base(self, tip: str, path: str) -> bool:
         """``tip`` holds ``path`` exactly as every merge base of ``tip`` and HEAD does."""
         bases = self._merge_bases(tip)
-        entry = self._tip_entries[tip][path]
+        entry = self._tip_entry(tip, path)
         return bool(bases) and all(self._base_entry(base, tip, path) == entry for base in bases)
 
     def _merge_bases(self, tip: str) -> tuple[str, ...]:
@@ -308,8 +379,8 @@ class LineageJudge:
     def _base_entry(self, base: str, tip: str, path: str) -> str | None:
         """``path``'s entry in ``base``; one lookup covers every path ``tip`` holds."""
         if (base, path) not in self._base_entries:
-            wanted = {item for item in self._tip_entries[tip]
-                      if (base, item) not in self._base_entries}
+            wanted = {item for item, entry in self._tip_entries[tip].items()
+                      if entry is not None and (base, item) not in self._base_entries}
             for chunk in self._chunks(wanted):
                 found = _z_entries(self._git(['ls-tree', '-r', '-z', base, '--', *chunk]).stdout)
                 self._base_entries.update({(base, item): found.get(item) for item in chunk})
@@ -372,6 +443,8 @@ class LineageJudge:
                 return RETIRE, 'deleted_in_lineage'
             if self._on_other_branch(src):
                 return HOLD, 'source_on_other_branch'
+            if deletion is not None:
+                return RETIRE, 'deleted_before_card_commit'
             return RETIRE, 'untracked_source_gone'
         if self._on_other_branch(src):
             return HOLD, 'source_on_other_branch'
