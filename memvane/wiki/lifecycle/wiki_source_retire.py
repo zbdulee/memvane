@@ -57,15 +57,21 @@ def _lineage_for(root: Path):
     return judge, reason
 
 
-def lineage_hold(lineage, rel: str, cards) -> str | None:
-    """First reason any of ``cards`` must keep ``rel``; None when all may retire."""
+def _lineage_blocker(lineage, rel: str, cards):
+    """``(card, reason)`` of the first of ``cards`` that must keep ``rel``, or None."""
     if lineage is None:
         return None
     for card in cards:
         verdict, reason = lineage.judge(rel, card)
         if verdict != 'retire':
-            return reason
+            return card, reason
     return None
+
+
+def lineage_hold(lineage, rel: str, cards) -> str | None:
+    """First reason any of ``cards`` must keep ``rel``; None when all may retire."""
+    blocker = _lineage_blocker(lineage, rel, cards)
+    return None if blocker is None else blocker[1]
 
 
 def retire_deleted_source(root: Path, config: dict, selected, collection: str,
@@ -151,10 +157,14 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
                 continue
             retiring.append((card, text))
 
-        hold = lineage_hold(lineage, rel, [card for card, _ in retiring] +
-                            [card for card, _, _ in shared_cards])
-        if hold is not None:
-            return {'state': 'held_branch', 'survivors': [], 'reason': hold}
+        citing = retiring + [(card, text) for card, text, _ in shared_cards]
+        blocker = _lineage_blocker(lineage, rel, [card for card, _ in citing])
+        if blocker is not None:
+            if len(citing) > 1:
+                # The whole bundle stays; name the card that held it.
+                _record_held(root, selected, blocker[0], dict(citing)[blocker[0]],
+                             blocker[1], wiki_root)
+            return {'state': 'held_branch', 'survivors': [], 'reason': blocker[1]}
         shared = set()
         if shared_cards:
             from memvane.wiki.card.api import verified_wiki_row
@@ -262,6 +272,18 @@ def retire_card(root: Path, wiki_root: Path, selected, card: Path,
             os.close(directory)
     _record_retired(root, None, selected, card, text, proof_hash, wiki_root=wiki_root)
     return 'retired'
+
+
+def _record_held(root, selected, card, text, reason, wiki_root) -> None:
+    """One ``wiki`` held event naming the card that kept a citing bundle; never fails."""
+    try:
+        rel = Path(card).relative_to(wiki_root).as_posix()
+        meta, _ = wiki_card.parse_frontmatter(text)
+        title = str(meta.get('title') or Path(card).stem)
+        # Ignored: a diagnostic line no decision reads; the next run logs the hold again.
+        workspace_files.append_activity(root, 'held', rel, title, bound=selected, reason=reason)
+    except Exception:
+        pass
 
 
 def _record_retired(root, config, selected, card, text, reason, *, wiki_root=None) -> None:
