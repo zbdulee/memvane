@@ -25,12 +25,25 @@
     "wiki/lifecycle": 8,
     "wiki/compile": 9,
     "host": 10,
-    "app": 11
+    "app": 11,
+    "ui": 12
   },
   "entrypoints": [
     "entry/run.py"
   ],
   "modules": {
+    "memvane/ui/__init__.py": {"context": "ui", "layer": "adapter", "pinned": false},
+    "memvane/ui/api.py": {"context": "ui", "layer": "adapter", "pinned": false},
+    "memvane/ui/auth.py": {"context": "ui", "layer": "adapter", "pinned": false},
+    "memvane/ui/cli.py": {"context": "ui", "layer": "adapter", "pinned": false},
+    "memvane/ui/lifecycle.py": {"context": "ui", "layer": "adapter", "pinned": false},
+    "memvane/ui/local_client.py": {"context": "ui", "layer": "adapter", "pinned": false},
+    "memvane/ui/platform_io.py": {"context": "ui", "layer": "adapter", "pinned": false},
+    "memvane/ui/preferences.py": {"context": "ui", "layer": "adapter", "pinned": false},
+    "memvane/ui/read_adapters.py": {"context": "ui", "layer": "adapter", "pinned": false},
+    "memvane/ui/server.py": {"context": "ui", "layer": "adapter", "pinned": false},
+    "memvane/ui/sse.py": {"context": "ui", "layer": "adapter", "pinned": false},
+    "memvane/ui/types.py": {"context": "ui", "layer": "domain", "pinned": false},
     "memvane/learning/context_learning/host_self.py": {"context": "learning", "layer": "adapter", "pinned": false},
     "memvane/learning/default_renewal_plan.py": {"context": "learning", "layer": "adapter", "pinned": false},
     "memvane/learning/default_renewal.py": {"context": "learning", "layer": "adapter", "pinned": false},

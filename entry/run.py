@@ -37,6 +37,7 @@ TARGETS = {
     'wiki-lifecycle': ('memvane.wiki.lifecycle.wiki_lifecycle:main', (), False),
     'wiki-dedup-resolve': ('memvane.wiki.dedup.wiki_dedup_resolve:main', (), False),
     'wiki-ledger': ('memvane.app.entry_commands:wiki_ledger', (), False),
+    'ui': ('memvane.ui.cli:main', (), True),
 }
 
 
