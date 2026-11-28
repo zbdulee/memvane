@@ -43,6 +43,12 @@ def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline, snapsh
                           authority=authority, linked=linked, timings=timings)
 
 
+def dry_run_recall(target_root, prompt, *, deadline, use_semantic=True, use_selector=False):
+    from memvane.recall.dry_run import dry_run_recall as implementation
+    return implementation(target_root, prompt, deadline=deadline, use_semantic=use_semantic,
+                          use_selector=use_selector)
+
+
 def serve_endpoint_recall(host, payload, *, cwd, trace, route_decision=None, main_proof=None,
                           linked=None):
     from memvane.recall.selected_recall import serve_endpoint_recall as implementation

@@ -14,12 +14,13 @@ def capture_recall(host, decision, payload, settings, pool, chosen, *, started=N
     return implementation(host, decision, payload, settings, pool, chosen, **given)
 
 def select_published(pool, *, prompt, config, project_root, wiki_names, scope_id, deadline=None,
-                     ensure_service=None, skip_busy=False, pair_budget=None, lane=None):
+                     ensure_service=None, skip_busy=False, pair_budget=None, lane=None,
+                     allow_admit_spawn=True):
     from memvane.learning.context_learning.selection_read import select_published as implementation
     given = {key: value for key, value, default in (
         ('deadline', deadline, None), ('ensure_service', ensure_service, None),
         ('skip_busy', skip_busy, False), ('pair_budget', pair_budget, None),
-        ('lane', lane, None)) if value is not default}
+        ('lane', lane, None), ('allow_admit_spawn', allow_admit_spawn, True)) if value is not default}
     return implementation(pool, prompt=prompt, config=config, project_root=project_root,
                           wiki_names=wiki_names, scope_id=scope_id, **given)
 
@@ -72,6 +73,11 @@ def run_automatic_learning(project):
 def learning_main(argv):
     from memvane.learning.context_learning.shared import main as implementation
     return implementation(argv)
+
+def inspect_project(project_root, *, check_invariants=False):
+    from memvane.learning.project_inspection import inspect_project as implementation
+    given = {'check_invariants': check_invariants} if check_invariants is not False else {}
+    return implementation(project_root, **given)
 
 def read_private_json(path):
     from memvane.learning.context_learning.dataset import read_private_json as implementation
@@ -169,14 +175,15 @@ def selector_tokenizers(config, project_root):
     from memvane.learning.wiki_card_budget import selector_tokenizers as implementation
     return implementation(config, project_root)
 
-def measure_card(card_text, tokenizer=None):
+def measure_card(card_text, tokenizer=None, *, failure_fields=False):
+    """With ``failure_fields`` the value is ``(measured, its failure_fields)``."""
     from memvane.learning.wiki_card_budget import measure_card as implementation
     args = (card_text, tokenizer) if tokenizer is not None else (card_text,)
-    return implementation(*args)
-
-def card_budget_failure_fields(measured):
-    from memvane.learning.wiki_card_budget import failure_fields as implementation
-    return implementation(measured)
+    measured = implementation(*args)
+    if not failure_fields:
+        return measured
+    from memvane.learning.wiki_card_budget import failure_fields as fields
+    return measured, fields(measured)
 
 def emit_card_budget(root, outcome, *, bound, path='', title='', reason=None, **fields):
     from memvane.learning.wiki_card_budget import emit as implementation

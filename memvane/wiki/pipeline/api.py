@@ -105,6 +105,12 @@ def finish_dedup_pair(project_root, pair_key):
     return implementation(project_root, pair_key)
 
 
+def pipeline_summary(project_root):
+    """Read-only counts of the ledger tables and the hook edit inbox; creates and locks nothing."""
+    from memvane.wiki.pipeline.summary import pipeline_summary as implementation
+    return implementation(project_root)
+
+
 def maintain(project_root, *, wiki_root, source_roots):
     """One bounded retention pass; the caller holds ``.compile-run.lock``."""
     from memvane.wiki.pipeline.retention import maintain as implementation

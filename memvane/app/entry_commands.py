@@ -10,6 +10,13 @@ def runtime_work_main(argv):
     if argv[:1]==['build-wake-status'] and len(argv)==3 and argv[1]=='--project':
         from memvane.install.api import wake_status
         print(json.dumps(wake_status(argv[2]),sort_keys=True,default=str));return 0
+    if argv[:1] == ['snapshot-readonly'] and len(argv) in (1, 2):
+        from memvane.runtime.api import runtime_main as main
+        captured = []
+        code = main(argv, execute=captured.append)
+        if code == 0 and captured:
+            print(json.dumps(captured[0], sort_keys=True, ensure_ascii=False))
+        return code
     from memvane.runtime.api import runtime_main as main
     from memvane.app.wiring import dispatch, drop_event, stall_event
     return main(argv, execute=dispatch, on_drop=drop_event, on_stall=stall_event)

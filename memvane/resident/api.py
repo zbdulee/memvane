@@ -17,6 +17,11 @@ def read_owner_state(manifest):
     return implementation(manifest)
 
 
+def inspect_owner_state(manifest):
+    from memvane.resident.embed_resident import inspect_owner_state as implementation
+    return implementation(manifest)
+
+
 def failure_decision(manifest, *, own_lock=False):
     from memvane.resident.embed_resident import _failure_decision as implementation
     return implementation(manifest, own_lock=own_lock)

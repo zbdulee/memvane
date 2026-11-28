@@ -506,6 +506,7 @@ _VALUE_SOURCES = {
     'memvane.journal.api.resolve_endpoint': 'memvane.journal.types.VerifiedEndpoint',
     'memvane.journal.api.reader_selection': 'memvane.journal.types.ReaderSelection',
     'memvane.recall.api.query_endpoint': 'memvane.recall.types.ReaderResult',
+    'memvane.recall.api.dry_run_recall': 'memvane.recall.types.DryRunRecallResult',
     'memvane.wiki.pipeline.api.publish_card': 'memvane.wiki.pipeline.types.PublishOutcome',
 }
 # Runtime surface (rereview 3.1): other domains call 58 runtime names, the 41

@@ -47,6 +47,87 @@ class ReaderResult:
         return hash(self._values())
 
 
+def _frozen(value):
+    """A read-only copy: mappings become ``MappingProxyType``, sequences tuples."""
+    from types import MappingProxyType
+    if isinstance(value, dict):
+        return MappingProxyType({str(key): _frozen(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_frozen(item) for item in value)
+    return value
+
+
+def _plain(value):
+    """The JSON-ready copy of a ``_frozen`` value."""
+    from types import MappingProxyType
+    if isinstance(value, (dict, MappingProxyType)):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_plain(item) for item in value]
+    return value
+
+
+class DryRunRecallResult:
+    """One dry run of the selected recall (``api.dry_run_recall``); frozen, equal by fields.
+
+    ``route``: the route state the target classified as (``candidate``,
+    ``worktree``, ``preview`` or a non-selected state); ``linked`` whether a
+    linked worktree's own view answered. ``outcome`` is ``served``, ``empty``
+    or ``refused`` with ``reason`` (the final reason or fixed refusal code).
+    The four stages: ``lexical_lists`` (per FTS query its rows with bm25
+    ``score`` and ``rank``), ``semantic_list`` (rows with ``cosine`` and
+    ``rank``, or None), ``fused_list`` (RRF ``rrfScore`` and ``rank``) and
+    ``selector_result`` (``ran``, ``reason``, ``checkpoint``, ``final`` cards
+    and ``decisions``: each pool card's selection or drop reason).
+    ``semantic_status`` is ``complete``, ``partial``, ``lexical_only``,
+    ``provider_absent`` (or a deferral/invalid status, or None when no read
+    ran). Rows carry path and blob hash, never the card body.
+    """
+
+    __slots__ = ('route', 'linked', 'outcome', 'reason', 'generation', 'lexical_lists',
+                 'semantic_list', 'fused_list', 'selector_result', 'semantic_status',
+                 'vector_covered_members', 'vector_eligible_members', 'fallback_reason',
+                 'notes', 'timings')
+
+    _NAMES = {'vector_covered_members': 'vectorCoveredMembers',
+              'vector_eligible_members': 'vectorEligibleMembers',
+              'lexical_lists': 'lexicalLists', 'semantic_list': 'semanticList',
+              'fused_list': 'fusedList', 'selector_result': 'selectorResult',
+              'semantic_status': 'semanticStatus', 'fallback_reason': 'fallbackReason'}
+
+    def __init__(self, *, route, outcome, reason, linked=False, generation=None, lexical_lists=(),
+                 semantic_list=None, fused_list=(), selector_result=None, semantic_status=None,
+                 vector_covered_members=None, vector_eligible_members=None,
+                 fallback_reason=None, notes=(), timings=None):
+        values = (route, bool(linked), outcome, reason, generation, lexical_lists, semantic_list,
+                  fused_list, {} if selector_result is None else selector_result, semantic_status,
+                  vector_covered_members, vector_eligible_members, fallback_reason, notes,
+                  {} if timings is None else timings)
+        for name, value in zip(self.__slots__, values):
+            object.__setattr__(self, name, _frozen(value))
+
+    def __setattr__(self, name, value):
+        raise AttributeError(f'cannot assign to field {name!r}')
+
+    def __delattr__(self, name):
+        raise AttributeError(f'cannot delete field {name!r}')
+
+    def as_dict(self):
+        """The JSON-ready view with camelCase keys (``lexicalLists``, ``semanticStatus`` ...)."""
+        return {self._NAMES.get(name, name): _plain(getattr(self, name)) for name in self.__slots__}
+
+    def __eq__(self, other):
+        return (self.as_dict() == other.as_dict() if type(other) is DryRunRecallResult
+                else NotImplemented)
+
+    def __hash__(self):
+        import json
+        return hash(json.dumps(self.as_dict(), sort_keys=True, default=repr))
+
+    def __repr__(self):
+        return f'DryRunRecallResult(route={self.route!r}, outcome={self.outcome!r}, reason={self.reason!r})'
+
+
 class HostResponseError(ValueError):
     """Fixed diagnostic code; never includes document body or source path."""
 

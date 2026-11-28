@@ -141,7 +141,7 @@ code/executable/manifest/adapter 지문과 기본 승인 체인, 현재 공식 r
 정체성·권한 거절은 후보 적용을 차단한다. `selector_heal.check_scope`는 갱신 intent나
 전환 intent(`teacher_enable_pending`)가 있으면 거절한다.
 
-구현: `context_learning_auto.py`, `context_learning_cli.py`, `prepare_laya_inference.py`, `project_learning_setup.py`, `project_learning_recovery.py`, `selector_maintenance.py`, `default_teacher_enable.py`, `candidate_close.py`, `case_rotation.py`.
+구현: `context_learning_auto.py`, `context_learning_cli.py`, `prepare_laya_inference.py`, `project_learning_setup.py`, `project_learning_recovery.py`, `selector_maintenance.py`, `default_teacher_enable.py`, `candidate_close.py`, `case_rotation.py`, `project_inspection.py`.
 
 공유 학습 queue는 `context_learning/shared.py`가 진입점이다. `shared.py`는 경로·policy·DB·동의 같은
 공통 seam, owned worker 자식 본문과 CLI `main`을 두고, 역할 모듈의 이름을 모두 다시 내보낸다.
@@ -307,3 +307,7 @@ hook은 teacher 전송·격리·tier·전환 모듈을 import하지 않는다. S
 존재만 본다. `UNSAFE_PATH`(`teacher_cli_unsafe_path`) 안내는 7일 간격, `REST_REASONS`는
 `teacher_codex_home_redirected`를 포함한다. 끄기는 setup skill의 `teacher-off`·`teacher-on`(`teacher-switch.json`)
 하나다. 환경 변수는 끄기 수단이 아니다. 계약 전체는 `docs/continual-learning.md`의 Default teacher 절에 있다.
+
+상태 화면의 학습 조회는 `api.inspect_project(project_root, *, check_invariants=False)`(`project_inspection.py`)다. `invariants.project_counts`와 같은 namespace를 읽고 승격 4종 지표(`candidateTrain`·`candidateEval`·`candidateEvalNonEmpty`·`candidateEvalEmpty`)와 그 기준, `caseRows`·`caseLimit`, active 포인터와 열린 적용 journal의 pending 포인터, teacher 전환·host 상태, checkpoint별 운영 점수, 최근 후보의 평가 지표를 돌려준다. DB는 `_query_only_uri`와 `PRAGMA query_only`로 열고, 승인 파일은 기록된 그대로 읽으며(선택 route 증명은 반복하지 않는다), `@prepared` 준비 게이트를 거치지 않는다. DB·namespace를 만들거나 바꾸지 않고 예외를 던지지 않는다. artifact를 해싱하는 불변식 점검은 `check_invariants`일 때만 한다.
+
+`select_published(..., allow_admit_spawn=False)`(dry-run recall)는 추론 receipt가 없을 때 trainer의 예측 검증을 띄우지 않고 `selector_not_prepared`로 답한다.

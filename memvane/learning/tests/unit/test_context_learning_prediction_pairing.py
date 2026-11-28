@@ -317,6 +317,32 @@ class SelectionBodyTests(unittest.TestCase):
             self.assertLessEqual(len(seen[0][0]['input_text'].encode()), adapter.MAX_INPUT_BYTES)
 
 
+    def test_a_dry_run_without_a_receipt_never_spawns_the_admission_check(self):
+        from memvane.learning.context_learning import live_select, inference_service
+        from memvane.learning.context_learning.contracts import digest
+        with tempfile.TemporaryDirectory(prefix='qmd-pairing-') as temporary:
+            state = Path(temporary).resolve(); state.chmod(0o700)
+            artifact = state / 'head.artifact'; artifact.write_text('synthetic head'); artifact.chmod(0o600)
+            def private(path, value):
+                path.write_text(json.dumps(value)); path.chmod(0o600)
+            private(state / 'active-checkpoint.json', {'schema_version': 1, 'artifact_path': str(artifact),
+                'artifact_sha256': hashlib.sha256(artifact.read_bytes()).hexdigest()})
+            private(state / 'live-selector.json', {'schema': 'qmd-live-selector-v1',
+                'trainerArgv': [sys.executable, str(Path(adapter.__file__).resolve()), str(state)],
+                'timeoutSeconds': 5, 'maxRssMib': 512})
+            small = '---\ntitle: small\n---\nSmall body.\n'
+            rows = [{'id': 'wiki/small.md', 'revision_sha256': digest(small), 'source_text': small}]
+            spawned, predicted = [], []
+            class Trainer:
+                def __init__(self, *_a, **_k): spawned.append(1)
+                def validate_prediction(self, *, cwd): return {}
+            with patch.object(live_select, 'VerifiedLayaTrainer', Trainer), \
+                    patch.object(inference_service, 'predict', lambda *a, **k: predicted.append(1)):
+                answer = live_select.choose(state, 'Synthetic request', rows, corpus_fingerprint='a' * 64,
+                                            allow_admit_spawn=False)
+            self.assertEqual(answer, (None, 'selector_not_prepared', {}))
+            self.assertEqual((spawned, predicted), ([], []))
+
 class ReceiptVersionTests(unittest.TestCase):
     def test_pairing_version_is_part_of_the_inference_receipt_checks(self):
         from memvane.learning.context_learning import inference_identity

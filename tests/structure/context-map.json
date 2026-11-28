@@ -143,12 +143,27 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/diagnostics/event_queries.py": {
+      "context": "diagnostics",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/diagnostics/event_summary.py": {
+      "context": "diagnostics",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/diagnostics/event_log.py": {
       "context": "diagnostics",
       "layer": "adapter",
       "pinned": false
     },
     "memvane/diagnostics/job_telemetry.py": {
+      "context": "diagnostics",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/diagnostics/slo.py": {
       "context": "diagnostics",
       "layer": "adapter",
       "pinned": false
@@ -898,6 +913,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/learning/project_inspection.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/learning/selector_maintenance.py": {
       "context": "learning",
       "layer": "adapter",
@@ -1006,6 +1026,11 @@
     "memvane/recall/reader_dispatch.py": {
       "context": "recall",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/recall/dry_run.py": {
+      "context": "recall",
+      "layer": "application",
       "pinned": false
     },
     "memvane/recall/selected_recall.py": {
@@ -1974,6 +1999,11 @@
       "pinned": false
     },
     "memvane/wiki/pipeline/retention.py": {
+      "context": "wiki/pipeline",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/pipeline/summary.py": {
       "context": "wiki/pipeline",
       "layer": "adapter",
       "pinned": false

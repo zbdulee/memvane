@@ -82,13 +82,24 @@ def _hybrid_fts_queries(prompt: str, lexical_patterns: tuple[str, ...]) -> list[
 
 def _fuse_verified_lists(lists: list[list[dict]], *, max_rows: int = MAX_ROWS) -> list[dict]:
     """Pinned QMD RRF ordering and skip-rerank score for verified paths."""
+    if type(max_rows) is not int or not 1 <= max_rows <= HYBRID_LIST_LIMIT:
+        _fail('invalid_hybrid_candidates')
+    # QMD skipRerank replaces fused score with position score 1/rank.
+    return [{**row, "score": 1 / rank}
+            for rank, (row, _score) in enumerate(rrf_ranked(lists)[:max_rows], 1)]
+
+
+def rrf_ranked(lists: list[list[dict]]) -> list[tuple[dict, float]]:
+    """``(row, fused RRF score)`` of every verified path in QMD RRF order.
+
+    The same validation and order ``_fuse_verified_lists`` serves; the dry
+    run reads the scores the served rows replace with ``1/rank``.
+    """
     by_path = {}
     scores = {}
     best_rank = {}
     generation = scope = None
     active_list = 0
-    if type(max_rows) is not int or not 1 <= max_rows <= HYBRID_LIST_LIMIT:
-        _fail('invalid_hybrid_candidates')
     for rows in lists:
         if not isinstance(rows, list) or len(rows) > HYBRID_LIST_LIMIT:
             _fail("invalid_hybrid_candidates")
@@ -124,9 +135,7 @@ def _fuse_verified_lists(lists: list[list[dict]], *, max_rows: int = MAX_ROWS) -
             scores[path] += 0.02
     # QMD's stable score sort retains first-seen ranked-list order for ties.
     ordered = sorted(scores, key=lambda path: -scores[path])
-    # QMD skipRerank replaces fused score with position score 1/rank.
-    return [{**by_path[path], "score": 1 / rank}
-            for rank, path in enumerate(ordered[:max_rows], 1)]
+    return [(by_path[path], scores[path]) for path in ordered]
 
 
 def reader_reseal_candidate(code, has_route):

@@ -21,6 +21,7 @@ from memvane.wiki.pipeline.types import (
     DB_NAME,
     PIPELINE_APP_ID,
     PIPELINE_USER_VERSION,
+    SUMMARY_GROUPS,
     WORKER_BUSY_TIMEOUT_MS,
     PipelineError,
 )
@@ -427,6 +428,14 @@ class PipelineStore(DecisionLedgerMixin, JobQueueMixin, VerifyQueueMixin, Retent
 
     def count_verify_jobs(self, *, state: str | None = None) -> int:
         return self._count_jobs('verify_jobs', state=state)
+
+    def group_counts(self, table: str) -> dict[str, int]:
+        """``value -> rows`` of the grouping column ``SUMMARY_GROUPS`` names for ``table``."""
+        if table not in SUMMARY_GROUPS:
+            raise PipelineError('invalid_summary_table')
+        column = SUMMARY_GROUPS[table][0]
+        rows = self._conn.execute(f'SELECT {column}, COUNT(*) FROM {table} GROUP BY {column}').fetchall()
+        return {str(row[0]): int(row[1]) for row in rows}
 
     def append_audit(self, kind: str, payload: dict, *, target_path: str | None = None,
                      source_path: str | None = None, body_hash: str | None = None) -> int:

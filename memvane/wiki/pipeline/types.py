@@ -42,6 +42,16 @@ DEDUP_STATES = ('queued', 'claimed', 'done')
 REFRESH_STATES = ('pending', 'settled', 'resolved')
 JOB_STATES = ('queued', 'claimed', 'done', 'deferred', 'dropped')
 PUBLISH_STATES = ('publishing', 'published', 'published_user_edited', 'conflict_user_edited', 'aborted')
+# ``pipeline_summary``: the grouping column counted per ledger table, and the values always listed.
+SUMMARY_GROUPS = {
+    'compile_jobs': ('state', JOB_STATES),
+    'verify_jobs': ('state', JOB_STATES),
+    'publish_txns': ('state', PUBLISH_STATES),
+    'refresh_events': ('state', REFRESH_STATES),
+    'dedup_pairs': ('state', DEDUP_STATES),
+    'suppressions': ('kind', SUPPRESSION_KINDS),
+    'audit_events': ('kind', AUDIT_KINDS),
+}
 
 
 class PipelineError(ValueError):
@@ -83,6 +93,7 @@ class PipelineHandle(Protocol):
     def count_compile_jobs(self, *, state: str | None = None) -> int: ...
     def recover_dead_verify_claims(self, *, max_attempts: int = 3) -> dict: ...
     def count_verify_jobs(self, *, state: str | None = None) -> int: ...
+    def group_counts(self, table: str) -> dict[str, int]: ...
     def append_generation(self, row: dict, *, origin_key: str | None = None) -> int | None: ...
     def generations(self, *, target_path: str | None = None, source_hash: str | None = None, canonical_key: str | None = None) -> list[dict]: ...
     def latest_generation(self, target_path: str) -> dict | None: ...

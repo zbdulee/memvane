@@ -56,7 +56,7 @@ def _request(active, artifact, case, pair_budget, lane):
 
 def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
            pointer_name='active-checkpoint.json', ensure_service=None, skip_busy=False,
-           pair_budget=None, lane=None):
+           pair_budget=None, lane=None, allow_admit_spawn=True):
     """Return (selected IDs or None, reason, bounded resource observation).
 
     A real 0-card prediction is []. None means use the preexisting QMD topN.
@@ -145,8 +145,7 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
                 'prompt': prompt, 'candidates': candidates}
         case['input_sha256'] = digest(canonical(case))
         remaining = deadline - time.monotonic() if deadline is not None else policy['timeoutSeconds']
-        if remaining < 1:
-            return None, 'timeout', {}
+        if remaining < 1: return None, 'timeout', {}
         request = _request(active, artifact, case, pair_budget, lane)
         # Validate before creating a shared process or socket. No prediction
         # can mint training evidence, even when capture/autoCycle are disabled.
@@ -155,6 +154,7 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
         admission_started = time.perf_counter()
         inference_receipt = admit(state, policy['trainerArgv'],
                                   active.get('model_input_view', LEGACY_INPUT_VIEW))
+        if inference_receipt is None and not allow_admit_spawn:return None, 'selector_not_prepared', {}  # dry run
         if inference_receipt is None:
             trainer = VerifiedLayaTrainer(policy['trainerArgv'],
                 max_seconds=min(policy['timeoutSeconds'], max(1, int(remaining))),

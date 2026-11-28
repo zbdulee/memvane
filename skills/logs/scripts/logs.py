@@ -13,7 +13,7 @@ each route) in UTC order under one ``ALL_READ_LIMIT`` byte budget split
 equally between readable targets; a target that cannot be read is reported
 with its reason, never shown as empty. ``--register PROJECT`` (repeatable)
 explicitly adds projects to that registry (the only write this tool makes).
-``--slo`` prints the service-level lines of ``logs_slo`` for the window, one
+``--slo`` prints the service-level lines (``diagnostics.api.slo_lines``) for the window, one
 block per install. ``--learning-check`` reads the project's learning state
 (read-only) and prints how many rows break each invariant: counts per rule, no
 row content.
@@ -29,147 +29,24 @@ terminal. Stored bytes are never changed.
 from __future__ import annotations
 
 import argparse
-import math
-from collections import Counter
-from datetime import datetime, timedelta, timezone
-import json
 import os
 from pathlib import Path
-import re
 import sys
-import unicodedata
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from memvane.diagnostics import event_log  # noqa: E402
+from memvane.diagnostics import api as diagnostics, event_log  # noqa: E402
+# Display escaping and visibility are the diagnostics domain's; the terminal rendering stays here.
+from memvane.diagnostics.event_queries import (  # noqa: E402
+    DIAG_ID as _DIAG_ID, EPOCH as _EPOCH, count as _count, diagnostic_groups as _groups,
+    diagnostic_ids as _diagnostic_ids, display as _display, esc as _esc, json_line as _json_line,
+    short as _short, ts as _ts, visible as _visible)
 from memvane.registry import log_targets  # noqa: E402
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import logs_slo  # noqa: E402
 
 ALL_READ_LIMIT = 16 * 1024 * 1024
 MAX_ALL_TARGETS = 128
-PART_EVENT = 'diagnostic.part'
-HEADER_EVENT = 'diagnostic.header'
-_DIAG_ID = re.compile(r'[0-9a-f]{32}\Z')
-_SHA = re.compile(r'[0-9a-f]{64}\Z')
-_KINDS = ('exception', 'origin_stack', 'child_stderr_tail')
-# Only these header fields are shown without --details.
-_HEADER_KEYS = ('ts', 'v', 'install', 'host', 'session', 'event', 'outcome', 'reason',
-                'ms', 'dropped')
-_GROUP_CAP = 200  # rows per diagnostic ID kept for reassembly (MAX_PARTS + header)
-_UNSAFE = frozenset(('Cc', 'Cf', 'Cs', 'Zl', 'Zp'))
-_NAMED = {'\n': '\\n', '\r': '\\r', '\t': '\\t'}
-_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
-
-
-# ------------------------------------------------------------ safe display
-
-def _escape_char(ch):
-    if ch in _NAMED:
-        return _NAMED[ch]
-    if unicodedata.category(ch) not in _UNSAFE:
-        return ch
-    n = ord(ch)
-    if n < 0x100:
-        return f'\\x{n:02x}'
-    return f'\\u{n:04x}' if n < 0x10000 else f'\\U{n:08x}'
-
-
-def _esc(value):
-    """Terminal-safe text: control, format and line-separator chars become escapes."""
-    text = str(value)
-    if text.isprintable():
-        return text
-    return ''.join(_escape_char(ch) for ch in text)
-
-
-def _display(value, depth=0):
-    """A copy of a row whose strings are all terminal-safe (for text rendering)."""
-    if isinstance(value, str):
-        return _esc(value)
-    if depth > 6:
-        return None
-    if isinstance(value, dict):
-        return {_esc(key): _display(item, depth + 1) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_display(item, depth + 1) for item in value]
-    return value
-
-
-def _json_line(row):
-    """``json.dumps`` plus \\u-escapes for DEL, C1, format and separator chars.
-
-    The parsed value is unchanged; only the printed form is safe to show.
-    """
-    text = json.dumps(row, ensure_ascii=False)
-    if text.isprintable():
-        return text
-    out = []
-    for ch in text:
-        if ch != ' ' and unicodedata.category(ch) in _UNSAFE:
-            n = ord(ch)
-            if n > 0xFFFF:
-                n -= 0x10000
-                out.append(f'\\u{0xD800 + (n >> 10):04x}\\u{0xDC00 + (n & 0x3FF):04x}')
-            else:
-                out.append(f'\\u{n:04x}')
-        else:
-            out.append(ch)
-    return ''.join(out)
-
-
-def _visible(row):
-    """The row as shown without --details, or None (a raw part is never shown)."""
-    if not isinstance(row, dict):
-        return None
-    event = row.get('event')
-    if event == PART_EVENT:
-        return None
-    if event == HEADER_EVENT:
-        out = {key: row[key] for key in _HEADER_KEYS if key in row}
-        ident = row.get('diagnostic_id')
-        if isinstance(ident, str) and _DIAG_ID.fullmatch(ident):
-            out['diagnostic_id'] = ident
-        if row.get('kind') in _KINDS:
-            out['kind'] = row['kind']
-        for key in ('parts', 'bytes', 'diagnostic_version'):
-            if _count(row.get(key)):
-                out[key] = row[key]
-        if isinstance(row.get('sha256'), str) and _SHA.fullmatch(row['sha256']):
-            out['sha256'] = row['sha256']
-        if type(row.get('truncated')) is bool:
-            out['truncated'] = row['truncated']
-        source = row.get('source_event')
-        if isinstance(source, str) and event_log.code(source) == source:
-            out['source_event'] = source
-        return out
-    prompt = row.get('prompt')
-    if isinstance(prompt, dict) and 'text' in prompt:
-        # Older installs could store prompt text; it is never shown.
-        row = dict(row)
-        row['prompt'] = {key: value for key, value in prompt.items() if key != 'text'}
-    return row
-
-
-def _groups(rows):
-    """Diagnostic rows by ID, bounded; an overflowing ID maps to None (incomplete)."""
-    groups = {}
-    for row in rows:
-        if not isinstance(row, dict) or row.get('event') not in (PART_EVENT, HEADER_EVENT):
-            continue
-        ident = row.get('diagnostic_id')
-        if not isinstance(ident, str) or not _DIAG_ID.fullmatch(ident):
-            continue
-        bucket = groups.setdefault(ident, [])
-        if bucket is None:
-            continue
-        if len(bucket) >= _GROUP_CAP:
-            groups[ident] = None
-            continue
-        bucket.append(row)
-    return groups
 
 
 class _View:
@@ -184,22 +61,12 @@ class _View:
 
     def detail(self, row, ident=None):
         ident = row.get('diagnostic_id') if ident is None else ident
-        incomplete = {'status': 'incomplete', 'diagnostic_id': ident}
         if not isinstance(ident, str) or not _DIAG_ID.fullmatch(ident):
-            return incomplete
+            return {'status': 'incomplete', 'diagnostic_id': ident}
         index = self.origin.get(id(row), 0)
         group = self.groups[index].get(ident) if index < len(self.groups) else None
-        if not group:
-            return incomplete
-        try:
-            from memvane.diagnostics import diagnostic_trace
-            result = diagnostic_trace.reassemble(group, ident)
-        except Exception:  # noqa: BLE001 - reported, never raised
-            return {'status': 'unavailable', 'diagnostic_id': ident}
-        if not isinstance(result, dict) or result.get('status') != 'complete':
-            return incomplete
-        return {'status': 'complete', 'diagnostic_id': ident, 'kind': result.get('kind'),
-                'truncated': result.get('truncated'), 'text': result.get('text')}
+        # An overflowing group (None) or a missing one reassembles as ``incomplete``.
+        return diagnostics.reassemble_diagnostic(group or [], ident)
 
 
 def _detail_lines(result):
@@ -216,7 +83,6 @@ def _detail_lines(result):
         # A fixed prefix: no stored line can look like a log row.
         yield '    | ' + _esc(line)
 
-FAILED = frozenset(('refused', 'failed', 'error', 'interrupted', 'exited'))
 
 def _state_root(args):
     if args.state_root:
@@ -232,56 +98,6 @@ def _state_root(args):
     if root is None:
         return None, f"route state {decision.get('state')} has no install journal"
     return root, None
-
-
-def _ts(row):
-    """Aware UTC timestamp of a record, or None (a naive one is read as UTC)."""
-    try:
-        value = datetime.fromisoformat(str(row.get('ts')).replace('Z', '+00:00'))
-    except (TypeError, ValueError):
-        return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-
-
-def _since(rows, hours):
-    if hours is None:
-        return rows
-    floor = datetime.now(timezone.utc) - timedelta(hours=hours)
-    return [row for row in rows if (_ts(row) or floor) >= floor]
-
-
-def _short(row):
-    parts = [str(row.get('ts', ''))[:19].replace('T', ' '), row.get('event'),
-             row.get('outcome') or '-']
-    if row.get('reason'):
-        parts.append(f"reason={row['reason']}")
-    if row.get('severity') == 'warning':
-        parts.append('severity=warning')
-    if row.get('ms') is not None:
-        parts.append(f"{row['ms']}ms")
-    if row.get('event') == HEADER_EVENT:
-        if row.get('kind') in _KINDS:
-            parts.append(f"kind={row['kind']}")
-        if _count(row.get('parts')):
-            parts.append(f"parts={row['parts']}")
-        if row.get('truncated') is True:
-            parts.append('truncated')
-    ident = row.get('diagnostic_id')
-    if isinstance(ident, str) and _DIAG_ID.fullmatch(ident):
-        parts.append(f'diagnostic={ident}')
-    ids = row.get('diagnostic_ids')
-    if isinstance(ids, list):
-        parts.extend(f'diagnostic={item}' for item in ids
-                     if isinstance(item, str) and _DIAG_ID.fullmatch(item))
-    return ' '.join(str(part) for part in parts)
-
-
-def _count(value):
-    return type(value) is int and 0 <= value <= 1 << 62
-
-
-
-
 
 
 def _recall_line(row):
@@ -305,13 +121,7 @@ def _print(rows, args, render=_short, view=None):
     view = view or _View()
     rows = rows[-args.limit:] if args.limit else rows
     for row in rows:
-        ids = []
-        if view.details:
-            candidates = [row.get('diagnostic_id')]
-            if isinstance(row.get('diagnostic_ids'), list):
-                candidates.extend(row['diagnostic_ids'])
-            ids = list(dict.fromkeys(value for value in candidates
-                                     if isinstance(value, str) and _DIAG_ID.fullmatch(value)))
+        ids = _diagnostic_ids(row) if view.details else []
         details = [view.detail(row, ident) for ident in ids]
         if args.json:
             out = dict(row, details=details) if details else row
@@ -347,321 +157,8 @@ def _header(state_root, info):
 
 
 def summary(rows, args, unified=False):
-    window = _since(rows, args.hours)
-    label = f'last {args.hours}h' if args.hours is not None else 'all retained'
-    print(f'events ({label}): {len(window)}')
-    counts = Counter((str(row.get('event')), str(row.get('outcome'))) for row in window)
-    for (event, outcome), count in sorted(counts.items(), key=lambda item: (str(item[0][0]),
-                                                                           str(item[0][1]))):
-        print(f'  {_esc(event)} {_esc(outcome)}: {count}')
-    hooks = ('recall', 'gate', 'posttool', 'index', 'compile', 'update', 'update-queued', 'file-change-event')
-    def values(items, field):
-        return [value for row in items for value in [row.get(field)]
-                if type(value) in (int, float) and math.isfinite(value) and value >= 0]
-    def percentile(items, fraction):
-        ordered = sorted(items)
-        return ordered[max(0, math.ceil(len(ordered) * fraction) - 1)]
-    for action in hooks:
-        action_rows = [row for row in window if row.get('event') == action][-100:]
-        elapsed = values(action_rows, 'ms')
-        if not elapsed:
-            continue
-        extra = ''
-        if action == 'recall':
-            semantic = [row for row in action_rows if isinstance(row.get('semantic'), str)]
-            if semantic:
-                used = sum(row['semantic'] in logs_slo.SEMANTIC_USED for row in semantic)
-                full = sum(logs_slo.full_coverage(row) for row in semantic)
-                extra = f' semantic={used}/{len(semantic)} ({100 * used / len(semantic):.1f}%) fullCoverage={full}/{len(semantic)}'
-            extra += ' target p50=1000ms p95=1500ms large-p95=2500ms'
-        print(f'{action} p50={percentile(elapsed, .5):g}ms p95={percentile(elapsed, .95):g}ms'
-              f' n={len(elapsed)}{extra}')
-        if action == 'recall':
-            for source in sorted({row['vectorSource'] for row in action_rows
-                                  if row.get('vectorSource') in ('arena', 'store', 'python')}):
-                sourced = [row for row in action_rows if row.get('vectorSource') == source
-                           and isinstance(row.get('semantic'), str)]
-                if not sourced:
-                    continue
-                used = sum(row['semantic'] in logs_slo.SEMANTIC_USED for row in sourced)
-                times = values(sourced, 'semanticMs')
-                latency = (f' p50={percentile(times, .5):g}ms p95={percentile(times, .95):g}ms'
-                           if times else '')
-                print(f'semantic {source}: {used}/{len(sourced)} '
-                      f'({100 * used / len(sourced):.1f}%){latency}')
-            labels = (('routeProofMs', 'route'), ('lexicalMs', 'lexical'),
-                      ('queryEmbeddingMs', 'queryEmbedding'), ('semanticMs', 'semantic'),
-                      ('selectorMs', 'selector'), ('renderMs', 'render'),
-                      ('vectorReadMs', 'vectorRead'), ('vectorUnpackMs', 'vectorUnpack'),
-                      ('vectorDotMs', 'vectorDot'), ('vectorLoadMs', 'vectorLoad'),
-                      ('vectorScanMs', 'vectorScan'), ('vectorVerifyMs', 'vectorVerify'))
-            stages = [(label, values(action_rows, key)) for key, label in labels]
-            # The same nearest-rank p50 as the observation line below: ``lexical`` is in both.
-            present = [f'{label}={percentile(data, .5):g}ms' for label, data in stages if data]
-            if present:
-                print('recall stage p50: ' + ' '.join(present))
-            # Checkout observation stages: each is a few ms while the
-            # observation cache serves, and hundreds when every one runs Git.
-            observed = [(label, values(action_rows, key)) for key, label in
-                        (('pinMs', 'pin'), ('lexicalMs', 'lexical'),
-                         ('stillCurrentMs', 'stillCurrent'), ('checkoutMs', 'checkout'))]
-            present = [f'{label}={percentile(data, .5):g}ms' for label, data in observed if data]
-            if present:
-                print('recall observation p50: ' + ' '.join(present))
-    recalls = [row for row in window if row.get('event') == 'recall']
-    if recalls:
-        empty = [row for row in recalls if row.get('outcome') != 'served']
-        reasons = Counter(str(row.get('reason')) for row in empty)
-        print(f"recalls: {len(recalls)} served={len(recalls) - len(empty)} "
-              f"empty/refused={len(empty)}"
-              + (' (' + ', '.join(f'{_esc(k)} {v}' for k, v in reasons.most_common(5)) + ')'
-                 if reasons else ''))
-        degraded = Counter(str(row.get('degraded') or row.get('vector_fallback'))
-                           for row in recalls
-                           if row.get('degraded') or row.get('vector_fallback'))
-        if degraded:
-            print('degraded recalls: ' + ', '.join(f'{_esc(k)} {v}'
-                                                   for k, v in degraded.items()))
-    # The trailing run over every retained row: a stalled index shows here even
-    # when the window holds no pass. One line per install: merged rows of a
-    # publishing install must not hide another install's run.
-    runs = logs_slo.sync_runs(rows if unified else [dict(row, install=None) for row in rows])
-    for install, (streak, reasons, last_ok) in sorted(runs.items(), key=lambda item: str(item[0])):
-        line = 'sync consecutive failed passes: ' + (f'install={_esc(install)} ' if unified else '') + str(streak)
-        if streak:
-            line += ' (' + ', '.join(f'{_esc(k)} {v}' for k, v in reasons.most_common(3)) + ')'
-        if last_ok:
-            line += f' last ok {_esc(str(last_ok))}'
+    for line in diagnostics.summarize_events(rows, args.hours, unified=unified):
         print(line)
-    # Sync owner occupancy, main publishes apart from linked view waits, and what the learning gates put
-    # off: one block per install, as the failure run above.
-    blocks = {}
-    for row in rows:
-        blocks.setdefault(row.get('install') if unified else None, []).append(row)
-    for install, block in sorted(blocks.items(), key=lambda item: str(item[0])):
-        for line in logs_slo.summary_lines(block, _since(block, args.hours)):
-            text = logs_slo.render(line, _esc)[len('slo ' + line['line'] + ': '):]
-            print(logs_slo.SUMMARY_LABELS[line['line']] + ': '
-                  + (f'install={_esc(install)} ' if unified else '') + text)
-    for name, test in (('last publish', lambda row: row.get('event') == 'index.publish'),
-                       ('last error', lambda row: row.get('severity') != 'warning' and
-                        (row.get('outcome') in FAILED or row.get('event') == 'hook.error'))):
-        found = [row for row in rows if test(row)]
-        if found:
-            row = _display(found[-1])
-            detail = ''
-            if row.get('event') == 'index.publish':
-                detail = f" generation={row.get('generation')}"
-            print(f'{name}: {_short(row)}{detail}')
-    dropped = sum(row.get('dropped', 0) for row in window if type(row.get('dropped')) is int)
-    if dropped:
-        print(f'lines a process could not write before a later one: {dropped}')
-    _teacher_summary(window)
-
-
-_CALL_OUTCOMES = ('gold', 'pending_review', 'pre_send_rejected', 'provider_refused', 'parked')
-# A kept (parked) answer committed by a later pass: its call and usage are on the ``parked`` row.
-_FROM_PARKED = 'parked_answer'
-_USAGE = ('usageIn', 'usageOut', 'usageCached', 'usageReasoning')
-_SCORE_KEYS = ('cases', 'exactRate', 'microF1', 'emptyAgree', 'nonEmptyAgree', 'defaultRank',
-               'unknownSelection', 'goldOutsideK')
-_PROMOTION_KEYS = ('cycle', 'trainCases', 'evalCases', 'evalEmpty', 'candidateExact', 'activeExact')
-
-
-def _tally(counter):
-    return ', '.join(f'{_esc(key)} {count}' for key, count in sorted(counter.items(), key=lambda x: str(x[0])))
-
-
-def _number(value):
-    return type(value) in (int, float) and math.isfinite(value)
-
-
-def _teacher_summary(window):
-    """Default-teacher lines: calls, usage, waits, isolation, scores and promotions."""
-    teacher = [row for row in window if row.get('event') == 'learning.teacher']
-    calls = [row for row in teacher if row.get('outcome') in _CALL_OUTCOMES and row.get('request_id')
-             and not (row.get('outcome') == 'gold' and row.get('reason') == _FROM_PARKED)]
-    days = {}
-    gold = [row for row in teacher if row.get('outcome') == 'gold' and row.get('request_id')]
-    for row in gold:
-        day = (_ts(row) or _EPOCH).date().isoformat()
-        days.setdefault(day, {'calls': 0, 'gold': 0, 'failed': Counter(), 'usage': Counter()})['gold'] += 1
-    for row in calls:
-        day = (_ts(row) or _EPOCH).date().isoformat()
-        entry = days.setdefault(day, {'calls': 0, 'gold': 0, 'failed': Counter(), 'usage': Counter()})
-        entry['calls'] += 1
-        if row.get('outcome') not in ('gold', 'parked'):
-            entry['failed'][str(row.get('reason') or row.get('outcome'))] += 1
-        for key in _USAGE:
-            if type(row.get(key)) is int and row[key] >= 0:
-                entry['usage'][key] += row[key]
-    for day, entry in sorted(days.items()):
-        failed = sum(entry['failed'].values())
-        usage = ' '.join(f'{key}={entry["usage"][key]}' for key in _USAGE if key in entry['usage'])
-        print(f"teacher {day}: calls={entry['calls']} gold={entry['gold']} failed={failed}"
-              + (f' ({_tally(entry["failed"])})' if failed else '') + (f' {usage}' if usage else ''))
-    parked = sum(1 for row in calls if row.get('outcome') == 'parked')
-    if parked:
-        later = sum(1 for row in gold if row.get('reason') == _FROM_PARKED)
-        print(f'teacher parked answers: kept={parked} committed_later={later}')
-    if gold:
-        selected = Counter(row.get('selectedCount') for row in gold
-                           if row.get('selectedCount') in (0, 1, 2, 3))
-        print('teacher selected: ' + ' '.join(f'{n}={selected.get(n, 0)}' for n in range(4)))
-        models = Counter((str(row.get('teacherHost')), str(row.get('model'))) for row in gold)
-        print('teacher models: ' + ', '.join(f'{_esc(host)} {_esc(model)} {count}'
-                                             for (host, model), count in sorted(models.items())))
-    pending = Counter(str(row.get('reason')) for row in calls if row.get('outcome') == 'pending_review')
-    if pending:
-        print(f'teacher pending_review: {_tally(pending)}')
-    isolation = Counter(row.get('isolation') for row in teacher
-                        if row.get('isolation') in ('refused', 'violated'))
-    if isolation:
-        print(f"teacher isolation: refused={isolation.get('refused', 0)} "
-              f"violated={isolation.get('violated', 0)}")
-    _teacher_waits([row for row in teacher if row.get('outcome') == 'pass'])
-    warned = [row for row in calls if isinstance(row.get('toolWarnings'), list) and row['toolWarnings']]
-    if warned:
-        tools = Counter()
-        for row in warned:
-            for item in row['toolWarnings']:
-                if isinstance(item, dict) and type(item.get('count')) is int and item['count'] > 0:
-                    tools[str(item.get('name'))] += item['count']
-        print(f'WARNING teacher tool calls: {len(warned)} call(s); {_tally(tools)}')
-    kept = [row for row in calls if isinstance(row.get('pluginWarnings'), list) and row['pluginWarnings']]
-    if kept:
-        plugins = Counter(str(name) for row in kept for name in row['pluginWarnings'])
-        print(f'WARNING teacher plugins not turned off: {len(kept)} call(s); {_tally(plugins)}')
-    scores = {}
-    for row in window:
-        if row.get('event') == 'learning.score' and row.get('checkpoint') is not None:
-            scores.setdefault(str(row['checkpoint']), []).append(row)
-    for checkpoint, rows in sorted(scores.items(), key=lambda item: str(_ts(item[1][-1]) or _EPOCH)):
-        last = rows[-1]
-        parts = [f'{key}={last[key]:g}' if isinstance(last[key], float) else f'{key}={last[key]}'
-                 for key in _SCORE_KEYS if _number(last.get(key))]
-        trend = [row['exactRate'] for row in rows if _number(row.get('exactRate'))]
-        if len(trend) > 1:
-            parts.append(f'trend exactRate {trend[0]:g}->{trend[-1]:g} (n={len(trend)})')
-        print(f'score {_esc(checkpoint)}: ' + ' '.join(parts))
-    promotions = [row for row in window if row.get('event') == 'learning.promotion']
-    for row in promotions[-10:]:
-        parts = [str(row.get('ts', ''))[:19].replace('T', ' '), _esc(row.get('outcome') or '-')]
-        parts.extend(f'{key}={_esc(row[key])}' for key in _PROMOTION_KEYS if row.get(key) is not None)
-        if row.get('reason'):
-            parts.append(f"reason={_esc(row['reason'])}")
-        print('promotion ' + ' '.join(parts))
-    _learning_inflow(window, promotions)
-
-
-# The default-teacher cohort: train, evaluation, non-empty and empty evaluation gold.
-_PROMOTION_NEEDS = (('candidateTrain', 100), ('candidateEval', 50),
-                    ('candidateEvalNonEmpty', 10), ('candidateEvalEmpty', 10))
-
-
-def _learning_inflow(window, promotions):
-    """Edit-recall funnel, distance to promotion, case-table room and learning deferrals."""
-    posttool = [row for row in window if row.get('event') == 'posttool']
-    edits = [row for row in window if row.get('event') == 'recall.edit']
-    stored = [row for row in window if row.get('event') == 'learning.capture' and row.get('outcome') == 'stored']
-    if posttool or edits or stored:
-        skips = Counter(str(row['editRecall']) for row in posttool if isinstance(row.get('editRecall'), str))
-        print(f'edit recall funnel: posttool={len(posttool)}'
-              + (f' ({_tally(skips)})' if skips else '')
-              + f' recall.edit={len(edits)} stored={len(stored)}')
-        # Where the edited files lie: the main checkout, a linked worktree of the
-        # same repository, or outside the repository (never a case).
-        targets = [(name, _edit_targets(rows)) for name, rows in
-                   (('posttool', posttool), ('recall.edit', edits), ('stored', stored))]
-        if any(tally for _, tally in targets):
-            print('edit recall targets: ' + '; '.join(
-                f'{name} {_tally(tally)}' for name, tally in targets if tally))
-    scores = [row for row in window if row.get('event') == 'learning.score' and _count(row.get('gold'))]
-    if scores:
-        last = scores[-1]
-        parts = [f"gold={last['gold']}"]
-        if _count(last.get('candidateTrain')):
-            parts.extend(f'{key}={last[key]}/{need}' for key, need in _PROMOTION_NEEDS if _count(last.get(key)))
-        else:
-            parts.append('candidate=none')
-        if promotions:
-            parts.append(f"last={_esc(promotions[-1].get('outcome') or '-')} "
-                         f"{str(promotions[-1].get('ts', ''))[:19].replace('T', ' ')}")
-        print('promotion progress: ' + ' '.join(parts))
-        rows, limit = last.get('caseRows'), last.get('caseLimit')
-        if _count(rows) and _count(limit) and limit and rows >= limit * .9:
-            print(f'WARNING learning case table: rows={rows}/{limit}; capture stops at the limit')
-    full = sum(1 for row in window if row.get('event') == 'learning.capture.shared'
-               and row.get('outcome') == 'queue_full')
-    if full:
-        print(f'WARNING learning capture queue_full: {full}')
-    cycles = [row for row in window if row.get('event') == 'learning.cycle']
-    deferred = Counter(str(row.get('reason')) for row in cycles if row.get('outcome') == 'deferred_resource')
-    trained = [row for row in cycles if row.get('outcome') == 'trained']
-    if deferred or trained:
-        last = (str(trained[-1].get('ts', ''))[:19].replace('T', ' ') if trained else 'none')
-        print('learning deferred: ' + (_tally(deferred) if deferred else 'none') + f'; last trained {_esc(last)}')
-    rotations = [row for row in window if row.get('event') == 'learning.rotation']
-    rotated = [row['count'] for row in rotations if row.get('outcome') == 'deleted' and _count(row.get('count'))]
-    idle = Counter(str(row.get('outcome')) for row in rotations
-                   if row.get('outcome') in ('nothing_closed', 'deferred'))
-    if rotated or idle:
-        # nothing_closed: the table is over its limit and every row is still protected.
-        print(f'learning rotation: deleted={sum(rotated)} passes={len(rotated)}'
-              + (f' ({_tally(idle)})' if idle else ''))
-    _selector_maintenance(window)
-
-
-_EDIT_TARGETS = ('main', 'linked', 'linked_unproved', 'mixed', 'outside')
-
-
-def _edit_targets(rows):
-    return Counter(row['editTarget'] for row in rows if row.get('editTarget') in _EDIT_TARGETS)
-
-
-def _selector_maintenance(window):
-    """Selector maintenance runs by result, with the reasons of the unfinished ones."""
-    runs = [row for row in window if row.get('event') == 'learning.selector.maintenance'
-            and row.get('outcome') in ('completed', 'deferred', 'failed')]
-    if not runs:
-        return
-    parts = [f"completed={sum(1 for row in runs if row['outcome'] == 'completed')}"]
-    for outcome in ('deferred', 'failed'):
-        reasons = Counter(str(row.get('reason')) for row in runs if row['outcome'] == outcome)
-        parts.append(f'{outcome}={sum(reasons.values())}' + (f' ({_tally(reasons)})' if reasons else ''))
-    stopped = Counter(str(row['incomplete']) for row in runs if isinstance(row.get('incomplete'), str))
-    if stopped:
-        # The step an unfinished run (``maintenance_incomplete``) stopped at.
-        parts.append(f'incomplete({_tally(stopped)})')
-    busy = [row['busyRetries'] for row in runs if _count(row.get('busyRetries'))]
-    if busy:
-        # Consecutive retries behind another install's prepare lease (not failures).
-        parts.append(f'busyRetriesMax={max(busy)}')
-    print('selector maintenance: ' + ' '.join(parts))
-
-
-def _teacher_waits(passes):
-    """Per host: the current wait reason, since when it holds, and the queued cases."""
-    if not passes:
-        return
-    last = passes[-1]
-    now = datetime.now(timezone.utc)
-    for host, wait_key, queued_key in (('claude', 'waitClaude', 'queuedClaude'),
-                                       ('codex', 'waitCodex', 'queuedCodex')):
-        reason = last.get(wait_key)
-        if not reason:
-            continue
-        since = last
-        for row in reversed(passes):
-            if row.get(wait_key) != reason:
-                break
-            since = row
-        start = _ts(since)
-        hours = f' {max(0.0, (now - start).total_seconds() / 3600):.1f}h' if start else ''
-        queued = last.get(queued_key) if _count(last.get(queued_key)) else 0
-        stamp = str(since.get('ts', ''))[:19].replace('T', ' ')
-        print(f'teacher wait {host}: {_esc(reason)} since {_esc(stamp)}'
-              f'{hours} queued={queued}')
 
 
 def _show(rows, args, view):
@@ -674,16 +171,9 @@ def _show(rows, args, view):
     if args.view == 'summary':
         summary(rows, args, unified=view is not None and view.unified)
         return
-    rows = _since(rows, args.hours)
-    if args.view == 'recalls':
-        _print([row for row in rows if row.get('event') == 'recall'], args, _recall_line, view)
-    elif args.view == 'errors':
-        _print([row for row in rows if row.get('severity') != 'warning' and
-                (row.get('outcome') in FAILED or row.get('event') == 'hook.error')],
-               args, _short, view)
-    else:
-        _print([row for row in rows if not args.event or row.get('event') == args.event],
-               args, _short, view)
+    render = _recall_line if args.view == 'recalls' else _short
+    _print(diagnostics.query_events(rows, args.view, hours=args.hours, event=args.event),
+           args, render, view)
 
 
 def _slo(rows, args, view):
@@ -697,18 +187,17 @@ def _slo(rows, args, view):
     roots = view.roots if view is not None else {}
     for install in sorted(blocks, key=str):
         block = blocks[install]
-        lines = logs_slo.lines(block, args.hours, state_root=roots.get(install))
         root = next((row.get('root') for row in block if row.get('root')), None) if unified else None
         if args.json:
-            for line in lines:
+            for line in diagnostics.slo_lines(block, args.hours, state_root=roots.get(install)):
                 print(_json_line({'slo': dict(line, **({'install': install, 'root': root} if unified else {}))}))
             continue
         if unified:
             print(f'slo install={_esc(install)} root={_esc(root or "-")} (last {args.hours:g}h)')
         else:
             print(f'slo (last {args.hours:g}h)')
-        for line in lines:
-            print('  ' + logs_slo.render(line, _esc))
+        for line in diagnostics.slo_lines(block, args.hours, state_root=roots.get(install), text=True):
+            print('  ' + line)
 
 
 def _learning_check(args):

@@ -91,3 +91,32 @@ def capture(decision, *, event, reason, exc=None, warning=False, child_stderr=No
 def telemetry_emit(path, phase, *, job_id, resources=None, **metadata):
     from memvane.diagnostics.job_telemetry import emit as implementation
     return implementation(path, phase, job_id=job_id, resources=resources, **metadata)
+
+
+def query_events(rows, view=None, *, hours=None, event=None, raw=False, now=None):
+    """Rows of one log view (``recalls``, ``errors``, ``events`` or None) in the window; ``raw``
+    rows first drop diagnostic parts and stored prompt text."""
+    from memvane.diagnostics.event_queries import query as implementation
+    return implementation(rows, view, hours=hours, event=event, raw=raw, now=now)
+
+
+def summarize_events(rows, hours=None, *, unified=False, now=None):
+    """The summary view of visible rows as display-escaped text lines."""
+    from memvane.diagnostics.event_summary import lines as implementation
+    return implementation(rows, hours, unified=unified, now=now)
+
+
+def slo_lines(rows, hours, *, state_root=None, now=None, text=False):
+    """Service-level lines of one install's visible rows: dicts, or escaped text with ``text``."""
+    from memvane.diagnostics import slo
+    found = slo.lines(rows, hours, state_root=state_root, now=now)
+    if not text:
+        return found
+    from memvane.diagnostics.event_queries import esc
+    return [slo.render(line, esc) for line in found]
+
+
+def reassemble_diagnostic(rows, diagnostic_id):
+    """``{status, diagnostic_id[, kind, truncated, text]}`` of one diagnostic in raw rows (explicit opt-in)."""
+    from memvane.diagnostics.event_queries import reassemble as implementation
+    return implementation(rows, diagnostic_id)
