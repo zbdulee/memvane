@@ -1395,8 +1395,10 @@ def _maybe_auto_open_ui(decision: dict, host: str) -> None:
         if not isinstance(cwd, str) or not cwd:
             return
         script = _Path(__file__).resolve().parents[2] / 'entry' / 'run.py'
-        subprocess.Popen([_sys.executable, '-B', str(script), 'ui', 'open', '--cwd', cwd,
-                          '--from-session-start'],
+        cmd = [_sys.executable, '-B', str(script), 'ui', 'open', '--cwd', cwd, '--from-session-start']
+        if host in ('claude', 'codex', 'hermes', 'gemini'):
+            cmd.extend(['--host', host])
+        subprocess.Popen(cmd,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          close_fds=True, start_new_session=True)
     except Exception:  # noqa: BLE001 - an opt-in convenience never changes the hook answer

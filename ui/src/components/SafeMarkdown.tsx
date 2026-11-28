@@ -96,7 +96,7 @@ type InlineRule = {pattern: RegExp; render: (match: RegExpExecArray, ctx: LinkCo
 
 function link(href: string | null, label: ComponentChildren, key: number): ComponentChildren {
   if (href === null) return <span key={key} class="md-link-dropped">{label}</span>;
-  if (href.startsWith('https://')) {
+  if (!href.startsWith('#')) {
     return (
       <a key={key} href={href} target="_blank" rel="noopener noreferrer" class="md-link md-link-external">
         {label}<span class="md-external" aria-hidden="true"> ↗</span>

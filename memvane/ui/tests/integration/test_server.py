@@ -251,3 +251,41 @@ class IdleTests(ServerCase):
         self.assertEqual(self.app.stop_reason, 'idle')
         self.thread.join(scaled(10))
         self.assertFalse(self.thread.is_alive())
+
+
+class Phase1RouteTests(ServerCase):
+    def test_new_routes_require_ui_header_and_session(self):
+        install = 'a' * 32
+        for method, path in (('GET', '/api/runtime'),
+                             ('GET', f'/api/installs/{install}/learning'),
+                             ('GET', f'/api/targets/{install}/wiki'),
+                             ('POST', f'/api/targets/{install}/query-playground')):
+            status, _f, body = self.raw(method, path, [f'Host: 127.0.0.1:{self.port}'])
+            self.assertEqual((status, json.loads(body)['error']), (403, 'ui_header_required'), path)
+            status, _f, body = self.browser(method, path, body={} if method == 'POST' else None)
+            self.assertEqual((status, body['error']), (401, 'session_required'), path)
+
+    def test_runtime_route_and_target_learning_wiki_playground_dispatch(self):
+        cookie = self.login()
+        status, _f, body = self.browser('GET', '/api/runtime', cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(set(body), {'wakes', 'sharedWorkers', 'proofs', 'disk'})
+
+        install = 'a' * 32
+        wt = f'{install}%3A0123456789ab'
+        for method, path, payload in (
+            ('GET', f'/api/targets/{install}/wiki', None),
+            ('GET', f'/api/targets/{wt}/wiki', None),
+            ('GET', f'/api/targets/{install}/wiki/card?rel=a.md', None),
+            ('GET', f'/api/targets/{install}/wiki/source?rel=a.py', None),
+            ('POST', f'/api/targets/{install}/query-playground', {'prompt': 'hi'}),
+            ('GET', f'/api/installs/{install}/learning', None),
+            ('POST', f'/api/installs/{install}/learning/check', {}),
+        ):
+            status, _f, body = self.browser(method, path, cookie=cookie, body=payload)
+            self.assertEqual((status, body['error']), (404, 'target_unknown'), path)
+
+    def test_session_started_accepts_gemini(self):
+        status, value = self.control('POST', '/api/internal/session-started',
+                                     {'targetId': 'b' * 32, 'host': 'gemini'})
+        self.assertEqual((status, value['delivered']), (200, 0))

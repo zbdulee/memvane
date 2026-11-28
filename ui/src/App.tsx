@@ -1,12 +1,30 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'preact/hooks';
-import {ApiError, exchangeLaunchCode, getOverview, getSession, reconcileOverview} from './api/client';
+import {
+  ApiError,
+  checkInstallLearning,
+  exchangeLaunchCode,
+  getInstallLearning,
+  getInstallRecalls,
+  getOverview,
+  getRuntime,
+  getSession,
+  getWikiCard,
+  getWikiList,
+  getWikiSource,
+  putPreferences,
+  reconcileOverview,
+  runQueryPlayground,
+} from './api/client';
 import {SseCoordinator, type SseStatus} from './api/sse';
-import type {OverviewResponse, SessionMeta} from './api/types';
+import type {OverviewResponse, SessionMeta, UiPreferences} from './api/types';
 import {AlertBanner} from './components/AlertBanner';
+import {cardHash} from './components/SafeMarkdown';
 import {SidebarTree} from './components/SidebarTree';
 import {Topbar} from './components/Topbar';
 import {OverviewPage} from './pages/OverviewPage';
-import {PlaceholderPage} from './pages/PlaceholderPage';
+import {RecallPage} from './pages/RecallPage';
+import {RuntimePage} from './pages/RuntimePage';
+import {WikiPage} from './pages/WikiPage';
 import {isTab, isTargetId, routeHash, useRoute} from './router';
 import {alertsInScope, findGroup, findNode} from './scope';
 import {safeText} from './text';
@@ -72,6 +90,9 @@ function Dashboard({session, theme, onToggleTheme}: {session: SessionMeta; theme
   const [reconciling, setReconciling] = useState(false);
   const [sse, setSse] = useState<SseStatus>('connecting');
   const [idle, setIdle] = useState<number | null>(session.idleSecondsRemaining);
+  const [preferences, setPreferences] = useState<UiPreferences>(session.preferences);
+  const [eventsRefreshToken, setEventsRefreshToken] = useState(0);
+  const [runtimeRefreshToken, setRuntimeRefreshToken] = useState(0);
   const refreshTimer = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
@@ -101,7 +122,13 @@ function Dashboard({session, theme, onToggleTheme}: {session: SessionMeta; theme
           setIdle(event.data.idleSecondsRemaining);
           break;
         case 'events_updated':
+          scheduleRefresh();
+          setEventsRefreshToken(n => n + 1);
+          break;
         case 'runtime_updated':
+          scheduleRefresh();
+          setRuntimeRefreshToken(n => n + 1);
+          break;
         case 'session_started':
           scheduleRefresh();
           break;
@@ -140,6 +167,24 @@ function Dashboard({session, theme, onToggleTheme}: {session: SessionMeta; theme
   const projectName = selected === null ? null : findGroup(projects, selected.installId)?.main.name ?? null;
   const alerts = overview === null ? [] : alertsInScope(overview, selected);
 
+  const loadRuntime = useCallback(() => {
+    void runtimeRefreshToken;
+    return getRuntime();
+  }, [runtimeRefreshToken]);
+
+  const savePreferences = useCallback(async (changes: Partial<Pick<UiPreferences, 'autoOpenOnSessionStart'>>) => {
+    const updated = await putPreferences(changes);
+    setPreferences(updated);
+    return updated;
+  }, []);
+
+  const openWikiCard = useCallback((path: string) => {
+    if (selected === null) return;
+    const rel = path.startsWith('.memvane/wiki/') ? path.slice('.memvane/wiki/'.length) : path;
+    const hash = cardHash(selected.targetId, rel);
+    if (hash !== null) window.location.hash = hash;
+  }, [selected]);
+
   return (
     <div class="app-shell">
       <Topbar
@@ -166,7 +211,16 @@ function Dashboard({session, theme, onToggleTheme}: {session: SessionMeta; theme
             ? overview === null
               ? <div class="empty-note">{loadError === null ? '현황을 불러오는 중…' : ''}</div>
               : <OverviewPage overview={overview} selected={selected} tab={route.tab} reconciling={reconciling} onReconcile={() => void reconcile()} />
-            : <PlaceholderPage tab={route.tab} />}
+            : null}
+          {route.tab === 'wiki'
+            ? <WikiPage selected={selected} loadList={getWikiList} loadCard={getWikiCard} loadSource={getWikiSource} />
+            : null}
+          {route.tab === 'recall'
+            ? <RecallPage selected={selected} loadRecalls={getInstallRecalls} runPlayground={runQueryPlayground} onOpenCard={openWikiCard} refreshToken={eventsRefreshToken} />
+            : null}
+          {route.tab === 'runtime'
+            ? <RuntimePage installId={selected?.installId ?? null} preferences={preferences} loadRuntime={loadRuntime} loadLearning={getInstallLearning} runLearningCheck={checkInstallLearning} savePreferences={savePreferences} />
+            : null}
         </div>
       </main>
     </div>

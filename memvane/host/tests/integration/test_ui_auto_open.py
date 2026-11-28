@@ -87,7 +87,8 @@ class Guards(FixtureCase):
         argv, options = self.spawned[0][0][0], self.spawned[0][1]
         self.assertEqual(argv[:2], [sys.executable, '-B'])
         self.assertTrue(argv[2].endswith(os.path.join('entry', 'run.py')))
-        self.assertEqual(argv[3:], ['ui', 'open', '--cwd', str(self.home / 'proj'), '--from-session-start'])
+        self.assertEqual(argv[3:], ['ui', 'open', '--cwd', str(self.home / 'proj'), '--from-session-start',
+                                    '--host', 'claude'])
         self.assertEqual({key: options[key] for key in ('stdin', 'stdout', 'stderr')},
                          dict.fromkeys(('stdin', 'stdout', 'stderr'), subprocess.DEVNULL))
         self.assertIs(options['close_fds'], True)
@@ -99,7 +100,8 @@ class Guards(FixtureCase):
         decision = {'state': 'worktree', 'worktreeProjectRoot': str(self.home / 'wt'),
                     'mainRoute': {'projectRoot': str(self.home / 'proj')}}
         self.run_helper(decision=decision)
-        self.assertEqual(self.spawned[0][0][0][-2:], [str(self.home / 'wt'), '--from-session-start'])
+        self.assertEqual(self.spawned[0][0][0][-4:], [str(self.home / 'wt'), '--from-session-start',
+                                                      '--host', 'claude'])
 
     def test_opt_in_off_absent_or_damaged_preferences_do_nothing(self):
         self.run_helper()
