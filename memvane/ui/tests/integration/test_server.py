@@ -5,9 +5,10 @@ import json
 import socket
 import stat
 import threading
+from unittest import mock
 
 from memvane.kernel import memvane_paths
-from memvane.ui import local_client, server
+from memvane.ui import local_client, runtime_adapters, server
 from memvane.ui.types import CSP, MAX_SSE_CLIENTS
 from tests.support.case import FixtureCase, scaled
 
@@ -257,6 +258,8 @@ class Phase1RouteTests(ServerCase):
     def test_new_routes_require_ui_header_and_session(self):
         install = 'a' * 32
         for method, path in (('GET', '/api/runtime'),
+                             ('GET', '/api/runtime/disk'),
+                             ('GET', '/api/runtime/disk?refresh=1'),
                              ('GET', f'/api/installs/{install}/learning'),
                              ('GET', f'/api/targets/{install}/wiki'),
                              ('POST', f'/api/targets/{install}/query-playground')):
@@ -267,9 +270,11 @@ class Phase1RouteTests(ServerCase):
 
     def test_runtime_route_and_target_learning_wiki_playground_dispatch(self):
         cookie = self.login()
-        status, _f, body = self.browser('GET', '/api/runtime', cookie=cookie)
+        with mock.patch.object(runtime_adapters, 'disk_usage', side_effect=AssertionError('disk walked')):
+            status, _f, body = self.browser('GET', '/api/runtime', cookie=cookie)
         self.assertEqual(status, 200)
         self.assertEqual(set(body), {'wakes', 'sharedWorkers', 'proofs', 'disk'})
+        self.assertEqual(body['disk'], [])
 
         install = 'a' * 32
         wt = f'{install}%3A0123456789ab'
@@ -284,6 +289,28 @@ class Phase1RouteTests(ServerCase):
         ):
             status, _f, body = self.browser(method, path, cookie=cookie, body=payload)
             self.assertEqual((status, body['error']), (404, 'target_unknown'), path)
+
+    def test_runtime_disk_route_caches_refreshes_and_validates(self):
+        cookie = self.login()
+        rows = [{'label': '설치별 상태 (installs)', 'bytes': 7}]
+        with mock.patch.object(runtime_adapters, 'disk_usage', return_value=rows) as walk:
+            status, _f, body = self.browser('GET', '/api/runtime/disk?refresh=1', cookie=cookie)
+            self.assertEqual((status, body), (200, {'disk': rows}))
+            self.assertEqual(walk.call_count, 1)
+            for path in ('/api/runtime/disk', '/api/runtime/disk?refresh=0', '/api/runtime/disk?refresh='):
+                status, _f, body = self.browser('GET', path, cookie=cookie)
+                self.assertEqual((status, body), (200, {'disk': rows}), path)
+            self.assertEqual(walk.call_count, 1)
+            status, _f, body = self.browser('GET', '/api/runtime/disk?refresh=1', cookie=cookie)
+            self.assertEqual((status, body), (200, {'disk': rows}))
+            self.assertEqual(walk.call_count, 2)
+            for value in ('bad', 'true', '2'):
+                status, _f, body = self.browser('GET', f'/api/runtime/disk?refresh={value}', cookie=cookie)
+                self.assertEqual((status, body['error']), (400, 'refresh_invalid'), value)
+            self.assertEqual(walk.call_count, 2)
+            self.assertEqual(walk.call_args, mock.call(self.app.home))
+        status, _f, _b = self.browser('POST', '/api/runtime/disk', cookie=cookie, body={})
+        self.assertEqual(status, 405)
 
     def test_session_started_accepts_gemini(self):
         status, value = self.control('POST', '/api/internal/session-started',

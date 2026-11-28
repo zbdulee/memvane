@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+from unittest import mock
 
 from memvane.kernel import bundle_paths
 from memvane.provider import api as provider
@@ -61,6 +62,50 @@ class RuntimeMonitorTests(FixtureCase):
         self.assertGreater(installs[0]['bytes'], 0)
         for item in view['disk']:
             self.assertEqual(set(item), {'label', 'bytes'})
+
+    def test_runtime_overview_without_disk_never_walks_the_disk(self):
+        with mock.patch.object(runtime_adapters, 'disk_usage', side_effect=AssertionError('disk walked')) as walk:
+            view = runtime_adapters.runtime_overview(home=self.home, include_disk=False)
+        self.assertEqual(walk.call_count, 0)
+        self.assertEqual(set(view), RUNTIME_KEYS)
+        self.assertEqual(view['disk'], [])
+        self.assertEqual([proof['installId'] for proof in view['proofs']], [self.id])
+
+    def test_disk_overview_reuses_the_cache_until_refresh_or_expiry(self):
+        before = tree_digest(self.home)
+        with mock.patch.object(runtime_adapters, 'disk_usage', wraps=runtime_adapters.disk_usage) as walk:
+            first = runtime_adapters.disk_overview(home=self.home, refresh=True)
+            self.assertEqual(walk.call_count, 1)
+            self.assertEqual(set(first), {'disk'})
+            installs = [item for item in first['disk'] if item['label'].startswith('설치별 상태')]
+            self.assertEqual(len(installs), 1)
+            self.assertGreater(installs[0]['bytes'], 0)
+            first['disk'].append({'label': 'caller mutation', 'bytes': 1})
+            again = runtime_adapters.disk_overview(home=self.home)
+            self.assertEqual(walk.call_count, 1)
+            self.assertNotIn('caller mutation', [item['label'] for item in again['disk']])
+            self.assertEqual(again['disk'], first['disk'][:-1])
+            runtime_adapters.disk_overview(home=self.home, refresh=True)
+            self.assertEqual(walk.call_count, 2)
+            runtime_adapters.disk_overview(home=self.home, ttl_seconds=0)
+            self.assertEqual(walk.call_count, 3)
+            self.assertEqual(tree_digest(self.home), before)
+            other = self.home / 'other-home'
+            other.mkdir(mode=0o700)
+            elsewhere = runtime_adapters.disk_overview(home=other)['disk']
+            self.assertEqual([item['bytes'] for item in elsewhere if item['label'].startswith('설치별 상태')], [0])
+            self.assertEqual(walk.call_count, 4)
+            runtime_adapters.disk_overview(home=self.home)
+            self.assertEqual(walk.call_count, 4)
+        self.assertEqual(walk.call_args_list[-1], mock.call(other))
+
+    def test_a_disk_scan_that_raises_is_not_cached(self):
+        with mock.patch.object(runtime_adapters, 'disk_usage', side_effect=OSError('boom')):
+            with self.assertRaises(OSError):
+                runtime_adapters.disk_overview(home=self.home, refresh=True)
+        with mock.patch.object(runtime_adapters, 'disk_usage', return_value=[{'label': 'x', 'bytes': 3}]) as walk:
+            self.assertEqual(runtime_adapters.disk_overview(home=self.home), {'disk': [{'label': 'x', 'bytes': 3}]})
+        self.assertEqual(walk.call_count, 1)
 
     def test_wakes_written_by_the_real_writer_read_in_user_language(self):
         queue = runtime.wake_queue()

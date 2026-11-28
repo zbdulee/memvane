@@ -17,6 +17,8 @@ import os
 from pathlib import Path
 import stat
 import sys
+import threading
+import time
 
 WAKE_LABELS = {
     'laya-sync': '색인 동기화 (laya-sync)',
@@ -33,6 +35,9 @@ TEACHER_HOSTS = ('claude', 'codex', 'hermes', 'gemini')
 MAX_WAKE_ITEMS = 256
 SCAN_ENTRY_LIMIT = 200000
 SCAN_DEPTH_LIMIT = 64
+DISK_CACHE_TTL_SECONDS = 60.0
+_DISK_CACHE = {}
+_DISK_LOCK = threading.Lock()
 
 
 # ----------------------------------------------------------------- helpers
@@ -294,15 +299,32 @@ def disk_usage(home=None):
 # ----------------------------------------------------------------- runtime
 
 
-def runtime_overview(*, home=None, wake_root=None):
-    """``RuntimeResponse`` DTO matching ``ui/src/api/types.ts``."""
+def disk_overview(*, home=None, refresh=False, ttl_seconds=DISK_CACHE_TTL_SECONDS):
+    """``{'disk': [DiskUsageItem]}`` from a per-home in-process cache that rescans only on refresh or expiry.
+
+    The lock is held across the scan, so concurrent requests share one walk
+    instead of each starting their own. A scan that raises is not cached.
+    """
+    key = os.fspath(home) if home is not None else ''
+    with _DISK_LOCK:
+        cached = _DISK_CACHE.get(key)
+        now = time.monotonic()
+        if refresh or cached is None or now - cached[0] >= ttl_seconds:
+            items = disk_usage(home)
+            cached = (time.monotonic(), [dict(item) for item in items])
+            _DISK_CACHE[key] = cached
+        return {'disk': [dict(item) for item in cached[1]]}
+
+
+def runtime_overview(*, home=None, wake_root=None, include_disk=True):
+    """``RuntimeResponse`` DTO matching ``ui/src/api/types.ts``; ``include_disk=False`` skips the disk walk."""
     snapshot, installs = _proved_installs(home)
     workers, proofs = resident_states(installs)
     return {
         'sharedWorkers': workers,
         'proofs': proofs,
         'wakes': wake_items(wake_snapshot(wake_root), _project_index(snapshot)),
-        'disk': disk_usage(home),
+        'disk': disk_usage(home) if include_disk else [],
     }
 
 
