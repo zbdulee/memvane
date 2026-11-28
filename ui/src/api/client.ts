@@ -4,6 +4,7 @@
 import type {
   ApiErrorBody,
   AuthExchangeResponse,
+  DiskUsageItem,
   DryRunRecallResponse,
   ErrorsResponse,
   HostName,
@@ -223,6 +224,11 @@ export function runQueryPlayground(
 
 export function getRuntime(): Promise<RuntimeResponse> {
   return requestJson<RuntimeResponse>('/api/runtime');
+}
+
+/** Disk usage is computed separately from `/api/runtime` because walking the state tree can be slow. */
+export function getRuntimeDisk(refresh = false): Promise<{disk: DiskUsageItem[]}> {
+  return requestJson<{disk: DiskUsageItem[]}>(`/api/runtime/disk?refresh=${refresh ? '1' : '0'}`);
 }
 
 export function getInstallLearning(installId: InstallId): Promise<LearningView> {

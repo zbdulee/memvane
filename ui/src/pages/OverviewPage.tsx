@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'preact/hooks';
+import {useEffect, useMemo, useState} from 'preact/hooks';
 import {ApiError, getInstallErrors} from '../api/client';
 import type {
   ErrorEventItem,
@@ -9,7 +9,7 @@ import type {
   WorktreeNode,
 } from '../api/types';
 import {Badge, Dot, type Tone} from '../components/Badge';
-import {navigate} from '../router';
+import {navigate, routeHash} from '../router';
 import {nodesInScope} from '../scope';
 import {formatClock, formatCount, formatMs, formatRelative, safeMultiline, safeText} from '../text';
 
@@ -77,8 +77,9 @@ function Kpis({nodes, overview}: {nodes: readonly WorktreeNode[]; overview: Over
   const installIds = new Set(nodes.map(node => node.installId));
   const installs = overview.installs.filter(install => installIds.has(install.installId));
   const single = installs.length === 1 ? installs[0] : undefined;
-  const recalls = nodes.reduce((sum, node) => sum + node.recalls24h, 0);
-  const slo = worstSlo(nodes.map(node => node.slo));
+  // Recall counts belong to the install; every checkout row repeats its install's number.
+  const recalls = installs.reduce((sum, install) => sum + install.recalls24h, 0);
+  const slo = worstSlo(installs.length > 0 ? installs.map(install => install.slo) : nodes.map(node => node.slo));
   const lastSync = latest(nodes.map(node => node.lastSyncAt));
   return (
     <section class="kpi-grid" aria-label="핵심 지표">
@@ -123,6 +124,7 @@ function CheckoutTable({nodes, selected, tab}: {nodes: readonly WorktreeNode[]; 
             <th>마지막 wake.sync</th>
             <th>24h Recall · p50 / p95</th>
             <th>SLO</th>
+            <th><span class="sr-only">바로 가기</span></th>
           </tr>
         </thead>
         <tbody>
@@ -155,10 +157,41 @@ function CheckoutTable({nodes, selected, tab}: {nodes: readonly WorktreeNode[]; 
                 <span class="muted"> / {formatCount(node.cards.generated)} / {formatCount(node.cards.pending)}</span>
               </td>
               <td title={formatClock(node.lastSyncAt)}>{formatRelative(node.lastSyncAt)}</td>
-              <td class="mono num nowrap">
-                {formatCount(node.recalls24h)}건 · {formatMs(node.p50Ms)} / {formatMs(node.p95Ms)}
+              {node.kind === 'main'
+                ? (
+                  <>
+                    <td class="mono num nowrap">
+                      {formatCount(node.recalls24h)}건 · {formatMs(node.p50Ms)} / {formatMs(node.p95Ms)}
+                    </td>
+                    <td><SloBadge slo={node.slo} /></td>
+                  </>
+                )
+                : (
+                  <>
+                    <td><span class="muted" title="recall 수치는 main checkout과 같은 설치 단위로 집계됩니다">설치 공유</span></td>
+                    <td><span class="muted" title="SLO는 설치 단위로 판정됩니다">설치 공유</span></td>
+                  </>
+                )}
+              <td class="cell-action nowrap">
+                <div class="row-links">
+                  <a
+                    class="btn btn-sm"
+                    href={routeHash({tab: 'wiki', target: node.targetId})}
+                    onClick={event => event.stopPropagation()}
+                    onKeyDown={event => event.stopPropagation()}
+                  >
+                    Wiki
+                  </a>
+                  <a
+                    class="btn btn-sm"
+                    href={routeHash({tab: 'recall', target: node.targetId})}
+                    onClick={event => event.stopPropagation()}
+                    onKeyDown={event => event.stopPropagation()}
+                  >
+                    Recall
+                  </a>
+                </div>
               </td>
-              <td><SloBadge slo={node.slo} /></td>
             </tr>
           ))}
         </tbody>
@@ -172,6 +205,42 @@ type DetailState =
   | {state: 'loaded'; sig: string; items: ErrorEventItem[]}
   | {state: 'failed'; sig: string; message: string};
 
+type ErrorKind = 'all' | 'refused' | 'error';
+
+const ERROR_FILTERS: readonly {id: ErrorKind; label: string; title: string}[] = [
+  {id: 'all', label: '전체', title: '모든 오류·거절 이벤트'},
+  {id: 'refused', label: '거절', title: 'recall이 거절·축소된 이벤트(recall*)'},
+  {id: 'error', label: '오류', title: 'recall 밖의 오류 이벤트(색인·위키·런타임 등)'},
+];
+
+function errorKind(item: ErrorEventItem): Exclude<ErrorKind, 'all'> {
+  return item.event === 'recall' || item.event.startsWith('recall.') ? 'refused' : 'error';
+}
+
+interface ErrorGroup {
+  key: string;
+  /** The newest event of the group; its diagnostics stand for the group. */
+  head: ErrorEventItem;
+  count: number;
+  hosts: string[];
+}
+
+function groupErrors(errors: readonly ErrorEventItem[]): ErrorGroup[] {
+  const groups = new Map<string, ErrorGroup>();
+  for (const item of errors) {
+    const key = `${item.installId}|${item.event}|${item.reason}`;
+    const group = groups.get(key);
+    if (group === undefined) {
+      groups.set(key, {key, head: item, count: 1, hosts: item.host === null ? [] : [item.host]});
+      continue;
+    }
+    group.count += 1;
+    if (item.ts > group.head.ts) group.head = item;
+    if (item.host !== null && !group.hosts.includes(item.host)) group.hosts.push(item.host);
+  }
+  return [...groups.values()].sort((a, b) => (a.head.ts < b.head.ts ? 1 : a.head.ts > b.head.ts ? -1 : 0));
+}
+
 function errorKey(item: ErrorEventItem): string {
   return `${item.installId}|${item.diagId ?? ''}|${item.ts}|${item.event}`;
 }
@@ -179,8 +248,18 @@ function errorKey(item: ErrorEventItem): string {
 function ErrorList({errors, projectName}: {errors: readonly ErrorEventItem[]; projectName: (id: InstallId) => string}) {
   const [details, setDetails] = useState<Readonly<Record<InstallId, DetailState>>>({});
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
+  const [kind, setKind] = useState<ErrorKind>('all');
 
   const sigOf = (id: InstallId): string => errors.filter(row => row.installId === id).map(errorKey).join('\n');
+  const counts = useMemo(() => {
+    const result: Record<ErrorKind, number> = {all: errors.length, refused: 0, error: 0};
+    for (const item of errors) result[errorKind(item)] += 1;
+    return result;
+  }, [errors]);
+  const groups = useMemo(
+    () => groupErrors(kind === 'all' ? errors : errors.filter(item => errorKind(item) === kind)),
+    [errors, kind],
+  );
 
   const fetchInstall = async (installId: InstallId, sig: string) => {
     setDetails(prev => ({...prev, [installId]: {state: 'loading', sig}}));
@@ -214,20 +293,20 @@ function ErrorList({errors, projectName}: {errors: readonly ErrorEventItem[]; pr
     }
   }, [errors]);
 
-  const load = async (item: ErrorEventItem) => {
-    const key = errorKey(item);
+  const load = async (group: ErrorGroup) => {
     const next = new Set(open);
-    if (next.has(key)) {
-      next.delete(key);
+    if (next.has(group.key)) {
+      next.delete(group.key);
       setOpen(next);
       return;
     }
-    next.add(key);
+    next.add(group.key);
     setOpen(next);
-    const sig = sigOf(item.installId);
-    const current = details[item.installId];
+    const installId = group.head.installId;
+    const sig = sigOf(installId);
+    const current = details[installId];
     if (current !== undefined && current.sig === sig && current.state !== 'failed') return;
-    await fetchInstall(item.installId, sig);
+    await fetchInstall(installId, sig);
   };
 
   const detailFor = (item: ErrorEventItem) => {
@@ -243,33 +322,78 @@ function ErrorList({errors, projectName}: {errors: readonly ErrorEventItem[]; pr
 
   if (errors.length === 0) return <div class="empty-note">최근 24시간 오류·거부 이벤트가 없습니다.</div>;
   return (
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>시각</th><th>프로젝트</th><th>호스트</th><th>이벤트 · 사유</th><th /></tr>
-        </thead>
-        <tbody>
-          {errors.map(item => {
-            const key = errorKey(item);
-            const expanded = open.has(key);
-            return [
-              <tr key={key}>
-                <td class="mono">{formatClock(item.ts)}</td>
-                <td><strong>{safeText(projectName(item.installId))}</strong></td>
-                <td>{item.host === null ? '—' : <Badge tone="muted">{item.host}</Badge>}</td>
-                <td class="mono">{safeText(item.event)} · {safeText(item.reason)}</td>
-                <td class="cell-action">
-                  <button type="button" class="btn btn-sm" onClick={() => void load(item)} aria-expanded={expanded}>
-                    {expanded ? '접기' : '상세 오류 로드'}
-                  </button>
-                </td>
-              </tr>,
-              expanded ? <tr key={`${key}-detail`} class="detail-row"><td colSpan={5}>{detailFor(item)}</td></tr> : null,
-            ];
-          })}
-        </tbody>
-      </table>
-    </div>
+    <>
+      <div class="card-actions filter-row" role="group" aria-label="이벤트 종류 필터">
+        {ERROR_FILTERS.map(item => (
+          <button
+            key={item.id}
+            type="button"
+            class={`btn btn-sm${kind === item.id ? ' active' : ''}`}
+            aria-pressed={kind === item.id}
+            title={item.title}
+            onClick={() => setKind(item.id)}
+          >
+            {item.label} <span class="mono muted">{formatCount(counts[item.id])}</span>
+          </button>
+        ))}
+      </div>
+      {groups.length === 0
+        ? <div class="empty-note">이 종류의 이벤트가 없습니다.</div>
+        : (
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>최근 시각</th><th>프로젝트</th><th>호스트</th><th>이벤트 · 사유</th><th /></tr>
+              </thead>
+              <tbody>
+                {groups.map(group => {
+                  const item = group.head;
+                  const expanded = open.has(group.key);
+                  return [
+                    <tr key={group.key}>
+                      <td class="mono nowrap">{formatClock(item.ts)}</td>
+                      <td><strong>{safeText(projectName(item.installId))}</strong></td>
+                      <td>
+                        <div class="cell-badges">
+                          {group.hosts.length === 0 ? '—' : group.hosts.map(host => <Badge key={host} tone="muted">{host}</Badge>)}
+                        </div>
+                      </td>
+                      <td>
+                        <div class="cell-badges">
+                          <Badge tone={errorKind(item) === 'refused' ? 'amber' : 'red'}>
+                            {errorKind(item) === 'refused' ? '거절' : '오류'}
+                          </Badge>
+                          <span class="mono">{safeText(item.event)} · {safeText(item.reason)}</span>
+                          {group.count > 1
+                            ? <Badge tone="muted" mono title={`최근 24시간 같은 이벤트 ${group.count}건`}>×{group.count}</Badge>
+                            : null}
+                        </div>
+                      </td>
+                      <td class="cell-action">
+                        <button type="button" class="btn btn-sm" onClick={() => void load(group)} aria-expanded={expanded}>
+                          {expanded ? '접기' : '상세 진단'}
+                        </button>
+                      </td>
+                    </tr>,
+                    expanded
+                      ? (
+                        <tr key={`${group.key}-detail`} class="detail-row">
+                          <td colSpan={5}>
+                            {group.count > 1
+                              ? <div class="card-sub">가장 최근 이벤트({formatClock(item.ts)})의 진단입니다.</div>
+                              : null}
+                            {detailFor(item)}
+                          </td>
+                        </tr>
+                      )
+                      : null,
+                  ];
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+    </>
   );
 }
 
